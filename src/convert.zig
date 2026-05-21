@@ -1,9 +1,9 @@
 //! Convert between Zig native types and R SEXPs.
 //!
 //! R works in terms of SEXPs. Zig works in terms of slices and structs.
-//! These functions bridge the gap - they allocate R vectors from slices
-//! and project R vector contents into Zig memory. Every allocation goes
-//! through an explicit allocator so callers control lifetime.
+//! These functions allocate R vectors from slices and project R vector
+//! contents into Zig memory. Every allocation goes through an explicit
+//! allocator so callers control lifetime.
 
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;

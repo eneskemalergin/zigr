@@ -1,19 +1,18 @@
-//! R's SEXP type system.
+//! R's SEXP type system and classification helpers.
 //!
-//! I mirror R's internal type tags and pointer layout so Zig code can
-//! dispatch on SEXPTYPE and manipulate R vectors without the C API getting
-//! in the way. Every operation here is unsafe at the boundary - callers
-//! must pair with the protection stack in protect.zig.
+//! Mirrors R's internal type tags so Zig code can dispatch on SEXPTYPE.
+//! Classification helpers wrap R's C API functions from the translated
+//! R headers. Callers outside R must not call functions that reach libR.
 
 const std = @import("std");
+const R = @import("R");
 
 /// Opaque pointer to an R SEXP. R's GC moves things around, so holding
 /// a raw SEXP across an R API call is a bug. Use protect.zig for that.
 pub const SEXP = ?*anyopaque;
 
-/// Maps R's internal type tags (from Rinternals.h). The C API uses these
-/// to switch on what kind of R object I'm looking at. I keep the same
-/// numeric values because R returns them directly.
+/// Maps R's internal type tags (from Rinternals.h). Numeric values match
+/// what R returns from TYPEOF().
 pub const SEXPTYPE = enum(c_int) {
     nil = 0,
     sym = 1,
@@ -51,26 +50,85 @@ pub const SEXPTYPE = enum(c_int) {
     _,
 };
 
-/// Length type used by R for vector sizes. Signed integer because R uses
-/// -1 for certain error states. Cast to usize after you validate.
+/// Length type used by R for vector sizes. Signed because R uses -1 for
+/// some error states. Cast to usize after validating >= 0.
 pub const R_len_t = c_int;
 
-/// Storage header for R vector objects. Every R vector starts with this
-/// layout in memory. I read the type tag here instead of calling R
-/// introspection functions - saves a function call per dispatch.
-pub const VECTOR_SEXPREC = extern struct {
-    type: SEXPTYPE,
-};
+/// Query the SEXPTYPE of a SEXP via R's TYPEOF() macro.
+pub fn typeOf(sexp: SEXP) SEXPTYPE {
+    return @enumFromInt(R.TYPEOF(@as(R.SEXP, @ptrCast(sexp))));
+}
 
-/// Wraps a CHARSXP (R string scalar). R interned strings are read-only
-/// and reference-counted. Writing through this pointer will segfault.
+/// True if the SEXP is any vector type (atomic, list, or expression).
+pub fn isVector(sexp: SEXP) bool {
+    return R.Rf_isVector(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a matrix (has dim attribute with 2 elements).
+pub fn isMatrix(sexp: SEXP) bool {
+    return R.Rf_isMatrix(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a factor (INTSXP with class = "factor").
+pub fn isFactor(sexp: SEXP) bool {
+    return R.Rf_isFactor(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a numeric vector (INTSXP, REALSXP, CPLXSXP).
+pub fn isNumeric(sexp: SEXP) bool {
+    return R.Rf_isNumeric(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is an integer vector (not factor, not raw).
+pub fn isInteger(sexp: SEXP) bool {
+    return R.Rf_isInteger(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a real (double) vector.
+pub fn isReal(sexp: SEXP) bool {
+    return R.Rf_isReal(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a string vector (STRSXP).
+pub fn isString(sexp: SEXP) bool {
+    return R.Rf_isString(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is NULL (R_NilValue).
+pub fn isNull(sexp: SEXP) bool {
+    return R.Rf_isNull(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is an environment.
+pub fn isEnvironment(sexp: SEXP) bool {
+    return R.Rf_isEnvironment(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a function (closure, builtin, or special).
+pub fn isFunction(sexp: SEXP) bool {
+    return R.Rf_isFunction(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is an S4 object.
+pub fn isS4(sexp: SEXP) bool {
+    return R.Rf_isS4(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// True if the SEXP is a data frame (VECSXP with class = "data.frame").
+pub fn isDataFrame(sexp: SEXP) bool {
+    return R.Rf_isFrame(@as(R.SEXP, @ptrCast(sexp))) != 0;
+}
+
+/// Wraps a CHARSXP (R string scalar). R interned strings are read-only.
 pub const StringSexp = extern struct {};
 
-/// Wraps an INTSXP (R integer vector). Elements are 32-bit signed ints.
-/// Missing values are INT_MIN. Check via `== R_NaInt` (from R headers).
+/// Wraps an INTSXP (R integer vector). Missing values are INT_MIN.
 pub const IntSexp = extern struct {};
 
-/// Wraps a REALSXP (R numeric vector). Elements are 64-bit doubles.
-/// Missing values are IEEE NaN with a specific payload. R provides
-/// ISNA() / ISNAN() for checking.
+/// Wraps a REALSXP (R numeric vector). Missing values are NA_REAL.
 pub const RealSexp = extern struct {};
+
+test "classification helpers compile" {
+    // Verify the function signatures are valid. Calls require R runtime.
+    try std.testing.expectEqual(@TypeOf(typeOf), fn (SEXP) SEXPTYPE);
+}
