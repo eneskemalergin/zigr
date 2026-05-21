@@ -8,20 +8,20 @@
 </p>
 
 <p align="center">
-    <a href="#build"><img src="https://img.shields.io/badge/version-0.0.1-0f766e?style=for-the-badge" alt="Version 0.0.1" /></a>
-    <a href="#build"><img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" /></a>
-    <a href="#build"><img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" /></a>
+    <img src="https://img.shields.io/badge/version-0.0.1-0f766e?style=for-the-badge" alt="Version 0.0.1" />
+    <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
+    <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
 </p>
 
 <p align="center">
-    <a href="#build"><img src="https://img.shields.io/badge/build-zig%20build%20test-16a34a?style=for-the-badge&logo=zig&logoColor=white" alt="zig build test" /></a>
-    <a href="plan/dev-guide.md"><img src="https://img.shields.io/badge/status-experimental-f59e0b?style=for-the-badge" alt="Experimental" /></a>
+    <img src="https://img.shields.io/badge/build-zig%20build%20test-16a34a?style=for-the-badge&logo=zig&logoColor=white" alt="zig build test" />
+    <img src="https://img.shields.io/badge/status-experimental-f59e0b?style=for-the-badge" alt="Experimental" />
 </p>
 
-Write R extensions in Zig. Compile with `zig build`. Skip the Makevars.
+Write R extensions in Zig. Compile with `zig build`. No custom Makevars.
 
-R extensions need compiled code. Normally that means C, C++ with Rcpp, or Rust with extendr. zigr is the Zig version: R's SEXP types as Zig structs, a protection stack mapping to PROTECT/UNPROTECT, and a build.zig that links R headers. No autotools, no Cargo, no R CMD INSTALL dance.
+R extensions need compiled code. Normally that means C, C++ with Rcpp, or Rust with extendr. zigr is the Zig version: R's SEXP types as Zig structs, a protection stack mapping to PROTECT/UNPROTECT, and a build.zig that links R headers. No autotools, no Makefile wrangling.
 
 ## Status
 
@@ -32,7 +32,7 @@ Experimental. This compiles and runs tests. The SEXP wrappers exist. The convers
 Requires [Zig 0.16](https://ziglang.org/learn/getting_started/).
 
 ```bash
-git clone https://github.com/yourname/zigr
+git clone https://github.com/eneskemalergin/zigr
 cd zigr
 zig build test
 ```
@@ -53,22 +53,30 @@ template/
 
 ## Why Zig and not Rust?
 
-Rust has extendr and savvy both are solid. But the Rust-to-R pipeline runs through Cargo, which means the user needs a Rust toolchain. Cross-compiling (especially Windows from Linux) adds more setup. Zig's compiler is a single static binary that cross-compiles to any target by default. For an R package shipping to Windows, macOS, and Linux, that matters. Zig's comptime replaces proc macros, so the build graph is simpler: no build.rs, no proc macro step.
+Rust has extendr and savvy both are solid. The Rust-to-R pipeline runs through Cargo, which means the user needs a Rust toolchain. Cross-compiling (especially Windows from Linux) adds more setup. Zig's compiler is a single static binary that cross-compiles to the three CRAN targets (Linux, macOS, Windows) without additional toolchains. Zig's comptime replaces proc macros, so the build graph is simpler: no build.rs, no proc macro step.
 
-Measured on a Linux x86_64 machine with R 4.6 and gcc 11.4. Vector sum of 1e7 doubles, compiled with R CMD SHLIB defaults (-O2).
+Vector sum of 1e7 doubles, compiled with each toolchain's defaults. This is a micro-benchmark: C (-O2) uses a plain while loop, Zig (ReleaseSafe) uses an explicit @Vector(8) SIMD path, Rcpp and extendr use their default iterator patterns.
 
-| Runner                     | Time       | vs C      |
+| Runner                     | Time       | vs C time |
 | -------------------------- | ---------- | --------- |
-| C -O2 while                | 9.27ms     | 1.00x     |
+| C -O2 (scalar while loop)  | 9.27ms     | 1.00x     |
 | Zig ReleaseSafe @Vector(8) | **3.91ms** | **0.42x** |
 | Rcpp sugar                 | 31.60ms    | 3.41x     |
 | extendr iter               | 59.00ms    | 6.37x     |
 
-Zig in safe mode with explicit SIMD is 2.4x faster than C's default -O2. Strict IEEE 754, no fast-math. The @Vector intrinsic drives the speed, not the compiler flag.
+On this test, the explicit SIMD path is 2.4x faster than C's scalar loop. C could match the time with `-O3 -ffast-math` or explicit SIMD intrinsics, but those are not the defaults that R users get through R CMD SHLIB. The point is not that Zig is inherently faster at math. The point is that Zig's default toolchain makes SIMD easy to write, and the resulting binaries are small and cross-compiled without ceremony.
 
 ## To use zigr in your R package
 
 Copy `template/build.zig` to your package root, point it at R_HOME, and write Zig code in `src/zig/`.
+
+The template accepts R_HOME in two ways:
+
+```bash
+export R_HOME=/usr/lib/R && zig build
+# or
+zig build -Dr-home=/usr/lib/R
+```
 
 ## License
 
@@ -77,7 +85,7 @@ MIT
 ---
 
 <p align="center">
-    <em>Single binary,</em><br />
-    <em>Cross-compile to every arch,</em><br />
-    <em>R calls Zig now.</em>
+    <em>Silent, static weight,</em><br />
+    <em>Data dances through the bridge,</em><br />
+    <em>Logic blooms in light.</em>
 </p>
