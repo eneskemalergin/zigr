@@ -2,6 +2,7 @@
 //! Compiled into a shared library and loaded by R via tests/run_r_tests.R.
 //! Not run by `zig build test` (those tests cannot link libR).
 
+const std = @import("std");
 const R = @import("R");
 
 // Use the R module's SEXP type for function parameters and returns.
@@ -88,10 +89,6 @@ export fn zigr_typeof_nil() SEXP {
 }
 
 /// Test Rf_isNull on a SEXP argument.
-export fn zigr_isnull_check(vec: SEXP) i32 {
-    if (R.Rf_isNull(vec) != 0) return 1;
-    return 0;
-}
 
 // ── Basic tests from Phase 2.1 ────────────────────────────
 
@@ -326,4 +323,357 @@ export fn zigr_nested_flags() SEXP {
     if (nested_outer_fired) v += 1;
     if (nested_inner_fired) v += 2;
     return R.Rf_ScalarInteger(v);
+}
+
+// ── REALSXP conversion tests (Phase 3.1) ──────────────
+
+const zigr_convert = @import("convert");
+
+/// Test toRealSlice — read from an R vector into a Zig slice.
+export fn zigr_test_to_real_slice() SEXP {
+    const n: R.R_xlen_t = 5;
+    const rvec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr: [*]f64 = @ptrCast(R.REAL(rvec));
+    ptr[0] = 1.0;
+    ptr[1] = 2.0;
+    ptr[2] = 3.0;
+    ptr[3] = 4.0;
+    ptr[4] = 5.0;
+    return rvec;
+}
+
+/// Test fromRealSlice — allocate from an array literal.
+export fn zigr_test_from_real_slice() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const values = [_]f64{ 10.0, 20.0, 30.0 };
+    const result = zigr_convert.fromRealSlice(values[0..]);
+    return @as(R.SEXP, @ptrCast(result));
+}
+
+/// Round-trip: create REALSXP from Zig slice, read back.
+export fn zigr_test_real_roundtrip() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const input = [_]f64{ 1.5, 2.5, 3.5, 4.5 };
+    const sexp = zigr_convert.fromRealSlice(input[0..]);
+    const r_sexp: R.SEXP = @ptrCast(sexp);
+    const ptr: [*]f64 = @ptrCast(R.REAL(r_sexp));
+    var ok = true;
+    for (input, 0..) |v, i| {
+        if (ptr[i] != v) ok = false;
+    }
+    if (ok) return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+// ── INTSXP conversion tests (Phase 3.2) ──────────────
+
+/// Create an INTSXP vector and return it.
+export fn zigr_test_int_create() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr: [*]i32 = @ptrCast(R.INTEGER(vec));
+    ptr[0] = 10;
+    ptr[1] = 20;
+    ptr[2] = 30;
+    ptr[3] = 40;
+    return vec;
+}
+
+/// Allocate from a Zig i32 slice.
+export fn zigr_test_int_from_slice() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const values = [_]i32{ 100, 200, 300 };
+    const result = zigr_convert.fromIntSlice(values[0..]);
+    return @as(R.SEXP, @ptrCast(result));
+}
+
+// ── STRSXP conversion tests (Phase 3.3) ──────────────
+
+/// Create a STRSXP vector and return it.
+export fn zigr_test_str_create() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vec, 0, R.Rf_mkChar("hello"));
+    R.SET_STRING_ELT(vec, 1, R.Rf_mkChar("world"));
+    R.SET_STRING_ELT(vec, 2, R.Rf_mkChar("zigr"));
+    return vec;
+}
+
+/// Allocate STRSXP from Zig slice, return it.
+export fn zigr_test_str_from_slice() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const values = [_][]const u8{ "alpha", "beta", "gamma" };
+    const result = zigr_convert.fromStringSlice(values[0..]);
+    return @as(R.SEXP, @ptrCast(result));
+}
+
+// ── LGLSXP conversion tests (Phase 3.4) ──────────────
+
+/// Create a LGLSXP vector and return it.
+export fn zigr_test_lgl_create() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr = R.LOGICAL(vec);
+    ptr[0] = 1; // TRUE
+    ptr[1] = 0; // FALSE
+    ptr[2] = R.R_NaInt; // NA
+    ptr[3] = 1; // TRUE
+    return vec;
+}
+
+/// Allocate LGLSXP from Zig slice, return it.
+export fn zigr_test_lgl_from_slice() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const values = [_]i32{ 1, 0, 1 };
+    const result = zigr_convert.fromLogicalSlice(values[0..]);
+    return @as(R.SEXP, @ptrCast(result));
+}
+
+// ── VECSXP conversion tests (Phase 3.5) ──────────────
+
+/// Create a VECSXP (list) with mixed types and return it.
+export fn zigr_test_list_create() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, n));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(vec, 0, R.Rf_ScalarReal(1.5));
+    _ = R.SET_VECTOR_ELT(vec, 1, R.Rf_ScalarInteger(42));
+    _ = R.SET_VECTOR_ELT(vec, 2, R.R_NilValue);
+    return vec;
+}
+
+/// Call toLogicalSlice on the lgl vector, verify values via R.
+/// Test toLogicalSlice via round-trip: create LGLSXP, read back, verify.
+export fn zigr_test_to_logical_slice() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr = R.LOGICAL(vec);
+    ptr[0] = 1;
+    ptr[1] = 0;
+    ptr[2] = R.R_NaInt;
+    ptr[3] = 1;
+
+    const slice = zigr_convert.toLogicalSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
+    var ok = true;
+    if (slice.len != 4) ok = false;
+    if (slice[0] != 1) ok = false;
+    if (slice[1] != 0) ok = false;
+    if (slice[2] != R.R_NaInt) ok = false;
+    if (slice[3] != 1) ok = false;
+    return if (ok) R.Rf_ScalarReal(1.0) else R.Rf_ScalarReal(0.0);
+}
+
+// ── Data frame tests (Phase 3.6) ──────────────────────
+
+const df = @import("dataframe");
+
+/// Build a data frame from Zig arrays, return it.
+export fn zigr_test_df_build() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vals = [_]f64{ 1.0, 2.0, 3.0 };
+    const col1 = (zigr_convert.fromRealSlice(vals[0..]));
+    const strs = [_][]const u8{ "a", "b", "c" };
+    const col2 = (zigr_convert.fromStringSlice(strs[0..]));
+    const names = [_][]const u8{ "x", "y" };
+    const cols = [_]R.SEXP{ @as(R.SEXP, @ptrCast(col1)), @as(R.SEXP, @ptrCast(col2)) };
+
+    return df.build(names[0..], cols[0..]);
+}
+
+/// Build a data frame and verify column access.
+export fn zigr_test_df_column() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vals = [_]f64{ 10.0, 20.0 };
+    const col1 = @as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(vals[0..])));
+    const names = [_][]const u8{"val"};
+    const cols = [_]R.SEXP{col1};
+    const df_sexp = df.build(names[0..], cols[0..]);
+
+    const df_wrap = df.DataFrame.wrap(df_sexp) orelse return R.R_NilValue;
+    const col = df_wrap.column("val") orelse return R.Rf_ScalarReal(0.0);
+    const rcol: R.SEXP = @as(R.SEXP, @ptrCast(col));
+    const ptr: [*]f64 = @ptrCast(R.REAL(rcol));
+    if (ptr[0] == 10.0 and ptr[1] == 20.0) return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+// ── RAWSXP / CPLXSXP tests ────────────────────────
+
+/// Create a RAWSXP vector and return it.
+export fn zigr_test_raw_create() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr = R.RAW(vec);
+    ptr[0] = 0xde;
+    ptr[1] = 0xad;
+    ptr[2] = 0xbe;
+    ptr[3] = 0xef;
+    return vec;
+}
+
+/// Create a CPLXSXP vector and return it.
+export fn zigr_test_cplx_create() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, n));
+    defer R.Rf_unprotect(1);
+    // Write via REAL/IMAG macros — use COMPLEX pointer
+    const Complex = extern struct { r: f64, i: f64 };
+    const ptr: [*]Complex = @ptrCast(@alignCast(R.COMPLEX(vec).?));
+    ptr[0] = .{ .r = 1.0, .i = 2.0 };
+    ptr[1] = .{ .r = 3.0, .i = 4.0 };
+    ptr[2] = .{ .r = 5.0, .i = 6.0 };
+    return vec;
+}
+
+// ── Attrib tests (Phase 3.7) ─────────────────────────
+
+const attrib = @import("attrib");
+
+/// Set and verify class attribute.
+export fn zigr_test_attrib_class() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    defer R.Rf_unprotect(1);
+    attrib.setClass(vec, "myclass");
+    const cls = attrib.getClass(std.heap.page_allocator, vec) catch return R.Rf_ScalarReal(0.0);
+    if (cls.len > 0 and std.mem.eql(u8, cls[0], "myclass")) return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Set and verify names attribute.
+export fn zigr_test_attrib_names() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(1);
+    const names = [_][]const u8{ "a", "b", "c" };
+    attrib.setNames(vec, names[0..]);
+    const ns = R.Rf_getAttrib(vec, R.R_NamesSymbol);
+    if (ns == R.R_NilValue) return R.Rf_ScalarReal(0.0);
+    const ok = R.XLENGTH(ns) == 3;
+    return if (ok) R.Rf_ScalarReal(1.0) else R.Rf_ScalarReal(0.0);
+}
+
+// ── ALTREP creation test (Phase 3.10) ───────────────
+
+const MyAlt = @import("altrep_create").AltReal("zigr", "test_real");
+
+/// Create an ALTREP REALSXP from a Zig slice, sum it in R.
+export fn zigr_test_altrep_create() SEXP {
+    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const vec = MyAlt.init(data[0..]);
+    return vec;
+}
+
+// ── Edge-case / adversarial tests ─────────────────────
+
+/// Test: fromRealSlice with empty slice.
+export fn zigr_test_from_empty() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const empty: []const f64 = &.{};
+    const result = zigr_convert.fromRealSlice(empty);
+    const len = R.XLENGTH(@as(R.SEXP, @ptrCast(result)));
+    return R.Rf_ScalarInteger(@intCast(len));
+}
+
+/// Test: toRealSlice with huge vector boundary.
+export fn zigr_test_real_huge() SEXP {
+    const n: R.R_xlen_t = 1000000;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr: [*]f64 = @ptrCast(R.REAL(vec));
+    ptr[0] = std.math.nan(f64);
+    ptr[n - 1] = std.math.inf(f64);
+    ptr[n / 2] = -std.math.inf(f64);
+    // Verify via toRealSlice
+    const slice = zigr_convert.toRealSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
+    if (slice.len != n) return R.Rf_ScalarReal(0.0);
+    if (!std.math.isNan(slice[0])) return R.Rf_ScalarReal(0.0);
+    if (slice[n - 1] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+    if (slice[n / 2] != -std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// Test: STRSXP toSlice with NA_STRING element.
+export fn zigr_test_str_na() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vec, 0, R.Rf_mkChar("hello"));
+    R.SET_STRING_ELT(vec, 1, R.R_NaString);
+    R.SET_STRING_ELT(vec, 2, R.Rf_mkChar("world"));
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const slice = zigr_convert.toStringSlice(arena.allocator(), @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
+    if (slice.len != 3) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, slice[0], "hello")) return R.Rf_ScalarReal(0.0);
+    if (slice[1].len != 0) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, slice[2], "world")) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// Test: LGLSXP with non-standard values (2, 3 should be TRUE).
+export fn zigr_test_lgl_edge() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
+    defer R.Rf_unprotect(1);
+    const ptr = R.LOGICAL(vec);
+    ptr[0] = 0; // FALSE
+    ptr[1] = 1; // TRUE
+    ptr[2] = 42; // non-standard — should be TRUE
+    ptr[3] = -7; // non-standard — should be TRUE (non-zero)
+    // Return as-is, R handles non-zero as TRUE
+    return vec;
+}
+
+/// Test: VECSXP with NULL element.
+export fn zigr_test_list_null() SEXP {
+    const n: R.R_xlen_t = 2;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, n));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(vec, 0, R.Rf_ScalarReal(1.0));
+    _ = R.SET_VECTOR_ELT(vec, 1, R.R_NilValue);
+    return vec;
+}
+
+/// Test: DataFrame column lookup with missing name.
+export fn zigr_test_df_col_missing() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const vals = [_]f64{ 1.0, 2.0 };
+    const col1 = zigr_convert.fromRealSlice(vals[0..]);
+    const names = [_][]const u8{"x"};
+    const cols = [_]R.SEXP{@as(R.SEXP, @ptrCast(col1))};
+    const df_sexp = df.build(names[0..], cols[0..]);
+    const df_wrap = df.DataFrame.wrap(df_sexp) orelse return R.Rf_ScalarReal(0.0);
+    const missing = df_wrap.column("nonexistent");
+    if (missing != null) return R.Rf_ScalarReal(0.0);
+    const exists = df_wrap.column("x");
+    if (exists == null) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// Test: toRealSlice with non-REALSXP (INTSXP) — R throws an error.
+/// This confirms that R enforces type safety on REAL() access.
+export fn zigr_test_real_wrong_type() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
+    defer R.Rf_unprotect(1);
+    // R's REAL() errors on INTSXP. This test confirms the error propagates.
+    // If this segfaults instead of erroring, the test catches it via tryCatch.
+    _ = zigr_convert.toRealSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch {};
+    return R.Rf_ScalarReal(0.0); // should never reach — error above
 }

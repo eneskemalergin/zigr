@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 MD036 MD041 MD045 -->
 <p align="center">
-    <img src="assets/logo-readme.svg" alt="zigr" width="420" />
+    <img src="assets/logo-readme.svg" alt="zigr" width="180" />
 </p>
 
 <p align="center">

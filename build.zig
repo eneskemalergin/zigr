@@ -103,6 +103,51 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "reverse_ffi", .module = rmod },
                     .{ .name = "memory", .module = mmod },
                     .{ .name = "rng", .module = rngmod },
+                    .{ .name = "convert", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/convert.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{
+                            .{ .name = "R", .module = r_mod },
+                            .{ .name = "cleanup", .module = cleanup_mod },
+                        },
+                    }) },
+                    .{ .name = "dataframe", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/dataframe.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
+                    .{ .name = "attrib", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/attrib.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
+                    .{ .name = "s4", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/s4.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
+                    .{ .name = "altrep", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/altrep.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
+                    .{ .name = "altrep_create", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/altrep_create.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
+                    .{ .name = "externalptr", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/externalptr.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
                 },
             }),
         });

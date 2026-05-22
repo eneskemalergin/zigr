@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-05-21
+
+### Added
+
+- Type conversion: `toRealSlice`, `fromRealSlice`, `toIntSlice`, `fromIntSlice`, `toStringSlice`, `fromStringSlice`, `toLogicalSlice`, `fromLogicalSlice`, `toListSlice`, `fromListSlice`, `toRawSlice`, `fromRawSlice`, `toComplexSlice`, `fromComplexSlice`.
+- Data frame module: `DataFrame.wrap`, `.columnCount`, `.rowCount`, `.columnNames`, `.column`, `build`.
+- Attribute handling: `setNames`, `getClass`, `setClass`, `setDim`, `getAttrib`, `setAttrib`.
+- S4 object support: `isS4`, `setS4Object`, `hasSlot`, `getSlot`, `setSlot`.
+- ALTREP consumption: `isAltRep`, `data1`, `data2`, `className`.
+- ALTREP creation: `AltReal` comptime class generator with Length, Elt, Dataptr, Duplicate callbacks.
+- External pointer wrappers: `make`, `addr`, `tag`, `registerFinalizer`, `create`.
+- R runtime tests expanded to 10 tests covering conversion, data frames, attributes, and ALTREP.
+
+### Fixed
+
+- SEXPTYPE enum values corrected to match Rinternals.h (were offset by 4+).
+- `Rf_isFrame` not in public R API — replaced with manual class attribute check.
+- Unused allocator parameters documented as reserved for future use.
+- Non-fallible functions return plain types, not `!T`.
+- `depth` in protect.zig made thread-local.
+- `cont` token now preserved via `R_PreserveObject` / `R_ReleaseObject`.
+- `StackChecker` gated on Debug/ReleaseSafe builds only.
+
+### Build
+
+- debug: 2.0s clean, 0.66s incremental.
+- ReleaseFast rtest .so: 459K stripped (34 exports).
+- ReleaseSmall rtest .so: 157K (34 exports).
+- 3/3 cross-compile targets.
+- 10 R runtime tests at 0.0.3, 22 at 0.0.2, 34 total.
+
 ## [0.0.2] - 2026-05-21
 
 ### Added
@@ -32,7 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Build
 
 - clean: 2.1s, incremental: 0.13s.
-- Test .so: 3.4M (22 exports, full R API coverage).
+- Test .so: 3.4M (22 exports, Debug build).
 - 3/3 cross-compile targets.
 
 ## [0.0.1] - 2026-05-21

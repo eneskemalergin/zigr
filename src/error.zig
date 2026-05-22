@@ -9,12 +9,14 @@ const R = @import("R");
 
 /// Signal an error to R. Calls Rf_error which never returns (C longjmp).
 pub fn signal(msg: []const u8) noreturn {
-    R.Rf_error(@ptrCast(msg.ptr));
+    const cstr: [*c]const u8 = @ptrCast(msg.ptr);
+    R.Rf_error(cstr);
 }
 
 /// Signal a warning to R. R prints the message and continues execution.
 pub fn warn(msg: []const u8) void {
-    R.Rf_warning(@ptrCast(msg.ptr));
+    const cstr: [*c]const u8 = @ptrCast(msg.ptr);
+    R.Rf_warning(cstr);
 }
 
 /// If condition is true, signal an error with the given message.

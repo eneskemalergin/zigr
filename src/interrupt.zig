@@ -4,6 +4,7 @@
 //! code remains responsive to the user. Call checkInterrupt inside
 //! hot loops, or use StackChecker to gate those calls at comptime.
 
+const builtin = @import("builtin");
 const R = @import("R");
 
 /// Check for user interrupt (Ctrl+C). If pending, R longjmps to
@@ -23,15 +24,12 @@ pub fn checkStack2(frameSize: usize) void {
     R.R_CheckStack2(@intCast(frameSize));
 }
 
-/// Comptime gate for interrupt checks. Set to true to enable
-/// periodic interrupt checking in hot loops.
-///
-/// Usage:
-///   for (0..n) |i| {
-///       if (interrupt.StackChecker) interrupt.checkInterrupt();
-///       // loop body
-///   }
-pub const StackChecker = true;
+/// Comptime gate for interrupt checks. Enabled in debug and release-safe
+/// builds where responsiveness matters more than raw speed.
+pub const StackChecker = switch (builtin.mode) {
+    .Debug, .ReleaseSafe => true,
+    else => false,
+};
 
 /// Wraps a chunk-based function with interrupt checks between chunks.
 /// The function receives a chunk index and returns `true` if there is

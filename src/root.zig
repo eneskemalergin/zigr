@@ -9,6 +9,12 @@ pub const interrupt = @import("interrupt.zig");
 pub const rng = @import("rng.zig");
 pub const memory = @import("memory.zig");
 pub const reverse_ffi = @import("reverse_ffi.zig");
+pub const dataframe = @import("dataframe.zig");
+pub const attrib = @import("attrib.zig");
+pub const s4 = @import("s4.zig");
+pub const altrep = @import("altrep.zig");
+pub const altrep_create = @import("altrep_create.zig");
+pub const externalptr = @import("externalptr.zig");
 
 test {
     _ = sexp;
@@ -19,4 +25,10 @@ test {
     _ = memory;
     _ = rng;
     _ = reverse_ffi;
+    _ = dataframe;
+    _ = attrib;
+    _ = s4;
+    _ = altrep;
+    _ = altrep_create;
+    _ = externalptr;
 }
