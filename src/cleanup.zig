@@ -87,15 +87,18 @@ pub fn protectCall(comptime func: *const fn () R.SEXP) R.SEXP {
     const cont = zigr_make_unwind_cont();
     R.R_PreserveObject(cont);
 
-    // Cleanup frame fires release on unwind.
+    // Save count before pushing our frame. On normal return,
+    // zigr_on_return clears every frame. We restore caller
+    // frames so their popFrame calls still work.
+    const saved_count = count;
     const Release = struct {
         fn release(ptr: ?*anyopaque) void {
             R.R_ReleaseObject(@as(R.SEXP, @ptrCast(ptr)));
         }
     };
     pushFrame(Release.release, @as(?*anyopaque, @ptrCast(cont)));
-    defer popFrame();
     defer R.R_ReleaseObject(cont);
+    defer count = saved_count;
 
     const W = struct {
         fn trampoline(_: ?*anyopaque) callconv(.c) R.SEXP {

@@ -10,12 +10,35 @@ const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.C) R.SEXP, .{ .n
 
 /// Install a symbol from a Zig string slice.
 /// Returns the symbol SEXP for use in lang2/lang3/lang4.
+/// Results are cached (R symbols live forever, safe to reuse the SEXP).
 pub fn symbol(name: []const u8) R.SEXP {
+    const S = struct {
+        var cache: [64]struct { name: [256:0]u8, len: usize, sexp: R.SEXP } = undefined;
+        var count: usize = 0;
+    };
+
+    for (0..S.count) |i| {
+        if (S.cache[i].len == name.len and std.mem.eql(u8, S.cache[i].name[0..name.len], name)) {
+            return S.cache[i].sexp;
+        }
+    }
+
     var buf: [256:0]u8 = undefined;
     const n = @min(name.len, buf.len - 1);
     @memcpy(buf[0..n], name[0..n]);
     buf[n] = 0;
-    return R.Rf_install(@ptrCast(&buf));
+    const sexp = R.Rf_install(@ptrCast(&buf));
+
+    if (S.count < S.cache.len) {
+        const cn = @min(name.len, S.cache[0].name.len - 1);
+        @memcpy(S.cache[S.count].name[0..cn], name[0..cn]);
+        S.cache[S.count].name[cn] = 0;
+        S.cache[S.count].len = cn;
+        S.cache[S.count].sexp = sexp;
+        S.count += 1;
+    }
+
+    return sexp;
 }
 
 /// Construct a call with 1 argument: fun(arg1).

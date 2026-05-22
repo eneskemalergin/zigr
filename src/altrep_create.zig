@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 
 const SliceWrap = struct {
     ptr: [*]const f64,
@@ -57,31 +58,74 @@ fn altGetRegion(x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t, buf: [*]f64) callconv(.
 
 fn altSum(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const w: *SliceWrap = @ptrCast(@alignCast(R.R_ExternalPtrAddr(R.R_altrep_data1(x)).?));
-    var total: f64 = 0.0;
-    for (0..w.len) |i| total += w.ptr[i];
+    const n = w.len;
+    if (n == 0) return R.Rf_ScalarReal(0.0);
+    const ptr = w.ptr;
+    const V = 8;
+    var i: usize = 0;
+    var vec: @Vector(V, f64) = @splat(0.0);
+    while (i + V <= n) : (i += V) {
+        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
+        vec += chunk;
+    }
+    var total = @reduce(.Add, vec);
+    for (i..n) |j| total += ptr[j];
     return R.Rf_ScalarReal(total);
 }
 
 fn altMin(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const w: *SliceWrap = @ptrCast(@alignCast(R.R_ExternalPtrAddr(R.R_altrep_data1(x)).?));
-    if (w.len == 0) return R.Rf_ScalarReal(std.math.inf(f64));
-    var val = w.ptr[0];
-    for (1..w.len) |i| if (w.ptr[i] < val) val = w.ptr[i];
+    const n = w.len;
+    if (n == 0) return R.Rf_ScalarReal(std.math.inf(f64));
+    const ptr = w.ptr;
+    const V = 8;
+    var i: usize = 0;
+    var vec: @Vector(V, f64) = @splat(std.math.inf(f64));
+    while (i + V <= n) : (i += V) {
+        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
+        vec = @select(f64, chunk < vec, chunk, vec);
+    }
+    var val = @reduce(.Min, vec);
+    for (i..n) |j| {
+        if (ptr[j] < val) val = ptr[j];
+    }
     return R.Rf_ScalarReal(val);
 }
 
 fn altMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const w: *SliceWrap = @ptrCast(@alignCast(R.R_ExternalPtrAddr(R.R_altrep_data1(x)).?));
-    if (w.len == 0) return R.Rf_ScalarReal(-std.math.inf(f64));
-    var val = w.ptr[0];
-    for (1..w.len) |i| if (w.ptr[i] > val) val = w.ptr[i];
+    const n = w.len;
+    if (n == 0) return R.Rf_ScalarReal(-std.math.inf(f64));
+    const ptr = w.ptr;
+    const V = 8;
+    var i: usize = 0;
+    var vec: @Vector(V, f64) = @splat(-std.math.inf(f64));
+    while (i + V <= n) : (i += V) {
+        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
+        vec = @select(f64, chunk > vec, chunk, vec);
+    }
+    var val = @reduce(.Max, vec);
+    for (i..n) |j| {
+        if (ptr[j] > val) val = ptr[j];
+    }
     return R.Rf_ScalarReal(val);
 }
 
 fn altIsSorted(x: R.SEXP) callconv(.c) c_int {
     const w: *SliceWrap = @ptrCast(@alignCast(R.R_ExternalPtrAddr(R.R_altrep_data1(x)).?));
-    if (w.len <= 1) return 1;
-    for (1..w.len) |i| if (w.ptr[i] < w.ptr[i - 1]) return 0;
+    const n = w.len;
+    if (n <= 1) return 1;
+    const ptr = w.ptr;
+    const V = 8;
+    var i: usize = 0;
+    while (i + V < n) : (i += V) {
+        const a = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
+        const b = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i + 1)).*);
+        if (@reduce(.Min, b - a) < 0.0) return 0;
+    }
+    for (i..n - 1) |j| {
+        if (ptr[j] > ptr[j + 1]) return 0;
+    }
     return 1;
 }
 
@@ -120,9 +164,20 @@ pub fn AltReal(comptime pkg: []const u8, comptime name: []const u8) type {
                 registered = true;
             }
             const w = makeWrap(slice);
+            // Cleanup: free SliceWrap if any R call after this longjmps.
+            // On normal return we pop the frame (SliceWrap lives in R's
+            // external pointer finalizer instead).
+            const Free = struct {
+                fn fire(ptr: ?*anyopaque) void {
+                    std.heap.c_allocator.destroy(@as(*SliceWrap, @ptrCast(ptr)));
+                }
+            };
+            cleanup.pushFrame(Free.fire, @as(?*anyopaque, @ptrCast(w)));
             const d1 = R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(w)), R.R_NilValue, R.R_NilValue);
             R.R_RegisterCFinalizerEx(d1, freeWrap, 1);
-            return R.R_new_altrep(class, d1, R.R_NilValue);
+            const result = R.R_new_altrep(class, d1, R.R_NilValue);
+            cleanup.popFrame();
+            return result;
         }
     };
 }

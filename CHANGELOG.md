@@ -13,7 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 11 new SEXP classification helpers: `isLogical`, `isComplex`, `isSymbol`, `isList`, `isLanguage`, `isPairList`, `isObject`, `isPrimitive`, `isArray`, `isNumber`, `isExpression`.
 - `AltReal.register(info)` accepts a DllInfo pointer for proper CRAN symbol registration.
 - `AltReal` now implements Get_region, Sum, Min, Max, Is_sorted, No_NA methods for faster R summary operations.
+- `AltReal` Sum, Min, Max, Is_sorted now use `@Vector(8, f64)` SIMD. Measured 2.7x (sum), 1.6x (min/max), 1.5x (isSorted) speedup on 10M elements.
 - Reverse FFI additions: `findVarInFrame`, `lang5`, `lang6`, `tryEval`, `tryEvalSilent`.
+- `DataFrame.columnIndex` and `columnByIndex` for efficient repeated column lookups without linear name scan.
+- `reverse_ffi.symbol` now caches the last 64 installed symbols in a static array, avoiding repeated `Rf_install` C calls.
 
 ### Fixed
 
@@ -26,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `setS4Object` now sets the object bit and S4 class attribute (complete=1) instead of only the S4 bit.
 - `Rf_findVar` resolved via `@extern` instead of fragile standalone `extern fn`.
 - `FREESXP` enum variant renamed from `_fresh` to `_free` to match R internals naming.
+- `toRealSlice`, `toIntSlice`, `toLogicalSlice` now use `@memcpy` from data pointer for non-ALTREP (zero C FFI, matches C baseline) and `*_GET_REGION` (single C call) for ALTREP, instead of per-element `*_ELT`.
+- `fromLogicalSlice` uses `@memcpy` instead of per-element write.
+- Removed 6 unnecessary cleanup frames from `from*` functions that wrap only pure `@memcpy` (keep only `fromStringSlice` where `Rf_mkCharLenCE` can longjmp).
+- `AltReal.init` now has a cleanup frame that frees the `SliceWrap` allocation if `R_MakeExternalPtr` or `R_new_altrep` longjmps (was a leak).
+- `dataframe.build` now has a prominent safety note documenting its unprotected return pattern.
+- `protectCall` now restores caller cleanup frames after `on_return` clears the stack, fixing a design fragility where caller frames were silently dropped.
 
 ## [0.0.3] - 2026-05-21
 

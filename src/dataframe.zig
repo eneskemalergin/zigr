@@ -44,18 +44,33 @@ pub const DataFrame = struct {
         return result;
     }
 
-    /// Look up a column by name. Returns null if the column does
-    /// not exist. NA column names are skipped during lookup.
-    pub fn column(self: DataFrame, name: []const u8) ?R.SEXP {
+    /// Get the numeric index of a column by name. Returns null if not
+    /// found. Use this for repeated column lookups: call columnIndex once,
+    /// then columnByIndex in a loop.
+    pub fn columnIndex(self: DataFrame, name: []const u8) ?i64 {
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
             const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
-            if (std.mem.eql(u8, cn, name)) return R.VECTOR_ELT(self.sexp, @intCast(i));
+            if (std.mem.eql(u8, cn, name)) return @intCast(i);
         }
         return null;
+    }
+
+    /// Get a column SEXP by its numeric index (zero-based).
+    /// Faster than column() when the index was obtained from columnIndex().
+    pub fn columnByIndex(self: DataFrame, index: i64) R.SEXP {
+        return R.VECTOR_ELT(self.sexp, @intCast(index));
+    }
+
+    /// Look up a column by name. Returns null if the column does
+    /// not exist. NA column names are skipped during lookup.
+    /// For repeated lookups, use columnIndex + columnByIndex instead.
+    pub fn column(self: DataFrame, name: []const u8) ?R.SEXP {
+        const idx = self.columnIndex(name) orelse return null;
+        return self.columnByIndex(idx);
     }
 };
 
@@ -74,6 +89,11 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
 }
 
 /// Build a data frame from column names and SEXP columns.
+///
+/// **Safety**: Returns an unprotected SEXP (standard R pattern). The caller
+/// MUST protect it immediately: `protect(dataframe.build(names, cols))`.
+/// Between this return and the caller's protect, the data frame could be
+/// collected by R's GC.
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     if (names.len == 0 or columns.len == 0) return R.R_NilValue;
     const ncols: R.R_xlen_t = @intCast(names.len);
