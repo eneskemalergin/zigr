@@ -15,6 +15,13 @@ pub const s4 = @import("s4.zig");
 pub const altrep = @import("altrep.zig");
 pub const altrep_create = @import("altrep_create.zig");
 pub const externalptr = @import("externalptr.zig");
+pub const @"export" = @import("export.zig");
+pub const lang = @import("lang.zig");
+pub const eval = @import("eval.zig");
+pub const trycatch = @import("trycatch.zig");
+pub const serialize = @import("serialize.zig");
+pub const weakref = @import("weakref.zig");
+pub const embed = @import("embed.zig");
 
 test {
     _ = sexp;
@@ -31,4 +38,11 @@ test {
     _ = altrep;
     _ = altrep_create;
     _ = externalptr;
+    _ = @"export";
+    _ = lang;
+    _ = eval;
+    _ = trycatch;
+    _ = serialize;
+    _ = weakref;
+    _ = embed;
 }

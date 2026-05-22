@@ -3,7 +3,6 @@
 //! Wraps R's S4 object functions: detection, slot access, and the S4
 //! bit on SEXP objects.
 
-const std = @import("std");
 const R = @import("R");
 
 fn toSym(name: []const u8) R.SEXP {

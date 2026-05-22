@@ -14,8 +14,8 @@ pub fn isAltRep(sexp: R.SEXP) bool {
     return R.ALTREP(sexp) != 0;
 }
 
-/// Get the first data pointer from an ALTREP vector. The meaning depends
-/// on the ALTREP class — for compact_intseq (1:n) this is the start value
+/// Get the first data pointer from an ALTREP vector. Interpretation
+/// depends on class: for compact_intseq (1:n) this is the start value
 /// as a SEXP-wrapped integer. For other classes it may be a pointer to
 /// external memory.
 pub fn data1(sexp: R.SEXP) R.SEXP {

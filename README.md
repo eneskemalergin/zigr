@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.4-0f766e?style=for-the-badge" alt="Version 0.0.4" />
+    <img src="https://img.shields.io/badge/version-0.0.5-0f766e?style=for-the-badge" alt="Version 0.0.5" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -25,7 +25,7 @@ R extensions need compiled code. Normally that means C, C++ with Rcpp, or Rust w
 
 ## Status
 
-Experimental. This compiles and runs tests. The SEXP wrappers exist. The conversion layer (Zig types to and from R vectors) is stubs. Real R interop needs the R dynamic library linked at runtime, which is the next block of work.
+Experimental but functional. All core R extension APIs are implemented and tested against R 4.6 in a live R session: SEXP type wrappers, PROTECT/UNPROTECT with R_UnwindProtect longjmp safety, ALTREP consumption and creation, type conversion (real, int, string, logical, raw, complex), data frames, attributes, S4 objects, external pointers, weak references, reverse FFI, error/warning signaling, RNG management, R-managed memory allocators, condition handling (tryCatch), R code evaluation, serialization, and a comptime export generator (R_init + R_registerRoutines + R_useDynamicSymbols for CRAN compliance).
 
 ## Build
 
@@ -43,12 +43,29 @@ zig build test
 build.zig              Module definition + tests
 build.zig.zon          Package manifest (zero dependencies)
 src/
-├── root.zig           Library entry, re-exports submodules
-├── sexp.zig           SEXPTYPE enum, VECTOR_SEXPREC, type stubs
-├── protect.zig        PROTECT/UNPROTECT wrapper (stub, needs libR)
-└── convert.zig        Type conversion (stub, not yet implemented)
-template/
-└── build.zig          Starter build.zig for R packages
+├── root.zig           Library entry, re-exports 20+ submodules
+├── sexp.zig           SEXPTYPE enum, 24 classification helpers
+├── protect.zig        PROTECT/UNPROTECT with depth tracking
+├── cleanup.zig        R_UnwindProtect bridge + cleanup stack
+├── convert.zig        Type conversion (REALSXP, INTSXP, STRSXP, LGLSXP, VECSXP, RAWSXP, CPLXSXP) + struct to/from R list
+├── error.zig          Rf_error / Rf_warning signaling
+├── interrupt.zig      R_CheckUserInterrupt, stack checking
+├── memory.zig         RAllocator (R_chk_calloc / R_chk_free)
+├── rng.zig            GetRNGstate / PutRNGstate wrappers
+├── reverse_ffi.zig    Rf_eval, Rf_lang2-6, Rf_findVar, Rf_defineVar
+├── dataframe.zig      DataFrame wrapper, build
+├── attrib.zig         getAttrib, setAttrib, setNames, setClass, setDim
+├── s4.zig             S4 object detection and slot access
+├── altrep.zig         ALTREP detection, data1/data2, class name
+├── altrep_create.zig  Comptime ALTREP class generator (AltReal)
+├── externalptr.zig    R_MakeExternalPtr wrappers with finalizers
+├── trycatch.zig       R_tryCatch wrapper (catch R errors from Zig)
+├── serialize.zig      R_SerializeToVector / R_UnserializeFromVector
+├── weakref.zig        R_MakeWeakRefC, R_WeakRefKey/Value
+├── embed.zig          rCodeEval / rRawEval (evaluate R code from Zig)
+├── export.zig         Comptime export generator (R_init_, R_registerRoutines)
+├── lang.zig           CAR, CDR, CONS, symbols, call1-6, list1-6, allocSExp
+├── eval.zig           rEval, findVar, findFunction, call, setVar, applyClosure
 ```
 
 ## Why Zig and not Rust?

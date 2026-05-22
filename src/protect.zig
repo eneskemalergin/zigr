@@ -34,8 +34,8 @@ pub fn unprotect() void {
 }
 
 /// Indexed protect: records the stack position so the SEXP can be
-/// replaced later via reprotect(). The index is NOT for random-access
-/// unprotect — use unprotect() for that.
+/// replaced later via reprotect(). The index is not for random-access
+/// unprotect (use unprotect() for that).
 pub fn protectWithIndex(value: SEXP, index: *i32) void {
     var ri: R.PROTECT_INDEX = undefined;
     R.R_ProtectWithIndex(value, &ri);

@@ -47,7 +47,7 @@ fn altDup(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     return dup;
 }
 
-fn altGetRegion(x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t, buf: [*]f64) callconv(.c) R.R_xlen_t {
+fn altGetRegion(x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t, buf: [*c]f64) callconv(.c) R.R_xlen_t {
     const w: *SliceWrap = @ptrCast(@alignCast(R.R_ExternalPtrAddr(R.R_altrep_data1(x)).?));
     const start = @as(usize, @intCast(i));
     if (start >= w.len) return 0;
@@ -169,7 +169,7 @@ pub fn AltReal(comptime pkg: []const u8, comptime name: []const u8) type {
             // external pointer finalizer instead).
             const Free = struct {
                 fn fire(ptr: ?*anyopaque) void {
-                    std.heap.c_allocator.destroy(@as(*SliceWrap, @ptrCast(ptr)));
+                    std.heap.c_allocator.destroy(@as(*SliceWrap, @ptrCast(@alignCast(ptr))));
                 }
             };
             cleanup.pushFrame(Free.fire, @as(?*anyopaque, @ptrCast(w)));

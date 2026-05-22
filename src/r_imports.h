@@ -1,6 +1,6 @@
 // zigr R header bindings
 // Minimal C stub that zig's build system translates into a Zig module.
-// Only includes what zigr actually uses — keeps translation fast.
+// Only includes what zigr actually uses (keeps translation fast).
 
 #include <R.h>
 #include <Rinternals.h>

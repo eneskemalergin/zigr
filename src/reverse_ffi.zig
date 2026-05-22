@@ -4,9 +4,10 @@
 //! Rf_defineVar, R_tryEval, R_tryEvalSilent so Zig code can construct and
 //! evaluate R expressions, look up variables, and define new bindings.
 
+const std = @import("std");
 const R = @import("R");
 
-const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.C) R.SEXP, .{ .name = "Rf_findVar" });
+const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findVar" });
 
 /// Install a symbol from a Zig string slice.
 /// Returns the symbol SEXP for use in lang2/lang3/lang4.
@@ -82,7 +83,7 @@ pub fn findVar(name: []const u8) R.SEXP {
     return Rf_findVar(symbol(name), R.R_GlobalEnv);
 }
 
-const Rf_findVarInFrame = @extern(*const fn (R.SEXP, R.SEXP) callconv(.C) R.SEXP, .{ .name = "Rf_findVarInFrame" });
+const Rf_findVarInFrame = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findVarInFrame" });
 
 /// Look up a variable in a specific environment frame without searching
 /// the parent chain.

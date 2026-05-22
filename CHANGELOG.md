@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-05-22
+
+### Added
+
+- Comptime export generator (`export.generateExports`): generates C wrappers, `R_init_<pkg>`, `R_registerRoutines`, CRAN-compliant `R_useDynamicSymbols(info, FALSE)`. Zero-length vectors to scalar parameters now panic with a clear message instead of reading garbage.
+- Language node module (`lang`): `car`, `cdr`, `setCar`, `setCdr`, `tag`, `setTag`, `cons`, `consList`, `symbol`, `call1`-`call6`, `allocSExp`, `dataCons`, `list1`-`list6`.
+- R evaluation module (`eval`): `rEval`, `findVar`, `findVarName`, `findFunction`, `call`, `setVar`. All wrapped in `R_UnwindProtect` for longjmp safety.
+- R condition handling module (`trycatch`): `tryCatch`, `tryCatchError`, `extractMessage` via `R_tryCatch`.
+- Serialization helpers (`serialize`): `toVector` and `fromVector` via `R_SerializeToVector` / `R_UnserializeFromVector`.
+- Weak reference module (`weakref`): `make`, `key`, `value` via `R_MakeWeakRefC`, `R_WeakRefKey`, `R_WeakRefValue`.
+- Export generator: `.External` interface support via second `external_exports` array.
+- Export generator: optional type support (`?f64`, `?i32`, `?bool`) — R NULL maps to `null`.
+- Export generator: `R_unload_<pkg>` generated alongside `R_init_<pkg>`.
+- Export generator: arity extended to 8 params for both `.Call` and `.External`.
+- Export generator: better error messages via `signalErrorMsg(prefix, detail)`.
+- `eval` module: `applyClosure`, `topLevelExec`, `baseEnv`, `emptyEnv` constants.
+- `lang.allocSExp` now accepts `SEXPTYPE` enum instead of raw `unsigned int`.
+- `callconv(.C)` fixed to `callconv(.c)` (Zig 0.16 CallingConvention has lowercase `c` only).
+- `altrep_create.altGetRegion` buffer type fixed to `[*c]f64` (nullable pointer).
+- `altrep_create` cleanup frame alignment fixed with `@alignCast`.
+- R code embedding module (`embed`): `rCodeEval` and `rRawEval` via `R_ParseEvalString` / `R_ParseVector`. Wrapped in `R_UnwindProtect`.
+- Struct-to-SEXP conversion (`convert.asSEXP` / `convert.fromSEXP`): converts Zig structs to/from R named lists using `@typeInfo` reflection. Supports nested structs, slices, scalars, optionals, SEXP.
+- Method/self exports (`export.generateMethods`): first param receives `*T` from EXTPTRSXP. Method names prefixed with `T__`.
+
+### Fixed
+
+- `trycatch.tryCatch` no longer segfaults: replaced `void*` comptime function pointer hack with comptime-generated trampoline per call site.
+- `trycatch.tryCatch` now actually catches conditions: was passing `R_NilValue` (catch nothing), now passes `"condition"` STRSXP (catch all).
+- `convert.fromSEXP` now takes explicit `arena` parameter — previous version returned struct with slice fields pointing into freed arena memory (use-after-free).
+- `zig fmt` requirements: `@typeInfo` field names in Zig 0.16 use `@"struct"`, `@"optional"`, `@"fn"` syntax, not `.Struct`, `.Optional`, `.Fn`.
+- `HandlerState` struct field default `= R.R_NilValue` fails in ReleaseFast (not comptime-known). Changed to explicit `undefined` initialization.
+
+### Testing
+
+- Expanded test suite to 26 tests covering happy-path, edge-case, error-handling, invariant, and resource categories. All pass in a live R 4.6 session.
+
 ## [0.0.4] - 2026-05-22
 
 ### Added
