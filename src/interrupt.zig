@@ -1,19 +1,18 @@
 //! Interrupt checking and stack safety.
 //!
 //! Wraps R_CheckUserInterrupt and R_CheckStack so long-running Zig
-//! code remains responsive to the user and stays within R's stack
-//! limits. The StackChecker comptime helper inserts interrupt checks
-//! at loop back-edges during long-running operations.
+//! code remains responsive to the user. Call checkInterrupt inside
+//! hot loops, or use StackChecker to gate those calls at comptime.
 
 const R = @import("R");
 
-/// Check for user interrupt (e.g. Ctrl+C). If an interrupt is pending,
-/// R longjmps to the error handler. Returns normally otherwise.
+/// Check for user interrupt (Ctrl+C). If pending, R longjmps to
+/// the error handler. Call inside long-running loops.
 pub fn checkInterrupt() void {
     R.R_CheckUserInterrupt();
 }
 
-/// Verify there is enough C stack space left for R's internal operations.
+/// Verify enough C stack space remains for R internal operations.
 /// Call in deep recursion or large stack frame code.
 pub fn checkStack() void {
     R.R_CheckStack();
@@ -24,10 +23,35 @@ pub fn checkStack2(frameSize: usize) void {
     R.R_CheckStack2(@intCast(frameSize));
 }
 
-/// Wraps a function with periodic interrupt checks at loop back-edges.
-/// The function receives a `*volatile bool` that it can set to true
-/// at loop back-edges to trigger interrupt checks.
-/// Use for long-running numerical loops that should remain responsive.
-pub fn longRunning(comptime func: *const fn () R.SEXP) R.SEXP {
-    return func();
+/// Comptime gate for interrupt checks. Set to true to enable
+/// periodic interrupt checking in hot loops.
+///
+/// Usage:
+///   for (0..n) |i| {
+///       if (interrupt.StackChecker) interrupt.checkInterrupt();
+///       // loop body
+///   }
+pub const StackChecker = true;
+
+/// Wraps a chunk-based function with interrupt checks between chunks.
+/// The function receives a chunk index and returns `true` if there is
+/// more work, `false` when done. Interrupts are checked before each
+/// chunk so the user can cancel long computations gracefully.
+///
+/// Usage:
+///   try interrupt.longRunning(struct {
+///       fn work(chunk: usize) bool {
+///           const start = chunk * chunk_size;
+///           const end = @min(start + chunk_size, total);
+///           for (start..end) |i| { /* process i */ }
+///           return end < total;  // more chunks?
+///       }
+///   }.work);
+pub fn longRunning(comptime func: *const fn (usize) bool) void {
+    var chunk: usize = 0;
+    while (true) {
+        checkInterrupt();
+        if (!func(chunk)) break;
+        chunk += 1;
+    }
 }

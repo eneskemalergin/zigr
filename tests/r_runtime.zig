@@ -243,3 +243,87 @@ export fn zigr_test_ralloc() SEXP {
     if (buf[0] != 42) return R.Rf_ScalarReal(-1.0);
     return R.Rf_ScalarReal(1.0);
 }
+
+// ── Preserve test (Phase 2.3) ─────────────────────────
+
+var preserve_released: bool = false;
+
+fn releasePreserved(_: ?*anyopaque) void {
+    preserve_released = true;
+}
+
+/// Preserve an SEXP, then error inside protectCall.
+/// Cleanup fires R_ReleaseObject on unwind.
+export fn zigr_test_preserve_longjmp() SEXP {
+    cleanup.init();
+    preserve_released = false;
+    const obj = R.Rf_ScalarReal(99.0);
+    R.R_PreserveObject(obj);
+    cleanup.pushFrame(releasePreserved, null);
+    _ = cleanup.protectCall(struct {
+        fn doBoom() SEXP {
+            R.Rf_error("preserve: expected");
+            return R.R_NilValue;
+        }
+    }.doBoom);
+    cleanup.popFrame();
+    return R.R_NilValue;
+}
+
+/// Query the preserve flag from R.
+export fn zigr_preserve_flag() SEXP {
+    return R.Rf_ScalarInteger(if (preserve_released) 1 else 0);
+}
+
+// ── Nested callbacks test (Phase 2.3) ────────────────
+
+var nested_outer_fired: bool = false;
+var nested_inner_fired: bool = false;
+
+fn markOuter(_: ?*anyopaque) void {
+    nested_outer_fired = true;
+}
+fn markInner(_: ?*anyopaque) void {
+    nested_inner_fired = true;
+}
+
+/// Inner function: pushes cleanup, then errors.
+/// Called by R via .Call (triggered from outer through rffi.eval).
+export fn zigr_test_nested_inner() SEXP {
+    cleanup.pushFrame(markInner, null);
+    R.Rf_error("nested inner: expected");
+    cleanup.popFrame();
+    return R.R_NilValue;
+}
+
+/// Outer function: pushes cleanup, calls protectCall which
+/// evaluates an R expression that .Call's back into zigr_test_nested_inner.
+export fn zigr_test_nested_outer() SEXP {
+    cleanup.init();
+    nested_outer_fired = false;
+    nested_inner_fired = false;
+    cleanup.pushFrame(markOuter, null);
+
+    _ = cleanup.protectCall(struct {
+        fn doNested() R.SEXP {
+            const fn_name = R.Rf_mkChar("zigr_test_nested_inner");
+            const fn_string = R.Rf_ScalarString(fn_name);
+            const call_sexp = rffi.lang2(
+                rffi.symbol(".Call"),
+                fn_string,
+            );
+            return rffi.eval(call_sexp);
+        }
+    }.doNested);
+
+    cleanup.popFrame();
+    return R.R_NilValue;
+}
+
+/// Query nested callback flags from R.
+export fn zigr_nested_flags() SEXP {
+    var v: i32 = 0;
+    if (nested_outer_fired) v += 1;
+    if (nested_inner_fired) v += 2;
+    return R.Rf_ScalarInteger(v);
+}
