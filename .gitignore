@@ -16,6 +16,5 @@ zig-*/
 
 # Ignored folders (dev only)
 plan/
-assets/
 benchmarks/
 experiments/
