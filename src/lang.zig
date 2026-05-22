@@ -81,12 +81,21 @@ pub fn list6(s1: R.SEXP, s2: R.SEXP, s3: R.SEXP, s4: R.SEXP, s5: R.SEXP, s6: R.S
 /// reuse the SEXP across calls instead of hitting Rf_install each time.
 pub fn symbol(name: []const u8) R.SEXP {
     const S = struct {
-        var cache: [64]struct { name: [256:0]u8, len: usize, sexp: R.SEXP } = undefined;
+        var cache: [64]struct {
+            hash: u64,
+            name: [256:0]u8,
+            len: usize,
+            sexp: R.SEXP,
+        } = undefined;
         var count: usize = 0;
     };
 
+    const hash = std.hash.Wyhash.hash(0, name);
+
     for (0..S.count) |i| {
-        if (S.cache[i].len == name.len and std.mem.eql(u8, S.cache[i].name[0..name.len], name)) {
+        if (S.cache[i].hash == hash and S.cache[i].len == name.len and
+            std.mem.eql(u8, S.cache[i].name[0..name.len], name))
+        {
             return S.cache[i].sexp;
         }
     }
@@ -101,6 +110,7 @@ pub fn symbol(name: []const u8) R.SEXP {
         const cn = @min(name.len, S.cache[0].name.len - 1);
         @memcpy(S.cache[S.count].name[0..cn], name[0..cn]);
         S.cache[S.count].name[cn] = 0;
+        S.cache[S.count].hash = hash;
         S.cache[S.count].len = cn;
         S.cache[S.count].sexp = sxp;
         S.count += 1;

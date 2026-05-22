@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - R package template (`template/`): `build.zig` with R_HOME detection, cross-compilation targets, zigr vendoring, and `src/<pkg>.so` installation.
 - Minimal R package example (`examples/hellozigr/`): DESCRIPTION, NAMESPACE, configure, Makevars, R wrapper, man pages, and Zig source demonstrating `generateExports`, type conversion, and reverse FFI.
 - Benchmark harness (`benchmarks/`): runner-agnostic design with `runner.json` config files per runner, convergence detection (CV < 2% over last N iterations), and standardized CSV schema. Three runners kept in-repo (zigr, C_Call, Rcpp); full multi-runner suite maintained separately.
+- BLAS/LAPACK tasks: 5 new matrix/linear algebra benchmarks (BLAS matmul, cross-product X'X, Cholesky decomposition, linear model fit via dgemm+dpotrf+dtrsm, row sums) added to all 3 runners. All verified producing identical results across zigr, C, and Rcpp.
+- Vectorized workloads: 6 new tasks covering element-wise ops (abs/log/exp/sqrt), row/column means and sums, vector-scalar broadcasting, sorting, cumulative sum, and random normal generation. All verified identical across zigr, C, Rcpp, and R baseline.
 
 ### Fixed
 

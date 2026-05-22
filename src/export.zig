@@ -101,17 +101,39 @@ const FreeArena = struct {
     }
 };
 
+/// Returns true if a type requires arena allocation for conversion.
+fn needsArena(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .optional => |info| needsArena(info.child),
+        .pointer => |info| info.size == .Slice,
+        .@"struct" => true,
+        else => false,
+    };
+}
+
 fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
+    comptime var arena_needed = needsArena(ret_type);
+    inline for (func_info.params) |p| {
+        if (needsArena(p.type.?)) arena_needed = true;
+    }
+
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
             _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-            const alloc = arena.allocator();
+            var arena: std.heap.ArenaAllocator = undefined;
+            var have_arena = false;
+            if (arena_needed) {
+                arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
+                have_arena = true;
+            }
+            defer if (have_arena) arena.deinit();
+            defer if (have_arena) cleanup.popFrame();
+            const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
 
             if (comptime n == 0) return toSexp(func(), ret_type);
             if (comptime n == 1) {
@@ -185,15 +207,25 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
+    comptime var arena_needed = needsArena(ret_type);
+    inline for (func_info.params) |p| {
+        if (needsArena(p.type.?)) arena_needed = true;
+    }
+
     const W = struct {
         fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
             return cleanup.protectCall(struct {
                 fn call() R.SEXP {
-                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                    defer arena.deinit();
-                    defer cleanup.popFrame();
-                    const alloc = arena.allocator();
+                    var arena: std.heap.ArenaAllocator = undefined;
+                    var have_arena = false;
+                    if (arena_needed) {
+                        arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                        cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
+                        have_arena = true;
+                    }
+                    defer if (have_arena) arena.deinit();
+                    defer if (have_arena) cleanup.popFrame();
+                    const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
 
                     if (comptime n == 1) {
                         const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
@@ -285,12 +317,24 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
+    comptime var arena_needed = needsArena(ret_type);
+    inline for (func_info.params) |p| {
+        if (needsArena(p.type.?)) arena_needed = true;
+    }
+
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
             _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-            const alloc = arena.allocator();
+            var arena: std.heap.ArenaAllocator = undefined;
+            var have_arena = false;
+            if (arena_needed) {
+                arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
+                have_arena = true;
+            }
+            defer if (have_arena) arena.deinit();
+            defer if (have_arena) cleanup.popFrame();
+            const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
 
             const ptr: *T = @ptrCast(@alignCast(R.R_ExternalPtrAddr(a0).?));
 

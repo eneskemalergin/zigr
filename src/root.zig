@@ -22,6 +22,7 @@ pub const trycatch = @import("trycatch.zig");
 pub const serialize = @import("serialize.zig");
 pub const weakref = @import("weakref.zig");
 pub const embed = @import("embed.zig");
+pub const raw = @import("raw.zig");
 
 test {
     _ = sexp;

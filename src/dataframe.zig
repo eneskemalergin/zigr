@@ -72,6 +72,22 @@ pub const DataFrame = struct {
         const idx = self.columnIndex(name) orelse return null;
         return self.columnByIndex(idx);
     }
+
+    /// Build a StringHashMap mapping column names to indices.
+    /// Caller owns the hash map and must deinit it.
+    /// Useful for O(1) lookups when accessing many columns.
+    pub fn columnMap(self: DataFrame, allocator: std.mem.Allocator) !std.StringHashMap(i64) {
+        var map = std.StringHashMap(i64).init(allocator);
+        const ncols = self.columnCount();
+        const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
+        for (0..@as(usize, @intCast(ncols))) |i| {
+            const elt = R.STRING_ELT(ns, @intCast(i));
+            if (elt == R.R_NaString) continue;
+            const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
+            try map.put(cn, @intCast(i));
+        }
+        return map;
+    }
 };
 
 fn sexp_isDataFrame(sexp: R.SEXP) bool {
@@ -97,30 +113,32 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     if (names.len == 0 or columns.len == 0) return R.R_NilValue;
     const ncols: R.R_xlen_t = @intCast(names.len);
+
+    // Batch protect: allocate all SEXPs, then set attributes
     const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, ncols));
+    const cnames = R.Rf_protect(R.Rf_allocVector(R.STRSXP, ncols));
+    const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const rn = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    defer R.Rf_unprotect(4);
 
     for (0..@as(usize, @intCast(ncols))) |i| {
         _ = R.SET_VECTOR_ELT(vec, @intCast(i), columns[i]);
     }
 
-    const cnames = R.Rf_protect(R.Rf_allocVector(R.STRSXP, ncols));
     for (0..@as(usize, @intCast(ncols))) |i| {
         const cs = R.Rf_mkCharLenCE(@ptrCast(names[i].ptr), @intCast(names[i].len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
         R.SET_STRING_ELT(cnames, @intCast(i), cs);
     }
     _ = R.Rf_namesgets(vec, cnames);
 
-    const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
     R.SET_STRING_ELT(cls, 0, R.Rf_mkChar("data.frame"));
     _ = R.Rf_classgets(vec, cls);
 
     const nrows: R.R_xlen_t = @intCast(R.XLENGTH(columns[0]));
-    const rn = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
     const rnp = R.INTEGER(rn);
     rnp[0] = R.R_NaInt;
     rnp[1] = @intCast(-nrows);
     _ = R.Rf_setAttrib(vec, R.R_RowNamesSymbol, rn);
 
-    _ = R.Rf_unprotect(4);
     return vec;
 }
