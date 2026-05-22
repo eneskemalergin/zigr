@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2026-05-22
+
+### Added
+
+- R package template (`template/`): `build.zig` with R_HOME detection, cross-compilation targets, zigr vendoring, and `src/<pkg>.so` installation.
+- Minimal R package example (`examples/hellozigr/`): DESCRIPTION, NAMESPACE, configure, Makevars, R wrapper, man pages, and Zig source demonstrating `generateExports`, type conversion, and reverse FFI.
+- Benchmark harness (`benchmarks/`): runner-agnostic design with `runner.json` config files per runner, convergence detection (CV < 2% over last N iterations), and standardized CSV schema. Three runners kept in-repo (zigr, C_Call, Rcpp); full multi-runner suite maintained separately.
+
+### Fixed
+
+- Export generator wrapper ABI: `fn([*]SEXP)` changed to `fn(SEXP,...,SEXP)` to match R's .Call dispatch (individual SEXPs, not array pointer). Fixes segfault in registered functions.
+- `R_registerRoutines` parameter order fixed: was passing .Call table as .C slot. Tables moved to static storage (stack-allocated tables became dangling after `R_init_` returned).
+- `pkg` param removed from `generateExports` / `generateMethods`. `@export` now done in user's root module (`@export` from dependency does not produce visible symbols).
+- Benchmark Zig task files updated for current zigr API (`toRealSlice`/`toIntSlice` now take allocator, return error unions; `dataframe.build` API change; `ArrayList` init fix for Zig 0.16).
+- `template/` and `examples/hellozigr/src/build.zig`: fixed for current `generateExports` API (no `pkg` param, `@export` in user root module); eliminated hardcoded `/usr/lib/R/lib` path (uses `r_lib` option, `R_LIB`, or `R_HOME`).
+- `build.zig.zon`: version updated from 0.0.5 to 0.0.6.
+- C_Call baseline runner: split from monolithic `bench.c` into per-task `.c` files + `register.c`; removed `-march=native` for fair comparison; fixed dead PROTECT/UNPROTECT in dataframe task; fixed `R_INCLUDE` path resolution.
+- C_C legacy runner: added `fib` and `parallel` tasks (was only vectorsum + na_prop); removed `-march=native`.
+- Fortran runner: removed duplicate `fib` (was in both `main.f90` and `tasks.f90`, causing linker error); fixed `R_INCLUDE` path resolution.
+- Rust_raw runner: added `matmul`, `strings`, `dataframe` tasks (was only 5 tasks).
+- savvy runner: documented as BROKEN (crate version mismatch), added `runner.json` with status note.
+- Cleaned up stale "zig" runner results (renamed to "zigr").
+
+### Testing
+
+- Cross-compilation verified: `x86_64-linux-gnu` (ELF), `aarch64-macos-none` (Mach-O), `x86_64-windows-gnu` (COFF). Header translation + source compilation pass for all three CRAN targets from Linux host without additional toolchains. Added `zig build check` for cross-compilation verification. Full R .so linking requires target R headers and shared library. Validation script at `scripts/cross-compile-test.sh`.
+
 ## [0.0.5] - 2026-05-22
 
 ### Added
@@ -16,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Serialization helpers (`serialize`): `toVector` and `fromVector` via `R_SerializeToVector` / `R_UnserializeFromVector`.
 - Weak reference module (`weakref`): `make`, `key`, `value` via `R_MakeWeakRefC`, `R_WeakRefKey`, `R_WeakRefValue`.
 - Export generator: `.External` interface support via second `external_exports` array.
-- Export generator: optional type support (`?f64`, `?i32`, `?bool`) — R NULL maps to `null`.
+- Export generator: optional type support (`?f64`, `?i32`, `?bool`) R NULL maps to `null`.
 - Export generator: `R_unload_<pkg>` generated alongside `R_init_<pkg>`.
 - Export generator: arity extended to 8 params for both `.Call` and `.External`.
 - Export generator: better error messages via `signalErrorMsg(prefix, detail)`.
@@ -27,13 +54,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `altrep_create` cleanup frame alignment fixed with `@alignCast`.
 - R code embedding module (`embed`): `rCodeEval` and `rRawEval` via `R_ParseEvalString` / `R_ParseVector`. Wrapped in `R_UnwindProtect`.
 - Struct-to-SEXP conversion (`convert.asSEXP` / `convert.fromSEXP`): converts Zig structs to/from R named lists using `@typeInfo` reflection. Supports nested structs, slices, scalars, optionals, SEXP.
-- Method/self exports (`export.generateMethods`): first param receives `*T` from EXTPTRSXP. Method names prefixed with `T__`.
+- Method/self exports (`export.generateMethods`): first param receives `*T` from EXTPTRSXP. Method names prefixed with `T__`
 
 ### Fixed
 
 - `trycatch.tryCatch` no longer segfaults: replaced `void*` comptime function pointer hack with comptime-generated trampoline per call site.
 - `trycatch.tryCatch` now actually catches conditions: was passing `R_NilValue` (catch nothing), now passes `"condition"` STRSXP (catch all).
-- `convert.fromSEXP` now takes explicit `arena` parameter — previous version returned struct with slice fields pointing into freed arena memory (use-after-free).
+- `convert.fromSEXP` now takes explicit `arena` parameter. Previous version returned struct with slice fields pointing into freed arena memory (use-after-free).
 - `zig fmt` requirements: `@typeInfo` field names in Zig 0.16 use `@"struct"`, `@"optional"`, `@"fn"` syntax, not `.Struct`, `.Optional`, `.Fn`.
 - `HandlerState` struct field default `= R.R_NilValue` fails in ReleaseFast (not comptime-known). Changed to explicit `undefined` initialization.
 

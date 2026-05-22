@@ -1,0 +1,12 @@
+ZIG = $(shell command -v zig 2>/dev/null)
+ZIG_TARGET = $(shell uname -s | tr '[:upper:]' '[:lower:]')
+R_HOME = $(shell R RHOME 2>/dev/null)
+
+all: $(SHLIB)
+
+$(SHLIB):
+	$(ZIG) build -Dtarget=native -Dr-home="$(R_HOME)"
+	cp zig-out/lib/hellozigr$(DLLSUFFIX) .
+
+clean:
+	rm -rf zig-out

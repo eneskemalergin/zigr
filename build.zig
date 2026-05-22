@@ -43,6 +43,29 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Cross-compilation check: compile zigr modules to a static library
+    // without linking against R. Verifies header translation + source
+    // compilation for any Zig target. The resulting .o/.a has unresolved
+    // R symbols resolved at runtime by R's dynamic linker.
+    // Cross-compilation check: verifies R header translation + Zig source
+    // compile for any target. Does NOT link against -lR; unresolved symbols
+    // are resolved by R at dynamic-link time.
+    const cross_check = b.addObject(.{
+        .name = "zigr_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cross_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "R", .module = r_mod },
+                .{ .name = "cleanup", .module = cleanup_mod },
+            },
+        }),
+    });
+
+    const check_step = b.step("check", "Cross-compilation check: compile zigr for any target");
+    check_step.dependOn(&cross_check.step);
+
     // Standalone tests
     const zigr_tests = b.addTest(.{ .root_module = zigr });
     zigr_tests.root_module.addLibraryPath(.{ .cwd_relative = r_lib });

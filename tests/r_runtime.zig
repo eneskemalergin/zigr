@@ -742,7 +742,9 @@ export fn zigr_phase4_from_sexp() SEXP {
     _ = R.SET_VECTOR_ELT(vec, 0, av);
     R.SET_STRING_ELT(names, 0, R.Rf_mkChar("a"));
     const bv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
-    R.REAL(bv)[0] = 1.0; R.REAL(bv)[1] = 2.0; R.REAL(bv)[2] = 3.0;
+    R.REAL(bv)[0] = 1.0;
+    R.REAL(bv)[1] = 2.0;
+    R.REAL(bv)[2] = 3.0;
     _ = R.SET_VECTOR_ELT(vec, 1, bv);
     R.SET_STRING_ELT(names, 1, R.Rf_mkChar("b"));
     _ = R.Rf_namesgets(vec, names);
@@ -762,7 +764,9 @@ const trycatch_mod = @import("trycatch");
 /// Embed: empty string should error, caught by tryCatch.
 export fn zigr_phase4_embed_empty() SEXP {
     if (trycatch_mod.tryCatch(struct {
-        fn call() R.SEXP { return embed.rCodeEval("", null); }
+        fn call() R.SEXP {
+            return embed.rCodeEval("", null);
+        }
     }.call)) |_| {
         return R.Rf_ScalarReal(0.0);
     } else |_| {
@@ -847,7 +851,8 @@ export fn zigr_phase4_from_sexp_optional_present() SEXP {
     const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 2));
     const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     const yv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
-    R.REAL(xv)[0] = 1.0; R.REAL(yv)[0] = 2.0;
+    R.REAL(xv)[0] = 1.0;
+    R.REAL(yv)[0] = 2.0;
     _ = R.SET_VECTOR_ELT(vec, 0, xv);
     _ = R.SET_VECTOR_ELT(vec, 1, yv);
     R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
@@ -897,7 +902,9 @@ export fn zigr_p4_embed_syntax_error() SEXP {
     // Arrange: invalid R expression
     // Act: evaluate under tryCatch
     if (trycatch_mod.tryCatch(struct {
-        fn call() R.SEXP { return embed.rCodeEval("~~~", null); }
+        fn call() R.SEXP {
+            return embed.rCodeEval("~~~", null);
+        }
     }.call)) |_| {
         // Assert: should NOT reach here (error expected)
         return R.Rf_ScalarReal(0.0);
@@ -911,7 +918,9 @@ export fn zigr_p4_embed_syntax_error() SEXP {
 /// Purpose: Verify Rf_error inside evaluated code is caught by tryCatch.
 export fn zigr_p4_embed_stop_error() SEXP {
     if (trycatch_mod.tryCatch(struct {
-        fn call() R.SEXP { return embed.rCodeEval("stop('test')", null); }
+        fn call() R.SEXP {
+            return embed.rCodeEval("stop('test')", null);
+        }
     }.call)) |_| {
         return R.Rf_ScalarReal(0.0);
     } else |_| {
@@ -925,7 +934,9 @@ export fn zigr_p4_embed_stop_error() SEXP {
 ///          warning() returns NULL invisibly; use { } block for second expr.
 export fn zigr_p4_embed_warning_noerror() SEXP {
     if (trycatch_mod.tryCatchError(struct {
-        fn call() R.SEXP { return embed.rCodeEval("{ warning('warn'); 42 }", null); }
+        fn call() R.SEXP {
+            return embed.rCodeEval("{ warning('warn'); 42 }", null);
+        }
     }.call)) |val| {
         // Should succeed: warning doesn't trigger error handler
         if (val) |sxp| {
@@ -1028,15 +1039,31 @@ export fn zigr_p4_struct_neg_zero() SEXP {
 ///          VECSXP allocation and name matching).
 export fn zigr_p4_struct_many_fields() SEXP {
     const Wide = struct {
-        a: f64, b: f64, c: f64, d: f64, e: f64,
-        f: f64, g: f64, h: f64, i: f64, j: f64,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+        g: f64,
+        h: f64,
+        i: f64,
+        j: f64,
     };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     const original = Wide{
-        .a = 1, .b = 2, .c = 3, .d = 4, .e = 5,
-        .f = 6, .g = 7, .h = 8, .i = 9, .j = 10,
+        .a = 1,
+        .b = 2,
+        .c = 3,
+        .d = 4,
+        .e = 5,
+        .f = 6,
+        .g = 7,
+        .h = 8,
+        .i = 9,
+        .j = 10,
     };
     const sexp = zigr_convert.asSEXP(original);
     const restored = zigr_convert.fromSEXP(Wide, sexp, arena.allocator());

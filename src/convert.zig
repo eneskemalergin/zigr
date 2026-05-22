@@ -207,7 +207,7 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
 fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
     if (comptime @typeInfo(T) == .optional) {
         if (sexp == R.R_NilValue) return null;
-        return sexpToZig(@typeInfo(T).@"optional".child, sexp, arena);
+        return sexpToZig(@typeInfo(T).optional.child, sexp, arena);
     }
     if (comptime T == f64) return R.REAL(sexp)[0];
     if (comptime T == i32) return R.INTEGER(sexp)[0];

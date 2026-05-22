@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const R = @import("R");
-const convert = @import("convert");
+const convert = @import("convert.zig");
 const cleanup = @import("cleanup");
 
 fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
@@ -28,7 +28,7 @@ fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
     if (pn + 1 < buf.len) buf[pn + 1] = ' ';
     if (dn > 0) @memcpy(buf[pn + 2 .. pn + 2 + dn], detail[0..dn]);
     buf[pn + 2 + dn] = 0;
-    R.Rf_error(buf.ptr);
+    R.Rf_error(&buf);
 }
 
 fn signalError(msg: []const u8) noreturn {
@@ -36,7 +36,7 @@ fn signalError(msg: []const u8) noreturn {
 }
 
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
-    if (comptime @typeInfo(T) == .Optional) {
+    if (comptime @typeInfo(T) == .optional) {
         if (sexp == R.R_NilValue) return null;
         const child = @typeInfo(T).Optional.child;
         return @as(T, fromSexp(child, sexp, arena));
@@ -75,7 +75,7 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
 }
 
 fn toSexp(value: anytype, comptime T: type) R.SEXP {
-    if (comptime @typeInfo(T) == .Optional) {
+    if (comptime @typeInfo(T) == .optional) {
         if (value) |v| {
             return toSexp(v, @typeInfo(T).Optional.child);
         } else {
@@ -101,92 +101,87 @@ const FreeArena = struct {
     }
 };
 
-fn makeWrapper(comptime func: anytype) *const fn ([*]R.SEXP) callconv(.c) R.SEXP {
-    const func_info = @typeInfo(@TypeOf(func)).Fn;
+fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
     const W = struct {
-        fn wrap(args: [*]R.SEXP) callconv(.c) R.SEXP {
-            return cleanup.protectCall(struct {
-                fn call() R.SEXP {
-                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                    defer arena.deinit();
-                    defer cleanup.popFrame();
-                    const alloc = arena.allocator();
+        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
+            _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
 
-                    if (comptime n == 0) return toSexp(func(), ret_type);
-                    if (comptime n == 1) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        return toSexp(func(p0), ret_type);
-                    }
-                    if (comptime n == 2) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        return toSexp(func(p0, p1), ret_type);
-                    }
-                    if (comptime n == 3) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        return toSexp(func(p0, p1, p2), ret_type);
-                    }
-                    if (comptime n == 4) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        return toSexp(func(p0, p1, p2, p3), ret_type);
-                    }
-                    if (comptime n == 5) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, args[4], alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4), ret_type);
-                    }
-                    if (comptime n == 6) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, args[4], alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, args[5], alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
-                    }
-                    if (comptime n == 7) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, args[4], alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, args[5], alloc);
-                        const p6 = fromSexp(func_info.params[6].type.?, args[6], alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
-                    }
-                    if (comptime n == 8) {
-                        const p0 = fromSexp(func_info.params[0].type.?, args[0], alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, args[4], alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, args[5], alloc);
-                        const p6 = fromSexp(func_info.params[6].type.?, args[6], alloc);
-                        const p7 = fromSexp(func_info.params[7].type.?, args[7], alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
-                    }
-                    @compileError("unsupported param count, max 8");
-                }
-            }.call);
+            if (comptime n == 0) return toSexp(func(), ret_type);
+            if (comptime n == 1) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                return toSexp(func(p0), ret_type);
+            }
+            if (comptime n == 2) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                return toSexp(func(p0, p1), ret_type);
+            }
+            if (comptime n == 3) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                return toSexp(func(p0, p1, p2), ret_type);
+            }
+            if (comptime n == 4) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                return toSexp(func(p0, p1, p2, p3), ret_type);
+            }
+            if (comptime n == 5) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                return toSexp(func(p0, p1, p2, p3, p4), ret_type);
+            }
+            if (comptime n == 6) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
+            }
+            if (comptime n == 7) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, a6, alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
+            }
+            if (comptime n == 8) {
+                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, a6, alloc);
+                const p7 = fromSexp(func_info.params[7].type.?, a7, alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
+            }
+            @compileError("unsupported param count, max 8");
         }
     };
     return W.wrap;
 }
 
 fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R.SEXP {
-    const func_info = @typeInfo(@TypeOf(func)).Fn;
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
@@ -268,7 +263,7 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     return W.wrap;
 }
 
-fn makeMethodDef(name: []const u8, wrapper: *const fn ([*]R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_CallMethodDef {
+fn makeMethodDef(name: []const u8, wrapper: *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_CallMethodDef {
     return R.R_CallMethodDef{
         .name = @ptrCast(name.ptr),
         .fun = @ptrCast(wrapper),
@@ -276,8 +271,8 @@ fn makeMethodDef(name: []const u8, wrapper: *const fn ([*]R.SEXP) callconv(.c) R
     };
 }
 
-fn makeExternalMethodDef(name: []const u8, wrapper: *const fn (R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_CallMethodDef {
-    return R.R_CallMethodDef{
+fn makeExternalMethodDef(name: []const u8, wrapper: *const fn (R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_ExternalMethodDef {
+    return R.R_ExternalMethodDef{
         .name = @ptrCast(name.ptr),
         .fun = @ptrCast(wrapper),
         .numArgs = arity,
@@ -285,49 +280,44 @@ fn makeExternalMethodDef(name: []const u8, wrapper: *const fn (R.SEXP) callconv(
 }
 
 // Generate a method wrapper where the first arg is an external pointer *T.
-fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn ([*]R.SEXP) callconv(.c) R.SEXP {
-    const func_info = @typeInfo(@TypeOf(func)).Fn;
-    const n = func_info.params.len; // includes self
+fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
     const W = struct {
-        fn wrap(args: [*]R.SEXP) callconv(.c) R.SEXP {
-            return cleanup.protectCall(struct {
-                fn call() R.SEXP {
-                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                    defer arena.deinit();
-                    defer cleanup.popFrame();
-                    const alloc = arena.allocator();
+        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
+            _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
 
-                    const ptr: *T = @ptrCast(@alignCast(R.R_ExternalPtrAddr(args[0]).?));
+            const ptr: *T = @ptrCast(@alignCast(R.R_ExternalPtrAddr(a0).?));
 
-                    if (comptime n == 1) return toSexp(func(ptr), ret_type);
-                    if (comptime n == 2) {
-                        const p0 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        return toSexp(func(ptr, p0), ret_type);
-                    }
-                    if (comptime n == 3) {
-                        const p0 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p1 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        return toSexp(func(ptr, p0, p1), ret_type);
-                    }
-                    if (comptime n == 4) {
-                        const p0 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p1 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p2 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        return toSexp(func(ptr, p0, p1, p2), ret_type);
-                    }
-                    if (comptime n == 5) {
-                        const p0 = fromSexp(func_info.params[1].type.?, args[1], alloc);
-                        const p1 = fromSexp(func_info.params[2].type.?, args[2], alloc);
-                        const p2 = fromSexp(func_info.params[3].type.?, args[3], alloc);
-                        const p3 = fromSexp(func_info.params[4].type.?, args[4], alloc);
-                        return toSexp(func(ptr, p0, p1, p2, p3), ret_type);
-                    }
-                    @compileError("method with >4 extra params not supported");
-                }
-            }.call);
+            if (comptime n == 1) return toSexp(func(ptr), ret_type);
+            if (comptime n == 2) {
+                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                return toSexp(func(ptr, p0), ret_type);
+            }
+            if (comptime n == 3) {
+                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                return toSexp(func(ptr, p0, p1), ret_type);
+            }
+            if (comptime n == 4) {
+                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p2 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                return toSexp(func(ptr, p0, p1, p2), ret_type);
+            }
+            if (comptime n == 5) {
+                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p2 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p3 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                return toSexp(func(ptr, p0, p1, p2, p3), ret_type);
+            }
+            @compileError("method with >4 extra params not supported");
         }
     };
     return W.wrap;
@@ -337,45 +327,45 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn ([*]R.S
 /// `external_exports` register under .External. Both are comptime slices
 /// of {name, func} pairs. Pass &.{} for empty tables.
 /// Generates R_init_<pkg> and R_unload_<pkg> (no-op) via @export.
-pub fn generateExports(comptime pkg: []const u8, comptime call_exports: anytype, comptime external_exports: anytype) type {
+pub fn generateExports(comptime call_exports: anytype, comptime external_exports: anytype) type {
     const call_count = call_exports.len;
     const ext_count = external_exports.len;
 
     return struct {
-        fn init(info: *R.DllInfo) void {
-            var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
-            var ext_defs: [ext_count + 1]R.R_CallMethodDef = undefined;
+        var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
+        var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
+        var initialized: bool = false;
+
+        /// Call this from your R_init_<pkg> entry point.
+        pub fn init(info: *R.DllInfo) void {
+            if (initialized) return;
+            initialized = true;
 
             inline for (0..call_count) |i| {
                 const exp = call_exports[i];
-                const fi = @typeInfo(@TypeOf(exp.func)).Fn;
+                const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 call_defs[i] = makeMethodDef(exp.name, makeWrapper(exp.func), @intCast(fi.params.len));
             }
             call_defs[call_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
             inline for (0..ext_count) |i| {
                 const exp = external_exports[i];
-                const fi = @typeInfo(@TypeOf(exp.func)).Fn;
+                const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 ext_defs[i] = makeExternalMethodDef(exp.name, makeExternalWrapper(exp.func), @intCast(fi.params.len));
             }
             ext_defs[ext_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
             _ = R.R_registerRoutines(
                 info,
+                null,
                 if (call_count > 0) @as([*c]const R.R_CallMethodDef, @ptrCast(&call_defs[0])) else null,
                 null,
-                null,
-                if (ext_count > 0) @as([*c]const R.R_CallMethodDef, @ptrCast(&ext_defs[0])) else null,
+                if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
-            R.R_useDynamicSymbols(info, 0);
         }
 
-        fn unload(_: *R.DllInfo) void {}
-
-        comptime {
-            @export(@as(*const anyopaque, @ptrCast(&init)), .{ .name = "R_init_" ++ pkg, .linkage = .strong });
-            @export(@as(*const anyopaque, @ptrCast(&unload)), .{ .name = "R_unload_" ++ pkg, .linkage = .strong });
-        }
+        /// Call this from your R_unload_<pkg> entry point.
+        pub fn unload(_: *R.DllInfo) void {}
     };
 }
 
@@ -384,18 +374,22 @@ pub fn generateExports(comptime pkg: []const u8, comptime call_exports: anytype,
 /// The generated wrapper verifies the pointer is non-null, calls the
 /// method, and returns the result. Method names are prefixed with
 /// `T__` to avoid collisions (e.g. `Person__greet`).
-pub fn generateMethods(comptime T: type, comptime pkg: []const u8, comptime call_exports: anytype, comptime external_exports: anytype) type {
+pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptime external_exports: anytype) type {
     const call_count = call_exports.len;
     const ext_count = external_exports.len;
 
     return struct {
+        var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
+        var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
+        var initialized: bool = false;
+
         fn init(info: *R.DllInfo) void {
-            var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
-            var ext_defs: [ext_count + 1]R.R_CallMethodDef = undefined;
+            if (initialized) return;
+            initialized = true;
 
             inline for (0..call_count) |i| {
                 const exp = call_exports[i];
-                const fi = @typeInfo(@TypeOf(exp.func)).Fn;
+                const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 const full_name = @typeName(T) ++ "__" ++ exp.name;
                 call_defs[i] = makeMethodDef(full_name, makeMethodWrapper(T, exp.func), @intCast(fi.params.len));
             }
@@ -403,7 +397,7 @@ pub fn generateMethods(comptime T: type, comptime pkg: []const u8, comptime call
 
             inline for (0..ext_count) |i| {
                 const exp = external_exports[i];
-                const fi = @typeInfo(@TypeOf(exp.func)).Fn;
+                const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 const full_name = @typeName(T) ++ "__" ++ exp.name;
                 ext_defs[i] = makeExternalMethodDef(full_name, makeExternalWrapper(exp.func), @intCast(fi.params.len));
             }
@@ -411,19 +405,13 @@ pub fn generateMethods(comptime T: type, comptime pkg: []const u8, comptime call
 
             _ = R.R_registerRoutines(
                 info,
+                null,
                 if (call_count > 0) @as([*c]const R.R_CallMethodDef, @ptrCast(&call_defs[0])) else null,
                 null,
-                null,
-                if (ext_count > 0) @as([*c]const R.R_CallMethodDef, @ptrCast(&ext_defs[0])) else null,
+                if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
-            R.R_useDynamicSymbols(info, 0);
         }
 
-        fn unload(_: *R.DllInfo) void {}
-
-        comptime {
-            @export(@as(*const anyopaque, @ptrCast(&init)), .{ .name = "R_init_" ++ pkg, .linkage = .strong });
-            @export(@as(*const anyopaque, @ptrCast(&unload)), .{ .name = "R_unload_" ++ pkg, .linkage = .strong });
-        }
+        pub fn unload(_: *R.DllInfo) void {}
     };
 }

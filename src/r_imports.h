@@ -8,3 +8,5 @@
 #include <R_ext/Rdynload.h>
 #include <R_ext/Utils.h>
 #include <R_ext/Altrep.h>
+#include <R_ext/BLAS.h>
+#include <R_ext/Lapack.h>

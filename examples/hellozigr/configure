@@ -1,0 +1,9 @@
+#!/bin/sh
+# Check that Zig >= 0.16.0 is available
+if ! command -v zig >/dev/null 2>&1; then
+  echo "Error: zig not found. Install Zig >= 0.16.0 (https://ziglang.org/download)"
+  exit 1
+fi
+ZIG_VER=$(zig version 2>/dev/null)
+echo "Found zig $ZIG_VER"
+exit 0

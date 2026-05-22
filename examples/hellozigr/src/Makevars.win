@@ -1,0 +1,11 @@
+ZIG = $(shell where zig 2>/dev/null)
+R_HOME = $(shell R RHOME 2>/dev/null)
+
+all: $(SHLIB)
+
+$(SHLIB):
+	$(ZIG) build -Dtarget=native -Dr-home="$(R_HOME)"
+	cp zig-out/lib/hellozigr.dll .
+
+clean:
+	rm -rf zig-out
