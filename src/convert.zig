@@ -1,9 +1,10 @@
 //! Convert between Zig native types and R SEXPs.
 //!
-//! Each vector type has toSlice (borrow, zero-copy for non-ALTREP) and
-//! fromSlice (allocate on R's heap, copy). from* functions unprotect
-//! their result before returning (standard R pattern). A cleanup frame
-//! protects against longjmp during allocation.
+//! Each vector type has toSlice (allocate on caller's allocator, copy) and
+//! fromSlice (allocate on R's heap, copy). to* functions return owned
+//! slices — caller must free. from* functions unprotect their result before
+//! returning (standard R pattern). A cleanup frame protects against longjmp
+//! during allocation.
 
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
@@ -18,16 +19,13 @@ const Unprot = struct {
     }
 };
 
-/// REALSXP: zero-copy borrow from REAL() pointer. If ALTREP, reads via
-/// REAL_ELT to avoid materialization.
+/// REALSXP: allocate and copy. Uses REAL_ELT which handles ALTREP
+/// transparently without materialization.
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
-    if (R.ALTREP(sexp) != 0) {
-        const result = try allocator.alloc(f64, n);
-        for (0..n) |i| result[i] = R.REAL_ELT(sexp, @intCast(i));
-        return result;
-    }
-    return R.REAL(sexp)[0..n];
+    const result = try allocator.alloc(f64, n);
+    for (0..n) |i| result[i] = R.REAL_ELT(sexp, @intCast(i));
+    return result;
 }
 
 /// REALSXP: allocate and copy.
@@ -41,15 +39,13 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
     return vec;
 }
 
-/// INTSXP: zero-copy from INTEGER() pointer. ALTREP-safe via INTEGER_ELT.
+/// INTSXP: allocate and copy. Uses INTEGER_ELT which handles ALTREP
+/// transparently without materialization.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
-    if (R.ALTREP(sexp) != 0) {
-        const result = try allocator.alloc(i32, n);
-        for (0..n) |i| result[i] = R.INTEGER_ELT(sexp, @intCast(i));
-        return result;
-    }
-    return R.INTEGER(sexp)[0..n];
+    const result = try allocator.alloc(i32, n);
+    for (0..n) |i| result[i] = R.INTEGER_ELT(sexp, @intCast(i));
+    return result;
 }
 
 /// INTSXP: allocate and copy.
@@ -89,15 +85,13 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
     return vec;
 }
 
-/// LGLSXP: zero-copy from LOGICAL() pointer. ALTREP-safe via LOGICAL_ELT.
+/// LGLSXP: allocate and copy. Uses LOGICAL_ELT which handles ALTREP
+/// transparently without materialization.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
-    if (R.ALTREP(sexp) != 0) {
-        const result = try allocator.alloc(i32, n);
-        for (0..n) |i| result[i] = R.LOGICAL_ELT(sexp, @intCast(i));
-        return result;
-    }
-    return R.LOGICAL(sexp)[0..n];
+    const result = try allocator.alloc(i32, n);
+    for (0..n) |i| result[i] = R.LOGICAL_ELT(sexp, @intCast(i));
+    return result;
 }
 
 /// LGLSXP: build from i32 slice.
@@ -133,9 +127,12 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
     return vec;
 }
 
-/// RAWSXP: zero-copy borrow from RAW() pointer.
-pub fn toRawSlice(sexp: SEXP) []u8 {
-    return R.RAW(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+/// RAWSXP: allocate and copy.
+pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
+    const n = @as(usize, @intCast(R.XLENGTH(sexp)));
+    const result = try allocator.alloc(u8, n);
+    @memcpy(result, R.RAW(sexp)[0..n]);
+    return result;
 }
 
 /// RAWSXP: allocate and copy.
@@ -149,11 +146,13 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
     return vec;
 }
 
-/// CPLXSXP: borrow from COMPLEX() pointer.
-pub fn toComplexSlice(sexp: SEXP) []Rcomplex {
-    const ptr: [*]Rcomplex = @ptrCast(@alignCast(R.COMPLEX(sexp).?));
+/// CPLXSXP: allocate and copy.
+pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
-    return ptr[0..n];
+    const result = try allocator.alloc(Rcomplex, n);
+    const src: [*]const Rcomplex = @ptrCast(@alignCast(R.COMPLEX(sexp).?));
+    @memcpy(result, src[0..n]);
+    return result;
 }
 
 /// CPLXSXP: allocate and copy.

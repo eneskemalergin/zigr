@@ -7,16 +7,23 @@
 const std = @import("std");
 const R = @import("R");
 
+fn cstr(buf: *[4096:0]u8, s: []const u8) [*c]const u8 {
+    const n = @min(s.len, buf.len - 1);
+    @memcpy(buf[0..n], s[0..n]);
+    buf[n] = 0;
+    return @ptrCast(buf);
+}
+
 /// Signal an error to R. Calls Rf_error which never returns (C longjmp).
 pub fn signal(msg: []const u8) noreturn {
-    const cstr: [*c]const u8 = @ptrCast(msg.ptr);
-    R.Rf_error(cstr);
+    var buf: [4096:0]u8 = undefined;
+    R.Rf_error(cstr(&buf, msg));
 }
 
 /// Signal a warning to R. R prints the message and continues execution.
 pub fn warn(msg: []const u8) void {
-    const cstr: [*c]const u8 = @ptrCast(msg.ptr);
-    R.Rf_warning(cstr);
+    var buf: [4096:0]u8 = undefined;
+    R.Rf_warning(cstr(&buf, msg));
 }
 
 /// If condition is true, signal an error with the given message.

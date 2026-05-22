@@ -18,7 +18,7 @@ pub const SEXPTYPE = enum(c_int) {
     list = 2,
     clos = 3,
     env = 4,
-    prompt = 5,
+    prom = 5,
     lang = 6,
     special = 7,
     builtin = 8,
@@ -38,7 +38,7 @@ pub const SEXPTYPE = enum(c_int) {
     raw = 24,
     s4 = 25,
     _new = 30,
-    _fresh = 31,
+    _free = 31,
     fun = 99,
     _,
 };
@@ -83,6 +83,39 @@ pub fn isFunction(sexp: SEXP) bool {
 }
 pub fn isS4(sexp: SEXP) bool {
     return R.Rf_isS4(sexp) != 0;
+}
+pub fn isLogical(sexp: SEXP) bool {
+    return R.Rf_isLogical(sexp) != 0;
+}
+pub fn isComplex(sexp: SEXP) bool {
+    return R.Rf_isComplex(sexp) != 0;
+}
+pub fn isSymbol(sexp: SEXP) bool {
+    return R.Rf_isSymbol(sexp) != 0;
+}
+pub fn isList(sexp: SEXP) bool {
+    return R.Rf_isList(sexp) != 0;
+}
+pub fn isLanguage(sexp: SEXP) bool {
+    return R.Rf_isLanguage(sexp) != 0;
+}
+pub fn isPairList(sexp: SEXP) bool {
+    return R.Rf_isPairList(sexp) != 0;
+}
+pub fn isObject(sexp: SEXP) bool {
+    return R.Rf_isObject(sexp) != 0;
+}
+pub fn isPrimitive(sexp: SEXP) bool {
+    return R.Rf_isPrimitive(sexp) != 0;
+}
+pub fn isArray(sexp: SEXP) bool {
+    return R.Rf_isArray(sexp) != 0;
+}
+pub fn isNumber(sexp: SEXP) bool {
+    return R.Rf_isNumber(sexp) != 0;
+}
+pub fn isExpression(sexp: SEXP) bool {
+    return R.Rf_isExpression(sexp) != 0;
 }
 
 pub fn isDataFrame(sexp: SEXP) bool {

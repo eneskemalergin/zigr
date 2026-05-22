@@ -35,7 +35,7 @@ pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
 pub fn setClass(sexp: R.SEXP, class: []const u8) void {
     const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
     defer R.Rf_unprotect(1);
-    R.SET_STRING_ELT(cls, 0, R.Rf_mkChar(@ptrCast(class.ptr)));
+    R.SET_STRING_ELT(cls, 0, R.Rf_mkCharLenCE(@ptrCast(class.ptr), @intCast(class.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
     _ = R.Rf_classgets(sexp, cls);
 }
 

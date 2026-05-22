@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2026-05-22
+
+### Added
+
+- `protect()` now returns `SEXP`, enabling `protect(allocVector(...))` chaining.
+- 11 new SEXP classification helpers: `isLogical`, `isComplex`, `isSymbol`, `isList`, `isLanguage`, `isPairList`, `isObject`, `isPrimitive`, `isArray`, `isNumber`, `isExpression`.
+- `AltReal.register(info)` accepts a DllInfo pointer for proper CRAN symbol registration.
+- `AltReal` now implements Get_region, Sum, Min, Max, Is_sorted, No_NA methods for faster R summary operations.
+- Reverse FFI additions: `findVarInFrame`, `lang5`, `lang6`, `tryEval`, `tryEvalSilent`.
+
+### Fixed
+
+- `protectWithIndex` no longer reads uninitialized index value before write.
+- `RAllocator.resize` returns `false` instead of calling `R_chk_realloc` that could invalidate the old pointer.
+- All C-string-taking functions (`signal`, `warn`, `symbol`, `setClass`, `hasSlot`, `getSlot`, `setSlot`) now ensure null termination, was reading past the end of runtime-constructed slices.
+- `PROMSXP` enum variant renamed from `prompt` to `prom` (was not a real SEXPTYPE name).
+- `toRealSlice`, `toIntSlice`, `toLogicalSlice`, `toRawSlice`, `toComplexSlice` now always allocate and return owned slices, removed inconsistent borrow-vs-alloc ALTREP bifurcation.
+- `toRawSlice` and `toComplexSlice` return `[]const T` to prevent mutation of R-managed memory. Both now require an allocator parameter.
+- `setS4Object` now sets the object bit and S4 class attribute (complete=1) instead of only the S4 bit.
+- `Rf_findVar` resolved via `@extern` instead of fragile standalone `extern fn`.
+- `FREESXP` enum variant renamed from `_fresh` to `_free` to match R internals naming.
+
 ## [0.0.3] - 2026-05-21
 
 ### Added
@@ -21,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - SEXPTYPE enum values corrected to match Rinternals.h (were offset by 4+).
-- `Rf_isFrame` not in public R API — replaced with manual class attribute check.
+- `Rf_isFrame` not in public R API, which replaced with manual class attribute check.
 - Unused allocator parameters documented as reserved for future use.
 - Non-fallible functions return plain types, not `!T`.
 - `depth` in protect.zig made thread-local.

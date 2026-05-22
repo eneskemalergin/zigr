@@ -15,6 +15,10 @@ zig-*/
 *~
 
 # Ignored folders (dev only)
+ref/
+tmp/
+data/
 plan/
+real/
 benchmarks/
 experiments/

@@ -14,12 +14,12 @@ const leak_warn_threshold = 64;
 
 /// Push a SEXP onto R's protection stack. Each push must be paired with
 /// exactly one unprotect() call on the normal return path.
-pub fn protect(value: SEXP) void {
+pub fn protect(value: SEXP) SEXP {
     if (builtin.mode == .Debug and depth > leak_warn_threshold) {
         std.log.warn("protect depth is {} (possible leak)", .{depth});
     }
-    _ = R.Rf_protect(value);
     depth += 1;
+    return R.Rf_protect(value);
 }
 
 /// Pop one entry from R's protection stack (LIFO). Must match a prior
@@ -37,7 +37,7 @@ pub fn unprotect() void {
 /// replaced later via reprotect(). The index is NOT for random-access
 /// unprotect — use unprotect() for that.
 pub fn protectWithIndex(value: SEXP, index: *i32) void {
-    var ri: R.PROTECT_INDEX = @intCast(index.*);
+    var ri: R.PROTECT_INDEX = undefined;
     R.R_ProtectWithIndex(value, &ri);
     index.* = @intCast(ri);
     depth += 1;

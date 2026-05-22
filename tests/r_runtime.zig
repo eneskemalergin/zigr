@@ -454,6 +454,8 @@ export fn zigr_test_list_create() SEXP {
 /// Call toLogicalSlice on the lgl vector, verify values via R.
 /// Test toLogicalSlice via round-trip: create LGLSXP, read back, verify.
 export fn zigr_test_to_logical_slice() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
     defer R.Rf_unprotect(1);
@@ -463,7 +465,7 @@ export fn zigr_test_to_logical_slice() SEXP {
     ptr[2] = R.R_NaInt;
     ptr[3] = 1;
 
-    const slice = zigr_convert.toLogicalSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
+    const slice = zigr_convert.toLogicalSlice(arena.allocator(), @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
     var ok = true;
     if (slice.len != 4) ok = false;
     if (slice[0] != 1) ok = false;
@@ -591,6 +593,8 @@ export fn zigr_test_from_empty() SEXP {
 
 /// Test: toRealSlice with huge vector boundary.
 export fn zigr_test_real_huge() SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const n: R.R_xlen_t = 1000000;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     defer R.Rf_unprotect(1);
@@ -599,7 +603,7 @@ export fn zigr_test_real_huge() SEXP {
     ptr[n - 1] = std.math.inf(f64);
     ptr[n / 2] = -std.math.inf(f64);
     // Verify via toRealSlice
-    const slice = zigr_convert.toRealSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
+    const slice = zigr_convert.toRealSlice(arena.allocator(), @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
     if (slice.len != n) return R.Rf_ScalarReal(0.0);
     if (!std.math.isNan(slice[0])) return R.Rf_ScalarReal(0.0);
     if (slice[n - 1] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);

@@ -18,8 +18,8 @@ fn rFree(_: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
     R.R_chk_free(@as(?*anyopaque, @ptrCast(buf.ptr)));
 }
 
-fn rResize(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
-    return R.R_chk_realloc(@as(?*anyopaque, @ptrCast(memory.ptr)), new_len) != null;
+fn rResize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+    return false;
 }
 
 fn rRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {

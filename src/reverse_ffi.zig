@@ -1,19 +1,21 @@
 //! Calling R functions from Zig.
 //!
-//! Wraps Rf_eval, Rf_lang2-4, Rf_install, Rf_findVar, Rf_defineVar
-//! so Zig code can construct and evaluate R expressions, look up
-//! variables, and define new bindings.
+//! Wraps Rf_eval, Rf_lang2-6, Rf_install, Rf_findVar, Rf_findVarInFrame,
+//! Rf_defineVar, R_tryEval, R_tryEvalSilent so Zig code can construct and
+//! evaluate R expressions, look up variables, and define new bindings.
 
 const R = @import("R");
 
-// Rf_findVar is declared in Rinternals.h but the translator could not
-// resolve it through the macro layer. Call it directly here.
-extern fn Rf_findVar(R.SEXP, R.SEXP) R.SEXP;
+const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.C) R.SEXP, .{ .name = "Rf_findVar" });
 
 /// Install a symbol from a Zig string slice.
 /// Returns the symbol SEXP for use in lang2/lang3/lang4.
 pub fn symbol(name: []const u8) R.SEXP {
-    return R.Rf_install(@ptrCast(name.ptr));
+    var buf: [256:0]u8 = undefined;
+    const n = @min(name.len, buf.len - 1);
+    @memcpy(buf[0..n], name[0..n]);
+    buf[n] = 0;
+    return R.Rf_install(@ptrCast(&buf));
 }
 
 /// Construct a call with 1 argument: fun(arg1).
@@ -55,4 +57,37 @@ pub fn defineVarIn(name: []const u8, value: R.SEXP, envir: R.SEXP) void {
 /// Returns R_NilValue if not found (R's missing symbol handling).
 pub fn findVar(name: []const u8) R.SEXP {
     return Rf_findVar(symbol(name), R.R_GlobalEnv);
+}
+
+const Rf_findVarInFrame = @extern(*const fn (R.SEXP, R.SEXP) callconv(.C) R.SEXP, .{ .name = "Rf_findVarInFrame" });
+
+/// Look up a variable in a specific environment frame without searching
+/// the parent chain.
+pub fn findVarInFrame(frame: R.SEXP, name: []const u8) R.SEXP {
+    return Rf_findVarInFrame(frame, symbol(name));
+}
+
+/// Construct a call with 4 arguments: fun(arg1, arg2, arg3, arg4).
+pub fn lang5(fun: R.SEXP, arg1: R.SEXP, arg2: R.SEXP, arg3: R.SEXP, arg4: R.SEXP) R.SEXP {
+    return R.Rf_lang5(fun, arg1, arg2, arg3, arg4);
+}
+
+/// Construct a call with 5 arguments: fun(arg1, arg2, arg3, arg4, arg5).
+pub fn lang6(fun: R.SEXP, arg1: R.SEXP, arg2: R.SEXP, arg3: R.SEXP, arg4: R.SEXP, arg5: R.SEXP) R.SEXP {
+    return R.Rf_lang6(fun, arg1, arg2, arg3, arg4, arg5);
+}
+
+/// Evaluate an R expression and catch errors. Returns null if an error
+/// was signaled, otherwise the result SEXP.
+pub fn tryEval(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
+    var err: c_int = 0;
+    const result = R.R_tryEval(expr, envir, &err);
+    return if (err != 0) null else result;
+}
+
+/// Evaluate an R expression and catch errors silently (no error printed).
+pub fn tryEvalSilent(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
+    var err: c_int = 0;
+    const result = R.R_tryEvalSilent(expr, envir, &err);
+    return if (err != 0) null else result;
 }
