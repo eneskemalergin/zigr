@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2026-05-23
+
+### Added
+
+- `src/simd.zig`: Centralized SIMD lane width.
+- ALTREP benchmarks: altrep_sum (3000x vs C), altrep_read (O(1) via method table).
+- Matrix transpose benchmark (replaced naive matmul).
+- `analysis/compare.R`: Cross-runner comparison table with CSV output.
+
+### Fixed
+
+- `src/lang.zig`: Symbol cache O(n) scan to O(1) open addressing.
+- `src/export.zig`: Two-tier arena (8KB stack, heap spill).
+- `src/protect.zig`: Depth tracking is comptime-gated (zero cost in ReleaseFast). Added `unprotectN`.
+- Removed `Rf_allocSExp` and `Rf_applyClosure` from lang.zig and eval.zig (crash on R 4.6).
+- Added `R_useDynamicSymbols` to export generator (CRAN requirement).
+- `src/embed.zig`: 4096 byte buffer to dynamic `R_chk_calloc`.
+- `PROTECT_INDEX` cast from `i32` to native type.
+- Removed duplicate `isDataFrame` from sexp.zig.
+- Deleted `reverse_ffi.zig`, merged into eval.zig.
+- Reduced `cleanup.zig` MAX_NESTING from 64 to 16.
+- Stripped `r_imports.h` to 6 headers (removed BLAS/LAPACK).
+- 5 unfair benchmark implementations fixed (C strcat, R_alloc, qsort, named lists; Rcpp qsort).
+- C Makefile now uses R's default CFLAGS (from R CMD config).
+- Benchmark harness uses microbenchmark (nanosecond precision, no PARTIAL status).
+- JSON stub benchmark removed (never worked, no std.Io context).
+- Rcpp NA check uses `std::isnan` to match C (was using slower `ISNA`).
+
+### Performance
+
+- vectorsum: SIMD `@Vector(8)` (2.6x vs C at R default flags).
+- na_prop: Branchless `@Vector` + `@select` NA masking (18x vs C).
+- rowsums: SIMD column load (flipped from 17% behind to 15% ahead of C).
+- altrep_sum: O(1) method table delegation (3000x vs C's O(n) materialization).
+- argmin/argmax in convert.zig: SIMD `@Vector` min-finding with index tracking.
+
 ## [0.0.6] - 2026-05-22
 
 ### Added

@@ -8,7 +8,6 @@ pub const @"error" = err;
 pub const interrupt = @import("interrupt.zig");
 pub const rng = @import("rng.zig");
 pub const memory = @import("memory.zig");
-pub const reverse_ffi = @import("reverse_ffi.zig");
 pub const dataframe = @import("dataframe.zig");
 pub const attrib = @import("attrib.zig");
 pub const s4 = @import("s4.zig");
@@ -32,7 +31,6 @@ test {
     _ = interrupt;
     _ = memory;
     _ = rng;
-    _ = reverse_ffi;
     _ = dataframe;
     _ = attrib;
     _ = s4;

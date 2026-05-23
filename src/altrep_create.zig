@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const simd = @import("simd");
 const cleanup = @import("cleanup");
 
 const SliceWrap = struct {
@@ -61,7 +62,7 @@ fn altSum(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const n = w.len;
     if (n == 0) return R.Rf_ScalarReal(0.0);
     const ptr = w.ptr;
-    const V = 8;
+    const V = simd.f64_lanes;
     var i: usize = 0;
     var vec: @Vector(V, f64) = @splat(0.0);
     while (i + V <= n) : (i += V) {
@@ -78,7 +79,7 @@ fn altMin(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const n = w.len;
     if (n == 0) return R.Rf_ScalarReal(std.math.inf(f64));
     const ptr = w.ptr;
-    const V = 8;
+    const V = simd.f64_lanes;
     var i: usize = 0;
     var vec: @Vector(V, f64) = @splat(std.math.inf(f64));
     while (i + V <= n) : (i += V) {
@@ -97,7 +98,7 @@ fn altMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const n = w.len;
     if (n == 0) return R.Rf_ScalarReal(-std.math.inf(f64));
     const ptr = w.ptr;
-    const V = 8;
+    const V = simd.f64_lanes;
     var i: usize = 0;
     var vec: @Vector(V, f64) = @splat(-std.math.inf(f64));
     while (i + V <= n) : (i += V) {
@@ -116,7 +117,7 @@ fn altIsSorted(x: R.SEXP) callconv(.c) c_int {
     const n = w.len;
     if (n <= 1) return 1;
     const ptr = w.ptr;
-    const V = 8;
+    const V = simd.f64_lanes;
     var i: usize = 0;
     while (i + V < n) : (i += V) {
         const a = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);

@@ -89,12 +89,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{.{ .name = "R", .module = r_mod }},
         });
-        const rmod = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = "src/reverse_ffi.zig" },
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "R", .module = r_mod }},
-        });
         const mmod = b.createModule(.{
             .root_source_file = .{ .cwd_relative = "src/memory.zig" },
             .target = target,
@@ -123,7 +117,6 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "cleanup", .module = cleanup_mod },
                     .{ .name = "error", .module = mod },
                     .{ .name = "interrupt", .module = imod },
-                    .{ .name = "reverse_ffi", .module = rmod },
                     .{ .name = "memory", .module = mmod },
                     .{ .name = "rng", .module = rngmod },
                     .{ .name = "convert", .module = b.createModule(.{

@@ -191,29 +191,30 @@ export fn zigr_test_check_stack() SEXP {
 
 // ── Reverse FFI tests (Phase 2.8) ─────────────────────
 
-const rffi = @import("reverse_ffi");
+const test_lang = @import("lang");
+const test_eval = @import("eval");
 
-/// Evaluate 1 + 1 via reverse_ffi.lang3 + eval.
+/// Evaluate 1 + 1 via lang.call3 + eval.rEval.
 export fn zigr_test_rev_eval() SEXP {
-    const plus = rffi.symbol("+");
+    const plus = test_lang.symbol("+");
     const one = R.Rf_ScalarReal(1.0);
-    const call = rffi.lang3(plus, one, one);
-    return rffi.eval(call);
+    const call = test_lang.call3(plus, one, one);
+    return test_eval.rEval(call, null);
 }
 
-/// Define a variable via reverse_ffi.defineVar, then look it up.
+/// Define a variable via eval.defineVar, then look it up.
 export fn zigr_test_rev_define_find() SEXP {
-    rffi.defineVar("zigr_test_var", R.Rf_ScalarReal(42.0));
-    return rffi.findVar("zigr_test_var");
+    test_eval.defineVar("zigr_test_var", R.Rf_ScalarReal(42.0));
+    return test_eval.findVarName("zigr_test_var");
 }
 
-/// Build and evaluate a lang3 call: `sum(10, 20)`.
+/// Build and evaluate a call3: `sum(10, 20)`.
 export fn zigr_test_rev_lang3() SEXP {
-    const fsum = rffi.symbol("sum");
+    const fsum = test_lang.symbol("sum");
     const a = R.Rf_ScalarReal(10.0);
     const b = R.Rf_ScalarReal(20.0);
-    const call = rffi.lang3(fsum, a, b);
-    return rffi.eval(call);
+    const call = test_lang.call3(fsum, a, b);
+    return test_eval.rEval(call, null);
 }
 
 // ── RNG tests (Phase 2.7) ─────────────────────────────
@@ -305,11 +306,11 @@ export fn zigr_test_nested_outer() SEXP {
         fn doNested() R.SEXP {
             const fn_name = R.Rf_mkChar("zigr_test_nested_inner");
             const fn_string = R.Rf_ScalarString(fn_name);
-            const call_sexp = rffi.lang2(
-                rffi.symbol(".Call"),
+            const call_sexp = test_lang.call2(
+                test_lang.symbol(".Call"),
                 fn_string,
             );
-            return rffi.eval(call_sexp);
+            return test_eval.rEval(call_sexp, null);
         }
     }.doNested);
 

@@ -95,9 +95,73 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     @compileError("unsupported return type: " ++ @typeName(T));
 }
 
+/// Two-tier allocator: stack buffer first, heap on spill.
+/// For ~90% of export calls the fixed buffer is sufficient and no
+/// heap allocation occurs. The heap arena exists only for large returns.
+const TwoTierArena = struct {
+    fixed_buf: [8192]u8,
+    fba: std.heap.FixedBufferAllocator,
+    heap_arena: std.heap.ArenaAllocator,
+
+    fn init() TwoTierArena {
+        var self = TwoTierArena{
+            .fixed_buf = undefined,
+            .fba = undefined,
+            .heap_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+        };
+        self.fba = std.heap.FixedBufferAllocator.init(&self.fixed_buf);
+        return self;
+    }
+
+    fn allocator(self: *TwoTierArena) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = allocFn,
+                .free = freeFn,
+                .resize = resizeFn,
+                .remap = remapFn,
+            },
+        };
+    }
+
+    fn deinit(self: *TwoTierArena) void {
+        self.heap_arena.deinit();
+    }
+
+    fn allocFn(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *TwoTierArena = @ptrCast(@alignCast(ctx));
+        const fixed_result = self.fba.allocator().alloc(u8, len) catch null;
+        if (fixed_result) |mem| return mem.ptr;
+        return self.heap_arena.allocator().rawAlloc(len, alignment, ra);
+    }
+
+    fn freeFn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *TwoTierArena = @ptrCast(@alignCast(ctx));
+        // Fixed buffer: free is a no-op (reset on next alloc).
+        // Heap arena: individual frees are not supported; arena deinit frees all.
+        _ = self;
+        _ = buf;
+        _ = alignment;
+        _ = ra;
+    }
+
+    fn resizeFn(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
+        _ = buf;
+        _ = new_len;
+        return false;
+    }
+
+    fn remapFn(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
+        _ = memory;
+        _ = new_len;
+        return null;
+    }
+};
+
 const FreeArena = struct {
     fn fire(ptr: ?*anyopaque) void {
-        @as(*std.heap.ArenaAllocator, @ptrCast(@alignCast(ptr))).deinit();
+        @as(*TwoTierArena, @ptrCast(@alignCast(ptr))).deinit();
     }
 };
 
@@ -124,10 +188,10 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
             _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
-            var arena: std.heap.ArenaAllocator = undefined;
+            var arena: TwoTierArena = undefined;
             var have_arena = false;
             if (arena_needed) {
-                arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                arena = TwoTierArena.init();
                 cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
                 have_arena = true;
             }
@@ -216,10 +280,10 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
         fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
             return cleanup.protectCall(struct {
                 fn call() R.SEXP {
-                    var arena: std.heap.ArenaAllocator = undefined;
+                    var arena: TwoTierArena = undefined;
                     var have_arena = false;
                     if (arena_needed) {
-                        arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                        arena = TwoTierArena.init();
                         cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
                         have_arena = true;
                     }
@@ -325,10 +389,10 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
             _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
-            var arena: std.heap.ArenaAllocator = undefined;
+            var arena: TwoTierArena = undefined;
             var have_arena = false;
             if (arena_needed) {
-                arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                arena = TwoTierArena.init();
                 cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
                 have_arena = true;
             }
@@ -406,6 +470,7 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
                 null,
                 if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
+            R.R_useDynamicSymbols(info, 0);
         }
 
         /// Call this from your R_unload_<pkg> entry point.
@@ -454,6 +519,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
                 null,
                 if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
+            R.R_useDynamicSymbols(info, 0);
         }
 
         pub fn unload(_: *R.DllInfo) void {}

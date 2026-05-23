@@ -10,11 +10,12 @@ const R = @import("R");
 /// Returns the result SEXP. Wraps R_ParseEvalString.
 pub fn rCodeEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
     const env = envir orelse R.R_GlobalEnv;
-    var buf: [4096:0]u8 = undefined;
-    const n = @min(code.len, buf.len - 1);
-    @memcpy(buf[0..n], code[0..n]);
-    buf[n] = 0;
-    return R.R_ParseEvalString(&buf, env);
+    const buf = R.R_chk_calloc(code.len + 1, 1) orelse @panic("OOM");
+    defer R.R_chk_free(buf);
+    const c_buf: [*]u8 = @ptrCast(@as(*anyopaque, @ptrCast(buf.?)));
+    @memcpy(c_buf[0..code.len], code);
+    c_buf[code.len] = 0;
+    return R.R_ParseEvalString(@ptrCast(c_buf), env);
 }
 
 /// Evaluate R code via R_ParseEvalString. Semantically identical to

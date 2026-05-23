@@ -17,6 +17,7 @@
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
 const R = @import("R");
+const simd = @import("simd");
 const cleanup = @import("cleanup");
 
 pub const Rcomplex = extern struct { r: f64, i: f64 };
@@ -277,7 +278,7 @@ pub fn sum(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return 0.0;
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         // ALTREP: allocate and copy via REAL_GET_REGION
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
@@ -311,7 +312,7 @@ pub fn norm2(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return 0.0;
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
@@ -343,7 +344,7 @@ pub fn min(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return std.math.inf(f64);
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
@@ -372,7 +373,7 @@ pub fn max(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return -std.math.inf(f64);
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
@@ -396,54 +397,86 @@ pub fn max(sexp: SEXP) f64 {
     return val;
 }
 
-/// Index of the minimum value in a REALSXP (0-based).
-pub fn argmin(sexp: SEXP) i64 {
+fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return -1;
 
-    const data = if (R.ALTREP(sexp) != 0) blk: {
+    const lanes = simd.f64_lanes;
+    const owned: bool = R.ALTREP(sexp) != 0;
+    const data = if (owned) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
         break :blk @as([*]f64, @ptrCast(@alignCast(buf)))[0..n];
     } else R.REAL(sexp)[0..n];
+    defer if (owned) R.R_chk_free(@ptrCast(@constCast(&data[0])));
 
-    var min_val = data[0];
-    var min_idx: usize = 0;
-    var i: usize = 1;
-    while (i < n) : (i += 1) {
-        if (data[i] < min_val) {
-            min_val = data[i];
-            min_idx = i;
+    if (find_min) {
+        var vec_val: @Vector(lanes, f64) = @splat(data[0]);
+        var vec_idx: @Vector(lanes, usize) = @splat(0);
+        var base: usize = 0;
+        if (n >= lanes) {
+            const end = n - (n % lanes);
+            while (base < end) : (base += lanes) {
+                const v: @Vector(lanes, f64) = data[base..][0..lanes].*;
+                const cmp = v < vec_val;
+                const offset: @Vector(lanes, usize) = @splat(base);
+                const idx: @Vector(lanes, usize) = offset + comptime blk: {
+                    var seq: [lanes]usize = undefined;
+                    for (&seq, 0..) |*s, k| s.* = k;
+                    break :blk @as(@Vector(lanes, usize), seq);
+                };
+                vec_val = @select(f64, cmp, v, vec_val);
+                vec_idx = @select(usize, cmp, idx, vec_idx);
+            }
         }
+        var result = vec_val[0];
+        var result_idx = vec_idx[0];
+        for (1..lanes) |j| {
+            if (vec_val[j] < result) { result = vec_val[j]; result_idx = vec_idx[j]; }
+        }
+        while (base < n) : (base += 1) {
+            if (data[base] < result) { result = data[base]; result_idx = base; }
+        }
+        return @intCast(result_idx);
+    } else {
+        var vec_val: @Vector(lanes, f64) = @splat(data[0]);
+        var vec_idx: @Vector(lanes, usize) = @splat(0);
+        var base: usize = 0;
+        if (n >= lanes) {
+            const end = n - (n % lanes);
+            while (base < end) : (base += lanes) {
+                const v: @Vector(lanes, f64) = data[base..][0..lanes].*;
+                const cmp = v > vec_val;
+                const offset: @Vector(lanes, usize) = @splat(base);
+                const idx: @Vector(lanes, usize) = offset + comptime blk: {
+                    var seq: [lanes]usize = undefined;
+                    for (&seq, 0..) |*s, k| s.* = k;
+                    break :blk @as(@Vector(lanes, usize), seq);
+                };
+                vec_val = @select(f64, cmp, v, vec_val);
+                vec_idx = @select(usize, cmp, idx, vec_idx);
+            }
+        }
+        var result = vec_val[0];
+        var result_idx = vec_idx[0];
+        for (1..lanes) |j| {
+            if (vec_val[j] > result) { result = vec_val[j]; result_idx = vec_idx[j]; }
+        }
+        while (base < n) : (base += 1) {
+            if (data[base] > result) { result = data[base]; result_idx = base; }
+        }
+        return @intCast(result_idx);
     }
-
-    if (R.ALTREP(sexp) != 0) R.R_chk_free(@ptrCast(@constCast(&data[0])));
-    return @intCast(min_idx);
 }
 
-/// Index of the maximum value in a REALSXP (0-based). Uses SIMD.
+/// Index of the minimum value in a REALSXP (0-based).
+pub fn argmin(sexp: SEXP) i64 {
+    return argminmax(true, sexp);
+}
+
+/// Index of the maximum value in a REALSXP (0-based).
 pub fn argmax(sexp: SEXP) i64 {
-    const n = @as(usize, @intCast(R.XLENGTH(sexp)));
-    if (n == 0) return -1;
-
-    const data = if (R.ALTREP(sexp) != 0) blk: {
-        const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
-        _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
-        break :blk @as([*]f64, @ptrCast(@alignCast(buf)))[0..n];
-    } else R.REAL(sexp)[0..n];
-
-    var max_val = data[0];
-    var max_idx: usize = 0;
-    var i: usize = 1;
-    while (i < n) : (i += 1) {
-        if (data[i] > max_val) {
-            max_val = data[i];
-            max_idx = i;
-        }
-    }
-
-    if (R.ALTREP(sexp) != 0) R.R_chk_free(@ptrCast(@constCast(&data[0])));
-    return @intCast(max_idx);
+    return argminmax(false, sexp);
 }
 
 /// Sum of a REALSXP excluding NA values. Uses @select for branchless NA masking.
@@ -451,7 +484,7 @@ pub fn sum_narm(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return 0.0;
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
@@ -485,7 +518,7 @@ pub fn mean_narm(sexp: SEXP) f64 {
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     if (n == 0) return 0.0;
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     const data = if (R.ALTREP(sexp) != 0) blk: {
         const buf = R.R_chk_calloc(n, @sizeOf(f64)) orelse @panic("OOM");
         _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), @as([*]f64, @ptrCast(@alignCast(buf))));
@@ -529,7 +562,7 @@ pub fn pmin(a: SEXP, b: SEXP) SEXP {
     defer R.Rf_unprotect(1);
     const rp = R.REAL(result);
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     var i: usize = 0;
     if (n >= lanes) {
         const end = n - (n % lanes);
@@ -554,7 +587,7 @@ pub fn pmax(a: SEXP, b: SEXP) SEXP {
     defer R.Rf_unprotect(1);
     const rp = R.REAL(result);
 
-    const lanes: comptime_int = 8;
+    const lanes = simd.f64_lanes;
     var i: usize = 0;
     if (n >= lanes) {
         const end = n - (n % lanes);

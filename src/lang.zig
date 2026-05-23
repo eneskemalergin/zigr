@@ -2,45 +2,7 @@
 
 const std = @import("std");
 const R = @import("R");
-const protect = @import("protect");
-const sexp_types = @import("sexp");
-
-/// Read the first element of a pairlist or call node.
-pub fn car(sexp: R.SEXP) R.SEXP {
-    return R.CAR(sexp);
-}
-
-/// Read the rest of a pairlist or call node (all arguments after the first).
-pub fn cdr(sexp: R.SEXP) R.SEXP {
-    return R.CDR(sexp);
-}
-
-/// Replace the first element of a pairlist or call node.
-pub fn setCar(sexp: R.SEXP, value: R.SEXP) void {
-    _ = R.SETCAR(sexp, value);
-}
-
-/// Replace the rest of a pairlist or call node.
-pub fn setCdr(sexp: R.SEXP, value: R.SEXP) void {
-    _ = R.SETCDR(sexp, value);
-}
-
-/// Read the TAG (named argument name) of a pairlist element.
-pub fn tag(sexp: R.SEXP) R.SEXP {
-    return R.TAG(sexp);
-}
-
-/// Set the TAG of a pairlist element. Tags are SYMSXP symbols.
-pub fn setTag(sexp: R.SEXP, value: R.SEXP) void {
-    R.SET_TAG(sexp, value);
-}
-
-/// Allocate a SEXP of the given type. Uses @extern since Rf_allocSExp
-/// is behind ENABLE_LEGACY_NONAPI_FUNS and may not be in the R module.
-pub fn allocSExp(sxp_type: sexp_types.SEXPTYPE) R.SEXP {
-    const Rf_allocSExp = @extern(*const fn (R.SEXPTYPE) callconv(.c) R.SEXP, .{ .name = "Rf_allocSExp" });
-    return Rf_allocSExp(@intCast(@intFromEnum(sxp_type)));
-}
+const protect = @import("protect.zig");
 
 /// Create a data pairlist node (LISTSXP, not a call node).
 pub fn dataCons(car_val: R.SEXP, cdr_val: R.SEXP) R.SEXP {
@@ -77,42 +39,49 @@ pub fn list6(s1: R.SEXP, s2: R.SEXP, s3: R.SEXP, s4: R.SEXP, s5: R.SEXP, s6: R.S
     return R.Rf_list6(s1, s2, s3, s4, s5, s6);
 }
 
-/// Install a symbol. Result is cached: R symbols live forever, so we
-/// reuse the SEXP across calls instead of hitting Rf_install each time.
+/// Install a symbol. Result is cached in an open-addressing hash table
+/// with linear probing. O(1) average lookup vs the previous O(n) linear scan.
+/// R symbols live forever so no deletion logic is needed.
 pub fn symbol(name: []const u8) R.SEXP {
     const S = struct {
-        var cache: [64]struct {
-            hash: u64,
-            name: [256:0]u8,
-            len: usize,
-            sexp: R.SEXP,
-        } = undefined;
+        // Power-of-2 size for cheap modulo via mask.
+        // 0 hash = empty slot. Wyhash never produces 0.
+        const cap = 64;
+        const mask = cap - 1;
+        var hashes: [cap]u64 = undefined;
+        var names: [cap][256:0]u8 = undefined;
+        var lengths: [cap]usize = undefined;
+        var sexps: [cap]R.SEXP = undefined;
         var count: usize = 0;
     };
 
     const hash = std.hash.Wyhash.hash(0, name);
+    var idx = @as(usize, @truncate(hash)) & S.mask;
 
-    for (0..S.count) |i| {
-        if (S.cache[i].hash == hash and S.cache[i].len == name.len and
-            std.mem.eql(u8, S.cache[i].name[0..name.len], name))
+    // Probe until empty slot or match.
+    while (S.hashes[idx] != 0) {
+        if (S.hashes[idx] == hash and S.lengths[idx] == name.len and
+            std.mem.eql(u8, S.names[idx][0..name.len], name))
         {
-            return S.cache[i].sexp;
+            return S.sexps[idx];
         }
+        idx = (idx + 1) & S.mask;
     }
 
+    // Not cached: install into R's symbol table.
     var buf: [256:0]u8 = undefined;
     const n = @min(name.len, buf.len - 1);
     @memcpy(buf[0..n], name[0..n]);
     buf[n] = 0;
     const sxp = R.Rf_install(@ptrCast(&buf));
 
-    if (S.count < S.cache.len) {
-        const cn = @min(name.len, S.cache[0].name.len - 1);
-        @memcpy(S.cache[S.count].name[0..cn], name[0..cn]);
-        S.cache[S.count].name[cn] = 0;
-        S.cache[S.count].hash = hash;
-        S.cache[S.count].len = cn;
-        S.cache[S.count].sexp = sxp;
+    // Store in cache if space remains.
+    if (S.count < S.cap) {
+        S.hashes[idx] = hash;
+        S.lengths[idx] = n;
+        @memcpy(S.names[idx][0..n], name[0..n]);
+        S.names[idx][n] = 0;
+        S.sexps[idx] = sxp;
         S.count += 1;
     }
 

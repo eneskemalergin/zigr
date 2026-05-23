@@ -118,20 +118,6 @@ pub fn isExpression(sexp: SEXP) bool {
     return R.Rf_isExpression(sexp) != 0;
 }
 
-pub fn isDataFrame(sexp: SEXP) bool {
-    if (R.TYPEOF(sexp) != R.VECSXP) return false;
-    const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
-    if (cls == R.R_NilValue) return false;
-    const n = R.XLENGTH(cls);
-    for (0..@as(usize, @intCast(n))) |i| {
-        const elt = R.STRING_ELT(cls, @intCast(i));
-        if (elt == R.R_NaString) continue;
-        const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
-        if (std.mem.eql(u8, cn, "data.frame")) return true;
-    }
-    return false;
-}
-
 test "classification helpers compile" {
     try std.testing.expectEqual(@TypeOf(typeOf), fn (SEXP) SEXPTYPE);
 }

@@ -7,7 +7,7 @@
 const std = @import("std");
 const R = @import("R");
 
-const MAX_NESTING = 64;
+const MAX_NESTING = 16;
 
 const Frame = struct {
     func: *const fn (data: ?*anyopaque) void,
