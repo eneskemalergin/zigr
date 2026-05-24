@@ -4,49 +4,55 @@
 
 const R = @import("R");
 
+fn len(sexp: R.SEXP) usize {
+    const l = R.XLENGTH(sexp);
+    if (l < 0) @panic("negative vector length from corrupted SEXP");
+    return @as(usize, @intCast(l));
+}
+
 /// Read-only slice of a REALSXP. No copy.
 pub fn real(sexp: R.SEXP) []const f64 {
-    return R.REAL(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.REAL(sexp)[0..len(sexp)];
 }
 
 /// Read-only slice of an INTSXP. No copy.
 pub fn int(sexp: R.SEXP) []const i32 {
-    return R.INTEGER(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.INTEGER(sexp)[0..len(sexp)];
 }
 
 /// Read-only slice of a LGLSXP. No copy.
 pub fn logical(sexp: R.SEXP) []const i32 {
-    return R.LOGICAL(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.LOGICAL(sexp)[0..len(sexp)];
 }
 
 /// Mutable slice of a REALSXP. No copy.
 pub fn realMut(sexp: R.SEXP) []f64 {
-    return R.REAL(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.REAL(sexp)[0..len(sexp)];
 }
 
 /// Mutable slice of an INTSXP. No copy.
 pub fn intMut(sexp: R.SEXP) []i32 {
-    return R.INTEGER(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.INTEGER(sexp)[0..len(sexp)];
 }
 
 /// Read-only slice of a RAWSXP. No copy.
 pub fn raw(sexp: R.SEXP) []const u8 {
-    return R.RAW(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.RAW(sexp)[0..len(sexp)];
 }
 
 /// Mutable slice of a RAWSXP. No copy.
 pub fn rawMut(sexp: R.SEXP) []u8 {
-    return R.RAW(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.RAW(sexp)[0..len(sexp)];
 }
 
 /// Read-only slice of a CPLXSXP (Rcomplex). No copy.
 pub fn complex(sexp: R.SEXP) []const R.Rcomplex {
-    return R.COMPLEX(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.COMPLEX(sexp)[0..len(sexp)];
 }
 
 /// Mutable slice of a CPLXSXP. No copy.
 pub fn complexMut(sexp: R.SEXP) []R.Rcomplex {
-    return R.COMPLEX(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.COMPLEX(sexp)[0..len(sexp)];
 }
 
 /// Returns (rows, cols) for a matrix SEXP.

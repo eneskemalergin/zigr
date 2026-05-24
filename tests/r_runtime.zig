@@ -920,6 +920,106 @@ export fn zigr_test_raw_logical() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
+/// Test raw.real reads REALSXP correctly.
+export fn zigr_test_raw_real() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(1);
+    const ptr = R.REAL(vec);
+    ptr[0] = 1.5;
+    ptr[1] = 2.5;
+    ptr[2] = 3.5;
+
+    const slice = raw_mod.real(vec);
+    const ok = slice.len == 3 and slice[0] == 1.5 and slice[1] == 2.5 and slice[2] == 3.5;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.int reads INTSXP correctly.
+export fn zigr_test_raw_int() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
+    defer R.Rf_unprotect(1);
+    const ptr = R.INTEGER(vec);
+    ptr[0] = 10;
+    ptr[1] = 20;
+    ptr[2] = -5;
+
+    const slice = raw_mod.int(vec);
+    const ok = slice.len == 3 and slice[0] == 10 and slice[1] == 20 and slice[2] == -5;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.realMut writes to REALSXP correctly.
+export fn zigr_test_raw_real_mut() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    defer R.Rf_unprotect(1);
+
+    const slice = raw_mod.realMut(vec);
+    slice[0] = 42.0;
+    slice[1] = 99.0;
+
+    const readback = R.REAL(vec);
+    const ok = readback[0] == 42.0 and readback[1] == 99.0;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.intMut writes to INTSXP correctly.
+export fn zigr_test_raw_int_mut() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    defer R.Rf_unprotect(1);
+
+    const slice = raw_mod.intMut(vec);
+    slice[0] = 100;
+    slice[1] = 200;
+
+    const readback = R.INTEGER(vec);
+    const ok = readback[0] == 100 and readback[1] == 200;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.raw reads RAWSXP correctly.
+export fn zigr_test_raw_raw() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 3));
+    defer R.Rf_unprotect(1);
+    const ptr = R.RAW(vec);
+    ptr[0] = 0xAB;
+    ptr[1] = 0xCD;
+    ptr[2] = 0xEF;
+
+    const slice = raw_mod.raw(vec);
+    const ok = slice.len == 3 and slice[0] == 0xAB and slice[1] == 0xCD and slice[2] == 0xEF;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.complex reads CPLXSXP correctly.
+export fn zigr_test_raw_complex() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
+    defer R.Rf_unprotect(1);
+    const ptr = R.COMPLEX(vec);
+    ptr[0] = .{ .r = 1.0, .i = 2.0 };
+    ptr[1] = .{ .r = 3.0, .i = 4.0 };
+
+    const slice = raw_mod.complex(vec);
+    const ok = slice.len == 2 and slice[0].r == 1.0 and slice[0].i == 2.0 and slice[1].r == 3.0 and slice[1].i == 4.0;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test raw.dims returns correct dimensions.
+export fn zigr_test_raw_dims() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 12));
+    defer R.Rf_unprotect(1);
+    R.Rf_setAttrib(vec, R.R_DimSymbol, null);
+
+    const d = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    R.INTEGER(d)[0] = 3;
+    R.INTEGER(d)[1] = 4;
+    R.Rf_setAttrib(vec, R.R_DimSymbol, d);
+    R.Rf_unprotect(1);
+
+    const result = raw_mod.dims(vec);
+    const ok = result.rows == 3 and result.cols == 4;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
 /// Trigger fromSEXP on a missing required field. R should see an error.
 export fn zigr_test_from_sexp_missing_required() SEXP {
     const Test = struct { x: f64, y: f64 };

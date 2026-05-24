@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.7-0f766e?style=for-the-badge" alt="Version 0.0.7" />
+    <img src="https://img.shields.io/badge/version-0.0.8-0f766e?style=for-the-badge" alt="Version 0.0.8" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -31,7 +31,7 @@ zigr is a Zig library that wraps R's C API as Zig structs plus a build.zig that 
 
 R packages on CRAN need to ship binaries for x86_64 Linux, aarch64 macOS, and x86_64 Windows. Building for Windows from Linux normally means you install MinGW-w64 or a Windows cross-toolchain. For Rcpp you need a cross-compiled libstdc++. For extendr you need Rust std for the Windows target.
 
-Zig ships its own target libs in the compiler binary. One file, 40 MB. `zig build -Dtarget=x86_64-windows-gnu` produces a working Windows .dll from Linux, no extra tools. macOS aarch64 from Linux works the same way.
+Zig ships its own target libs in the compiler binary. One file, 165 MB. `zig build -Dtarget=x86_64-windows-gnu` produces a working Windows .dll from Linux, no extra tools. macOS aarch64 from Linux works the same way.
 
 The Zig 0.16.0 binary is bundled in this repo. No download, no PATH changes.
 
@@ -47,7 +47,7 @@ The test step requires R headers on the system. See `examples/template/` for the
 
 ## What you get
 
-23 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
+25 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
 
 - SEXP types and 24 classification helpers
 - PROTECT/UNPROTECT with R_UnwindProtect longjmp safety
@@ -109,6 +109,7 @@ src/
 ├── lang.zig           CAR, CDR, CONS, symbols, calls
 ├── eval.zig           rEval, findVar, findFunction, call, setVar
 ├── raw.zig            Zero-copy vector data access
+├── rvector.zig        Typed RVector wrapper with arithmetic
 ├── simd.zig           SIMD lane configuration
 └── cross_check.zig    Cross-compilation verification
 ```

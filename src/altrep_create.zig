@@ -69,7 +69,8 @@ fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
 }
 
 fn wrapFromData1(comptime kind: AltKind, sexp: R.SEXP) *Wrap(kind) {
-    return @ptrCast(@alignCast(R.R_ExternalPtrAddr(sexp).?));
+    const raw = R.R_ExternalPtrAddr(sexp) orelse @panic("null ALTREP data pointer");
+    return @ptrCast(@alignCast(raw));
 }
 
 fn wrapFromAltrep(comptime kind: AltKind, x: R.SEXP) *Wrap(kind) {
@@ -489,7 +490,8 @@ fn makeStringWrap(slice: []const []const u8) *StringWrap {
 }
 
 fn stringWrapFromData1(sexp: R.SEXP) *StringWrap {
-    return @ptrCast(@alignCast(R.R_ExternalPtrAddr(sexp).?));
+    const raw = R.R_ExternalPtrAddr(sexp) orelse @panic("null ALTREP string data pointer");
+    return @ptrCast(@alignCast(raw));
 }
 
 fn stringWrapFromAltrep(x: R.SEXP) *StringWrap {

@@ -408,7 +408,9 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             defer if (have_arena) cleanup.popFrame();
             const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
 
-            const ptr: *T = @ptrCast(@alignCast(R.R_ExternalPtrAddr(a0).?));
+            if (R.Rf_isExternalPtr(a0) == 0) signalError("expected external pointer");
+            const raw_ptr = R.R_ExternalPtrAddr(a0) orelse signalError("null external pointer");
+            const ptr: *T = @ptrCast(@alignCast(raw_ptr));
 
             if (comptime n == 1) return toSexp(func(ptr), ret_type);
             if (comptime n == 2) {
@@ -486,11 +488,21 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
     };
 }
 
+fn safeName(comptime T: type) []const u8 {
+    const name = @typeName(T);
+    comptime var buf: [name.len]u8 = undefined;
+    inline for (name, 0..) |c, i| {
+        buf[i] = if (c == '.') '_' else c;
+    }
+    return &buf;
+}
+
 /// Generate method exports for a struct type `T`. Functions receive
 /// `self: *T` as the first parameter, extracted from an EXTPTRSXP.
 /// The generated wrapper verifies the pointer is non-null, calls the
 /// method, and returns the result. Method names are prefixed with
-/// `T__` to avoid collisions (e.g. `Person__greet`).
+/// `T__` to avoid collisions (e.g. `Person__greet`). Dots in the
+/// type name are replaced with underscores for valid C identifiers.
 pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptime external_exports: anytype) type {
     const call_count = call_exports.len;
     const ext_count = external_exports.len;
@@ -507,7 +519,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
             inline for (0..call_count) |i| {
                 const exp = call_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                const full_name = @typeName(T) ++ "__" ++ exp.name;
+                const full_name = safeName(T) ++ "__" ++ exp.name;
                 call_defs[i] = makeMethodDef(full_name, makeMethodWrapper(T, exp.func), @intCast(fi.params.len));
             }
             call_defs[call_count] = .{ .name = null, .fun = null, .numArgs = 0 };
@@ -515,7 +527,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
             inline for (0..ext_count) |i| {
                 const exp = external_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                const full_name = @typeName(T) ++ "__" ++ exp.name;
+                const full_name = safeName(T) ++ "__" ++ exp.name;
                 ext_defs[i] = makeExternalMethodDef(full_name, makeExternalWrapper(exp.func), @intCast(fi.params.len));
             }
             ext_defs[ext_count] = .{ .name = null, .fun = null, .numArgs = 0 };

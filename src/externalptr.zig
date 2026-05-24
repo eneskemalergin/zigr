@@ -47,7 +47,8 @@ pub fn create(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) v
     const sexp = make(@as(?*anyopaque, @ptrCast(heap_val)), R.R_NilValue, R.R_NilValue);
     const F = struct {
         fn finalizer(s: R.SEXP) callconv(.c) void {
-            const p: *T = @ptrCast(@alignCast(R.R_ExternalPtrAddr(s).?));
+            const raw = R.R_ExternalPtrAddr(s) orelse return;
+            const p: *T = @ptrCast(@alignCast(raw));
             deinitFn(p);
             std.heap.c_allocator.destroy(p);
         }
