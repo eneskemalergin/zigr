@@ -4,7 +4,21 @@
 
 const std = @import("std");
 const R = @import("R");
-const raw_mod = @import("raw");
+const zigr = @import("zigr");
+const raw_mod = zigr.raw;
+const cleanup = @import("cleanup");
+const err = zigr.@"error";
+const ict = zigr.interrupt;
+const test_eval = zigr.eval;
+const rng = zigr.rng;
+const mem = zigr.memory;
+const zigr_convert = zigr.convert;
+const df = zigr.dataframe;
+const attrib = zigr.attrib;
+const altrep_create = zigr.altrep_create;
+const test_lang = zigr.lang;
+const embed = zigr.embed;
+const trycatch_mod = zigr.trycatch;
 
 // Use the R module's SEXP type for function parameters and returns.
 const SEXP = R.SEXP;
@@ -105,7 +119,6 @@ export fn zigr_test_return42() SEXP {
 
 // ── Longjmp / R_UnwindProtect tests (Phase 2.3) ──────────
 
-const cleanup = @import("cleanup");
 
 // Flag set by the cleanup handler on longjmp.
 var longjmp_cleanup_fired: bool = false;
@@ -155,8 +168,6 @@ export fn zigr_longjmp_flag() SEXP {
 
 // ── Error module tests (Phase 2.4) ─────────────────────────
 
-const err = @import("error");
-const ict = @import("interrupt");
 
 /// Test error.signal: calls Rf_error and is caught by tryCatch.
 export fn zigr_test_error_signal() SEXP {
@@ -192,8 +203,6 @@ export fn zigr_test_check_stack() SEXP {
 
 // ── Reverse FFI tests (Phase 2.8) ─────────────────────
 
-const test_lang = @import("lang");
-const test_eval = @import("eval");
 
 /// Evaluate 1 + 1 via lang.call3 + eval.rEval.
 export fn zigr_test_rev_eval() SEXP {
@@ -220,7 +229,6 @@ export fn zigr_test_rev_lang3() SEXP {
 
 // ── RNG tests (Phase 2.7) ─────────────────────────────
 
-const rng = @import("rng");
 
 /// Acquire and release RNG: should not crash.
 export fn zigr_test_rng() SEXP {
@@ -231,7 +239,6 @@ export fn zigr_test_rng() SEXP {
 
 // ── Memory allocator tests (Phase 2.6) ────────────────
 
-const mem = @import("memory");
 
 /// Allocate and free through RAllocator.
 export fn zigr_test_ralloc() SEXP {
@@ -329,7 +336,6 @@ export fn zigr_nested_flags() SEXP {
 
 // ── REALSXP conversion tests (Phase 3.1) ──────────────
 
-const zigr_convert = @import("convert");
 
 /// Test toRealSlice, read from an R vector into a Zig slice.
 export fn zigr_test_to_real_slice() SEXP {
@@ -479,7 +485,6 @@ export fn zigr_test_to_logical_slice() SEXP {
 
 // ── Data frame tests (Phase 3.6) ──────────────────────
 
-const df = @import("dataframe");
 
 /// Build a data frame from Zig arrays, return it.
 export fn zigr_test_df_build() SEXP {
@@ -546,7 +551,6 @@ export fn zigr_test_cplx_create() SEXP {
 
 // ── Attrib tests (Phase 3.7) ─────────────────────────
 
-const attrib = @import("attrib");
 
 /// Set and verify class attribute.
 export fn zigr_test_attrib_class() SEXP {
@@ -572,13 +576,229 @@ export fn zigr_test_attrib_names() SEXP {
 
 // ── ALTREP creation test (Phase 3.10) ───────────────
 
-const MyAlt = @import("altrep_create").AltReal("zigr", "test_real");
+const MyAlt = altrep_create.AltReal("zigr", "test_real");
+const MyAltInt = altrep_create.AltInteger("zigr", "test_integer");
+const MyAltLogical = altrep_create.AltLogical("zigr", "test_logical");
+const MyAltRaw = altrep_create.AltRaw("zigr", "test_raw");
+const MyAltComplex = altrep_create.AltComplex("zigr", "test_complex");
+const MyAltString = altrep_create.AltString("zigr", "test_string");
+const AltRealSliceWrap = struct {
+    ptr: [*]const f64,
+    len: usize,
+};
+const AltIntSliceWrap = struct {
+    ptr: [*]const i32,
+    len: usize,
+};
+const zigr_altreal_slice_tag_name = "zigr_altreal_slice_wrap";
+const zigr_altinteger_slice_tag_name = "zigr_altinteger_slice_wrap";
+const zigr_altlogical_slice_tag_name = "zigr_altlogical_slice_wrap";
 
 /// Create an ALTREP REALSXP from a Zig slice, sum it in R.
 export fn zigr_test_altrep_create() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
     return vec;
+}
+
+/// ALTREP sum uses the same result as a regular REALSXP.
+export fn zigr_test_altrep_sum_simd() SEXP {
+    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.sum(vec));
+}
+
+/// ALTREP exposes a direct data pointer so zigr can skip region copying.
+export fn zigr_test_altrep_direct_ptr() SEXP {
+    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const vec = MyAlt.init(data[0..]);
+    const data1 = R.R_altrep_data1(vec);
+    if (R.TYPEOF(data1) != R.EXTPTRSXP) return R.Rf_ScalarReal(0.0);
+    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altreal_slice_tag_name)) return R.Rf_ScalarReal(0.0);
+    const ptr = R.R_ExternalPtrAddr(data1) orelse return R.Rf_ScalarReal(0.0);
+    const wrap: *const AltRealSliceWrap = @ptrCast(@alignCast(ptr));
+    const ok = wrap.len == 5 and wrap.ptr[0] == 1.0 and wrap.ptr[4] == 5.0;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Integer ALTREP exposes owned backing and toIntSlice reads it correctly.
+export fn zigr_test_altint_direct_slice() SEXP {
+    const data = [_]i32{ 4, 2, 9, -1, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    const data1 = R.R_altrep_data1(vec);
+    if (R.TYPEOF(data1) != R.EXTPTRSXP) return R.Rf_ScalarReal(0.0);
+    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altinteger_slice_tag_name)) return R.Rf_ScalarReal(0.0);
+    const ptr = R.R_ExternalPtrAddr(data1) orelse return R.Rf_ScalarReal(0.0);
+    const wrap: *const AltIntSliceWrap = @ptrCast(@alignCast(ptr));
+    if (wrap.len != 5 or wrap.ptr[0] != 4 or wrap.ptr[3] != -1) return R.Rf_ScalarReal(0.0);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const slice = zigr_convert.toIntSlice(arena.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    const ok = slice.len == 5 and slice[0] == 4 and slice[1] == 2 and slice[2] == 9 and slice[3] == -1 and slice[4] == 3;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Integer ALTREP sum uses the direct owned-backing helper path.
+export fn zigr_test_altint_sum_direct() SEXP {
+    const data = [_]i32{ 4, 2, 9, -1, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    return R.Rf_ScalarReal(@floatFromInt(zigr_convert.sumInt(vec)));
+}
+
+export fn zigr_test_altint_min_direct() SEXP {
+    const data = [_]i32{ 4, -1, 9, -1, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    return R.Rf_ScalarInteger(zigr_convert.minInt(vec));
+}
+
+export fn zigr_test_altint_max_direct() SEXP {
+    const data = [_]i32{ 4, -1, 9, 9, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    return R.Rf_ScalarInteger(zigr_convert.maxInt(vec));
+}
+
+export fn zigr_test_altint_argmin_direct() SEXP {
+    const data = [_]i32{ 4, -1, 9, -1, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argminInt(vec)));
+}
+
+export fn zigr_test_altint_argmax_direct() SEXP {
+    const data = [_]i32{ 4, 9, 9, -1, 3 };
+    const vec = MyAltInt.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argmaxInt(vec)));
+}
+
+/// Logical ALTREP exposes owned backing and toLogicalSlice preserves values.
+export fn zigr_test_altlogical_direct_slice() SEXP {
+    const data = [_]i32{ 1, 0, R.R_NaInt, 1 };
+    const vec = MyAltLogical.init(data[0..]);
+    const data1 = R.R_altrep_data1(vec);
+    if (R.TYPEOF(data1) != R.EXTPTRSXP) return R.Rf_ScalarReal(0.0);
+    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altlogical_slice_tag_name)) return R.Rf_ScalarReal(0.0);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const slice = zigr_convert.toLogicalSlice(arena.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    const ok = slice.len == 4 and slice[0] == 1 and slice[1] == 0 and slice[2] == R.R_NaInt and slice[3] == 1;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Logical ALTREP TRUE count uses the direct owned-backing helper path.
+export fn zigr_test_altlogical_count_true_direct() SEXP {
+    const data = [_]i32{ 1, 0, R.R_NaInt, 1 };
+    const vec = MyAltLogical.init(data[0..]);
+    return R.Rf_ScalarReal(@floatFromInt(zigr_convert.countTrue(vec)));
+}
+
+export fn zigr_test_altlogical_min_direct() SEXP {
+    const data = [_]i32{ 1, 0, 1, 0 };
+    const vec = MyAltLogical.init(data[0..]);
+    return R.Rf_ScalarLogical(zigr_convert.minLogical(vec));
+}
+
+export fn zigr_test_altlogical_max_direct() SEXP {
+    const data = [_]i32{ 0, 1, 0, 1 };
+    const vec = MyAltLogical.init(data[0..]);
+    return R.Rf_ScalarLogical(zigr_convert.maxLogical(vec));
+}
+
+export fn zigr_test_altlogical_argmin_direct() SEXP {
+    const data = [_]i32{ 1, 0, 1, 0 };
+    const vec = MyAltLogical.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argminLogical(vec)));
+}
+
+export fn zigr_test_altlogical_argmax_direct() SEXP {
+    const data = [_]i32{ 0, 1, 1, 0 };
+    const vec = MyAltLogical.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argmaxLogical(vec)));
+}
+
+/// ALTREP mean matches scalar expectation.
+export fn zigr_test_altrep_mean_simd() SEXP {
+    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.mean(vec));
+}
+
+/// ALTREP norm2 matches scalar expectation.
+export fn zigr_test_altrep_norm2_simd() SEXP {
+    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.norm2(vec));
+}
+
+/// ALTREP min matches scalar expectation.
+export fn zigr_test_altrep_min_simd() SEXP {
+    const data = [_]f64{ 4.0, 2.0, 9.0, -1.0, 3.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.min(vec));
+}
+
+/// ALTREP max matches scalar expectation.
+export fn zigr_test_altrep_max_simd() SEXP {
+    const data = [_]f64{ 4.0, 2.0, 9.0, -1.0, 3.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.max(vec));
+}
+
+/// ALTREP argmin preserves first minimum index.
+export fn zigr_test_altrep_argmin_simd() SEXP {
+    const data = [_]f64{ 4.0, -1.0, 9.0, -1.0, 3.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argmin(vec)));
+}
+
+/// ALTREP argmax preserves first maximum index.
+export fn zigr_test_altrep_argmax_simd() SEXP {
+    const data = [_]f64{ 4.0, 9.0, 9.0, -1.0, 3.0 };
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarInteger(@intCast(zigr_convert.argmax(vec)));
+}
+
+/// ALTREP sum_narm skips NA values.
+export fn zigr_test_altrep_sum_narm_simd() SEXP {
+    var data = [_]f64{ 1.0, 0.0, 4.0, 5.0 };
+    data[1] = R.NA_REAL();
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.sum_narm(vec));
+}
+
+/// ALTREP mean_narm skips NA values.
+export fn zigr_test_altrep_mean_narm_simd() SEXP {
+    var data = [_]f64{ 1.0, 0.0, 5.0 };
+    data[1] = R.NA_REAL();
+    const vec = MyAlt.init(data[0..]);
+    return R.Rf_ScalarReal(zigr_convert.mean_narm(vec));
+}
+
+export fn zigr_test_altraw_create() SEXP {
+    const data = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    return MyAltRaw.init(data[0..]);
+}
+
+export fn zigr_test_altcomplex_create() SEXP {
+    const data = [_]altrep_create.ComplexElem{
+        .{ .r = 1.0, .i = 2.0 },
+        .{ .r = 3.0, .i = 4.0 },
+    };
+    return MyAltComplex.init(data[0..]);
+}
+
+export fn zigr_test_altstring_create() SEXP {
+    const data = [_][]const u8{ "alpha", "beta", "gamma" };
+    return MyAltString.init(data[0..]);
+}
+
+export fn zigr_test_lang_builder() SEXP {
+    const args = [_]SEXP{
+        R.Rf_ScalarInteger(1),
+        R.Rf_ScalarInteger(2),
+        R.Rf_ScalarInteger(3),
+    };
+    return test_eval.call("sum", args[0..]);
 }
 
 // ── Edge-case / adversarial tests ─────────────────────
@@ -918,7 +1138,6 @@ export fn zigr_test_pmax_recycling() SEXP {
 
 // ── Phase 4 embed tests ─────────────────────────────
 
-const embed = @import("embed");
 
 /// Test rCodeEval with 1 + 1. Should return 2.
 export fn zigr_phase4_embed_sum() SEXP {
@@ -993,7 +1212,6 @@ export fn zigr_phase4_from_sexp() SEXP {
 
 // ── Phase 4 edge-case tests ─────────────────────────
 
-const trycatch_mod = @import("trycatch");
 
 /// Embed: empty string should error, caught by tryCatch.
 export fn zigr_phase4_embed_empty() SEXP {

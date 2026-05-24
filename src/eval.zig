@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const lang = @import("lang.zig");
 
 const Rf_findFun = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findFun" });
 const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findVar" });
@@ -100,17 +101,8 @@ pub const emptyEnv: R.SEXP = R.R_EmptyEnv;
 
 /// Call an R function by name with positional arguments.
 pub fn call(name: []const u8, args: []const R.SEXP) R.SEXP {
-    const fun_sym = installSym(name);
-    const fun = Rf_findFun(fun_sym, R.R_GlobalEnv);
-
-    var arg_list = R.R_NilValue;
-    var i = args.len;
-    while (i > 0) {
-        i -= 1;
-        arg_list = R.Rf_lcons(args[i], arg_list);
-    }
-
-    const call_expr = R.Rf_lcons(fun, arg_list);
+    const fun = Rf_findFun(installSym(name), R.R_GlobalEnv);
+    const call_expr = lang.buildCall(fun, args);
     return R.Rf_eval(call_expr, R.R_GlobalEnv);
 }
 

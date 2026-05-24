@@ -7,8 +7,16 @@ fn vectorSum(slice: []const f64) f64 {
     return total;
 }
 
+fn stringTotalBytes(strings: zigr.convert.StringSliceView) i32 {
+    var total: usize = 0;
+    var it = strings.iterator();
+    while (it.next()) |s| total += s.len;
+    return @intCast(total);
+}
+
 const Exports = zigr.@"export".generateExports(&.{
     .{ .name = "C_vector_sum", .func = vectorSum },
+    .{ .name = "C_string_total_bytes", .func = stringTotalBytes },
 }, &.{});
 
 comptime {

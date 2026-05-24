@@ -7,13 +7,17 @@
 //! Errors signal Rf_error instead of panicking.
 //!
 //! Supported types: []const f64, []const i32, []const []const u8,
-//! []const u8 (RAWSXP), []const Rcomplex, f64, i32, bool, ?f64, ?i32, ?bool,
+//! convert.StringSliceView, []const u8 (RAWSXP), []const Rcomplex,
+//! f64, i32, bool, ?f64, ?i32, ?bool,
 //! void, R.SEXP.
 //! Scalar f64/i32/bool require a non-empty, non-NA length-1 vector.
 //! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as null.
 //! Use R.SEXP or a vector parameter when NA values need custom handling.
 //! []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar strings,
 //! extract via R.STRING_ELT inside the function body.
+//! `[]const []const u8` still allocates slice headers because Zig needs a
+//! concrete slice-of-slices container. `convert.StringSliceView` is the
+//! zero-copy export-only alternative for read-only string access.
 
 const std = @import("std");
 const R = @import("R");
@@ -43,13 +47,16 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return @as(T, fromSexp(child, sexp, arena));
     }
     if (comptime T == []const f64) {
-        return convert.toRealSlice(arena, sexp) catch |err| signalErrorMsg("toRealSlice", @errorName(err));
+        return convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
     }
     if (comptime T == []const i32) {
-        return convert.toIntSlice(arena, sexp) catch |err| signalErrorMsg("toIntSlice", @errorName(err));
+        return convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
     }
     if (comptime T == []const []const u8) {
         return convert.toStringSlice(arena, sexp) catch |err| signalErrorMsg("toStringSlice", @errorName(err));
+    }
+    if (comptime T == convert.StringSliceView) {
+        return convert.toStringSliceView(sexp) catch |err| signalErrorMsg("toStringSliceView", @errorName(err));
     }
     if (comptime T == f64) {
         return convert.toRealScalar(sexp) catch |err| convert.signalError(err);
@@ -64,7 +71,7 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return convert.toRawSlice(arena, sexp) catch |err| signalErrorMsg("toRawSlice", @errorName(err));
     }
     if (comptime T == []const convert.Rcomplex) {
-        return convert.toComplexSlice(arena, sexp) catch |err| signalErrorMsg("toComplexSlice", @errorName(err));
+        return convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
     }
     if (comptime T == R.SEXP) {
         return sexp;
@@ -446,7 +453,7 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
         var initialized: bool = false;
 
         /// Call this from your R_init_<pkg> entry point.
-        pub fn init(info: *R.DllInfo) void {
+        pub fn init(info: *R.DllInfo) callconv(.c) void {
             if (initialized) return;
             initialized = true;
 
@@ -475,7 +482,7 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
         }
 
         /// Call this from your R_unload_<pkg> entry point.
-        pub fn unload(_: *R.DllInfo) void {}
+        pub fn unload(_: *R.DllInfo) callconv(.c) void {}
     };
 }
 
@@ -493,7 +500,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
         var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
         var initialized: bool = false;
 
-        fn init(info: *R.DllInfo) void {
+        fn init(info: *R.DllInfo) callconv(.c) void {
             if (initialized) return;
             initialized = true;
 
@@ -523,6 +530,6 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
             _ = R.R_useDynamicSymbols(info, 0);
         }
 
-        pub fn unload(_: *R.DllInfo) void {}
+        pub fn unload(_: *R.DllInfo) callconv(.c) void {}
     };
 }

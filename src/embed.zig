@@ -5,17 +5,35 @@
 //! functions don't allocate Zig memory.
 
 const R = @import("R");
+const cleanup = @import("cleanup");
+
+const FreeBuf = struct {
+    fn fire(ptr: ?*anyopaque) void {
+        R.R_chk_free(ptr);
+    }
+};
+
+fn signalError(msg: []const u8) noreturn {
+    var buf: [256:0]u8 = undefined;
+    const n = @min(msg.len, buf.len - 1);
+    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
+    buf[n] = 0;
+    R.Rf_error(&buf);
+}
 
 /// Parse and evaluate an R expression from a Zig string.
 /// Returns the result SEXP. Wraps R_ParseEvalString.
 pub fn rCodeEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
     const env = envir orelse R.R_GlobalEnv;
-    const buf = R.R_chk_calloc(code.len + 1, 1) orelse @panic("OOM");
-    defer R.R_chk_free(buf);
-    const c_buf: [*]u8 = @ptrCast(@as(*anyopaque, @ptrCast(buf.?)));
+    const buf = R.R_chk_calloc(code.len + 1, 1) orelse signalError("out of memory during embedded R evaluation");
+    cleanup.pushFrame(FreeBuf.fire, buf);
+    const c_buf: [*]u8 = @ptrCast(@as(*anyopaque, @ptrCast(buf)));
     @memcpy(c_buf[0..code.len], code);
     c_buf[code.len] = 0;
-    return R.R_ParseEvalString(@ptrCast(c_buf), env);
+    const result = R.R_ParseEvalString(@ptrCast(c_buf), env);
+    cleanup.popFrame();
+    R.R_chk_free(buf);
+    return result;
 }
 
 /// Evaluate R code via R_ParseEvalString. Semantically identical to

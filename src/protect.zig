@@ -32,6 +32,34 @@ pub fn protect(value: SEXP) SEXP {
     return R.Rf_protect(value);
 }
 
+pub const ScopedProtect = struct {
+    value: SEXP,
+    active: bool = true,
+
+    pub fn init(value: SEXP) ScopedProtect {
+        return .{ .value = protect(value) };
+    }
+
+    pub fn get(self: ScopedProtect) SEXP {
+        return self.value;
+    }
+
+    pub fn release(self: *ScopedProtect) SEXP {
+        self.active = false;
+        return self.value;
+    }
+
+    pub fn deinit(self: *ScopedProtect) void {
+        if (!self.active) return;
+        self.active = false;
+        unprotect();
+    }
+};
+
+pub fn scoped(value: SEXP) ScopedProtect {
+    return ScopedProtect.init(value);
+}
+
 /// Pop one entry from R's protection stack (LIFO). Must match a prior
 /// protect() call. Calling unprotect more times than protect will
 /// unbalance the stack and crash R.

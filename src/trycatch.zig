@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const protect = @import("protect.zig");
 
 pub const RCondition = error{RCondition};
 
@@ -25,8 +26,9 @@ fn catchHandler(cond: R.SEXP, data: ?*anyopaque) callconv(.c) R.SEXP {
 /// Returns error.RCondition if any condition was signaled.
 pub fn tryCatch(comptime func: *const fn () R.SEXP) RCondition!R.SEXP {
     var state = HandlerState{ .condition = undefined };
-    const classes = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
-    R.SET_STRING_ELT(classes, 0, R.Rf_mkChar("condition"));
+    var classes = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
+    defer classes.deinit();
+    R.SET_STRING_ELT(classes.get(), 0, R.Rf_mkChar("condition"));
 
     const W = struct {
         fn trampoline(_: ?*anyopaque) callconv(.c) R.SEXP {
@@ -37,14 +39,13 @@ pub fn tryCatch(comptime func: *const fn () R.SEXP) RCondition!R.SEXP {
     const result = R.R_tryCatch(
         W.trampoline,
         null,
-        classes,
+        classes.get(),
         catchHandler,
         @as(?*anyopaque, @ptrCast(&state)),
         null,
         null,
     );
 
-    R.Rf_unprotect(1);
     if (state.happened) return error.RCondition;
     return result;
 }
@@ -54,8 +55,9 @@ pub fn tryCatch(comptime func: *const fn () R.SEXP) RCondition!R.SEXP {
 /// can extract "message" from it via getAttrib).
 pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
     var state = HandlerState{ .condition = undefined };
-    const classes = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
-    R.SET_STRING_ELT(classes, 0, R.Rf_mkChar("error"));
+    var classes = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
+    defer classes.deinit();
+    R.SET_STRING_ELT(classes.get(), 0, R.Rf_mkChar("error"));
 
     const W = struct {
         fn trampoline(_: ?*anyopaque) callconv(.c) R.SEXP {
@@ -66,14 +68,13 @@ pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
     const result = R.R_tryCatch(
         W.trampoline,
         null,
-        classes,
+        classes.get(),
         catchHandler,
         @as(?*anyopaque, @ptrCast(&state)),
         null,
         null,
     );
 
-    R.Rf_unprotect(1);
     if (state.happened) return state.condition;
     return result;
 }

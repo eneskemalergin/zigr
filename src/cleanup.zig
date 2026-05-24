@@ -25,6 +25,14 @@ const noop = struct {
     fn nop() callconv(.c) void {}
 }.nop;
 
+fn signalError(msg: []const u8) noreturn {
+    var buf: [256:0]u8 = undefined;
+    const n = @min(msg.len, buf.len - 1);
+    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
+    buf[n] = 0;
+    R.Rf_error(&buf);
+}
+
 fn clean_handler(_data: ?*anyopaque, jump: R.Rboolean) callconv(.c) void {
     _ = _data;
     if (jump == 1) on_unwind() else on_return();
@@ -68,7 +76,7 @@ pub fn init() void {
 }
 
 pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) void {
-    if (count >= MAX_NESTING) @panic("cleanup stack overflow");
+    if (count >= MAX_NESTING) signalError("cleanup stack overflow");
     stack[count] = .{ .func = func, .data = data };
     count += 1;
 }

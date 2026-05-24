@@ -33,13 +33,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{.{ .name = "R", .module = r_mod }},
     });
-
+    const simd_mod = b.addModule("simd", .{
+        .root_source_file = b.path("src/simd.zig"),
+        .target = target,
+        .imports = &.{},
+    });
     const zigr = b.addModule("zigr", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "R", .module = r_mod },
             .{ .name = "cleanup", .module = cleanup_mod },
+            .{ .name = "simd", .module = simd_mod },
         },
     });
 
@@ -77,34 +82,6 @@ pub fn build(b: *std.Build) void {
 
     // R runtime test .so. Build via `zig build rtest` when R is available.
     if (b.findProgram(&.{"Rscript"}, &.{})) |_| {
-        const mod = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = "src/error.zig" },
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "R", .module = r_mod }},
-        });
-        const imod = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = "src/interrupt.zig" },
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "R", .module = r_mod }},
-        });
-        const mmod = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = "src/memory.zig" },
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "R", .module = r_mod }},
-        });
-        const rngmod = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = "src/rng.zig" },
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "R", .module = r_mod },
-                .{ .name = "cleanup", .module = cleanup_mod },
-            },
-        });
-
         const so = b.addLibrary(.{
             .linkage = .dynamic,
             .name = "zigr_r_test",
@@ -115,137 +92,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{
                     .{ .name = "R", .module = r_mod },
                     .{ .name = "cleanup", .module = cleanup_mod },
-                    .{ .name = "error", .module = mod },
-                    .{ .name = "interrupt", .module = imod },
-                    .{ .name = "memory", .module = mmod },
-                    .{ .name = "rng", .module = rngmod },
-                    .{ .name = "convert", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/convert.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{
-                            .{ .name = "R", .module = r_mod },
-                            .{ .name = "cleanup", .module = cleanup_mod },
-                        },
-                    }) },
-                    .{ .name = "raw", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/raw.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "dataframe", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/dataframe.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "attrib", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/attrib.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "s4", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/s4.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "altrep", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/altrep.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "altrep_create", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/altrep_create.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{
-                            .{ .name = "R", .module = r_mod },
-                            .{ .name = "cleanup", .module = cleanup_mod },
-                        },
-                    }) },
-                    .{ .name = "externalptr", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/externalptr.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "trycatch", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/trycatch.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "serialize", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/serialize.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "weakref", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/weakref.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "sexp", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/sexp.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "protect", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/protect.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "lang", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/lang.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{
-                            .{ .name = "R", .module = r_mod },
-                            .{ .name = "protect", .module = b.createModule(.{
-                                .root_source_file = .{ .cwd_relative = "src/protect.zig" },
-                                .target = target,
-                                .optimize = optimize,
-                                .imports = &.{.{ .name = "R", .module = r_mod }},
-                            }) },
-                        },
-                    }) },
-                    .{ .name = "embed", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/embed.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                    }) },
-                    .{ .name = "eval", .module = b.createModule(.{
-                        .root_source_file = .{ .cwd_relative = "src/eval.zig" },
-                        .target = target,
-                        .optimize = optimize,
-                        .imports = &.{
-                            .{ .name = "R", .module = r_mod },
-                            .{ .name = "cleanup", .module = cleanup_mod },
-                            .{ .name = "lang", .module = b.createModule(.{
-                                .root_source_file = .{ .cwd_relative = "src/lang.zig" },
-                                .target = target,
-                                .optimize = optimize,
-                                .imports = &.{
-                                    .{ .name = "R", .module = r_mod },
-                                    .{ .name = "protect", .module = b.createModule(.{
-                                        .root_source_file = .{ .cwd_relative = "src/protect.zig" },
-                                        .target = target,
-                                        .optimize = optimize,
-                                        .imports = &.{.{ .name = "R", .module = r_mod }},
-                                    }) },
-                                },
-                            }) },
-                        },
-                    }) },
+                    .{ .name = "zigr", .module = zigr },
                 },
             }),
         });

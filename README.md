@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.6-0f766e?style=for-the-badge" alt="Version 0.0.6" />
+    <img src="https://img.shields.io/badge/version-0.0.7-0f766e?style=for-the-badge" alt="Version 0.0.7" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -19,17 +19,23 @@
     <img src="https://img.shields.io/badge/status-experimental-f59e0b?style=for-the-badge" alt="Experimental" />
 </p>
 
-Write R extensions in Zig. Compile with `zig build`. No custom Makevars.
+Cross-compile R extensions to all three CRAN targets from a single binary. No Cargo, no Makevars, no cross-toolchain setup.
 
-R extensions need compiled code. Normally that means C, C++ with Rcpp, or Rust with extendr. zigr is the Zig version: R's SEXP types as Zig structs, a protection stack mapping to PROTECT/UNPROTECT, and a build.zig that links R headers. No autotools, no Makefile wrangling.
+---
 
-## Status
+R extensions need compiled code. Normally that means three different build systems depending on backend: autotools + configure for C, R CMD SHLIB for Rcpp, Cargo + rustup for extendr. Each has its own cross-compilation story, and none of them are simple.
 
-Experimental but functional. All core R extension APIs are implemented and tested against R 4.6 in a live R session: SEXP type wrappers, PROTECT/UNPROTECT with R_UnwindProtect longjmp safety, ALTREP consumption and creation, type conversion (real, int, string, logical, raw, complex), data frames, attributes, S4 objects, external pointers, weak references, reverse FFI, error/warning signaling, RNG management, R-managed memory allocators, condition handling (tryCatch), R code evaluation, serialization, and a comptime export generator (R_init + R_registerRoutines + R_useDynamicSymbols for CRAN compliance).
+zigr is a Zig library that wraps R's C API as Zig structs plus a build.zig that links R headers. Write Zig, run `zig build`, get a shared library. That is the whole flow.
+
+## Why cross-compilation matters
+
+R packages on CRAN need to ship binaries for x86_64 Linux, aarch64 macOS, and x86_64 Windows. Building for Windows from Linux normally means you install MinGW-w64 or a Windows cross-toolchain. For Rcpp you need a cross-compiled libstdc++. For extendr you need Rust std for the Windows target.
+
+Zig ships its own target libs in the compiler binary. One file, 40 MB. `zig build -Dtarget=x86_64-windows-gnu` produces a working Windows .dll from Linux, no extra tools. macOS aarch64 from Linux works the same way.
+
+The Zig 0.16.0 binary is bundled in this repo. No download, no PATH changes.
 
 ## Build
-
-Requires [Zig 0.16](https://ziglang.org/learn/getting_started/).
 
 ```bash
 git clone https://github.com/eneskemalergin/zigr
@@ -37,63 +43,100 @@ cd zigr
 zig build test
 ```
 
+The test step requires R headers on the system. See `examples/template/` for the per-package setup.
+
+## What you get
+
+23 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
+
+- SEXP types and 24 classification helpers
+- PROTECT/UNPROTECT with R_UnwindProtect longjmp safety
+- Type conversion (real, int, string, logical, raw, complex)
+- Zero-copy export views for numeric, complex, and read-only string inputs via `convert.StringSliceView`
+- SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
+- ALTREP consumption and creation (real, integer, logical classes)
+- Data frames, attributes, S4 objects, external pointers, weak references
+- R code evaluation (`rCodeEval`, `rRawEval`)
+- Condition handling (`tryCatch`, `tryCatchError`)
+- Serialization, RNG management, error/warning signaling
+- R-managed memory allocator
+- Struct-to-SEXP reflection (`asSEXP`/`fromSEXP`)
+- generateExports (`.Call` and `.External`) and generateMethods (EXTPTRSXP)
+- Zero dependencies (build.zig.zon is empty)
+
+## Performance
+
+I run benchmarks against 5 other backends (C, Rcpp, extendr, savvy, R). The results are in `benchmarks/README.md`. I will not paste the full table here because the numbers shift as I fix things and add tasks. A few notes:
+
+- zigr leads the current 36-task matrix on geomean vs R. The SIMD path is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
+- ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
+- Strings and per-element math wrappers are the weak spots. I know why and I am working on it.
+
+The benchmark harness is not frozen. Tasks get added, runners get fixed, and the numbers change. Treat them as directional.
+
+## Philosophy
+
+zigr is not trying to be Rcpp with Zig syntax. It does not wrap every R type in a class hierarchy. It does not hide the SEXP behind a generic `Robj`. It gives you the R C API directly, with comptime helpers that remove the repetitive parts (export registration, type conversion, protection).
+
+You write explicit loops, explicit `Rf_protect`, explicit `REAL()` slice access. This is more typing. It is also faster because nothing is hidden.
+
 ## Project structure
 
 ```bash
 build.zig              Module definition + tests
 build.zig.zon          Package manifest (zero dependencies)
 src/
-├── root.zig           Library entry, re-exports 20+ submodules
+├── root.zig           Library entry, re-exports all submodules
 ├── sexp.zig           SEXPTYPE enum, 24 classification helpers
 ├── protect.zig        PROTECT/UNPROTECT with depth tracking
 ├── cleanup.zig        R_UnwindProtect bridge + cleanup stack
-├── convert.zig        Type conversion (REALSXP, INTSXP, STRSXP, LGLSXP, VECSXP, RAWSXP, CPLXSXP) + struct to/from R list
+├── convert.zig        Type conversion + struct reflection
 ├── error.zig          Rf_error / Rf_warning signaling
 ├── interrupt.zig      R_CheckUserInterrupt, stack checking
 ├── memory.zig         RAllocator (R_chk_calloc / R_chk_free)
 ├── rng.zig            GetRNGstate / PutRNGstate wrappers
-├── reverse_ffi.zig    Rf_eval, Rf_lang2-6, Rf_findVar, Rf_defineVar
 ├── dataframe.zig      DataFrame wrapper, build
 ├── attrib.zig         getAttrib, setAttrib, setNames, setClass, setDim
 ├── s4.zig             S4 object detection and slot access
 ├── altrep.zig         ALTREP detection, data1/data2, class name
-├── altrep_create.zig  Comptime ALTREP class generator (AltReal)
+├── altrep_create.zig  Comptime ALTREP class generator
 ├── externalptr.zig    R_MakeExternalPtr wrappers with finalizers
-├── trycatch.zig       R_tryCatch wrapper (catch R errors from Zig)
+├── trycatch.zig       R_tryCatch wrapper
 ├── serialize.zig      R_SerializeToVector / R_UnserializeFromVector
 ├── weakref.zig        R_MakeWeakRefC, R_WeakRefKey/Value
-├── embed.zig          rCodeEval / rRawEval (evaluate R code from Zig)
-├── export.zig         Comptime export generator (R_init_, R_registerRoutines)
-├── lang.zig           CAR, CDR, CONS, symbols, call1-6, list1-6, allocSExp
-├── eval.zig           rEval, findVar, findFunction, call, setVar, applyClosure
+├── embed.zig          rCodeEval / rRawEval
+├── export.zig         Comptime export generator
+├── lang.zig           CAR, CDR, CONS, symbols, calls
+├── eval.zig           rEval, findVar, findFunction, call, setVar
+├── raw.zig            Zero-copy vector data access
+├── simd.zig           SIMD lane configuration
+└── cross_check.zig    Cross-compilation verification
 ```
-
-## Why Zig and not Rust?
-
-Rust has extendr and savvy both are solid. The Rust-to-R pipeline runs through Cargo, which means the user needs a Rust toolchain. Cross-compiling (especially Windows from Linux) adds more setup. Zig's compiler is a single static binary that cross-compiles to the three CRAN targets (Linux, macOS, Windows) without additional toolchains. Zig's comptime replaces proc macros, so the build graph is simpler: no build.rs, no proc macro step.
-
-Vector sum of 1e7 doubles, compiled with each toolchain's defaults. This is a micro-benchmark: C (-O2) uses a plain while loop, Zig (ReleaseSafe) uses an explicit @Vector(8) SIMD path, Rcpp and extendr use their default iterator patterns.
-
-| Runner                     | Time       | vs C time |
-| -------------------------- | ---------- | --------- |
-| C -O2 (scalar while loop)  | 9.27ms     | 1.00x     |
-| Zig ReleaseSafe @Vector(8) | **3.91ms** | **0.42x** |
-| Rcpp sugar                 | 31.60ms    | 3.41x     |
-| extendr iter               | 59.00ms    | 6.37x     |
-
-On this test, the explicit SIMD path is 2.4x faster than C's scalar loop. C could match the time with `-O3 -ffast-math` or explicit SIMD intrinsics, but those are not the defaults that R users get through R CMD SHLIB. The point is not that Zig is inherently faster at math. The point is that Zig's default toolchain makes SIMD easy to write, and the resulting binaries are small and cross-compiled without ceremony.
 
 ## To use zigr in your R package
 
 Copy `template/build.zig` to your package root, point it at R_HOME, and write Zig code in `src/zig/`.
-
-The template accepts R_HOME in two ways:
 
 ```bash
 export R_HOME=/usr/lib/R && zig build
 # or
 zig build -Dr-home=/usr/lib/R
 ```
+
+For exported read-only character vectors, prefer `zigr.convert.StringSliceView` over `[]const []const u8`. The old slice-of-slices form still works, but it has to allocate Zig slice headers. `StringSliceView` keeps the call zero-copy and lets you iterate element-by-element.
+
+```zig
+const zigr = @import("zigr");
+
+fn stringTotalBytes(strings: zigr.convert.StringSliceView) i32 {
+    var total: usize = 0;
+    var it = strings.iterator();
+    while (it.next()) |s| total += s.len;
+    return @intCast(total);
+}
+```
+
+See `examples/hellozigr/` for a full package example exposing this through `.Call`.
 
 ## License
 

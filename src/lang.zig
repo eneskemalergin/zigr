@@ -118,23 +118,48 @@ pub fn call6(fun: R.SEXP, arg1: R.SEXP, arg2: R.SEXP, arg3: R.SEXP, arg4: R.SEXP
     return R.Rf_lang6(fun, arg1, arg2, arg3, arg4, arg5);
 }
 
-/// Create a pairlist node. The result is protected: pairlists are built
-/// from last to first, and an intermediate CONS cell could be collected
-/// before the full list is assembled.
+/// Create a pairlist node.
 pub fn cons(car_val: R.SEXP, cdr_val: R.SEXP) R.SEXP {
-    const result = R.Rf_lcons(car_val, cdr_val);
-    protect.protect(result);
-    return result;
+    return R.Rf_lcons(car_val, cdr_val);
 }
 
-/// Build a pairlist from a slice. Each node is protected as it is created.
+/// Build a pairlist from a slice. Intermediate nodes are protected while the
+/// list is under construction, then released before returning the head.
 pub fn consList(items: []const R.SEXP) R.SEXP {
     var list = R.R_NilValue;
+    var protect_count: usize = 0;
     var i = items.len;
     while (i > 0) {
         i -= 1;
-        list = R.Rf_lcons(items[i], list);
-        protect.protect(list);
+        list = protect.protect(R.Rf_lcons(items[i], list));
+        protect_count += 1;
     }
+    if (protect_count > 0) protect.unprotectN(protect_count);
     return list;
+}
+
+/// Build a call node from a function SEXP and positional arguments.
+/// Intermediate pairlist nodes are protected only while the call is assembled.
+pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
+    const arg_list = consList(args);
+    var call_expr = protect.scoped(R.Rf_lcons(fun, arg_list));
+    defer call_expr.deinit();
+    return call_expr.get();
+}
+
+/// Narrow comptime expression builder for common call construction.
+/// Accepts a tuple of positional SEXP arguments.
+pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
+    const Args = @TypeOf(args);
+    const info = @typeInfo(Args);
+    if (comptime info != .@"struct" or !info.@"struct".is_tuple) {
+        @compileError("buildNamedCall expects a tuple literal like .{ arg1, arg2 }");
+    }
+
+    const fields = info.@"struct".fields;
+    var values: [fields.len]R.SEXP = undefined;
+    inline for (fields, 0..) |field, index| {
+        values[index] = @field(args, field.name);
+    }
+    return buildCall(symbol(name), values[0..]);
 }

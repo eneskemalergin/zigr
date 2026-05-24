@@ -22,6 +22,7 @@ pub const serialize = @import("serialize.zig");
 pub const weakref = @import("weakref.zig");
 pub const embed = @import("embed.zig");
 pub const raw = @import("raw.zig");
+pub const rvector = @import("rvector.zig");
 
 test {
     _ = sexp;
@@ -44,4 +45,5 @@ test {
     _ = serialize;
     _ = weakref;
     _ = embed;
+    _ = rvector;
 }

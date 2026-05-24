@@ -114,7 +114,6 @@ pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     if (names.len == 0 or columns.len == 0) return R.R_NilValue;
     const ncols: R.R_xlen_t = @intCast(names.len);
 
-    // Batch protect: allocate all SEXPs, then set attributes
     const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, ncols));
     const cnames = R.Rf_protect(R.Rf_allocVector(R.STRSXP, ncols));
     const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));

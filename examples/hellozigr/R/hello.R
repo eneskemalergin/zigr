@@ -7,6 +7,15 @@ vector_sum <- function(x) {
 }
 
 
+#' Sum string byte lengths using Zig
+#' @param x a character vector
+#' @return the total byte length of all elements
+#' @export
+string_total_bytes <- function(x) {
+  .Call("C_string_total_bytes", as.character(x))
+}
+
+
 #' Generate normal variates using R's rnorm from Zig
 #' @param n number of observations
 #' @return invisibly calls rnorm, results printed by R

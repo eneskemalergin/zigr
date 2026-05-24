@@ -1,4 +1,6 @@
 #!/bin/sh
+set -e
+
 # Check that Zig >= 0.16.0 is available
 if ! command -v zig >/dev/null 2>&1; then
   echo "Error: zig not found. Install Zig >= 0.16.0 (https://ziglang.org/download)"
@@ -6,4 +8,12 @@ if ! command -v zig >/dev/null 2>&1; then
 fi
 ZIG_VER=$(zig version 2>/dev/null)
 echo "Found zig $ZIG_VER"
+
+R_INCLUDE=$(Rscript -e 'cat(R.home("include"))' 2>/dev/null)
+R_LIB=$(Rscript -e 'cat(file.path(R.home(), "lib"))' 2>/dev/null)
+
+cd src
+zig build -Dtarget=native -Doptimize=ReleaseFast -Dr-include="$R_INCLUDE" -Dr-lib="$R_LIB"
+cp zig-out/lib/libhellozigr.so hellozigr.so
+
 exit 0
