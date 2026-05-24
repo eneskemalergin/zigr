@@ -20,6 +20,13 @@ fn hasPrefixAbc(s: []const u8) bool {
     return s.len >= 3 and std.mem.eql(u8, s[0..3], "abc");
 }
 
+fn isAscii(s: []const u8) bool {
+    for (s) |byte| {
+        if (byte >= 0x80) return false;
+    }
+    return true;
+}
+
 export fn zigr_bench_string_variants(vec: SEXP) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -27,18 +34,22 @@ export fn zigr_bench_string_variants(vec: SEXP) SEXP {
     const strings = convert.toCachedStringSliceView(arena.allocator(), vec) catch |err| convert.signalError(err);
     const n = strings.len;
     var concat_len: usize = 0;
+    var max_len: usize = 0;
     var valid_count: usize = 0;
     var nchar_sum: i64 = 0;
     var prefix_match: i64 = 0;
+    var all_ascii = true;
 
     for (0..n) |index| {
         const value = strings.at(index);
         if (value.is_na) continue;
         const s = value.bytes;
         concat_len += value.len;
+        max_len = @max(max_len, value.len);
         valid_count += 1;
         nchar_sum += @as(i64, @intCast(value.len));
         if (hasPrefixAbc(s)) prefix_match += 1;
+        all_ascii = all_ascii and isAscii(s);
     }
     if (valid_count > 0) concat_len += valid_count - 1;
 
@@ -70,8 +81,14 @@ export fn zigr_bench_string_variants(vec: SEXP) SEXP {
             added += 1;
         }
         buf[concat_len] = 0;
-        R.SET_STRING_ELT(concat, 0, R.Rf_mkCharLenCE(buf, @intCast(concat_len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+        if (all_ascii) {
+            R.SET_STRING_ELT(concat, 0, R.Rf_mkCharLen(buf, @intCast(concat_len)));
+        } else {
+            R.SET_STRING_ELT(concat, 0, R.Rf_mkCharLenCE(buf, @intCast(concat_len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+        }
     }
+
+    const upper_buf = if (all_ascii and max_len > 0) R.R_alloc(max_len + 1, 1) else null;
 
     for (0..n) |index| {
         const value = strings.at(index);
@@ -85,17 +102,24 @@ export fn zigr_bench_string_variants(vec: SEXP) SEXP {
         const sub_len = @min(value.len, 3);
         if (sub_len == 0) {
             R.SET_STRING_ELT(extract, @intCast(index), R.Rf_mkChar(""));
+        } else if (all_ascii) {
+            R.SET_STRING_ELT(extract, @intCast(index), R.Rf_mkCharLen(s.ptr, @intCast(sub_len)));
         } else {
             R.SET_STRING_ELT(extract, @intCast(index), R.Rf_mkCharLenCE(s.ptr, @intCast(sub_len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
         }
 
         if (value.len == 0) {
             R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkChar(""));
+        } else if (all_ascii) {
+            const ascii_buf = upper_buf.?;
+            for (s, 0..) |byte, offset| ascii_buf[offset] = std.ascii.toUpper(byte);
+            ascii_buf[value.len] = 0;
+            R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkCharLen(ascii_buf, @intCast(value.len)));
         } else {
-            const upper_buf = R.R_alloc(value.len + 1, 1);
-            for (s, 0..) |byte, offset| upper_buf[offset] = std.ascii.toUpper(byte);
-            upper_buf[value.len] = 0;
-            R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkCharLenCE(upper_buf, @intCast(value.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+            const utf8_buf = R.R_alloc(value.len + 1, 1);
+            for (s, 0..) |byte, offset| utf8_buf[offset] = std.ascii.toUpper(byte);
+            utf8_buf[value.len] = 0;
+            R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkCharLenCE(utf8_buf, @intCast(value.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
         }
     }
 

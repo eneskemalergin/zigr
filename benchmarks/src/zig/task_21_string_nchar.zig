@@ -8,9 +8,8 @@ export fn zigr_bench_string_nchar(vec: SEXP) SEXP {
     var total: i64 = 0;
     for (0..strings.len) |i| {
         const value = strings.at(i);
-        if (!value.is_na) {
-            total += @as(i64, @intCast(value.bytes.len));
-        }
+        if (value.is_na) return R.Rf_ScalarInteger(R.R_NaInt);
+        total += @as(i64, @intCast(value.len));
     }
     return R.Rf_ScalarInteger(@intCast(total));
 }

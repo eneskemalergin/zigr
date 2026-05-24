@@ -335,7 +335,12 @@ pub const StringView = struct {
 
 fn makeStringView(elt: SEXP) StringView {
     const is_na = elt == R.R_NaString;
-    const bytes = if (is_na) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+    const bytes = if (is_na)
+        ""
+    else blk: {
+        const len = @as(usize, @intCast(R.XLENGTH(elt)));
+        break :blk R.R_CHAR(elt)[0..len];
+    };
     return .{
         .charsxp = elt,
         .bytes = bytes,
