@@ -10,6 +10,14 @@ const R = @import("R");
 /// Re-exported from the translated R headers.
 pub const SEXP = R.SEXP;
 
+/// Safe length of any SEXP. Returns the XLENGTH cast to usize, panicking
+/// on negative lengths (corrupted SEXP). Use instead of raw @intCast.
+pub fn xlength(sexp: SEXP) usize {
+    const len = R.XLENGTH(sexp);
+    if (len < 0) @panic("negative vector length from corrupted SEXP");
+    return @as(usize, @intCast(len));
+}
+
 /// Maps R's internal type tags from Rinternals.h. Numeric values must
 /// match what R returns from TYPEOF() and what Rf_allocVector expects.
 pub const SEXPTYPE = enum(c_int) {

@@ -16,16 +16,11 @@
 
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
+const xlength = @import("sexp.zig").xlength;
 const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
-
-fn xlength(sexp: SEXP) usize {
-    const len = R.XLENGTH(sexp);
-    if (len < 0) @panic("negative vector length from corrupted SEXP");
-    return @as(usize, @intCast(len));
-}
 
 pub const Rcomplex = extern struct { r: f64, i: f64 };
 const zigr_altreal_slice_tag_name = "zigr_altreal_slice_wrap";
