@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.8-0f766e?style=for-the-badge" alt="Version 0.0.8" />
+    <img src="https://img.shields.io/badge/version-0.0.9-0f766e?style=for-the-badge" alt="Version 0.0.9" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -43,7 +43,24 @@ cd zigr
 zig build test
 ```
 
-The test step requires R headers on the system. See `examples/template/` for the per-package setup.
+The test and rtest steps require R development headers on the system. The build resolves R paths in this order (CLI option, environment variable, default):
+
+| Path          | CLI option           | Environment variable | Fallback                            |
+| ------------- | -------------------- | -------------------- | ----------------------------------- |
+| R include dir | `-Dr-include=<path>` | `$R_INCLUDE`         | `$R_HOME/include`                   |
+| R library dir | `-Dr-lib=<path>`     | `$R_LIB`             | `$R_HOME/lib` then `/usr/lib/R/lib` |
+
+On Debian/Ubuntu, `R_HOME` is typically `/usr/lib/R` but the include directory may be at `/usr/share/R/include` instead of `$R_HOME/include`. Either set `R_INCLUDE` explicitly or use `-Dr-include=/usr/share/R/include`.
+
+```bash
+export R_HOME=/usr/lib/R
+export R_INCLUDE=/usr/share/R/include
+zig build check   # verify setup + formatting
+zig build test    # run standalone tests
+zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.R)
+```
+
+See `examples/template/` for the per-package setup.
 
 ## What you get
 

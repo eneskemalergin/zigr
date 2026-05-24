@@ -20,65 +20,38 @@ pub fn build(b: *std.Build) void {
         break :blk "/usr/lib/R/lib";
     };
 
-    // ── R C API via translate-c ──
     const r_headers = b.addTranslateC(.{
         .root_source_file = b.path("../src/r_imports.h"),
         .target = target,
         .optimize = optimize,
     });
     r_headers.addIncludePath(.{ .cwd_relative = r_include });
-    const c_mod = r_headers.addModule("R");
-
-    const raw_mod = b.createModule(.{
-        .root_source_file = b.path("../src/raw.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "R", .module = c_mod }},
-    });
-
-    const dataframe_mod = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = "../src/dataframe.zig" },
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "R", .module = c_mod }},
-    });
-
-    const cleanup_mod = b.addModule("cleanup", .{
-        .root_source_file = .{ .cwd_relative = "../src/cleanup.zig" },
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "R", .module = c_mod }},
-    });
+    const r_mod = r_headers.addModule("R");
 
     const simd_mod = b.addModule("simd", .{
-        .root_source_file = .{ .cwd_relative = "../src/simd.zig" },
-        .target = target,
-        .optimize = optimize,
+        .root_source_file = b.path("../src/simd.zig"),
     });
-
-    const convert_mod = b.createModule(.{
-        .root_source_file = b.path("../src/convert.zig"),
-        .target = target,
-        .optimize = optimize,
+    const err_mod = b.addModule("error", .{
+        .root_source_file = b.path("../src/error.zig"),
+        .imports = &.{.{ .name = "R", .module = r_mod }},
+    });
+    const cleanup_mod = b.addModule("cleanup", .{
+        .root_source_file = b.path("../src/cleanup.zig"),
         .imports = &.{
-            .{ .name = "R", .module = c_mod },
+            .{ .name = "R", .module = r_mod },
+            .{ .name = "error", .module = err_mod },
+        },
+    });
+    const zigr_mod = b.addModule("zigr", .{
+        .root_source_file = b.path("../src/root.zig"),
+        .imports = &.{
+            .{ .name = "R", .module = r_mod },
             .{ .name = "cleanup", .module = cleanup_mod },
+            .{ .name = "error", .module = err_mod },
             .{ .name = "simd", .module = simd_mod },
         },
     });
 
-    const altrep_create_mod = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = "../src/altrep_create.zig" },
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "R", .module = c_mod },
-            .{ .name = "cleanup", .module = cleanup_mod },
-            .{ .name = "simd", .module = simd_mod },
-        },
-    });
-
-    // ── Benchmark shared library ──────────────────────────────
     const bench_lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zigr_benchmarks",
@@ -87,22 +60,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "R", .module = c_mod },
-                .{ .name = "convert", .module = convert_mod },
-                .{ .name = "raw", .module = raw_mod },
-                .{ .name = "dataframe", .module = dataframe_mod },
-                .{ .name = "cleanup", .module = cleanup_mod },
+                .{ .name = "R", .module = r_mod },
+                .{ .name = "zigr", .module = zigr_mod },
                 .{ .name = "simd", .module = simd_mod },
-                .{ .name = "altrep_create", .module = altrep_create_mod },
             },
         }),
     });
     bench_lib.lto = .full;
-    bench_lib.root_module.addCSourceFile(.{
-        .file = b.path("src/zig/task_34_math_shim.c"),
-        .flags = &.{ "-fno-builtin", "-fno-lto" },
-    });
-
     bench_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     bench_lib.root_module.linkSystemLibrary("R", .{});
     bench_lib.root_module.linkSystemLibrary("blas", .{});
@@ -113,16 +77,15 @@ pub fn build(b: *std.Build) void {
 
     const task12_lib = b.addLibrary(.{
         .linkage = .dynamic,
-        .name = "zigr_benchmarks_task12",
+        .name = "zigr_benchmarks_task28",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/task_12_only_main.zig"),
+            .root_source_file = b.path("src/zig/task_28_only_main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "R", .module = c_mod }},
+            .imports = &.{.{ .name = "R", .module = r_mod }},
         }),
     });
     task12_lib.lto = .full;
-
     task12_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     task12_lib.root_module.linkSystemLibrary("R", .{});
     task12_lib.root_module.linkSystemLibrary("blas", .{});
