@@ -1,5 +1,6 @@
 const std = @import("std");
 const R = @import("R");
+const convert = @import("convert");
 
 const SEXP = R.SEXP;
 const result_names = [_][:0]const u8{ "concat", "nchar_sum", "prefix_match", "extract_substr", "to_upper" };
@@ -20,19 +21,23 @@ fn hasPrefixAbc(s: []const u8) bool {
 }
 
 export fn zigr_bench_string_variants(vec: SEXP) SEXP {
-    const n = @as(usize, @intCast(R.XLENGTH(vec)));
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const strings = convert.toCachedStringSliceView(arena.allocator(), vec) catch |err| convert.signalError(err);
+    const n = strings.len;
     var concat_len: usize = 0;
     var valid_count: usize = 0;
     var nchar_sum: i64 = 0;
     var prefix_match: i64 = 0;
 
     for (0..n) |index| {
-        const elt = R.STRING_ELT(vec, @intCast(index));
-        if (elt == R.R_NaString) continue;
-        const s = std.mem.sliceTo(R.R_CHAR(elt), 0);
-        concat_len += s.len;
+        const value = strings.at(index);
+        if (value.is_na) continue;
+        const s = value.bytes;
+        concat_len += value.len;
         valid_count += 1;
-        nchar_sum += @as(i64, @intCast(s.len));
+        nchar_sum += @as(i64, @intCast(value.len));
         if (hasPrefixAbc(s)) prefix_match += 1;
     }
     if (valid_count > 0) concat_len += valid_count - 1;
@@ -53,15 +58,15 @@ export fn zigr_bench_string_variants(vec: SEXP) SEXP {
         var pos: usize = 0;
         var added: usize = 0;
         for (0..n) |index| {
-            const elt = R.STRING_ELT(vec, @intCast(index));
-            if (elt == R.R_NaString) continue;
-            const s = std.mem.sliceTo(R.R_CHAR(elt), 0);
+            const value = strings.at(index);
+            if (value.is_na) continue;
+            const s = value.bytes;
             if (added > 0) {
                 buf[pos] = ',';
                 pos += 1;
             }
-            @memcpy(buf[pos..][0..s.len], s);
-            pos += s.len;
+            @memcpy(buf[pos..][0..value.len], s);
+            pos += value.len;
             added += 1;
         }
         buf[concat_len] = 0;
@@ -69,28 +74,28 @@ export fn zigr_bench_string_variants(vec: SEXP) SEXP {
     }
 
     for (0..n) |index| {
-        const elt = R.STRING_ELT(vec, @intCast(index));
-        if (elt == R.R_NaString) {
+        const value = strings.at(index);
+        if (value.is_na) {
             R.SET_STRING_ELT(extract, @intCast(index), R.R_NaString);
             R.SET_STRING_ELT(upper, @intCast(index), R.R_NaString);
             continue;
         }
 
-        const s = std.mem.sliceTo(R.R_CHAR(elt), 0);
-        const sub_len = @min(s.len, 3);
+        const s = value.bytes;
+        const sub_len = @min(value.len, 3);
         if (sub_len == 0) {
             R.SET_STRING_ELT(extract, @intCast(index), R.Rf_mkChar(""));
         } else {
             R.SET_STRING_ELT(extract, @intCast(index), R.Rf_mkCharLenCE(s.ptr, @intCast(sub_len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
         }
 
-        if (s.len == 0) {
+        if (value.len == 0) {
             R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkChar(""));
         } else {
-            const upper_buf = R.R_alloc(s.len + 1, 1);
+            const upper_buf = R.R_alloc(value.len + 1, 1);
             for (s, 0..) |byte, offset| upper_buf[offset] = std.ascii.toUpper(byte);
-            upper_buf[s.len] = 0;
-            R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkCharLenCE(upper_buf, @intCast(s.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+            upper_buf[value.len] = 0;
+            R.SET_STRING_ELT(upper, @intCast(index), R.Rf_mkCharLenCE(upper_buf, @intCast(value.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
         }
     }
 

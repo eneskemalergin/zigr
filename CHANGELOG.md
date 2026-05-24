@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] - 2026-05-24
+
+### Added
+
+### Fixed
+
+- `benchmarks/src/zig/task_10_blas_matmul.zig`: simplified result allocation.
+- `benchmarks/run_benchmarks.R`: runs benchmark subprocesses with `OPENBLAS_NUM_THREADS=1`.
+- `benchmarks/src/zig/task_12_cholesky.zig`: factors directly in the final R matrix instead of using a scratch buffer.
+- `benchmarks/build.zig`, `benchmarks/src/zig/task_12_only_main.zig`, `benchmarks/runner_subprocess.R`, and `benchmarks/runners/zigr.json`: route `12_cholesky` through an isolated zigr benchmark library.
+- `src/convert.zig`, `benchmarks/src/zig/task_04_strings.zig`, `benchmarks/src/zig/task_21_string_nchar.zig`, and `benchmarks/src/zig/task_35_string_variants.zig`: added reusable string-view helpers with cached element metadata and ported string-heavy benchmarks onto them.
+- `benchmarks/src/zig/task_27_struct_convert.zig`: replaced the generic reflective conversion path with a handwritten fixed-slot path and cached output names, removing most of the remaining struct-conversion overhead.
+
+### Performance
+
+- Focused checks put `27_struct_convert` and `35_string_variants` ahead of savvy.
+- Full rebuilt benchmark refresh brings `12_cholesky` back near Rust/C parity.
+
 ## [0.0.7] - 2026-05-23
 
 ### Added

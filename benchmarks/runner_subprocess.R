@@ -191,6 +191,14 @@ if (call_type != "r") {
   if (!file.exists(so_path)) stop(sprintf("library not found: %s", so_path))
   tryCatch(dyn.load(so_path),
            error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+
+     extra_so_paths <- cfg$extra_so_paths %||% list()
+     for (extra_so in extra_so_paths) {
+          extra_path <- file.path(root_dir, extra_so)
+          if (!file.exists(extra_path)) stop(sprintf("library not found: %s", extra_path))
+          tryCatch(dyn.load(extra_path),
+                               error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+     }
 } else {
   source(file.path(root_dir, "src/r/run_all.R"))
 }
@@ -203,6 +211,13 @@ for (task in all_tasks) {
   tid <- task$id
      task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
      cfun <- exports[[tid]]
+     if (call_type == ".Call" && !is.null(cfun)) {
+          package_overrides <- cfg$package_overrides %||% list()
+          package_name <- package_overrides[[tid]]
+          if (!is.null(package_name)) {
+               cfun <- getNativeSymbolInfo(cfun, PACKAGE = package_name)$address
+          }
+     }
      if (is.null(task_expr) && is.null(cfun)) {
     n_na <- n_na + 1
     cat(sprintf("  %-14s [N/A]\n", tid))
@@ -217,7 +232,7 @@ for (task in all_tasks) {
   args <- task$args()
 
   # Cold start
-     cs <- timed_call(cfun, args, call_type, expr = task_expr)
+  cs <- timed_call(cfun, args, call_type, expr = task_expr)
   log_cold_start(runner_name, tid, cs$wall_ms, dir = file.path(root_dir, "results"))
   if (!is.na(cs$error)) {
     n_fail <- n_fail + 1
@@ -232,7 +247,7 @@ for (task in all_tasks) {
   }
 
   # Microbenchmark measurement
-     bm <- benchmark_call(cfun, args, call_type, warmup = 10L, times = 100L, expr = task_expr)
+  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, times = 100L, expr = task_expr)
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, bm$error))

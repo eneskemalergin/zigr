@@ -7,21 +7,26 @@ const dpotrf_ = @extern(*const fn (uplo: [*c]const u8, n: [*c]const c_int, a: [*
 export fn zigr_bench_cholesky(a_sexp: SEXP) SEXP {
     const n = R.Rf_nrows(a_sexp);
     const nu = @as(usize, @intCast(n));
+    const len = nu * nu;
 
     const result = R.Rf_protect(R.Rf_allocMatrix(R.REALSXP, n, n));
-    defer R.Rf_unprotect(1);
     const rp = R.REAL(result);
-
-    @memcpy(rp[0 .. nu * nu], R.REAL(a_sexp)[0 .. nu * nu]);
+    const src = R.REAL(a_sexp);
+    @memcpy(rp[0..len], src[0..len]);
 
     var info: c_int = 0;
     const uplo: u8 = 'U';
     dpotrf_(ptr(&uplo), ptr(&n), rp, ptr(&n), @ptrCast(&info), 1);
 
-    for (0..nu) |col| {
-        for (col + 1..nu) |row| rp[col * nu + row] = 0.0;
+    var col: usize = 0;
+    while (col < nu) : (col += 1) {
+        var row: usize = col + 1;
+        while (row < nu) : (row += 1) {
+            rp[col * nu + row] = 0.0;
+        }
     }
 
+    R.Rf_unprotect(1);
     return result;
 }
 

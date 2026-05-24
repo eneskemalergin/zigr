@@ -3,7 +3,13 @@
   "label": "zigr (Zig)",
   "build_command": "zig build -Doptimize=ReleaseFast",
   "so_path": "zig-out/lib/libzigr_benchmarks.so",
+  "extra_so_paths": [
+    "zig-out/lib/libzigr_benchmarks_task12.so"
+  ],
   "call_type": ".Call",
+  "package_overrides": {
+    "12_cholesky": "libzigr_benchmarks_task12"
+  },
   "exports": {
     "01_fib": "zigr_bench_fib",
     "02_vectorsum": "zigr_bench_vectorsum",

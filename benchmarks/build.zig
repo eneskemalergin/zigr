@@ -104,4 +104,22 @@ pub fn build(b: *std.Build) void {
     bench_lib.root_module.linkSystemLibrary("blas", .{});
 
     b.installArtifact(bench_lib);
+
+    const task12_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "zigr_benchmarks_task12",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/zig/task_12_only_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "R", .module = c_mod }},
+        }),
+    });
+    task12_lib.lto = .full;
+
+    task12_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
+    task12_lib.root_module.linkSystemLibrary("R", .{});
+    task12_lib.root_module.linkSystemLibrary("blas", .{});
+
+    b.installArtifact(task12_lib);
 }

@@ -49,13 +49,24 @@ if (do_build) {
 }
 
 # Run each runner in a fresh subprocess
+blas_env <- c("OPENBLAS_NUM_THREADS=1")
+
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
   cat(sprintf("── Runner: %s (%s) ──\n", rn, cfg$label))
 
-  tf <- if (is.null(tasks_filter)) "" else sprintf("--tasks=%s", paste(tasks_filter, collapse = ","))
-  cmd <- sprintf("Rscript runner_subprocess.R --runner=%s %s", shQuote(rn), tf)
-  code <- system(cmd, ignore.stdout = FALSE, ignore.stderr = FALSE)
+  runner_args <- c("runner_subprocess.R", sprintf("--runner=%s", rn))
+  if (!is.null(tasks_filter)) {
+    runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+  }
+
+  code <- system2(
+    "Rscript",
+    args = runner_args,
+    env = blas_env,
+    stdout = "",
+    stderr = ""
+  )
   if (code != 0) {
     cat(sprintf("  [SUB] exited with code %d\n", code))
   }

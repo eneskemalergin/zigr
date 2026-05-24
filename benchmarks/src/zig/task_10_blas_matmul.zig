@@ -9,8 +9,12 @@ export fn zigr_bench_blas_matmul(a_sexp: SEXP, b_sexp: SEXP) SEXP {
     const m = R.Rf_ncols(b_sexp);
     const k = R.Rf_ncols(a_sexp);
 
-    const result = R.Rf_protect(R.Rf_allocMatrix(R.REALSXP, n, m));
-    defer R.Rf_unprotect(1);
+    const result = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n * m));
+    const dims = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    defer R.Rf_unprotect(2);
+    R.INTEGER(dims)[0] = n;
+    R.INTEGER(dims)[1] = m;
+    _ = R.Rf_setAttrib(result, R.R_DimSymbol, dims);
     const rp = @as([*]f64, @ptrCast(R.REAL(result)));
 
     const alpha: f64 = 1.0;

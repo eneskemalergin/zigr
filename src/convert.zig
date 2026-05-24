@@ -326,20 +326,38 @@ pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     return result;
 }
 
+pub const StringView = struct {
+    charsxp: SEXP,
+    bytes: []const u8,
+    len: usize,
+    is_na: bool,
+};
+
+fn makeStringView(elt: SEXP) StringView {
+    const is_na = elt == R.R_NaString;
+    const bytes = if (is_na) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+    return .{
+        .charsxp = elt,
+        .bytes = bytes,
+        .len = bytes.len,
+        .is_na = is_na,
+    };
+}
+
 pub const StringSliceView = struct {
     sexp: SEXP,
     len: usize,
 
-    pub fn at(self: StringSliceView, index: usize) []const u8 {
+    pub fn at(self: StringSliceView, index: usize) StringView {
         const elt = R.STRING_ELT(self.sexp, @intCast(index));
-        return if (elt == R.R_NaString) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+        return makeStringView(elt);
     }
 
     pub const Iterator = struct {
         view: StringSliceView,
         index: usize = 0,
 
-        pub fn next(self: *Iterator) ?[]const u8 {
+        pub fn next(self: *Iterator) ?StringView {
             if (self.index >= self.view.len) return null;
             const value = self.view.at(self.index);
             self.index += 1;
@@ -352,12 +370,51 @@ pub const StringSliceView = struct {
     }
 };
 
+pub const CachedStringSliceView = struct {
+    items: []const StringView,
+    len: usize,
+
+    pub fn at(self: CachedStringSliceView, index: usize) StringView {
+        return self.items[index];
+    }
+
+    pub const Iterator = struct {
+        view: CachedStringSliceView,
+        index: usize = 0,
+
+        pub fn next(self: *Iterator) ?StringView {
+            if (self.index >= self.view.len) return null;
+            const value = self.view.at(self.index);
+            self.index += 1;
+            return value;
+        }
+    };
+
+    pub fn iterator(self: CachedStringSliceView) Iterator {
+        return .{ .view = self };
+    }
+};
+
 /// STRSXP: borrow CHARSXP data without allocating slice headers.
 pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     return .{
         .sexp = sexp,
         .len = @as(usize, @intCast(R.XLENGTH(sexp))),
+    };
+}
+
+/// STRSXP: cache per-element string metadata once for repeated multi-pass use.
+pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
+    try expectType(sexp, R.STRSXP, error.ExpectedString);
+    const n = @as(usize, @intCast(R.XLENGTH(sexp)));
+    const items = try allocator.alloc(StringView, n);
+    for (0..n) |i| {
+        items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
+    }
+    return .{
+        .items = items,
+        .len = n,
     };
 }
 

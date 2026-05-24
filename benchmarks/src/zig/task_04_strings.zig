@@ -1,27 +1,28 @@
 const std = @import("std");
 const R = @import("R");
+const convert = @import("convert");
 
 const SEXP = R.SEXP;
 
 export fn zigr_bench_strings(vec: SEXP, sep_sexp: SEXP) SEXP {
-    const n = @as(usize, @intCast(R.XLENGTH(vec)));
-    const sep = std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(sep_sexp, 0)), 0);
+    const strings = convert.toStringSliceView(vec) catch |err| convert.signalError(err);
+    const sep_view = convert.toStringSliceView(sep_sexp) catch |err| convert.signalError(err);
+    const sep = sep_view.at(0).bytes;
 
     var total: usize = 0;
-    for (0..n) |i| {
-        const elt = R.STRING_ELT(vec, @intCast(i));
-        if (elt != R.R_NaString) total += std.mem.len(R.R_CHAR(elt));
+    for (0..strings.len) |i| {
+        const value = strings.at(i);
+        if (!value.is_na) total += value.bytes.len;
         total += sep.len;
     }
 
     const buf = R.R_alloc(total, 1);
     var pos: usize = 0;
-    for (0..n) |i| {
-        const elt = R.STRING_ELT(vec, @intCast(i));
-        if (elt != R.R_NaString) {
-            const s = std.mem.sliceTo(R.R_CHAR(elt), 0);
-            @memcpy(buf[pos..][0..s.len], s);
-            pos += s.len;
+    for (0..strings.len) |i| {
+        const value = strings.at(i);
+        if (!value.is_na) {
+            @memcpy(buf[pos..][0..value.bytes.len], value.bytes);
+            pos += value.bytes.len;
         }
         @memcpy(buf[pos..][0..sep.len], sep);
         pos += sep.len;
