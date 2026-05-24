@@ -128,6 +128,12 @@ pub fn build(b: *std.Build) void {
                             .{ .name = "cleanup", .module = cleanup_mod },
                         },
                     }) },
+                    .{ .name = "raw", .module = b.createModule(.{
+                        .root_source_file = .{ .cwd_relative = "src/raw.zig" },
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{.{ .name = "R", .module = r_mod }},
+                    }) },
                     .{ .name = "dataframe", .module = b.createModule(.{
                         .root_source_file = .{ .cwd_relative = "src/dataframe.zig" },
                         .target = target,

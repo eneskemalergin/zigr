@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const raw_mod = @import("raw");
 
 // Use the R module's SEXP type for function parameters and returns.
 const SEXP = R.SEXP;
@@ -673,14 +674,246 @@ export fn zigr_test_df_col_missing() SEXP {
 }
 
 /// Test: toRealSlice with non-REALSXP (INTSXP), R throws an error.
-/// This confirms that R enforces type safety on REAL() access.
+/// This confirms zigr rejects the wrong type before touching REAL().
 export fn zigr_test_real_wrong_type() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
     defer R.Rf_unprotect(1);
-    // R's REAL() errors on INTSXP. This test confirms the error propagates.
-    // If this segfaults instead of erroring, the test catches it via tryCatch.
-    _ = zigr_convert.toRealSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch {};
-    return R.Rf_ScalarReal(0.0); // should never reach, error above
+    _ = zigr_convert.toRealSlice(std.heap.page_allocator, @as(SEXP, @ptrCast(vec))) catch |convert_err| {
+        return R.Rf_ScalarReal(if (convert_err == error.ExpectedReal) 1.0 else 0.0);
+    };
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test raw.logical reads LGLSXP through LOGICAL(), not INTEGER().
+export fn zigr_test_raw_logical() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 4));
+    defer R.Rf_unprotect(1);
+    const ptr = R.LOGICAL(vec);
+    ptr[0] = 1;
+    ptr[1] = 0;
+    ptr[2] = R.R_NaInt;
+    ptr[3] = 1;
+
+    const slice = raw_mod.logical(vec);
+    const ok = slice.len == 4 and slice[0] == 1 and slice[1] == 0 and slice[2] == R.R_NaInt and slice[3] == 1;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Trigger fromSEXP on a missing required field. R should see an error.
+export fn zigr_test_from_sexp_missing_required() SEXP {
+    const Test = struct { x: f64, y: f64 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    R.REAL(xv)[0] = 99.0;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    _ = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Trigger fromSEXP on a malformed named list. R should see an error.
+export fn zigr_test_from_sexp_invalid_names() SEXP {
+    const Test = struct { x: f64 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    R.REAL(xv)[0] = 1.0;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.R_NaString);
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    _ = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Trigger fromSEXP on a list without names. R should see an error.
+export fn zigr_test_from_sexp_missing_names() SEXP {
+    const Test = struct { x: f64 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    R.REAL(xv)[0] = 1.0;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.Rf_unprotect(2);
+
+    _ = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Trigger fromSEXP on a list with mismatched names length. R should see an error.
+export fn zigr_test_from_sexp_name_length_mismatch() SEXP {
+    const Test = struct { x: f64 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 2));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    R.REAL(xv)[0] = 1.0;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
+    R.SET_STRING_ELT(names, 1, R.Rf_mkChar("extra"));
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    _ = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test toListSlice rejects non-list input.
+export fn zigr_test_list_wrong_type() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    defer R.Rf_unprotect(1);
+    _ = zigr_convert.toListSlice(std.heap.page_allocator, vec) catch |convert_err| {
+        return R.Rf_ScalarReal(if (convert_err == error.ExpectedList) 1.0 else 0.0);
+    };
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test scalar REAL conversion rejects NA.
+export fn zigr_test_real_scalar_na() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    defer R.Rf_unprotect(1);
+    R.REAL(vec)[0] = R.NA_REAL();
+    _ = zigr_convert.toRealScalar(vec) catch |convert_err| {
+        return R.Rf_ScalarReal(if (convert_err == error.ScalarNA) 1.0 else 0.0);
+    };
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test scalar INT conversion rejects NA.
+export fn zigr_test_int_scalar_na() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    defer R.Rf_unprotect(1);
+    R.INTEGER(vec)[0] = R.R_NaInt;
+    _ = zigr_convert.toIntScalar(vec) catch |convert_err| {
+        return R.Rf_ScalarReal(if (convert_err == error.ScalarNA) 1.0 else 0.0);
+    };
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test scalar LOGICAL conversion rejects NA.
+export fn zigr_test_bool_scalar_na() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 1));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(vec)[0] = R.R_NaInt;
+    _ = zigr_convert.toBoolScalar(vec) catch |convert_err| {
+        return R.Rf_ScalarReal(if (convert_err == error.ScalarNA) 1.0 else 0.0);
+    };
+    return R.Rf_ScalarReal(0.0);
+}
+
+/// Test optional REAL field maps NA to null.
+export fn zigr_test_optional_real_na_to_null() SEXP {
+    const Test = struct { x: ?f64 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    R.REAL(xv)[0] = R.NA_REAL();
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    const result = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
+}
+
+/// Test optional INT field maps NA to null.
+export fn zigr_test_optional_int_na_to_null() SEXP {
+    const Test = struct { x: ?i32 };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    R.INTEGER(xv)[0] = R.R_NaInt;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    const result = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
+}
+
+/// Test optional LOGICAL field maps NA to null.
+export fn zigr_test_optional_bool_na_to_null() SEXP {
+    const Test = struct { x: ?bool };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    const xv = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 1));
+    R.LOGICAL(xv)[0] = R.R_NaInt;
+    _ = R.SET_VECTOR_ELT(vec, 0, xv);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("x"));
+    _ = R.Rf_namesgets(vec, names);
+    R.Rf_unprotect(3);
+
+    const result = zigr_convert.fromSEXP(Test, vec, arena.allocator());
+    return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
+}
+
+/// Test pmin recycling semantics on mismatched lengths.
+export fn zigr_test_pmin_recycling() SEXP {
+    const a = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 4));
+    const b = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    defer R.Rf_unprotect(2);
+
+    const ap = R.REAL(a);
+    ap[0] = 5.0;
+    ap[1] = 1.0;
+    ap[2] = 7.0;
+    ap[3] = -1.0;
+
+    const bp = R.REAL(b);
+    bp[0] = 3.0;
+    bp[1] = 2.0;
+
+    const result = zigr_convert.pmin(a, b);
+    if (R.XLENGTH(result) != 4) return R.Rf_ScalarReal(0.0);
+    const rp = R.REAL(result);
+    const ok = rp[0] == 3.0 and rp[1] == 1.0 and rp[2] == 3.0 and rp[3] == -1.0;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+/// Test pmax recycling semantics on mismatched lengths.
+export fn zigr_test_pmax_recycling() SEXP {
+    const a = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    const b = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    defer R.Rf_unprotect(2);
+
+    const ap = R.REAL(a);
+    ap[0] = -4.0;
+    ap[1] = 2.0;
+    ap[2] = 9.0;
+
+    R.REAL(b)[0] = 3.0;
+
+    const result = zigr_convert.pmax(a, b);
+    if (R.XLENGTH(result) != 3) return R.Rf_ScalarReal(0.0);
+    const rp = R.REAL(result);
+    const ok = rp[0] == 3.0 and rp[1] == 3.0 and rp[2] == 9.0;
+    return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
 // ── Phase 4 embed tests ─────────────────────────────

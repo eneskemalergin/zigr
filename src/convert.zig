@@ -28,9 +28,115 @@ const Unprot = struct {
     }
 };
 
+pub const ConvertError = error{
+    ExpectedReal,
+    ExpectedInteger,
+    ExpectedLogical,
+    ExpectedString,
+    ExpectedList,
+    ExpectedNamedList,
+    ExpectedRaw,
+    ExpectedComplex,
+    ZeroLength,
+    ScalarNA,
+    MissingField,
+};
+
+fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertError!void {
+    if (@as(c_uint, @intCast(R.TYPEOF(sexp))) != expected) return err;
+}
+
+fn expectNonEmpty(sexp: SEXP) ConvertError!void {
+    if (R.XLENGTH(sexp) == 0) return error.ZeroLength;
+}
+
+pub fn errorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ExpectedReal => "expected REALSXP",
+        error.ExpectedInteger => "expected INTSXP",
+        error.ExpectedLogical => "expected LGLSXP",
+        error.ExpectedString => "expected STRSXP",
+        error.ExpectedList => "expected VECSXP",
+        error.ExpectedNamedList => "expected named VECSXP",
+        error.ExpectedRaw => "expected RAWSXP",
+        error.ExpectedComplex => "expected CPLXSXP",
+        error.ZeroLength => "expected non-empty vector",
+        error.ScalarNA => "scalar inputs must not be NA",
+        error.MissingField => "missing required field in R list",
+        error.OutOfMemory => "out of memory during SEXP conversion",
+        else => @errorName(err),
+    };
+}
+
+fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
+    try expectType(sexp, R.VECSXP, error.ExpectedNamedList);
+    const ns = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
+    if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP) return error.ExpectedNamedList;
+    if (R.XLENGTH(ns) != R.XLENGTH(sexp)) return error.ExpectedNamedList;
+    for (0..@as(usize, @intCast(R.XLENGTH(ns)))) |i| {
+        if (R.STRING_ELT(ns, @intCast(i)) == R.R_NaString) return error.ExpectedNamedList;
+    }
+    return ns;
+}
+
+pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
+    if (sexp == R.R_NilValue) return true;
+    if (comptime T == f64) {
+        return R.TYPEOF(sexp) == R.REALSXP and R.XLENGTH(sexp) > 0 and R.ISNA(R.REAL(sexp)[0]) != 0;
+    }
+    if (comptime T == i32) {
+        return R.TYPEOF(sexp) == R.INTSXP and R.XLENGTH(sexp) > 0 and R.INTEGER(sexp)[0] == R.R_NaInt;
+    }
+    if (comptime T == bool) {
+        return R.TYPEOF(sexp) == R.LGLSXP and R.XLENGTH(sexp) > 0 and R.LOGICAL(sexp)[0] == R.R_NaInt;
+    }
+    return false;
+}
+
+pub fn signalError(err: anyerror) noreturn {
+    const msg = errorMessage(err);
+    var buf: [256:0]u8 = undefined;
+    const n = @min(msg.len, buf.len - 1);
+    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
+    buf[n] = 0;
+    R.Rf_error(&buf);
+}
+
+pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
+    try expectType(sexp, R.REALSXP, error.ExpectedReal);
+    try expectNonEmpty(sexp);
+    const value = R.REAL(sexp)[0];
+    if (R.ISNA(value) != 0) return error.ScalarNA;
+    return value;
+}
+
+pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
+    try expectType(sexp, R.INTSXP, error.ExpectedInteger);
+    try expectNonEmpty(sexp);
+    const value = R.INTEGER(sexp)[0];
+    if (value == R.R_NaInt) return error.ScalarNA;
+    return value;
+}
+
+pub fn toBoolScalar(sexp: SEXP) ConvertError!bool {
+    try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
+    try expectNonEmpty(sexp);
+    const value = R.LOGICAL(sexp)[0];
+    if (value == R.R_NaInt) return error.ScalarNA;
+    return value != 0;
+}
+
+fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const f64 {
+    try expectType(sexp, R.REALSXP, error.ExpectedReal);
+    if (R.ALTREP(sexp) != 0) return try toRealSlice(allocator, sexp);
+    const n = @as(usize, @intCast(R.XLENGTH(sexp)));
+    return R.REAL(sexp)[0..n];
+}
+
 /// REALSXP: allocate and copy. Uses REAL_GET_REGION for ALTREP (one C call),
 /// @memcpy from REAL() for non-ALTREP (zero C FFI, matches C baseline).
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
+    try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(f64, n);
     if (R.ALTREP(sexp) != 0) {
@@ -53,6 +159,7 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
 /// INTSXP: allocate and copy. Uses INTEGER_GET_REGION for ALTREP,
 /// @memcpy from INTEGER() for non-ALTREP.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
+    try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(i32, n);
     if (R.ALTREP(sexp) != 0) {
@@ -74,6 +181,7 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 
 /// STRSXP: borrow CHARSXP data into a Zig slice array.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
+    try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
@@ -101,6 +209,7 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 /// LGLSXP: allocate and copy. Uses LOGICAL_GET_REGION for ALTREP,
 /// @memcpy from LOGICAL() for non-ALTREP.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
+    try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(i32, n);
     if (R.ALTREP(sexp) != 0) {
@@ -122,6 +231,7 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
 
 /// VECSXP: borrow list elements into a SEXP slice.
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
+    try expectType(sexp, R.VECSXP, error.ExpectedList);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(SEXP, n);
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
@@ -142,6 +252,7 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
 /// RAWSXP: allocate and copy. Uses RAW_GET_REGION for ALTREP,
 /// @memcpy from RAW() for non-ALTREP.
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
+    try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(u8, n);
     if (R.ALTREP(sexp) != 0) {
@@ -164,6 +275,7 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
 /// CPLXSXP: allocate and copy. Uses COMPLEX_GET_REGION for ALTREP,
 /// @memcpy from COMPLEX() for non-ALTREP.
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
+    try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const n = @as(usize, @intCast(R.XLENGTH(sexp)));
     const result = try allocator.alloc(Rcomplex, n);
     if (R.ALTREP(sexp) != 0) {
@@ -205,22 +317,23 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     @compileError("unsupported type in struct conversion: " ++ @typeName(T));
 }
 
-fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
+fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     if (comptime @typeInfo(T) == .optional) {
-        if (sexp == R.R_NilValue) return null;
-        return sexpToZig(@typeInfo(T).optional.child, sexp, arena);
+        const child = @typeInfo(T).optional.child;
+        if (optionalInputIsNullish(child, sexp)) return null;
+        return try sexpToZig(child, sexp, arena);
     }
-    if (comptime T == f64) return R.REAL(sexp)[0];
-    if (comptime T == i32) return R.INTEGER(sexp)[0];
-    if (comptime T == bool) return R.LOGICAL(sexp)[0] != 0;
-    if (comptime T == []const f64) return toRealSlice(arena, sexp) catch |err| @panic(@errorName(err));
-    if (comptime T == []const i32) return toIntSlice(arena, sexp) catch |err| @panic(@errorName(err));
-    if (comptime T == []const []const u8) return toStringSlice(arena, sexp) catch |err| @panic(@errorName(err));
-    if (comptime T == []const u8) return toRawSlice(arena, sexp) catch |err| @panic(@errorName(err));
-    if (comptime T == []const Rcomplex) return toComplexSlice(arena, sexp) catch |err| @panic(@errorName(err));
+    if (comptime T == f64) return try toRealScalar(sexp);
+    if (comptime T == i32) return try toIntScalar(sexp);
+    if (comptime T == bool) return try toBoolScalar(sexp);
+    if (comptime T == []const f64) return try toRealSlice(arena, sexp);
+    if (comptime T == []const i32) return try toIntSlice(arena, sexp);
+    if (comptime T == []const []const u8) return try toStringSlice(arena, sexp);
+    if (comptime T == []const u8) return try toRawSlice(arena, sexp);
+    if (comptime T == []const Rcomplex) return try toComplexSlice(arena, sexp);
     if (comptime T == SEXP) return sexp;
     if (comptime @typeInfo(T) == .@"struct") {
-        return structFromSexp(T, sexp, arena);
+        return try structFromSexp(T, sexp, arena);
     }
     @compileError("unsupported type in struct conversion: " ++ @typeName(T));
 }
@@ -244,9 +357,9 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     return vec;
 }
 
-fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
+fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     const fields = @typeInfo(T).@"struct".fields;
-    const ns = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
+    const ns = try expectNamedList(sexp);
     var result: T = undefined;
 
     inline for (fields) |field| {
@@ -257,14 +370,13 @@ fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
             const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
             if (std.mem.eql(u8, cn, field.name)) {
                 const elem = R.VECTOR_ELT(sexp, @intCast(i));
-                @field(result, field.name) = sexpToZig(field.type, elem, arena);
+                @field(result, field.name) = try sexpToZig(field.type, elem, arena);
                 found = true;
                 break;
             }
         }
         if (!found) {
-            if (comptime @typeInfo(field.type) != .optional)
-                @panic("missing field in R list: " ++ field.name);
+            if (comptime @typeInfo(field.type) != .optional) return error.MissingField;
             @field(result, field.name) = @as(field.type, null);
         }
     }
@@ -432,10 +544,16 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
         var result = vec_val[0];
         var result_idx = vec_idx[0];
         for (1..lanes) |j| {
-            if (vec_val[j] < result) { result = vec_val[j]; result_idx = vec_idx[j]; }
+            if (vec_val[j] < result) {
+                result = vec_val[j];
+                result_idx = vec_idx[j];
+            }
         }
         while (base < n) : (base += 1) {
-            if (data[base] < result) { result = data[base]; result_idx = base; }
+            if (data[base] < result) {
+                result = data[base];
+                result_idx = base;
+            }
         }
         return @intCast(result_idx);
     } else {
@@ -460,10 +578,16 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
         var result = vec_val[0];
         var result_idx = vec_idx[0];
         for (1..lanes) |j| {
-            if (vec_val[j] > result) { result = vec_val[j]; result_idx = vec_idx[j]; }
+            if (vec_val[j] > result) {
+                result = vec_val[j];
+                result_idx = vec_idx[j];
+            }
         }
         while (base < n) : (base += 1) {
-            if (data[base] > result) { result = data[base]; result_idx = base; }
+            if (data[base] > result) {
+                result = data[base];
+                result_idx = base;
+            }
         }
         return @intCast(result_idx);
     }
@@ -491,7 +615,8 @@ pub fn sum_narm(sexp: SEXP) f64 {
         break :blk @as([*]f64, @ptrCast(@alignCast(buf)))[0..n];
     } else R.REAL(sexp)[0..n];
 
-    const na: @Vector(lanes, f64) = @splat(R.R_NaReal);
+    const na_bits: @Vector(lanes, u64) = @splat(@as(u64, @bitCast(R.R_NaReal)));
+    const zero: @Vector(lanes, f64) = @splat(0.0);
     var total: f64 = 0.0;
     var i: usize = 0;
     if (n >= lanes) {
@@ -499,13 +624,13 @@ pub fn sum_narm(sexp: SEXP) f64 {
         const end = n - (n % lanes);
         while (i < end) : (i += lanes) {
             const v: @Vector(lanes, f64) = data[i..][0..lanes].*;
-            const ok: @Vector(lanes, f64) = @select(f64, v != na, @as(@Vector(lanes, f64), @splat(1.0)), @as(@Vector(lanes, f64), @splat(0.0)));
-            vec_total += v * ok;
+            const ok = @as(@Vector(lanes, u64), @bitCast(v)) != na_bits;
+            vec_total += @select(f64, ok, v, zero);
         }
         total += @reduce(.Add, vec_total);
     }
     while (i < n) : (i += 1) {
-        if (R.ISNA(data[i])) continue;
+        if (R.ISNA(data[i]) != 0) continue;
         total += data[i];
     }
 
@@ -525,7 +650,9 @@ pub fn mean_narm(sexp: SEXP) f64 {
         break :blk @as([*]f64, @ptrCast(@alignCast(buf)))[0..n];
     } else R.REAL(sexp)[0..n];
 
-    const na: @Vector(lanes, f64) = @splat(R.R_NaReal);
+    const na_bits: @Vector(lanes, u64) = @splat(@as(u64, @bitCast(R.R_NaReal)));
+    const zero: @Vector(lanes, f64) = @splat(0.0);
+    const one: @Vector(lanes, f64) = @splat(1.0);
     var total: f64 = 0.0;
     var count: i64 = 0;
     var i: usize = 0;
@@ -535,15 +662,15 @@ pub fn mean_narm(sexp: SEXP) f64 {
         const end = n - (n % lanes);
         while (i < end) : (i += lanes) {
             const v: @Vector(lanes, f64) = data[i..][0..lanes].*;
-            const ok: @Vector(lanes, f64) = @select(f64, v != na, @as(@Vector(lanes, f64), @splat(1.0)), @as(@Vector(lanes, f64), @splat(0.0)));
-            vec_total += v * ok;
-            vec_cnt += ok;
+            const ok = @as(@Vector(lanes, u64), @bitCast(v)) != na_bits;
+            vec_total += @select(f64, ok, v, zero);
+            vec_cnt += @select(f64, ok, one, zero);
         }
         total += @reduce(.Add, vec_total);
         count += @as(i64, @intFromFloat(@reduce(.Add, vec_cnt)));
     }
     while (i < n) : (i += 1) {
-        if (R.ISNA(data[i])) continue;
+        if (R.ISNA(data[i]) != 0) continue;
         total += data[i];
         count += 1;
     }
@@ -554,50 +681,40 @@ pub fn mean_narm(sexp: SEXP) f64 {
 
 /// Element-wise minimum of two REALSXPs. Returns a new REALSXP.
 pub fn pmin(a: SEXP, b: SEXP) SEXP {
-    const n = @as(usize, @intCast(R.XLENGTH(a)));
-    const da = R.REAL(a);
-    const db = R.REAL(b);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const da = toRealSliceView(arena.allocator(), a) catch |err| signalError(err);
+    const db = toRealSliceView(arena.allocator(), b) catch |err| signalError(err);
+    const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     const result = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @intCast(n)));
     defer R.Rf_unprotect(1);
     const rp = R.REAL(result);
 
-    const lanes = simd.f64_lanes;
-    var i: usize = 0;
-    if (n >= lanes) {
-        const end = n - (n % lanes);
-        while (i < end) : (i += lanes) {
-            const va: @Vector(lanes, f64) = da[i..][0..lanes].*;
-            const vb: @Vector(lanes, f64) = db[i..][0..lanes].*;
-            @as(*@Vector(lanes, f64), @ptrCast(&rp[i])).* = @select(f64, va < vb, va, vb);
-        }
+    for (0..n) |i| {
+        rp[i] = @min(da[i % da.len], db[i % db.len]);
     }
-    while (i < n) : (i += 1) rp[i] = @min(da[i], db[i]);
 
     return result;
 }
 
 /// Element-wise maximum of two REALSXPs. Returns a new REALSXP.
 pub fn pmax(a: SEXP, b: SEXP) SEXP {
-    const n = @as(usize, @intCast(R.XLENGTH(a)));
-    const da = R.REAL(a);
-    const db = R.REAL(b);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const da = toRealSliceView(arena.allocator(), a) catch |err| signalError(err);
+    const db = toRealSliceView(arena.allocator(), b) catch |err| signalError(err);
+    const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     const result = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @intCast(n)));
     defer R.Rf_unprotect(1);
     const rp = R.REAL(result);
 
-    const lanes = simd.f64_lanes;
-    var i: usize = 0;
-    if (n >= lanes) {
-        const end = n - (n % lanes);
-        while (i < end) : (i += lanes) {
-            const va: @Vector(lanes, f64) = da[i..][0..lanes].*;
-            const vb: @Vector(lanes, f64) = db[i..][0..lanes].*;
-            @as(*@Vector(lanes, f64), @ptrCast(&rp[i])).* = @select(f64, va > vb, va, vb);
-        }
+    for (0..n) |i| {
+        rp[i] = @max(da[i % da.len], db[i % db.len]);
     }
-    while (i < n) : (i += 1) rp[i] = @max(da[i], db[i]);
 
     return result;
 }
@@ -643,7 +760,7 @@ pub fn asSEXP(st: anytype) SEXP {
 /// Convert an R named list to a Zig struct. Field names are matched
 /// against list names. `arena` is used for any slice allocations in the
 /// struct fields. Missing optional fields default to null; missing
-/// non-optional fields panic.
+/// non-optional fields signal an R error.
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
-    return structFromSexp(T, sexp, arena);
+    return structFromSexp(T, sexp, arena) catch |err| signalError(err);
 }

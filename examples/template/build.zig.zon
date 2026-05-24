@@ -1,11 +1,11 @@
 .{
     .name = .mypackage,
     .version = "0.1.0",
-    .fingerprint = 0,
+    .fingerprint = 0xbb3e400dd9f4b475,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zigr = .{
-            .path = "zigr-0.0.5",
+            .path = "../..",
         },
     },
     .paths = .{

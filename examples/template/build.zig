@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .windows => ".dll",
         else => ".so",
     };
-    const install = b.addInstallFileWithDir(lib.getEmittedBin(), .{ .custom = "src" }, pkg_name ++ so_suffix);
+    const install_name = b.fmt("{s}{s}", .{ pkg_name, so_suffix });
+    const install = b.addInstallFileWithDir(lib.getEmittedBin(), .{ .custom = "src" }, install_name);
     b.getInstallStep().dependOn(&install.step);
 }

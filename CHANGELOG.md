@@ -13,11 +13,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - ALTREP benchmarks: altrep_sum (3000x vs C), altrep_read (O(1) via method table).
 - Matrix transpose benchmark (replaced naive matmul).
 - `analysis/compare.R`: Cross-runner comparison table with CSV output.
+- R runtime boundary tests for wrong-type inputs, malformed named lists, scalar `NA`, and optional scalar `NA` to `null`.
 
 ### Fixed
 
 - `src/lang.zig`: Symbol cache O(n) scan to O(1) open addressing.
 - `src/export.zig`: Two-tier arena (8KB stack, heap spill).
+- `src/raw.zig`: `logical()` now reads `LOGICAL()` instead of `INTEGER()`.
+- `src/convert.zig` and `src/export.zig`: Public conversions now type-check scalars and slices before dereference.
+- `src/convert.zig`: `fromSEXP` now rejects malformed named lists and signals R errors instead of panicking.
+- `src/convert.zig`: Scalar `NA` is rejected for required scalars and mapped to `null` for `?f64`, `?i32`, and `?bool`.
+- `src/convert.zig`: `pmin` and `pmax` now recycle shorter inputs correctly.
+- `src/export.zig`: Zig 0.16 export generator fixes for pointer-size enums, comptime loops, and `R_useDynamicSymbols`.
 - `src/protect.zig`: Depth tracking is comptime-gated (zero cost in ReleaseFast). Added `unprotectN`.
 - Removed `Rf_allocSExp` and `Rf_applyClosure` from lang.zig and eval.zig (crash on R 4.6).
 - Added `R_useDynamicSymbols` to export generator (CRAN requirement).
@@ -32,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Benchmark harness uses microbenchmark (nanosecond precision, no PARTIAL status).
 - JSON stub benchmark removed (never worked, no std.Io context).
 - Rcpp NA check uses `std::isnan` to match C (was using slower `ISNA`).
+- `examples/template`: Fixed Zig 0.16 package fingerprint, local dependency path, and install-file name formatting.
 
 ### Performance
 

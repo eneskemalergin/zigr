@@ -16,7 +16,7 @@ pub fn int(sexp: R.SEXP) []const i32 {
 
 /// Read-only slice of a LGLSXP. No copy.
 pub fn logical(sexp: R.SEXP) []const i32 {
-    return R.INTEGER(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
+    return R.LOGICAL(sexp)[0..@as(usize, @intCast(R.XLENGTH(sexp)))];
 }
 
 /// Mutable slice of a REALSXP. No copy.

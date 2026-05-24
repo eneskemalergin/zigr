@@ -9,10 +9,11 @@
 //! Supported types: []const f64, []const i32, []const []const u8,
 //! []const u8 (RAWSXP), []const Rcomplex, f64, i32, bool, ?f64, ?i32, ?bool,
 //! void, R.SEXP.
-//! Scalar f64/i32/bool receive raw values including NA sentinels (NaN/INT_MIN).
-//! The function body should call R.ISNA(v) or R.INTEGER_ELT checks if NA is
-//! possible. []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar
-//! strings, extract via R.STRING_ELT inside the function body.
+//! Scalar f64/i32/bool require a non-empty, non-NA length-1 vector.
+//! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as null.
+//! Use R.SEXP or a vector parameter when NA values need custom handling.
+//! []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar strings,
+//! extract via R.STRING_ELT inside the function body.
 
 const std = @import("std");
 const R = @import("R");
@@ -37,8 +38,8 @@ fn signalError(msg: []const u8) noreturn {
 
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime @typeInfo(T) == .optional) {
-        if (sexp == R.R_NilValue) return null;
         const child = @typeInfo(T).Optional.child;
+        if (convert.optionalInputIsNullish(child, sexp)) return null;
         return @as(T, fromSexp(child, sexp, arena));
     }
     if (comptime T == []const f64) {
@@ -51,16 +52,13 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return convert.toStringSlice(arena, sexp) catch |err| signalErrorMsg("toStringSlice", @errorName(err));
     }
     if (comptime T == f64) {
-        if (R.XLENGTH(sexp) == 0) signalError("zero-length vector passed to f64");
-        return R.REAL(sexp)[0];
+        return convert.toRealScalar(sexp) catch |err| convert.signalError(err);
     }
     if (comptime T == i32) {
-        if (R.XLENGTH(sexp) == 0) signalError("zero-length vector passed to i32");
-        return R.INTEGER(sexp)[0];
+        return convert.toIntScalar(sexp) catch |err| convert.signalError(err);
     }
     if (comptime T == bool) {
-        if (R.XLENGTH(sexp) == 0) signalError("zero-length vector passed to bool");
-        return R.LOGICAL(sexp)[0] != 0;
+        return convert.toBoolScalar(sexp) catch |err| convert.signalError(err);
     }
     if (comptime T == []const u8) {
         return convert.toRawSlice(arena, sexp) catch |err| signalErrorMsg("toRawSlice", @errorName(err));
@@ -169,7 +167,7 @@ const FreeArena = struct {
 fn needsArena(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .optional => |info| needsArena(info.child),
-        .pointer => |info| info.size == .Slice,
+        .pointer => |info| info.size == .slice,
         .@"struct" => true,
         else => false,
     };
@@ -180,10 +178,11 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
-    comptime var arena_needed = needsArena(ret_type);
-    inline for (func_info.params) |p| {
-        if (needsArena(p.type.?)) arena_needed = true;
-    }
+    const arena_needed = comptime blk: {
+        var needed = needsArena(ret_type);
+        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        break :blk needed;
+    };
 
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
@@ -271,10 +270,11 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
-    comptime var arena_needed = needsArena(ret_type);
-    inline for (func_info.params) |p| {
-        if (needsArena(p.type.?)) arena_needed = true;
-    }
+    const arena_needed = comptime blk: {
+        var needed = needsArena(ret_type);
+        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        break :blk needed;
+    };
 
     const W = struct {
         fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
@@ -381,10 +381,11 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
-    comptime var arena_needed = needsArena(ret_type);
-    inline for (func_info.params) |p| {
-        if (needsArena(p.type.?)) arena_needed = true;
-    }
+    const arena_needed = comptime blk: {
+        var needed = needsArena(ret_type);
+        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        break :blk needed;
+    };
 
     const W = struct {
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
@@ -470,7 +471,7 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
                 null,
                 if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
-            R.R_useDynamicSymbols(info, 0);
+            _ = R.R_useDynamicSymbols(info, 0);
         }
 
         /// Call this from your R_unload_<pkg> entry point.
@@ -519,7 +520,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
                 null,
                 if (ext_count > 0) @as([*c]const R.R_ExternalMethodDef, @ptrCast(&ext_defs[0])) else null,
             );
-            R.R_useDynamicSymbols(info, 0);
+            _ = R.R_useDynamicSymbols(info, 0);
         }
 
         pub fn unload(_: *R.DllInfo) void {}
