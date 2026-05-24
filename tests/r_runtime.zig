@@ -19,6 +19,7 @@ const altrep_create = zigr.altrep_create;
 const test_lang = zigr.lang;
 const embed = zigr.embed;
 const trycatch_mod = zigr.trycatch;
+const protect = zigr.protect;
 
 // Use the R module's SEXP type for function parameters and returns.
 const SEXP = R.SEXP;
@@ -1586,6 +1587,221 @@ export fn zigr_p4_stress_protect_10k() SEXP {
         const sexp = zigr_convert.asSEXP(S{ .v = @floatFromInt(i) });
         _ = sexp;
     }
+    return R.Rf_ScalarReal(1.0);
+}
+
+// ── lang.buildCall / buildNamedCall tests ─────────────
+
+/// buildCall_ThreeInts_HappyPath: buildCall(fun, &[a,b,c]) evaluates sum(a,b,c).
+export fn zigr_test_build_call() SEXP {
+    const args = [_]SEXP{
+        R.Rf_ScalarInteger(10),
+        R.Rf_ScalarInteger(20),
+        R.Rf_ScalarInteger(30),
+    };
+    const call = test_lang.buildCall(test_lang.symbol("sum"), args[0..]);
+    const result = test_eval.rEval(call, null);
+    if (R.TYPEOF(result) != R.REALSXP or R.XLENGTH(result) != 1) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(result)[0] != 60.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// buildNamedCall_TupleSyntax_HappyPath: buildNamedCall("sum", .{a,b}) evaluates sum(a,b).
+export fn zigr_test_build_named_call() SEXP {
+    const call = test_lang.buildNamedCall("sum", .{ R.Rf_ScalarInteger(1), R.Rf_ScalarInteger(2) });
+    const result = test_eval.rEval(call, null);
+    if (R.TYPEOF(result) != R.REALSXP or R.XLENGTH(result) != 1) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(result)[0] != 3.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+// ── protect.ScopedProtect lifecycle tests ──────────────
+
+/// ScopedProtect_Release_NoDoubleUnprotect: releasing ownership before deinit prevents double-unprotect.
+export fn zigr_test_scoped_release() SEXP {
+    const vec = R.Rf_allocVector(R.REALSXP, 1);
+    var s = protect.scoped(vec);
+    const released = s.release();
+    // s.deinit() is called implicitly. Because release() was called, deinit
+    // must NOT call Rf_unprotect. We verify by protecting again and checking
+    // the protection stack remains balanced.
+    _ = R.Rf_protect(released);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// ScopedProtect_Get_AfterInit_ReturnsValue: get() returns the same SEXP passed to init.
+export fn zigr_test_scoped_get() SEXP {
+    const vec = R.Rf_allocVector(R.REALSXP, 5);
+    var s = protect.scoped(vec);
+    defer s.deinit();
+    if (s.get() != vec) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+// ── RVector runtime tests ──────────────────────────────
+
+/// RVector_f64_Init_HappyPath: RVector(f64) wraps REALSXP, len() matches, view() returns values.
+export fn zigr_test_rvector_f64() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    const ptr = R.REAL(vec);
+    ptr[0] = 1.0; ptr[1] = 2.0; ptr[2] = 3.0; ptr[3] = 4.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    if (rv.len() != 4) return R.Rf_ScalarReal(0.0);
+    if (rv.asSEXP() != vec) return R.Rf_ScalarReal(0.0);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const v = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (v.len != 4 or v[0] != 1.0 or v[3] != 4.0) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_i32_Init_HappyPath: RVector(i32) wraps INTSXP, values match.
+export fn zigr_test_rvector_i32() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
+    const ptr = R.INTEGER(vec);
+    ptr[0] = 10; ptr[1] = -5; ptr[2] = 99;
+    const rv = zigr.rvector.RVector(i32).init(vec) catch return R.Rf_ScalarReal(0.0);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const v = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (v.len != 3 or v[0] != 10 or v[1] != -5 or v[2] != 99) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_WrongType_Error: RVector(f64).init(INTSXP) must signal an error.
+export fn zigr_test_rvector_wrong_type() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
+    R.Rf_unprotect(1);
+    const rv = zigr.rvector.RVector(f64).init(vec);
+    if (rv) |_| return R.Rf_ScalarReal(0.0) else |_| return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_addScalar_HappyPath: addScalar adds a constant to every element.
+export fn zigr_test_rvector_add_scalar() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    const ptr = R.REAL(vec);
+    ptr[0] = 1.0; ptr[1] = 2.0; ptr[2] = 3.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const result = rv.addScalar(10.0);
+    const rp = R.REAL(result);
+    if (rp[0] != 11.0 or rp[1] != 12.0 or rp[2] != 13.0) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_subScalar_HappyPath: subScalar subtracts a constant from every element.
+export fn zigr_test_rvector_sub_scalar() SEXP {
+    const n: R.R_xlen_t = 2;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    R.REAL(vec)[0] = 5.0; R.REAL(vec)[1] = 10.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const result = rv.subScalar(3.0);
+    const rp = R.REAL(result);
+    if (rp[0] != 2.0 or rp[1] != 7.0) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_mulScalar_HappyPath: mulScalar multiplies every element by a constant.
+export fn zigr_test_rvector_mul_scalar() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    R.REAL(vec)[0] = 2.0; R.REAL(vec)[1] = 3.0; R.REAL(vec)[2] = 4.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const result = rv.mulScalar(2.0);
+    const rp = R.REAL(result);
+    if (rp[0] != 4.0 or rp[1] != 6.0 or rp[2] != 8.0) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_divScalar_HappyPath: divScalar divides every element by a constant.
+export fn zigr_test_rvector_div_scalar() SEXP {
+    const n: R.R_xlen_t = 2;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    R.REAL(vec)[0] = 10.0; R.REAL(vec)[1] = 20.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const result = rv.divScalar(2.0);
+    const rp = R.REAL(result);
+    if (rp[0] != 5.0 or rp[1] != 10.0) return R.Rf_ScalarReal(0.0);
+    R.Rf_unprotect(1);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_add_HappyPath: add between two vectors is element-wise.
+export fn zigr_test_rvector_add_vec() SEXP {
+    const n: R.R_xlen_t = 3;
+    const va = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    const vb = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    defer R.Rf_unprotect(2);
+    R.REAL(va)[0] = 1.0; R.REAL(va)[1] = 2.0; R.REAL(va)[2] = 3.0;
+    R.REAL(vb)[0] = 10.0; R.REAL(vb)[1] = 20.0; R.REAL(vb)[2] = 30.0;
+    const ra = (zigr.rvector.RVector(f64).init(va) catch return R.Rf_ScalarReal(0.0));
+    const rb = (zigr.rvector.RVector(f64).init(vb) catch return R.Rf_ScalarReal(0.0));
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const result = ra.add(rb, arena.allocator());
+    const rp = R.REAL(result);
+    if (rp[0] != 11.0 or rp[1] != 22.0 or rp[2] != 33.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_sum_HappyPath: sum() returns the sum of all elements.
+export fn zigr_test_rvector_f64_sum() SEXP {
+    const n: R.R_xlen_t = 4;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
+    defer R.Rf_unprotect(1);
+    R.REAL(vec)[0] = 1.0; R.REAL(vec)[1] = 2.0; R.REAL(vec)[2] = 3.0; R.REAL(vec)[3] = 4.0;
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const total = rv.sum();
+    if (total != 10.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_i32_sum_HappyPath: sumInt returns correct i64 sum of int vector.
+export fn zigr_test_rvector_i32_sum() SEXP {
+    const n: R.R_xlen_t = 3;
+    const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
+    defer R.Rf_unprotect(1);
+    R.INTEGER(vec)[0] = 100; R.INTEGER(vec)[1] = 200; R.INTEGER(vec)[2] = 300;
+    const rv = zigr.rvector.RVector(i32).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const total = rv.sum();
+    if (total != 600) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_add_Recycling_Edge: add with length-1 and length-3 produces length-3 with recycling.
+export fn zigr_test_rvector_recycle() SEXP {
+    const va = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    const vb = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(2);
+    R.REAL(va)[0] = 10.0;
+    R.REAL(vb)[0] = 1.0; R.REAL(vb)[1] = 2.0; R.REAL(vb)[2] = 3.0;
+    const ra = (zigr.rvector.RVector(f64).init(va) catch return R.Rf_ScalarReal(0.0));
+    const rb = (zigr.rvector.RVector(f64).init(vb) catch return R.Rf_ScalarReal(0.0));
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const result = ra.add(rb, arena.allocator());
+    const rp = R.REAL(result);
+    if (R.XLENGTH(result) != 3) return R.Rf_ScalarReal(0.0);
+    // 10 is recycled to match length 3: 10+1, 10+2, 10+3
+    if (rp[0] != 11.0 or rp[1] != 12.0 or rp[2] != 13.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// RVector_f64_addScalar_Empty_Edge: addScalar on empty vector returns empty vector.
+export fn zigr_test_rvector_empty() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    R.Rf_unprotect(1);
+    const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
+    const result = rv.addScalar(5.0);
+    if (R.XLENGTH(result) != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

@@ -19,14 +19,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         fn expectType(sexp: R.SEXP) !void {
-            const ok = switch (T) {
-                f64 => R.TYPEOF(sexp) == R.REALSXP,
-                i32 => R.TYPEOF(sexp) == R.INTSXP,
-                u8 => R.TYPEOF(sexp) == R.RAWSXP,
-                convert.Rcomplex => R.TYPEOF(sexp) == R.CPLXSXP,
-                else => @compileError("unsupported RVector type: " ++ typeName()),
-            };
-            if (!ok) return error.UnexpectedType;
+            if (R.TYPEOF(sexp) != convert.typeToSEXPTYPE(T)) return error.UnexpectedType;
         }
 
         pub fn init(sexp: R.SEXP) !Self {
@@ -109,24 +102,11 @@ pub fn RVector(comptime T: type) type {
         }
 
         fn allocResult(n: usize) protect.ScopedProtect {
-            const sexp_type = switch (T) {
-                f64 => R.REALSXP,
-                i32 => R.INTSXP,
-                u8 => R.RAWSXP,
-                convert.Rcomplex => R.CPLXSXP,
-                else => unreachable,
-            };
-            return protect.scoped(R.Rf_allocVector(sexp_type, @intCast(n)));
+            return protect.scoped(R.Rf_allocVector(convert.typeToSEXPTYPE(T), @intCast(n)));
         }
 
         fn resultSlice(result: R.SEXP) []T {
-            return switch (T) {
-                f64 => @as([*]T, @ptrCast(R.REAL(result)))[0..@as(usize, @intCast(R.XLENGTH(result)))],
-                i32 => @as([*]T, @ptrCast(R.INTEGER(result)))[0..@as(usize, @intCast(R.XLENGTH(result)))],
-                u8 => @as([*]T, @ptrCast(R.RAW(result)))[0..@as(usize, @intCast(R.XLENGTH(result)))],
-                convert.Rcomplex => @as([*]T, @ptrCast(@alignCast(R.COMPLEX(result).?)))[0..@as(usize, @intCast(R.XLENGTH(result)))],
-                else => unreachable,
-            };
+            return convert.dataPtr(T, result)[0..@as(usize, @intCast(R.XLENGTH(result)))];
         }
 
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {

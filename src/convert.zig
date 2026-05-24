@@ -655,6 +655,8 @@ const IntChunkIter = struct {
     }
 };
 
+// LogicalChunkIter reuses IntChunk because both store i32 data under the hood.
+// R's LOGICAL() and INTEGER() both return int* -- the difference is semantic only.
 const LogicalChunkIter = struct {
     sexp: SEXP,
     n: usize,
@@ -1238,4 +1240,27 @@ pub fn asSEXP(st: anytype) SEXP {
 /// non-optional fields signal an R error.
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
     return structFromSexp(T, sexp, arena) catch |err| signalError(err);
+}
+
+/// Map a Zig numeric type to the corresponding R SEXPTYPE constant.
+pub fn typeToSEXPTYPE(comptime T: type) R.SEXPTYPE {
+    return switch (T) {
+        f64 => R.REALSXP,
+        i32 => R.INTSXP,
+        u8 => R.RAWSXP,
+        Rcomplex => R.CPLXSXP,
+        else => @compileError("unsupported type: " ++ @typeName(T)),
+    };
+}
+
+/// Get a mutable pointer to the underlying data array of a SEXP.
+/// The caller is responsible for ensuring the SEXP is of the expected type.
+pub fn dataPtr(comptime T: type, sexp: SEXP) [*]T {
+    return switch (T) {
+        f64 => @ptrCast(R.REAL(sexp)),
+        i32 => @ptrCast(R.INTEGER(sexp)),
+        u8 => @ptrCast(R.RAW(sexp)),
+        Rcomplex => @ptrCast(@alignCast(R.COMPLEX(sexp).?)),
+        else => @compileError("unsupported type: " ++ @typeName(T)),
+    };
 }

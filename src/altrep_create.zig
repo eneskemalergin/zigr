@@ -265,22 +265,40 @@ fn realMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
 
 fn integerMin(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
-    if (w.len == 0) return R.Rf_ScalarInteger(std.math.maxInt(i32));
-    var value = w.ptr[0];
-    for (w.ptr[1..w.len]) |item| {
-        if (item < value) value = item;
+    const n = w.len;
+    if (n == 0) return R.Rf_ScalarInteger(std.math.maxInt(i32));
+    const ptr = w.ptr;
+    const V = simd.i32_lanes;
+    var i: usize = 0;
+    var vec: @Vector(V, i32) = @splat(std.math.maxInt(i32));
+    while (i + V <= n) : (i += V) {
+        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(ptr + i)).*);
+        vec = @select(i32, chunk < vec, chunk, vec);
     }
-    return R.Rf_ScalarInteger(value);
+    var val = @reduce(.Min, vec);
+    for (i..n) |j| {
+        if (ptr[j] < val) val = ptr[j];
+    }
+    return R.Rf_ScalarInteger(val);
 }
 
 fn integerMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
-    if (w.len == 0) return R.Rf_ScalarInteger(std.math.minInt(i32));
-    var value = w.ptr[0];
-    for (w.ptr[1..w.len]) |item| {
-        if (item > value) value = item;
+    const n = w.len;
+    if (n == 0) return R.Rf_ScalarInteger(std.math.minInt(i32));
+    const ptr = w.ptr;
+    const V = simd.i32_lanes;
+    var i: usize = 0;
+    var vec: @Vector(V, i32) = @splat(std.math.minInt(i32));
+    while (i + V <= n) : (i += V) {
+        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(ptr + i)).*);
+        vec = @select(i32, chunk > vec, chunk, vec);
     }
-    return R.Rf_ScalarInteger(value);
+    var val = @reduce(.Max, vec);
+    for (i..n) |j| {
+        if (ptr[j] > val) val = ptr[j];
+    }
+    return R.Rf_ScalarInteger(val);
 }
 
 fn buildClass(comptime kind: AltKind, comptime pkg: []const u8, comptime name: []const u8, info: anytype) R.R_altrep_class_t {

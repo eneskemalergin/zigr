@@ -17,7 +17,7 @@
 //! extract via R.STRING_ELT inside the function body.
 //! `[]const []const u8` still allocates slice headers because Zig needs a
 //! concrete slice-of-slices container. `convert.StringSliceView` is the
-//! zero-copy export-only alternative for read-only string access.
+//! zero-copy input-only alternative for read-only string access.
 
 const std = @import("std");
 const R = @import("R");

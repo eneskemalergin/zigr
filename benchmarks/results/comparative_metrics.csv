@@ -1,7 +1,7 @@
-"runner","tasks_won","geomean_vs_r","geomean_vs_best_native","median_vs_best_native","meaningful_native_wins","low_noise_wins","low_noise_task_count","low_noise_cv_threshold_pct","meaningful_margin_ratio"
-"zigr",13,0.395618726264019,1.2278415413611,1.04387417218543,12,8,19,20,1.05
-"c_call",3,0.714722373804748,2.21821102702818,1.27777777777778,2,2,19,20,1.05
-"rcpp",8,0.666757836599765,2.06934837876937,1.16072573228171,5,2,19,20,1.05
-"extendr",5,0.530149141584935,1.64536988757328,1.09592820712912,2,3,19,20,1.05
-"savvy",5,0.516036043388956,1.60156850232043,1.11066217732884,1,4,19,20,1.05
-"r",5,1,NA,NA,NA,NA,19,20,1.05
+"runner","tasks_won","geomean_vs_r","geomean_vs_best_native","median_vs_best_native","meaningful_native_wins","low_noise_wins","low_noise_task_count","aggregate_task_count","excluded_shared_task_count","low_noise_cv_threshold_pct","meaningful_margin_ratio"
+"zigr",9,0.570873242612677,1.25890108766454,1.06777456785834,6,6,15,32,7,20,1.05
+"c_call",4,0.683718967468828,1.50775073616013,1.15787360526706,1,2,15,32,7,20,1.05
+"rcpp",5,0.65457101338461,1.44347308507969,1.05076200590557,3,1,15,32,7,20,1.05
+"extendr",4,0.658939577141435,1.45310672921377,1.07877322825,2,2,15,32,7,20,1.05
+"savvy",5,0.637906235872924,1.4067235845441,1.07946632383809,2,4,15,32,7,20,1.05
+"r",5,1,NA,NA,NA,NA,15,32,7,20,1.05

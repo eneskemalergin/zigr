@@ -42,7 +42,7 @@ OUT = $(SRCDIR)bench.c.so
 all: $(OUT)
 
 $(OUT): $(SRC)
-	gcc $(PKG_CFLAGS) -fPIC -shared -o $@ $(SRC) $(PKG_LIBS)
+	$(CC) $(PKG_CFLAGS) -fPIC -shared -o $@ $(SRC) $(PKG_LIBS)
 
 clean:
 	rm -f $(OUT)

@@ -5,6 +5,28 @@ results_dir <- "results"
 low_noise_cv_threshold <- 20
 meaningful_margin <- 1.05
 
+aggregate_exclusions <- data.frame(
+  task = c(
+    "07_parallel",
+    "29_scale_law",
+    "30_arena_vs_rmalloc",
+    "36_parallel_scaling",
+    "38_owned_altrep_real_sum",
+    "39_owned_altrep_int_sum",
+    "40_owned_altrep_logical_sum"
+  ),
+  comparison_note = c(
+    "native runners use multithreaded sums while the R baseline is single-threaded",
+    "runners intentionally use different dispatch strategies",
+    "runners intentionally use different allocation strategies",
+    "native runners sweep thread counts while the R baseline repeats serial sum",
+    "owned ALTREP capability benchmark rather than a common user-level path",
+    "owned ALTREP capability benchmark rather than a common user-level path",
+    "owned ALTREP capability benchmark rather than a common user-level path"
+  ),
+  stringsAsFactors = FALSE
+)
+
 for (arg in args) {
   if (grepl("^--results-dir=", arg)) {
     results_dir <- sub("^--results-dir=", "", arg)
@@ -93,16 +115,42 @@ names(cv_wide) <- c("task", paste0(sub("cv_pct\\.", "", names(cv_wide)[-1]), "_c
 merged <- merge(mean_wide, cv_wide, by = "task")
 merged <- merged[match(ordered_tasks, merged$task), ]
 
+matched_exclusions <- match(merged$task, aggregate_exclusions$task)
+merged$aggregate_comparable <- is.na(matched_exclusions)
+merged$comparison_note <- ifelse(
+  is.na(matched_exclusions),
+  "",
+  aggregate_exclusions$comparison_note[matched_exclusions]
+)
+
 native_runners <- c("zigr", "c_call", "rcpp", "extendr", "savvy")
 all_runners <- c("r", native_runners)
 native_mean_cols <- paste0(native_runners, "_mean")
 all_mean_cols <- paste0(all_runners, "_mean")
 all_cv_cols <- paste0(all_runners, "_cv")
 
+aggregate_merged <- merged[merged$aggregate_comparable, , drop = FALSE]
+if (nrow(aggregate_merged) == 0L) {
+  stop("no aggregate-comparable tasks remain after applying the benchmark comparison policy")
+}
+
+excluded_aggregate_tasks <- merged[!merged$aggregate_comparable, c("task", "comparison_note"), drop = FALSE]
+if (nrow(excluded_aggregate_tasks) > 0L) {
+  cat(sprintf(
+    "Excluding strategy-sensitive tasks from aggregate metrics: %s\n",
+    paste(sprintf("%s (%s)", excluded_aggregate_tasks$task, excluded_aggregate_tasks$comparison_note), collapse = ", ")
+  ))
+}
+
 merged$best_native_mean_ms <- apply(merged[, native_mean_cols], 1, min)
 merged$best_all_mean_ms <- apply(merged[, all_mean_cols], 1, min)
 merged$max_cv_pct <- apply(merged[, all_cv_cols], 1, max, na.rm = TRUE)
 merged$low_noise <- merged$max_cv_pct <= low_noise_cv_threshold
+
+aggregate_merged$best_native_mean_ms <- apply(aggregate_merged[, native_mean_cols], 1, min)
+aggregate_merged$best_all_mean_ms <- apply(aggregate_merged[, all_mean_cols], 1, min)
+aggregate_merged$max_cv_pct <- apply(aggregate_merged[, all_cv_cols], 1, max, na.rm = TRUE)
+aggregate_merged$low_noise <- aggregate_merged$max_cv_pct <= low_noise_cv_threshold
 
 merged$best_native_runner <- apply(
   merged[, native_mean_cols],
@@ -110,9 +158,17 @@ merged$best_native_runner <- apply(
   function(row) native_runners[[which.min(row)]]
 )
 
+aggregate_merged$best_native_runner <- apply(
+  aggregate_merged[, native_mean_cols],
+  1,
+  function(row) native_runners[[which.min(row)]]
+)
+
 for (runner in native_runners) {
   merged[[paste0(runner, "_vs_best_native")]] <-
     merged[[paste0(runner, "_mean")]] / merged$best_native_mean_ms
+  aggregate_merged[[paste0(runner, "_vs_best_native")]] <-
+    aggregate_merged[[paste0(runner, "_mean")]] / aggregate_merged$best_native_mean_ms
 }
 
 runner_metrics <- data.frame(
@@ -123,7 +179,7 @@ runner_metrics <- data.frame(
 runner_metrics$tasks_won <- vapply(
   runner_metrics$runner,
   function(runner) {
-    sum(abs(merged[[paste0(runner, "_mean")]] - merged$best_all_mean_ms) < 1e-12)
+    sum(abs(aggregate_merged[[paste0(runner, "_mean")]] - aggregate_merged$best_all_mean_ms) < 1e-12)
   },
   integer(1)
 )
@@ -131,7 +187,7 @@ runner_metrics$tasks_won <- vapply(
 runner_metrics$geomean_vs_r <- c(
   vapply(
     native_runners,
-    function(runner) exp(mean(log(merged[[paste0(runner, "_mean")]] / merged$r_mean))),
+    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_mean")]] / aggregate_merged$r_mean))),
     numeric(1)
   ),
   1.0
@@ -140,7 +196,7 @@ runner_metrics$geomean_vs_r <- c(
 runner_metrics$geomean_vs_best_native <- c(
   vapply(
     native_runners,
-    function(runner) exp(mean(log(merged[[paste0(runner, "_vs_best_native")]]))),
+    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_vs_best_native")]]))),
     numeric(1)
   ),
   NA_real_
@@ -149,7 +205,7 @@ runner_metrics$geomean_vs_best_native <- c(
 runner_metrics$median_vs_best_native <- c(
   vapply(
     native_runners,
-    function(runner) median(merged[[paste0(runner, "_vs_best_native")]]),
+    function(runner) median(aggregate_merged[[paste0(runner, "_vs_best_native")]]),
     numeric(1)
   ),
   NA_real_
@@ -159,8 +215,8 @@ runner_metrics$meaningful_native_wins <- c(
   vapply(
     native_runners,
     function(runner) {
-      vals <- merged[[paste0(runner, "_mean")]]
-      others <- merged[, paste0(setdiff(native_runners, runner), "_mean"), drop = FALSE]
+      vals <- aggregate_merged[[paste0(runner, "_mean")]]
+      others <- aggregate_merged[, paste0(setdiff(native_runners, runner), "_mean"), drop = FALSE]
       sum(apply(others, 1, min) / vals > meaningful_margin)
     },
     integer(1)
@@ -168,7 +224,7 @@ runner_metrics$meaningful_native_wins <- c(
   NA_integer_
 )
 
-low_noise_subset <- merged[merged$low_noise, , drop = FALSE]
+low_noise_subset <- aggregate_merged[aggregate_merged$low_noise, , drop = FALSE]
 runner_metrics$low_noise_wins <- c(
   vapply(
     native_runners,
@@ -182,6 +238,8 @@ runner_metrics$low_noise_wins <- c(
 )
 
 runner_metrics$low_noise_task_count <- if (nrow(low_noise_subset) == 0L) 0L else nrow(low_noise_subset)
+runner_metrics$aggregate_task_count <- nrow(aggregate_merged)
+runner_metrics$excluded_shared_task_count <- nrow(merged) - nrow(aggregate_merged)
 runner_metrics$low_noise_cv_threshold_pct <- low_noise_cv_threshold
 runner_metrics$meaningful_margin_ratio <- meaningful_margin
 
@@ -192,6 +250,8 @@ task_comparisons <- data.frame(
   zigr_vs_best_native = merged$zigr_vs_best_native,
   max_cv_pct = merged$max_cv_pct,
   low_noise = merged$low_noise,
+  aggregate_comparable = merged$aggregate_comparable,
+  comparison_note = merged$comparison_note,
   stringsAsFactors = FALSE
 )
 

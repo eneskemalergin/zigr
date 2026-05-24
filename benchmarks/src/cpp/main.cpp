@@ -814,11 +814,11 @@ extern "C" SEXP rcpp_bench_which_na(SEXP vec) {
 // ── Task 23: ALTREP Sum ───────────────────────────────────────
 
 extern "C" SEXP rcpp_bench_altrep_sum(SEXP sexp) {
-  R_xlen_t n = XLENGTH(sexp);
-  int *data = INTEGER(sexp);
-  double total = 0.0;
-  for (R_xlen_t i = 0; i < n; i++) total += data[i];
-  return ScalarReal(total);
+  SEXP sum_sym = PROTECT(Rf_install("sum"));
+  SEXP call = PROTECT(Rf_lang2(sum_sym, sexp));
+  SEXP result = Rf_eval(call, R_GlobalEnv);
+  UNPROTECT(2);
+  return result;
 }
 
 // ── Task 24: ALTREP Read ──────────────────────────────────────
