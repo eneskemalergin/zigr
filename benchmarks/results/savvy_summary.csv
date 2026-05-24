@@ -1,2 +1,0 @@
-runner,task,status,mean_ms,sd_ms,cv_pct,rss_kb,cold_start_ms,n_iterations,error
-savvy,35_string_variants,PASS,2.5842,0.5203,20.13,272408,4.529,100,

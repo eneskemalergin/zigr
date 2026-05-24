@@ -611,25 +611,39 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     return vec.get();
 }
 
+fn charsxpBytes(elt: SEXP) []const u8 {
+    const len = @as(usize, @intCast(R.XLENGTH(elt)));
+    return R.R_CHAR(elt)[0..len];
+}
+
+fn buildNameIndex(ns: SEXP, allocator: std.mem.Allocator) !std.StringHashMapUnmanaged(usize) {
+    var index: std.StringHashMapUnmanaged(usize) = .{};
+    errdefer index.deinit(allocator);
+
+    for (0..@as(usize, @intCast(R.XLENGTH(ns)))) |i| {
+        const elt = R.STRING_ELT(ns, @intCast(i));
+        if (elt == R.R_NaString) continue;
+
+        const name = charsxpBytes(elt);
+        const gop = try index.getOrPut(allocator, name);
+        if (!gop.found_existing) gop.value_ptr.* = i;
+    }
+
+    return index;
+}
+
 fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     const fields = @typeInfo(T).@"struct".fields;
     const ns = try expectNamedList(sexp);
+    var name_index = try buildNameIndex(ns, arena);
+    defer name_index.deinit(arena);
     var result: T = undefined;
 
     inline for (fields) |field| {
-        var found = false;
-        for (0..@as(usize, @intCast(R.XLENGTH(ns)))) |i| {
-            const elt = R.STRING_ELT(ns, @intCast(i));
-            if (elt == R.R_NaString) continue;
-            const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
-            if (std.mem.eql(u8, cn, field.name)) {
-                const elem = R.VECTOR_ELT(sexp, @intCast(i));
-                @field(result, field.name) = try sexpToZig(field.type, elem, arena);
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
+        if (name_index.get(field.name)) |i| {
+            const elem = R.VECTOR_ELT(sexp, @intCast(i));
+            @field(result, field.name) = try sexpToZig(field.type, elem, arena);
+        } else {
             if (comptime @typeInfo(field.type) != .optional) return error.MissingField;
             @field(result, field.name) = @as(field.type, null);
         }

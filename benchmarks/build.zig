@@ -98,10 +98,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     bench_lib.lto = .full;
+    bench_lib.root_module.addCSourceFile(.{
+        .file = b.path("src/zig/task_34_math_shim.c"),
+        .flags = &.{ "-fno-builtin", "-fno-lto" },
+    });
 
     bench_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     bench_lib.root_module.linkSystemLibrary("R", .{});
     bench_lib.root_module.linkSystemLibrary("blas", .{});
+    bench_lib.root_module.linkSystemLibrary("dl", .{});
+    bench_lib.root_module.linkSystemLibrary("m", .{});
 
     b.installArtifact(bench_lib);
 

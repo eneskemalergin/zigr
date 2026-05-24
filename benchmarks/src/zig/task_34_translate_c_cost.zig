@@ -2,8 +2,8 @@ const R = @import("R");
 const raw = @import("raw");
 
 const SEXP = R.SEXP;
-const repeats: usize = 512;
 const strategy_names = [_][:0]const u8{ "abs", "log", "exp", "sqrt" };
+const c_kernel = @extern(*const fn ([*c]const f64, usize, [*c]f64) callconv(.c) void, .{ .name = "zigr_task34_kernel" });
 
 fn setNames(result: SEXP) void {
     const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, strategy_names.len));
@@ -21,26 +21,7 @@ export fn zigr_bench_translate_c_cost(vec: SEXP) SEXP {
     defer R.Rf_unprotect(1);
     const out = R.REAL(result);
 
-    var abs_total: f64 = 0.0;
-    var log_total: f64 = 0.0;
-    var exp_total: f64 = 0.0;
-    var sqrt_total: f64 = 0.0;
-
-    for (0..repeats) |repeat_index| {
-        const bias = (@as(f64, @floatFromInt(repeat_index)) + 1.0) * 0.001;
-        for (input) |value| {
-            const shifted = value + bias;
-            abs_total += @abs(shifted - 0.75);
-            log_total += @log(shifted);
-            exp_total += @exp(shifted);
-            sqrt_total += @sqrt(shifted);
-        }
-    }
-
-    out[0] = abs_total;
-    out[1] = log_total;
-    out[2] = exp_total;
-    out[3] = sqrt_total;
+    c_kernel(input.ptr, input.len, out);
     setNames(result);
     return result;
 }

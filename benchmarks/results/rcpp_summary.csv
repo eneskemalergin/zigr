@@ -1,2 +1,0 @@
-runner,task,status,mean_ms,sd_ms,cv_pct,rss_kb,cold_start_ms,n_iterations,error
-rcpp,35_string_variants,PASS,2.322,0.2108,9.08,272604,5.135,100,

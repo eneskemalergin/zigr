@@ -1,2 +1,0 @@
-runner,task,status,mean_ms,sd_ms,cv_pct,rss_kb,cold_start_ms,n_iterations,error
-zigr,35_string_variants,PASS,2.2951,0.5197,22.64,336428,4.38,100,
