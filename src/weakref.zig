@@ -1,4 +1,11 @@
 //! Weak reference wrappers.
+//!
+//! R weak references associate a value with a key without preventing
+//! the key from being garbage-collected. When GC collects the key,
+//! the finalizer runs. Use weak references for caches, observers, or
+//! any association that should not extend the key's lifetime. For
+//! owned native resources (allocations, handles), use externalptr.zig
+//! instead: finalizers there are more predictable.
 
 const R = @import("R");
 

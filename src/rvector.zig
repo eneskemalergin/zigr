@@ -28,7 +28,8 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn len(self: Self) usize {
-            return @as(usize, @intCast(R.XLENGTH(self.sexp)));
+            const l = R.XLENGTH(self.sexp);
+            return @as(usize, @intCast(if (l < 0) @as(R.R_xlen_t, 0) else l));
         }
 
         pub fn asSEXP(self: Self) R.SEXP {
@@ -106,7 +107,8 @@ pub fn RVector(comptime T: type) type {
         }
 
         fn resultSlice(result: R.SEXP) []T {
-            return convert.dataPtr(T, result)[0..@as(usize, @intCast(R.XLENGTH(result)))];
+            const rlen = R.XLENGTH(result);
+            return convert.dataPtr(T, result)[0..@as(usize, @intCast(if (rlen < 0) @as(R.R_xlen_t, 0) else rlen))];
         }
 
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {

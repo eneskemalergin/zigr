@@ -35,7 +35,8 @@ pub const DataFrame = struct {
     /// Get column names as an allocated slice of strings.
     pub fn columnNames(self: DataFrame, allocator: std.mem.Allocator) ![][]const u8 {
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
-        const n = @as(usize, @intCast(R.XLENGTH(ns)));
+        const nlen = R.XLENGTH(ns);
+        const n = @as(usize, @intCast(if (nlen < 0) @as(R.R_xlen_t, 0) else nlen));
         const result = try allocator.alloc([]const u8, n);
         for (0..n) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));

@@ -8,7 +8,7 @@
 const std = @import("std");
 const R = @import("R");
 
-const alloc_ctx = extern struct {};
+const AllocContext = struct {};
 
 fn rAlloc(_: *anyopaque, len: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
     return @as(?[*]u8, @ptrCast(R.R_chk_calloc(len, 1)));
@@ -27,7 +27,7 @@ fn rRemap(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: 
 }
 
 pub const RAllocator = std.mem.Allocator{
-    .ptr = @ptrCast(@constCast(&(alloc_ctx{}))),
+    .ptr = @ptrCast(@constCast(&(AllocContext{}))),
     .vtable = &.{
         .alloc = rAlloc,
         .free = rFree,

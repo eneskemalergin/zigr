@@ -119,7 +119,7 @@ fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
     const ns = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
     if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP) return error.ExpectedNamedList;
     if (R.XLENGTH(ns) != R.XLENGTH(sexp)) return error.ExpectedNamedList;
-    for (0..xlength(ns)))) |i| {
+    for (0..xlength(ns)) |i| {
         if (R.STRING_ELT(ns, @intCast(i)) == R.R_NaString) return error.ExpectedNamedList;
     }
     return ns;
@@ -209,7 +209,7 @@ fn zigrAltLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
 }
 
 fn directRealSliceOrNull(sexp: SEXP) ?[]const f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (R.ALTREP(sexp) == 0) return R.REAL(sexp)[0..n];
 
     if (zigrAltRealSliceOrNull(sexp)) |data| return data;
@@ -220,7 +220,7 @@ fn directRealSliceOrNull(sexp: SEXP) ?[]const f64 {
 }
 
 fn directIntSliceOrNull(sexp: SEXP) ?[]const i32 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (R.ALTREP(sexp) == 0) return R.INTEGER(sexp)[0..n];
 
     if (zigrAltIntegerSliceOrNull(sexp)) |data| return data;
@@ -231,7 +231,7 @@ fn directIntSliceOrNull(sexp: SEXP) ?[]const i32 {
 }
 
 fn directLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (R.ALTREP(sexp) == 0) return R.LOGICAL(sexp)[0..n];
 
     if (zigrAltLogicalSliceOrNull(sexp)) |data| return data;
@@ -242,7 +242,7 @@ fn directLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
 }
 
 fn directComplexSliceOrNull(sexp: SEXP) ?[]const Rcomplex {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (R.ALTREP(sexp) == 0) {
         const ptr = R.COMPLEX(sexp) orelse return null;
         const complex_ptr: [*]const Rcomplex = @ptrCast(@alignCast(ptr));
@@ -268,7 +268,7 @@ pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const i32 {
 /// @memcpy from REAL() for non-ALTREP (zero C FFI, matches C baseline).
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(f64, n);
     if (directRealSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
@@ -296,7 +296,7 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
 /// @memcpy from INTEGER() for non-ALTREP.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(i32, n);
     if (directIntSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
@@ -323,7 +323,7 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 /// STRSXP: borrow CHARSXP data into a Zig slice array.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
@@ -344,7 +344,7 @@ fn makeStringView(elt: SEXP) StringView {
     const bytes = if (is_na)
         ""
     else blk: {
-        const len = xlength(elt)));
+        const len = xlength(elt);
         break :blk R.R_CHAR(elt)[0..len];
     };
     return .{
@@ -411,14 +411,14 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     return .{
         .sexp = sexp,
-        .len = xlength(sexp))),
+        .len = xlength(sexp),
     };
 }
 
 /// STRSXP: cache per-element string metadata once for repeated multi-pass use.
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const items = try allocator.alloc(StringView, n);
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
@@ -448,7 +448,7 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 /// @memcpy from LOGICAL() for non-ALTREP.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(i32, n);
     if (directLogicalSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
@@ -480,7 +480,7 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
 /// VECSXP: borrow list elements into a SEXP slice.
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(SEXP, n);
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
     return result;
@@ -501,7 +501,7 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
 /// @memcpy from RAW() for non-ALTREP.
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(u8, n);
     if (R.ALTREP(sexp) != 0) {
         var free_result = AllocSliceCleanup.init(u8, allocator, result);
@@ -527,7 +527,7 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
 /// @memcpy from COMPLEX() for non-ALTREP.
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const result = try allocator.alloc(Rcomplex, n);
     if (R.ALTREP(sexp) != 0) {
         var free_result = AllocSliceCleanup.init(Rcomplex, allocator, result);
@@ -618,7 +618,7 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
 }
 
 fn charsxpBytes(elt: SEXP) []const u8 {
-    const len = xlength(elt)));
+    const len = xlength(elt);
     return R.R_CHAR(elt)[0..len];
 }
 
@@ -626,7 +626,7 @@ fn buildNameIndex(ns: SEXP, allocator: std.mem.Allocator) !std.StringHashMapUnma
     var index: std.StringHashMapUnmanaged(usize) = .empty;
     errdefer index.deinit(allocator);
 
-    for (0..xlength(ns)))) |i| {
+    for (0..xlength(ns)) |i| {
         const elt = R.STRING_ELT(ns, @intCast(i));
         if (elt == R.R_NaString) continue;
 
@@ -679,7 +679,7 @@ const RealChunkIter = struct {
     buf: [real_chunk_len]f64 = undefined,
 
     fn init(sexp: SEXP) RealChunkIter {
-        const n = xlength(sexp)));
+        const n = xlength(sexp);
         return .{
             .sexp = sexp,
             .n = n,
@@ -712,7 +712,7 @@ const IntChunkIter = struct {
     buf: [int_chunk_len]i32 = undefined,
 
     fn init(sexp: SEXP) IntChunkIter {
-        const n = xlength(sexp)));
+        const n = xlength(sexp);
         return .{
             .sexp = sexp,
             .n = n,
@@ -747,7 +747,7 @@ const LogicalChunkIter = struct {
     buf: [int_chunk_len]i32 = undefined,
 
     fn init(sexp: SEXP) LogicalChunkIter {
-        const n = xlength(sexp)));
+        const n = xlength(sexp);
         return .{
             .sexp = sexp,
             .n = n,
@@ -775,7 +775,7 @@ const LogicalChunkIter = struct {
 /// Sum of a REALSXP using SIMD @Vector reduction.
 /// Up to 2.5x faster than a scalar loop for large vectors.
 pub fn sum(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0.0;
 
     const lanes = simd.f64_lanes;
@@ -801,7 +801,7 @@ pub fn sum(sexp: SEXP) f64 {
 pub fn sumInt(sexp: SEXP) i64 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0;
 
     var total: i64 = 0;
@@ -817,7 +817,7 @@ pub fn sumInt(sexp: SEXP) i64 {
 pub fn countTrue(sexp: SEXP) i64 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0;
 
     var total: i64 = 0;
@@ -1009,7 +1009,7 @@ pub fn mean(sexp: SEXP) f64 {
 
 /// Sum of squares (L2 norm squared) of a REALSXP using SIMD.
 pub fn norm2(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0.0;
 
     const lanes = simd.f64_lanes;
@@ -1037,7 +1037,7 @@ pub fn norm2(sexp: SEXP) f64 {
 
 /// Minimum of a REALSXP using SIMD @Vector reduction.
 pub fn min(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return std.math.inf(f64);
 
     const lanes = simd.f64_lanes;
@@ -1064,7 +1064,7 @@ pub fn min(sexp: SEXP) f64 {
 
 /// Maximum of a REALSXP using SIMD @Vector reduction.
 pub fn max(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return -std.math.inf(f64);
 
     const lanes = simd.f64_lanes;
@@ -1090,7 +1090,7 @@ pub fn max(sexp: SEXP) f64 {
 }
 
 fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return -1;
 
     const lanes = simd.f64_lanes;
@@ -1172,7 +1172,7 @@ pub fn argmax(sexp: SEXP) i64 {
 
 /// Sum of a REALSXP excluding NA values. Uses @select for branchless NA masking.
 pub fn sum_narm(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0.0;
 
     const lanes = simd.f64_lanes;
@@ -1203,7 +1203,7 @@ pub fn sum_narm(sexp: SEXP) f64 {
 
 /// Mean of a REALSXP excluding NA values.
 pub fn mean_narm(sexp: SEXP) f64 {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     if (n == 0) return 0.0;
 
     const lanes = simd.f64_lanes;
@@ -1280,7 +1280,7 @@ pub fn pmax(a: SEXP, b: SEXP) SEXP {
 
 /// Cumulative sum of a REALSXP. Returns a new REALSXP.
 pub fn cumsum(sexp: SEXP) SEXP {
-    const n = xlength(sexp)));
+    const n = xlength(sexp);
     const data = R.REAL(sexp);
 
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));

@@ -8,7 +8,6 @@ const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 
-
 /// Set column/row names on a VECSXP or data frame.
 pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     var ns = protect.scoped(R.Rf_allocVector(R.STRSXP, @as(R.R_xlen_t, @intCast(names.len))));
@@ -24,7 +23,8 @@ pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
 pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
     const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
     if (cls == R.R_NilValue) return &.{};
-    const n = @as(usize, @intCast(R.XLENGTH(cls)));
+    const clen = R.XLENGTH(cls);
+    const n = @as(usize, @intCast(if (clen < 0) @as(R.R_xlen_t, 0) else clen));
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(cls, @intCast(i));

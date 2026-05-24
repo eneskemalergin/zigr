@@ -28,10 +28,18 @@ pub fn build(b: *std.Build) void {
     r_headers.addIncludePath(.{ .cwd_relative = r_include });
     const r_mod = r_headers.addModule("R");
 
+    const err_mod = b.addModule("error", .{
+        .root_source_file = b.path("src/error.zig"),
+        .target = target,
+        .imports = &.{.{ .name = "R", .module = r_mod }},
+    });
     const cleanup_mod = b.addModule("cleanup", .{
         .root_source_file = b.path("src/cleanup.zig"),
         .target = target,
-        .imports = &.{.{ .name = "R", .module = r_mod }},
+        .imports = &.{
+            .{ .name = "R", .module = r_mod },
+            .{ .name = "error", .module = err_mod },
+        },
     });
     const simd_mod = b.addModule("simd", .{
         .root_source_file = b.path("src/simd.zig"),
@@ -44,17 +52,14 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "R", .module = r_mod },
             .{ .name = "cleanup", .module = cleanup_mod },
+            .{ .name = "error", .module = err_mod },
             .{ .name = "simd", .module = simd_mod },
         },
     });
 
-    // Cross-compilation check: compile zigr modules to a static library
-    // without linking against R. Verifies header translation + source
-    // compilation for any Zig target. The resulting .o/.a has unresolved
-    // R symbols resolved at runtime by R's dynamic linker.
-    // Cross-compilation check: verifies R header translation + Zig source
-    // compile for any target. Does NOT link against -lR; unresolved symbols
-    // are resolved by R at dynamic-link time.
+    // Cross-compilation check: compile zigr modules without linking against
+    // R. Verifies header translation + source compilation for any target.
+    // Unresolved R symbols are resolved by R at dynamic-link time.
     const cross_check = b.addObject(.{
         .name = "zigr_check",
         .root_module = b.createModule(.{
@@ -68,8 +73,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Format check: verify all .zig files match zig fmt.
+    const fmt_step = b.step("fmt", "Check zig fmt compliance");
+    const fmt_check = b.addFmt(.{ .paths = &.{"."}, .check = true });
+    fmt_step.dependOn(&fmt_check.step);
+
     const check_step = b.step("check", "Cross-compilation check: compile zigr for any target");
     check_step.dependOn(&cross_check.step);
+    check_step.dependOn(&fmt_check.step);
 
     // Standalone tests
     const zigr_tests = b.addTest(.{ .root_module = zigr });

@@ -6,14 +6,7 @@
 
 const std = @import("std");
 const R = @import("R");
-
-fn signalError(msg: []const u8) noreturn {
-    var buf: [256:0]u8 = undefined;
-    const n = @min(msg.len, buf.len - 1);
-    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
-    buf[n] = 0;
-    R.Rf_error(&buf);
-}
+const err = @import("error");
 
 /// Wrap a Zig pointer as an R external pointer with optional tag and
 /// protected value. The tag identifies the pointer type. The protected
@@ -42,7 +35,7 @@ pub fn registerFinalizer(sexp: R.SEXP, comptime cleanupFn: *const fn (R.SEXP) ca
 /// Create an external pointer from a Zig type, wrapping the value
 /// and registering a finalizer that calls `deinit` on the value.
 pub fn create(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void) R.SEXP {
-    const heap_val = std.heap.c_allocator.create(T) catch signalError("out of memory during external pointer creation");
+    const heap_val = std.heap.c_allocator.create(T) catch err.signal("out of memory during external pointer creation");
     heap_val.* = init_val;
     const sexp = make(@as(?*anyopaque, @ptrCast(heap_val)), R.R_NilValue, R.R_NilValue);
     const F = struct {

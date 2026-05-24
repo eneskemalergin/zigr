@@ -4,6 +4,8 @@
 
 const R = @import("R");
 
+const Rcomplex = extern struct { r: f64, i: f64 };
+
 fn len(sexp: R.SEXP) usize {
     const l = R.XLENGTH(sexp);
     if (l < 0) @panic("negative vector length from corrupted SEXP");
@@ -46,13 +48,13 @@ pub fn rawMut(sexp: R.SEXP) []u8 {
 }
 
 /// Read-only slice of a CPLXSXP (Rcomplex). No copy.
-pub fn complex(sexp: R.SEXP) []const R.Rcomplex {
-    return R.COMPLEX(sexp)[0..len(sexp)];
+pub fn complex(sexp: R.SEXP) []const Rcomplex {
+    return @as([*]const Rcomplex, @ptrCast(@alignCast(R.COMPLEX(sexp).?)))[0..len(sexp)];
 }
 
 /// Mutable slice of a CPLXSXP. No copy.
-pub fn complexMut(sexp: R.SEXP) []R.Rcomplex {
-    return R.COMPLEX(sexp)[0..len(sexp)];
+pub fn complexMut(sexp: R.SEXP) []Rcomplex {
+    return @as([*]Rcomplex, @ptrCast(@alignCast(R.COMPLEX(sexp).?)))[0..len(sexp)];
 }
 
 /// Returns (rows, cols) for a matrix SEXP.

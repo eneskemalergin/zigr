@@ -6,6 +6,7 @@
 
 const R = @import("R");
 const cleanup = @import("cleanup");
+const err = @import("error");
 
 const FreeBuf = struct {
     fn fire(ptr: ?*anyopaque) void {
@@ -13,19 +14,11 @@ const FreeBuf = struct {
     }
 };
 
-fn signalError(msg: []const u8) noreturn {
-    var buf: [256:0]u8 = undefined;
-    const n = @min(msg.len, buf.len - 1);
-    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
-    buf[n] = 0;
-    R.Rf_error(&buf);
-}
-
 /// Parse and evaluate an R expression from a Zig string.
 /// Returns the result SEXP. Wraps R_ParseEvalString.
 pub fn rCodeEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
     const env = envir orelse R.R_GlobalEnv;
-    const buf = R.R_chk_calloc(code.len + 1, 1) orelse signalError("out of memory during embedded R evaluation");
+    const buf = R.R_chk_calloc(code.len + 1, 1) orelse err.signal("out of memory during embedded R evaluation");
     cleanup.pushFrame(FreeBuf.fire, buf);
     const c_buf: [*]u8 = @ptrCast(@as(*anyopaque, @ptrCast(buf)));
     @memcpy(c_buf[0..code.len], code);

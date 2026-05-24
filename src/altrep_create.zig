@@ -8,6 +8,7 @@ const std = @import("std");
 const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
+const err = @import("error");
 
 pub const ComplexElem = extern struct {
     r: f64,
@@ -53,17 +54,9 @@ fn Wrap(comptime kind: AltKind) type {
     };
 }
 
-fn signalError(msg: []const u8) noreturn {
-    var buf: [256:0]u8 = undefined;
-    const n = @min(msg.len, buf.len - 1);
-    if (n > 0) @memcpy(buf[0..n], msg[0..n]);
-    buf[n] = 0;
-    R.Rf_error(&buf);
-}
-
 fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
     const W = Wrap(kind);
-    const w = std.heap.c_allocator.create(W) catch signalError("out of memory during ALTREP creation");
+    const w = std.heap.c_allocator.create(W) catch err.signal("out of memory during ALTREP creation");
     w.* = .{ .ptr = slice.ptr, .len = slice.len };
     return w;
 }
@@ -477,13 +470,13 @@ const StringWrap = struct {
 };
 
 fn makeStringWrap(slice: []const []const u8) *StringWrap {
-    const values = std.heap.c_allocator.alloc(R.SEXP, slice.len) catch signalError("out of memory during ALTREP string creation");
+    const values = std.heap.c_allocator.alloc(R.SEXP, slice.len) catch err.signal("out of memory during ALTREP string creation");
     errdefer std.heap.c_allocator.free(values);
     for (slice, 0..) |item, index| {
         values[index] = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
     }
 
-    const wrap = std.heap.c_allocator.create(StringWrap) catch signalError("out of memory during ALTREP string creation");
+    const wrap = std.heap.c_allocator.create(StringWrap) catch err.signal("out of memory during ALTREP string creation");
     errdefer std.heap.c_allocator.destroy(wrap);
     wrap.* = .{ .ptr = values.ptr, .len = values.len };
     return wrap;

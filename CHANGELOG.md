@@ -9,7 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `tests/r_runtime.zig` and `tests/run_r_tests.R`: tests covering `raw.real()`, `raw.int()`, `raw.realMut()`, `raw.intMut()`, `raw.raw()`, `raw.complex()`, and `raw.dims()`.
+
 ### Fixed
+
+- `src/export.zig`: `generateMethods` now replaces dots in `@typeName(T)` with underscores so generated C identifiers are valid.
+- `src/export.zig`, `src/altrep_create.zig`, `src/externalptr.zig`: external pointer addresses now checked for null and valid EXTPTRSXP type before unwrapping.
+- `src/convert.zig`, `src/raw.zig`: all `XLENGTH` to `usize` casts wrapped in a safety helper that panics on negative lengths, preventing silent wrap in release builds.
+- `src/convert.zig`: `StringHashMapUnmanaged` init changed from `= .{}` to `= .empty` for Zig 0.16 compliance.
+- `examples/hellozigr/R/hello.R`: removed dead `r_norm` function that referenced a nonexistent Zig export.
+- `build.zig.zon` version bumped to 0.0.8 to match README and CHANGELOG.
+- `README.md`: module count corrected from 23 to 25, bundled binary size corrected from 40 MB to 165 MB, added missing `rvector.zig` to project tree.
 
 - `benchmarks/src/zig/task_10_blas_matmul.zig`: simplified result allocation.
 - `benchmarks/run_benchmarks.R`: runs benchmark subprocesses with `OPENBLAS_NUM_THREADS=1`.

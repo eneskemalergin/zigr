@@ -120,7 +120,6 @@ export fn zigr_test_return42() SEXP {
 
 // ── Longjmp / R_UnwindProtect tests (Phase 2.3) ──────────
 
-
 // Flag set by the cleanup handler on longjmp.
 var longjmp_cleanup_fired: bool = false;
 
@@ -169,7 +168,6 @@ export fn zigr_longjmp_flag() SEXP {
 
 // ── Error module tests (Phase 2.4) ─────────────────────────
 
-
 /// Test error.signal: calls Rf_error and is caught by tryCatch.
 export fn zigr_test_error_signal() SEXP {
     err.signal("zigr error signal test");
@@ -204,7 +202,6 @@ export fn zigr_test_check_stack() SEXP {
 
 // ── Reverse FFI tests (Phase 2.8) ─────────────────────
 
-
 /// Evaluate 1 + 1 via lang.call3 + eval.rEval.
 export fn zigr_test_rev_eval() SEXP {
     const plus = test_lang.symbol("+");
@@ -230,7 +227,6 @@ export fn zigr_test_rev_lang3() SEXP {
 
 // ── RNG tests (Phase 2.7) ─────────────────────────────
 
-
 /// Acquire and release RNG: should not crash.
 export fn zigr_test_rng() SEXP {
     rng.acquire();
@@ -239,7 +235,6 @@ export fn zigr_test_rng() SEXP {
 }
 
 // ── Memory allocator tests (Phase 2.6) ────────────────
-
 
 /// Allocate and free through RAllocator.
 export fn zigr_test_ralloc() SEXP {
@@ -336,7 +331,6 @@ export fn zigr_nested_flags() SEXP {
 }
 
 // ── REALSXP conversion tests (Phase 3.1) ──────────────
-
 
 /// Test toRealSlice, read from an R vector into a Zig slice.
 export fn zigr_test_to_real_slice() SEXP {
@@ -486,7 +480,6 @@ export fn zigr_test_to_logical_slice() SEXP {
 
 // ── Data frame tests (Phase 3.6) ──────────────────────
 
-
 /// Build a data frame from Zig arrays, return it.
 export fn zigr_test_df_build() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -551,7 +544,6 @@ export fn zigr_test_cplx_create() SEXP {
 }
 
 // ── Attrib tests (Phase 3.7) ─────────────────────────
-
 
 /// Set and verify class attribute.
 export fn zigr_test_attrib_class() SEXP {
@@ -994,9 +986,9 @@ export fn zigr_test_raw_raw() SEXP {
 export fn zigr_test_raw_complex() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
     defer R.Rf_unprotect(1);
-    const ptr = R.COMPLEX(vec);
-    ptr[0] = .{ .r = 1.0, .i = 2.0 };
-    ptr[1] = .{ .r = 3.0, .i = 4.0 };
+    const wslice = raw_mod.complexMut(vec);
+    wslice[0] = .{ .r = 1.0, .i = 2.0 };
+    wslice[1] = .{ .r = 3.0, .i = 4.0 };
 
     const slice = raw_mod.complex(vec);
     const ok = slice.len == 2 and slice[0].r == 1.0 and slice[0].i == 2.0 and slice[1].r == 3.0 and slice[1].i == 4.0;
@@ -1007,12 +999,12 @@ export fn zigr_test_raw_complex() SEXP {
 export fn zigr_test_raw_dims() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 12));
     defer R.Rf_unprotect(1);
-    R.Rf_setAttrib(vec, R.R_DimSymbol, null);
+    _ = R.Rf_setAttrib(vec, R.R_DimSymbol, R.R_NilValue);
 
     const d = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
     R.INTEGER(d)[0] = 3;
     R.INTEGER(d)[1] = 4;
-    R.Rf_setAttrib(vec, R.R_DimSymbol, d);
+    _ = R.Rf_setAttrib(vec, R.R_DimSymbol, d);
     R.Rf_unprotect(1);
 
     const result = raw_mod.dims(vec);
@@ -1239,7 +1231,6 @@ export fn zigr_test_pmax_recycling() SEXP {
 
 // ── Phase 4 embed tests ─────────────────────────────
 
-
 /// Test rCodeEval with 1 + 1. Should return 2.
 export fn zigr_phase4_embed_sum() SEXP {
     const result = embed.rCodeEval("1 + 1", null);
@@ -1312,7 +1303,6 @@ export fn zigr_phase4_from_sexp() SEXP {
 }
 
 // ── Phase 4 edge-case tests ─────────────────────────
-
 
 /// Embed: empty string should error, caught by tryCatch.
 export fn zigr_phase4_embed_empty() SEXP {
@@ -1746,7 +1736,10 @@ export fn zigr_test_rvector_f64() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     const ptr = R.REAL(vec);
-    ptr[0] = 1.0; ptr[1] = 2.0; ptr[2] = 3.0; ptr[3] = 4.0;
+    ptr[0] = 1.0;
+    ptr[1] = 2.0;
+    ptr[2] = 3.0;
+    ptr[3] = 4.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     if (rv.len() != 4) return R.Rf_ScalarReal(0.0);
     if (rv.asSEXP() != vec) return R.Rf_ScalarReal(0.0);
@@ -1763,7 +1756,9 @@ export fn zigr_test_rvector_i32() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
     const ptr = R.INTEGER(vec);
-    ptr[0] = 10; ptr[1] = -5; ptr[2] = 99;
+    ptr[0] = 10;
+    ptr[1] = -5;
+    ptr[2] = 99;
     const rv = zigr.rvector.RVector(i32).init(vec) catch return R.Rf_ScalarReal(0.0);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1786,7 +1781,9 @@ export fn zigr_test_rvector_add_scalar() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     const ptr = R.REAL(vec);
-    ptr[0] = 1.0; ptr[1] = 2.0; ptr[2] = 3.0;
+    ptr[0] = 1.0;
+    ptr[1] = 2.0;
+    ptr[2] = 3.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     const result = rv.addScalar(10.0);
     const rp = R.REAL(result);
@@ -1799,7 +1796,8 @@ export fn zigr_test_rvector_add_scalar() SEXP {
 export fn zigr_test_rvector_sub_scalar() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
-    R.REAL(vec)[0] = 5.0; R.REAL(vec)[1] = 10.0;
+    R.REAL(vec)[0] = 5.0;
+    R.REAL(vec)[1] = 10.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     const result = rv.subScalar(3.0);
     const rp = R.REAL(result);
@@ -1812,7 +1810,9 @@ export fn zigr_test_rvector_sub_scalar() SEXP {
 export fn zigr_test_rvector_mul_scalar() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
-    R.REAL(vec)[0] = 2.0; R.REAL(vec)[1] = 3.0; R.REAL(vec)[2] = 4.0;
+    R.REAL(vec)[0] = 2.0;
+    R.REAL(vec)[1] = 3.0;
+    R.REAL(vec)[2] = 4.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     const result = rv.mulScalar(2.0);
     const rp = R.REAL(result);
@@ -1825,7 +1825,8 @@ export fn zigr_test_rvector_mul_scalar() SEXP {
 export fn zigr_test_rvector_div_scalar() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
-    R.REAL(vec)[0] = 10.0; R.REAL(vec)[1] = 20.0;
+    R.REAL(vec)[0] = 10.0;
+    R.REAL(vec)[1] = 20.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     const result = rv.divScalar(2.0);
     const rp = R.REAL(result);
@@ -1840,8 +1841,12 @@ export fn zigr_test_rvector_add_vec() SEXP {
     const va = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     const vb = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     defer R.Rf_unprotect(2);
-    R.REAL(va)[0] = 1.0; R.REAL(va)[1] = 2.0; R.REAL(va)[2] = 3.0;
-    R.REAL(vb)[0] = 10.0; R.REAL(vb)[1] = 20.0; R.REAL(vb)[2] = 30.0;
+    R.REAL(va)[0] = 1.0;
+    R.REAL(va)[1] = 2.0;
+    R.REAL(va)[2] = 3.0;
+    R.REAL(vb)[0] = 10.0;
+    R.REAL(vb)[1] = 20.0;
+    R.REAL(vb)[2] = 30.0;
     const ra = (zigr.rvector.RVector(f64).init(va) catch return R.Rf_ScalarReal(0.0));
     const rb = (zigr.rvector.RVector(f64).init(vb) catch return R.Rf_ScalarReal(0.0));
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1857,7 +1862,10 @@ export fn zigr_test_rvector_f64_sum() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
     defer R.Rf_unprotect(1);
-    R.REAL(vec)[0] = 1.0; R.REAL(vec)[1] = 2.0; R.REAL(vec)[2] = 3.0; R.REAL(vec)[3] = 4.0;
+    R.REAL(vec)[0] = 1.0;
+    R.REAL(vec)[1] = 2.0;
+    R.REAL(vec)[2] = 3.0;
+    R.REAL(vec)[3] = 4.0;
     const rv = zigr.rvector.RVector(f64).init(vec) catch return R.Rf_ScalarReal(0.0);
     const total = rv.sum();
     if (total != 10.0) return R.Rf_ScalarReal(0.0);
@@ -1869,7 +1877,9 @@ export fn zigr_test_rvector_i32_sum() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
     defer R.Rf_unprotect(1);
-    R.INTEGER(vec)[0] = 100; R.INTEGER(vec)[1] = 200; R.INTEGER(vec)[2] = 300;
+    R.INTEGER(vec)[0] = 100;
+    R.INTEGER(vec)[1] = 200;
+    R.INTEGER(vec)[2] = 300;
     const rv = zigr.rvector.RVector(i32).init(vec) catch return R.Rf_ScalarReal(0.0);
     const total = rv.sum();
     if (total != 600) return R.Rf_ScalarReal(0.0);
@@ -1882,7 +1892,9 @@ export fn zigr_test_rvector_recycle() SEXP {
     const vb = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     defer R.Rf_unprotect(2);
     R.REAL(va)[0] = 10.0;
-    R.REAL(vb)[0] = 1.0; R.REAL(vb)[1] = 2.0; R.REAL(vb)[2] = 3.0;
+    R.REAL(vb)[0] = 1.0;
+    R.REAL(vb)[1] = 2.0;
+    R.REAL(vb)[2] = 3.0;
     const ra = (zigr.rvector.RVector(f64).init(va) catch return R.Rf_ScalarReal(0.0));
     const rb = (zigr.rvector.RVector(f64).init(vb) catch return R.Rf_ScalarReal(0.0));
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

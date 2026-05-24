@@ -3,7 +3,7 @@
 pub const sexp = @import("sexp.zig");
 pub const protect = @import("protect.zig");
 pub const convert = @import("convert.zig");
-const err = @import("error.zig");
+const err = @import("error");
 pub const @"error" = err;
 pub const interrupt = @import("interrupt.zig");
 pub const rng = @import("rng.zig");
