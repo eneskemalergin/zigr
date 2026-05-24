@@ -1,0 +1,263 @@
+# Pure R baseline implementations for all benchmark tasks.
+# Each function matches the interface expected by the .Call wrapper:
+# first arg is the R object, returns an R object.
+
+# Task 1: Fibonacci
+r_bench_fib <- function(n) {
+  if (n <= 1) return(n)
+  a <- 0; b <- 1
+  for (i in 2:n) { next_val <- a + b; a <- b; b <- next_val }
+  b
+}
+
+# Task 2: Vector Sum
+r_bench_vectorsum <- function(x) sum(x)
+
+# Task 3: Naive Matrix Multiply
+r_bench_transpose <- function(m) t(m)
+
+# Task 4: String Concatenation
+r_bench_strings <- function(x, sep) paste0(x, collapse = sep)
+
+# Task 5: Data Frame Filtering
+r_bench_dataframe <- function(df) {
+  sub <- df[df$x > 0 & !is.na(df$x), , drop = FALSE]
+  sub$z <- sub$x / sub$y
+  if (nrow(sub) == 0) return(data.frame(grp = integer(), z_sum = numeric()))
+  agg <- aggregate(z ~ grp, data = sub, FUN = sum)
+  names(agg) <- c("grp", "z_sum")
+  agg$grp <- as.integer(as.character(agg$grp))
+  agg
+}
+
+# Task 6: NA-safe Mean
+r_bench_na_prop <- function(x) mean(x, na.rm = TRUE)
+
+# Task 7: Parallel Sum (just sum() in R -- R is single-threaded)
+r_bench_parallel <- function(x) sum(x)
+
+# Task 9: PROTECT Stress
+r_bench_protect_stress <- function(n) 0L
+
+# Task 10: BLAS Matmul
+r_bench_blas_matmul <- function(A, B) A %*% B
+
+# Task 11: Cross-product
+r_bench_crossprod <- function(X) crossprod(X)
+
+# Task 12: Cholesky
+r_bench_cholesky <- function(A) chol(A)
+
+# Task 13: Linear Model
+r_bench_lm <- function(X, y) {
+  as.numeric(lm.fit(X, y)$coefficients)
+}
+
+# Task 14: Row Sums
+r_bench_rowsums <- function(X) rowSums(X)
+
+# Task 15: Element-wise ops (abs, log, exp, sqrt)
+r_bench_elem_ops <- function(x) {
+  cbind(abs(x), log(ifelse(x > 0, x, 1)), exp(x), sqrt(ifelse(x >= 0, x, 0)))
+}
+
+# Task 16: Row means and column sums
+r_bench_rowcol_means <- function(X) {
+  list(row_means = rowMeans(X), col_sums = colSums(X))
+}
+
+# Task 17: Vector + scalar broadcast
+r_bench_broadcast <- function(x, s) x + s
+
+# Task 18: Sort
+r_bench_sort <- function(x) sort(x)
+
+# Task 19: Cumulative sum
+r_bench_cumsum <- function(x) cumsum(x)
+
+# Task 20: Random normal
+r_bench_rnorm <- function(n) rnorm(n)
+
+# Task 21: String nchar
+r_bench_string_nchar <- function(x) sum(nchar(x))
+
+# Task 22: Which NA
+r_bench_which_na <- function(x) which(is.na(x))
+
+# Task 23: ALTREP sum — R's sum() uses method table, O(1)
+r_bench_altrep_sum <- function(x) sum(x)
+
+# Task 24: ALTREP read — R accesses directly, no materialization
+r_bench_altrep_read <- function(x) c(x[1], x[length(x)])
+
+# Task 25: ALTREP create — pure R can create built-in compact intseq ALTREP
+r_bench_altrep_create <- function(n) seq_len(n)
+
+# Task 38: Real create + sum over a numeric vector payload
+r_bench_owned_altrep_real_sum <- function(n) {
+  x <- as.double(((seq_len(n) - 1L) %% 1024L) + 1L)
+  sum(x)
+}
+
+# Task 39: Integer create + sum over a recycled integer payload
+r_bench_owned_altrep_int_sum <- function(n) {
+  x <- ((seq_len(n) - 1L) %% 1024L) + 1L
+  sum(x)
+}
+
+# Task 40: Logical create + sum over alternating flags
+r_bench_owned_altrep_logical_sum <- function(n) {
+  x <- rep(c(TRUE, FALSE), length.out = n)
+  sum(x)
+}
+
+# Task 26: Type dispatch over mixed atomic vectors
+r_bench_comptime_dispatch <- function(xs) {
+  total <- 0
+  for (i in seq_len(256L)) {
+    for (x in xs) {
+      total <- total + switch(
+        typeof(x),
+        double = sum(x),
+        integer = sum(x),
+        logical = sum(x),
+        stop("unsupported type in r_bench_comptime_dispatch")
+      )
+    }
+  }
+  total
+}
+
+# Task 27: Struct convert
+r_bench_struct_convert <- function(x) {
+  list(
+    id = as.integer(x$id),
+    count = as.integer(x$count),
+    level = as.integer(x$level),
+    flag = as.logical(x$flag),
+    enabled = as.logical(x$enabled),
+    ratio = as.numeric(x$ratio),
+    offset = as.numeric(x$offset),
+    scale = as.numeric(x$scale),
+    weights = as.numeric(x$weights),
+    indices = as.integer(x$indices)
+  )
+}
+
+# Task 28: NA proportion sweep
+r_bench_na_prop_vary <- function(xs) {
+  setNames(vapply(xs, function(x) mean(x, na.rm = TRUE), numeric(1)), names(xs))
+}
+
+# Task 29: Scale law mixed-size vector sums
+r_bench_scale_law <- function(xs) {
+  setNames(vapply(xs, sum, numeric(1)), names(xs))
+}
+
+# Task 30: Allocation strategy benchmark
+r_bench_arena_vs_rmalloc <- function(x) {
+  total <- 0
+  for (i in seq_len(100L)) {
+    temp <- x + (i * 0.001)
+    total <- total + sum(temp)
+  }
+  total
+}
+
+# Task 31: Protection strategy comparison
+r_bench_prot_overhead <- function(x) {
+  repeats <- 4096
+  total <- 0
+  for (i in seq_len(repeats)) {
+    temp <- x + (i * 0.001)
+    total <- total + sum(temp)
+  }
+  setNames(rep(total, 5L), c("unsafe", "manual", "batch", "preserve", "reprotect"))
+}
+
+# Task 32: Longjmp safety comparison
+r_bench_longjmp_safety <- function(x) {
+  repeats <- 512L
+  direct_total <- 0
+  try_ok_total <- 0
+  try_err_total <- 0
+  unwind_ok_total <- 0
+
+  for (i in seq_len(repeats)) {
+    bias <- i * 0.001
+    direct_total <- direct_total + sum(x + bias)
+    try_ok_total <- try_ok_total + tryCatch(sum(x + bias), error = function(e) stop(e))
+    try_err_total <- try_err_total + tryCatch({ stop("task32"); 0 }, error = function(e) 1)
+    unwind_ok_total <- unwind_ok_total + tryCatch(sum(x + bias), error = function(e) stop(e))
+  }
+
+  setNames(c(direct_total, try_ok_total, try_err_total, unwind_ok_total),
+           c("direct", "try_ok", "try_err", "unwind_ok"))
+}
+
+# Task 34: Math call cost comparison
+r_bench_translate_c_cost <- function(x) {
+  repeats <- 512L
+  abs_total <- 0
+  log_total <- 0
+  exp_total <- 0
+  sqrt_total <- 0
+
+  for (i in seq_len(repeats)) {
+    shifted <- x + (i * 0.001)
+    abs_total <- abs_total + sum(abs(shifted - 0.75))
+    log_total <- log_total + sum(log(shifted))
+    exp_total <- exp_total + sum(exp(shifted))
+    sqrt_total <- sqrt_total + sum(sqrt(shifted))
+  }
+
+  setNames(c(abs_total, log_total, exp_total, sqrt_total),
+           c("abs", "log", "exp", "sqrt"))
+}
+
+# Task 35: String operation suite
+r_bench_string_variants <- function(x) {
+  valid <- !is.na(x)
+  setNames(
+    list(
+      paste0(x[valid], collapse = ","),
+      as.integer(sum(nchar(x[valid]))),
+      as.integer(sum(startsWith(x[valid], "abc"))),
+      substring(x, 1L, 3L),
+      toupper(x)
+    ),
+    c("concat", "nchar_sum", "prefix_match", "extract_substr", "to_upper")
+  )
+}
+
+r_bench_parallel_scaling <- function(x) {
+  setNames(
+    c(sum(x), sum(x), sum(x), sum(x), sum(x)),
+    c("threads_1", "threads_2", "threads_4", "threads_8", "threads_16")
+  )
+}
+
+r_bench_memory_bandwidth <- function(x) {
+  n <- length(x)
+  copy_temp_total <- 0
+  copy_out_total <- 0
+  fill_out_total <- 0
+
+  for (i in 1:2) {
+    tmp <- x[]
+    copy_temp_total <- copy_temp_total + sum(tmp)
+
+    out <- numeric(n)
+    out[] <- x
+    copy_out_total <- copy_out_total + sum(out)
+
+    filled <- numeric(n)
+    filled[] <- x + 0.5
+    fill_out_total <- fill_out_total + sum(filled)
+  }
+
+  setNames(
+    c(copy_temp_total, copy_out_total, fill_out_total),
+    c("copy_temp", "copy_out", "fill_out")
+  )
+}

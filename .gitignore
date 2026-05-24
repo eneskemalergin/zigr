@@ -1,24 +1,42 @@
-# Zig build artifacts
+# ── Zig build artifacts ──────────────────────────────────
 zig-out/
 zig-cache/
 .zig-cache/
+**/.zig-cache/
 
-# Local Zig installation (download separately)
+# ── Local Zig installation (download separately) ────────
 zig-*/
-
-# Local zig wrapper (uses project-local zig installation)
 /zig
 
-# Editor
+# ── Benchmark build artifacts ───────────────────────────
+benchmarks/.zig-cache/
+benchmarks/zig-out/
+benchmarks/**/target/
+benchmarks/**/*.so
+benchmarks/**/*.o
+benchmarks/**/*.a
+benchmarks/**/*.d
+benchmarks/**/*.obj
+
+# Per-iteration benchmark data (large, regenerated every run)
+benchmarks/results/**/task_*.csv
+benchmarks/results/**/cold_start.csv
+benchmarks/results/**/error_*.csv
+
+# Rust build directories in runner subdirectories
+benchmarks/src/extendr/rust/target/
+benchmarks/src/savvy/rust/target/
+
+# ── Local dev folders ────────────────────────────────────
+ref/
+tmp/
+plan/
+data/
+real/
+experiments/
+
+# ── Editor files ─────────────────────────────────────────
 .vscode/
 *.swp
 *~
-
-# Ignored folders (dev only)
-ref/
-tmp/
-data/
-plan/
-real/
-benchmarks/
-experiments/
+.DS_Store
