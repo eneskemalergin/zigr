@@ -8,33 +8,33 @@ const std = @import("std");
 const R = @import("R");
 const err = @import("error");
 
-/// Wrap a Zig pointer as an R external pointer with optional tag and
-/// protected value. The tag identifies the pointer type. The protected
-/// value is preserved from GC.
+/// R_MakeExternalPtr with tag + protected value. The tag identifies the
+/// pointer type for safe downcasting; the protected value survives GC.
 pub fn make(ptr: ?*anyopaque, tag_sxp: R.SEXP, prot: R.SEXP) R.SEXP {
     return R.R_MakeExternalPtr(ptr, tag_sxp, prot);
 }
 
-/// Get the pointer from an external pointer SEXP.
+/// R_ExternalPtrAddr returns null if the pointer was cleared.
 pub fn addr(sexp: R.SEXP) ?*anyopaque {
     return R.R_ExternalPtrAddr(sexp);
 }
 
-/// Get the tag from an external pointer SEXP.
+/// R_ExternalPtrTag returns the tag set at creation time.
 pub fn tag(sexp: R.SEXP) R.SEXP {
     return R.R_ExternalPtrTag(sexp);
 }
 
-/// Register a finalizer that R calls when the external pointer is
-/// garbage-collected. The finalizer receives the EXTPTRSXP and can
-/// extract the pointer via addr().
+/// Registers a finalizer that R calls when the EXTPTRSXP is GC'd.
+/// The finalizer receives the EXTPTRSXP (not the raw pointer).
 pub fn registerFinalizer(sexp: R.SEXP, comptime cleanupFn: *const fn (R.SEXP) callconv(.c) void) void {
     R.R_RegisterCFinalizerEx(sexp, cleanupFn, 1);
 }
 
-/// Create an external pointer from a Zig type, wrapping the value
-/// and registering a finalizer that calls `deinit` on the value.
+/// Wraps a Zig value in an EXTPTRSXP and registers a finalizer that
+/// calls `deinitFn` then frees the heap allocation.
 pub fn create(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void) R.SEXP {
+    // c_allocator (not R_chk_*) because GC finalizers run asynchronously
+    // and cannot use R_chk_*.
     const heap_val = std.heap.c_allocator.create(T) catch err.signal("out of memory during external pointer creation");
     heap_val.* = init_val;
     const sexp = make(@as(?*anyopaque, @ptrCast(heap_val)), R.R_NilValue, R.R_NilValue);

@@ -1,14 +1,14 @@
-# ── Zig build artifacts ──────────────────────────────────
+# Zig build artifacts
 zig-out/
 zig-cache/
 .zig-cache/
 **/.zig-cache/
 
-# ── Local Zig installation (download separately) ────────
+# Local Zig installation (download separately)
 zig-*/
 /zig
 
-# ── Benchmark build artifacts ───────────────────────────
+# Benchmark build artifacts
 benchmarks/.zig-cache/
 benchmarks/zig-out/
 benchmarks/**/target/
@@ -27,7 +27,19 @@ benchmarks/results/**/error_*.csv
 benchmarks/src/extendr/rust/target/
 benchmarks/src/savvy/rust/target/
 
-# ── Local dev folders ────────────────────────────────────
+# hellozigr build artifacts (examples)
+examples/hellozigr/src/hellozigr.so
+examples/hellozigr/src/hellozigr.dll
+examples/hellozigr/src/.zig-cache/
+examples/hellozigr/src/zig-out/
+
+# R build artifacts
+.Rcheck/
+.Rhistory
+.RData
+.Rproj.user/
+
+# Local dev folders
 ref/
 tmp/
 plan/
@@ -35,7 +47,7 @@ data/
 real/
 experiments/
 
-# ── Editor files ─────────────────────────────────────────
+# Editor files
 .vscode/
 *.swp
 *~

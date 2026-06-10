@@ -15,7 +15,6 @@ const eval = @import("eval");
 const trycatch = @import("trycatch");
 const serialize = @import("serialize");
 const weakref = @import("weakref");
-const sexp = @import("sexp");
 
 fn mySum(slice: []const f64) f64 {
     var total: f64 = 0;
@@ -30,7 +29,7 @@ fn myOptional(opt: ?f64) f64 {
 test "lang" {
     const sym = lang.symbol("my_test");
 
-    const cell = lang.cons(R.R_NilValue, R.R_NilValue);
+    const cell = lang.lcons(R.R_NilValue, R.R_NilValue);
     _ = lang.car(cell);
     _ = lang.cdr(cell);
     lang.setCar(cell, R.R_NilValue);
@@ -38,7 +37,6 @@ test "lang" {
     _ = lang.tag(cell);
     lang.setTag(cell, R.R_NilValue);
 
-    _ = lang.allocSExp(sexp.SEXPTYPE.lang);
     _ = lang.dataCons(R.R_NilValue, R.R_NilValue);
 
     _ = lang.list1(R.R_NilValue);
@@ -48,18 +46,18 @@ test "lang" {
     _ = lang.list5(R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
     _ = lang.list6(R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
 
-    _ = lang.call1(sym);
-    _ = lang.call2(sym, R.R_NilValue);
-    _ = lang.call3(sym, R.R_NilValue, R.R_NilValue);
-    _ = lang.call4(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue);
-    _ = lang.call5(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
-    _ = lang.call6(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    _ = lang.call0(sym);
+    _ = lang.call1(sym, R.R_NilValue);
+    _ = lang.call2(sym, R.R_NilValue, R.R_NilValue);
+    _ = lang.call3(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    _ = lang.call4(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    _ = lang.call5(sym, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
 }
 
 test "eval" {
     const plus = lang.symbol("+");
     const one = R.Rf_ScalarReal(1.0);
-    const call = lang.call3(plus, one, one);
+    const call = lang.call2(plus, one, one);
     const res = eval.rEval(call, null);
     _ = res;
     _ = eval.baseEnv;

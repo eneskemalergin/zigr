@@ -5,6 +5,7 @@
 //! withRng uses a cleanup frame to ensure release fires even when
 //! the wrapped function longjmps (Rf_error).
 
+const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
 
@@ -28,10 +29,19 @@ pub fn release() void {
 /// frame armed. On normal return the frame pops silently. On longjmp
 /// (Rf_error) the cleanup fires release() before the unwind propagates.
 pub fn withRng(comptime func: *const fn () R.SEXP) R.SEXP {
-    acquire();
     cleanup.pushFrame(releaseRng, null);
+    acquire();
     const result = func();
     cleanup.popFrame();
     release();
     return result;
+}
+
+test "withRng type" {
+    try std.testing.expectEqual(@TypeOf(withRng), fn (comptime *const fn () R.SEXP) R.SEXP);
+}
+
+test "acquire and release types" {
+    try std.testing.expectEqual(@TypeOf(acquire), fn () void);
+    try std.testing.expectEqual(@TypeOf(release), fn () void);
 }

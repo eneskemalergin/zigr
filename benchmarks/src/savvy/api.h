@@ -1,6 +1,6 @@
 #include <Rinternals.h>
 
-SEXP savvy_bench_fib__ffi(SEXP c_arg__n);
+SEXP savvy_bench_fib_recursive__ffi(SEXP c_arg__n);
 SEXP savvy_bench_vectorsum__ffi(SEXP c_arg__vec);
 SEXP savvy_bench_transpose__ffi(SEXP c_arg__mat);
 SEXP savvy_bench_strings__ffi(SEXP c_arg__vec, SEXP c_arg__sep);

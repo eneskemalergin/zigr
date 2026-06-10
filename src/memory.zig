@@ -1,9 +1,15 @@
 //! R-managed memory allocator.
 //!
-//! Provides a std.mem.Allocator backed by R's checked memory functions.
-//! Use this when passing memory to C libraries that expect allocations
-//! on R's heap rather than the system allocator. Most zigr code should
-//! use the Zig arena allocator (Phase 9.1) instead.
+//! Provides a std.mem.Allocator backed by R's checked memory functions
+//! (R_chk_calloc / R_chk_free).  CRAN's memory checker tracks
+//! allocations made through these functions.
+//!
+//! When to use which allocator:
+//!   RAllocator        - Use for CRAN-tracked memory within a single .Call invocation.
+//!   ArenaAllocator    - Use for conversion scratch buffers. Freed as a group at call end.
+//!   c_allocator       - Use for long-lived wrappers (ALTREP backing, EXTPTRSXP) that
+//!                       must outlive .Call and survive GC finalizers (R_chk_* is inappropriate).
+//!   TwoTierArena      - Stack-first arena (8 KB buffer, heap spill) used by export wrappers.
 
 const std = @import("std");
 const R = @import("R");

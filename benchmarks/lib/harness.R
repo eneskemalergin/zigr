@@ -1,6 +1,3 @@
-# Harness helpers: timing (microbenchmark), convergence, CSV logging.
-# Requires the microbenchmark package.
-
 library(microbenchmark)
 
 peak_rss_kb <- function() {
@@ -33,7 +30,6 @@ runner_artifact_metrics <- function(cfg, root_dir) {
   )
 }
 
-# Build a call expression for a given function name, args, and call type.
 make_call_expr <- function(cfun, args, call_type) {
   if (call_type == "r") {
     as.call(c(list(as.name(cfun)), args))
@@ -44,16 +40,14 @@ make_call_expr <- function(cfun, args, call_type) {
   }
 }
 
-# Single timed call (used for cold-start measurement only).
-# Returns list(wall_ms, peak_rss_kb, error).
 timed_call <- function(cfun, args, call_type = ".Call", expr = NULL) {
   gc()
   rss_before <- peak_rss_kb()
   expr <- expr %||% make_call_expr(cfun, args, call_type)
   error <- NA_character_
-  wall_start <- nanotime()
+  wall_start <- get_nanotime()
   tryCatch(eval(expr), error = function(e) { error <<- conditionMessage(e) })
-  wall_end <- nanotime()
+  wall_end <- get_nanotime()
   rss_after <- peak_rss_kb()
   list(
     wall_ms     = (wall_end - wall_start) / 1e6,
@@ -62,42 +56,35 @@ timed_call <- function(cfun, args, call_type = ".Call", expr = NULL) {
   )
 }
 
-nanotime <- function() as.numeric(Sys.time()) * 1e9
+get_nanotime <- function() {
+  if (exists("get_nanotime", where = "package:microbenchmark", mode = "function")) {
+    microbenchmark::get_nanotime()
+  } else {
+    as.numeric(Sys.time()) * 1e9
+  }
+}
 
-# Benchmark a function call using microbenchmark.
-# Returns converged statistics or an error.
-#   cfun: function name (string)
-#   args: list of arguments
-#   call_type: ".Call", ".C", or "r"
-#   warmup: number of warmup iterations (not timed)
-#   times: number of timed iterations
-benchmark_call <- function(cfun, args, call_type,
-                           warmup = 10L,
-                           times  = 100L,
-                           expr   = NULL) {
+benchmark_call <- function(cfun, args, call_type, warmup = 10L, times = 100L, expr = NULL) {
   expr <- expr %||% make_call_expr(cfun, args, call_type)
   peak_rss_val <- NA_integer_
 
-  # Warmup
   for (i in seq_len(warmup)) {
     r <- tryCatch(eval(expr), error = function(e) NULL)
     if (is.null(r)) return(list(error = "warmup failed"))
   }
 
-  # Measure with microbenchmark
   mb <- tryCatch(
     microbenchmark(eval(expr), times = times, unit = "ms"),
     error = function(e) return(list(error = conditionMessage(e)))
   )
   if (is.list(mb) && !is.null(mb$error)) return(mb)
 
-  times_vec <- mb$time / 1e6  # nanoseconds to milliseconds
+  times_vec <- mb$time / 1e6
   n <- length(times_vec)
   mean_ms <- mean(times_vec)
   sd_ms <- sd(times_vec)
   cv_pct <- if (mean_ms > 0) sd_ms / mean_ms * 100 else 0
 
-  # Peak RSS from a separate call
   peak_rss_val <- peak_rss_kb()
 
   list(
@@ -113,7 +100,6 @@ benchmark_call <- function(cfun, args, call_type,
   )
 }
 
-# CSV I/O helpers
 write_csv <- function(df, path, append = FALSE) {
   dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
   write.table(df, path, sep = ",", row.names = FALSE, quote = FALSE, na = "",

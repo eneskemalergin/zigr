@@ -117,12 +117,14 @@ export fn zigr_bench_struct_convert(input_sexp: SEXP) SEXP {
     _ = R.SET_VECTOR_ELT(result, 6, offset_in);
     _ = R.SET_VECTOR_ELT(result, 7, scale_in);
 
-    const weights_out = R.Rf_allocVector(R.REALSXP, @intCast(weights.len));
-    @memcpy(R.REAL(weights_out)[0..weights.len], weights);
+    const weights_slice = weights.constSlice();
+    const weights_out = R.Rf_allocVector(R.REALSXP, @intCast(weights_slice.len));
+    @memcpy(R.REAL(weights_out)[0..weights_slice.len], weights_slice);
     _ = R.SET_VECTOR_ELT(result, 8, weights_out);
 
-    const indices_out = R.Rf_allocVector(R.INTSXP, @intCast(indices.len));
-    @memcpy(R.INTEGER(indices_out)[0..indices.len], indices);
+    const indices_slice = indices.constSlice();
+    const indices_out = R.Rf_allocVector(R.INTSXP, @intCast(indices_slice.len));
+    @memcpy(R.INTEGER(indices_out)[0..indices_slice.len], indices_slice);
     _ = R.SET_VECTOR_ELT(result, 9, indices_out);
 
     _ = R.Rf_setAttrib(result, R.R_NamesSymbol, cachedFieldNames());

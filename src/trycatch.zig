@@ -6,6 +6,7 @@
 const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
+const symbols = @import("symbols.zig");
 
 pub const RCondition = error{RCondition};
 
@@ -82,9 +83,11 @@ pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
 /// Extract the "message" from a condition SEXP. Returns "" if no
 /// message attribute is present.
 pub fn extractMessage(cond: R.SEXP) []const u8 {
-    const msg_sym = R.Rf_install("message");
+    const msg_sym = symbols.install("message");
     const msg_sexp = R.Rf_getAttrib(cond, msg_sym);
     if (msg_sexp == R.R_NilValue) return "";
+    if (R.TYPEOF(msg_sexp) != R.STRSXP) return "";
+    if (R.XLENGTH(msg_sexp) < 1) return "";
     const elt = R.STRING_ELT(msg_sexp, 0);
     if (elt == R.R_NaString) return "";
     return std.mem.sliceTo(R.R_CHAR(elt), 0);

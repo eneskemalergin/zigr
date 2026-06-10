@@ -6,24 +6,8 @@ low_noise_cv_threshold <- 20
 meaningful_margin <- 1.05
 
 aggregate_exclusions <- data.frame(
-  task = c(
-    "07_parallel",
-    "29_scale_law",
-    "30_arena_vs_rmalloc",
-    "36_parallel_scaling",
-    "38_owned_altrep_real_sum",
-    "39_owned_altrep_int_sum",
-    "40_owned_altrep_logical_sum"
-  ),
-  comparison_note = c(
-    "native runners use multithreaded sums while the R baseline is single-threaded",
-    "runners intentionally use different dispatch strategies",
-    "runners intentionally use different allocation strategies",
-    "native runners sweep thread counts while the R baseline repeats serial sum",
-    "owned ALTREP capability benchmark rather than a common user-level path",
-    "owned ALTREP capability benchmark rather than a common user-level path",
-    "owned ALTREP capability benchmark rather than a common user-level path"
-  ),
+  task = character(0),
+  comparison_note = character(0),
   stringsAsFactors = FALSE
 )
 

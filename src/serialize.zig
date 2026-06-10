@@ -1,9 +1,10 @@
 //! R serialization helpers.
 //!
-//! Convert any R object to a raw vector and back. ALTREP objects are
-//! materialized during serialization and restored as regular vectors
-//! on deserialization. The returned SEXP is unprotected: callers must
-//! protect it if used across GC-triggering calls.
+//! Convert any R object to a raw vector and back. ALTREP class metadata
+//! is preserved during serialization and restored on deserialization
+//! (R 4.x+ preserves the ALTREP class). The returned SEXP is
+//! unprotected: callers must protect it if used across GC-triggering
+//! calls.
 
 const R = @import("R");
 

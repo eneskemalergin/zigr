@@ -56,6 +56,8 @@ fn Wrap(comptime kind: AltKind) type {
 
 fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
     const W = Wrap(kind);
+    // c_allocator (not R_chk_*) because the Wrap must outlive the
+    // .Call invocation, R's finalizer frees it during a later GC.
     const w = std.heap.c_allocator.create(W) catch err.signal("out of memory during ALTREP creation");
     w.* = .{ .ptr = slice.ptr, .len = slice.len };
     return w;
@@ -80,6 +82,9 @@ fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
 
 fn dataptrImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) ?*anyopaque {
     const w = wrapFromAltrep(kind, x);
+    // Returns a non-const pointer to the Zig backing slice.  R 4.6's
+    // DATAPTR_RW() would add COW checks, but this ALTREP class has
+    // exclusive ownership of its backing memory, so no COW needed.
     return @as(?*anyopaque, @ptrCast(@constCast(w.ptr)));
 }
 
@@ -107,7 +112,7 @@ fn duplicateImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) R.SEXP {
         .logical => @memcpy(R.LOGICAL(dup)[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]),
         .raw => @memcpy(R.RAW(dup)[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]),
         .complex => {
-            const dst: [*]T = @ptrCast(@alignCast(R.COMPLEX(dup).?));
+            const dst: [*]T = @ptrCast(@alignCast(R.COMPLEX(dup) orelse @panic("COMPLEX returned null on freshly allocated CPLXSXP")));
             @memcpy(dst[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]);
         },
     }
@@ -544,6 +549,9 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             }.f);
             R.R_set_altrep_Duplicate_method(cls, duplicateString);
             R.R_set_altstring_Elt_method(cls, stringElt);
+            // R 4.6 has no R_set_altstring_Dataptr_method or
+            // R_set_altstring_Dataptr_or_null_method (strings are
+            // an array of SEXP, not a flat data buffer).
             R.R_set_altstring_Is_sorted_method(cls, stringIsSorted);
             R.R_set_altstring_No_NA_method(cls, stringNoNA);
             return cls;

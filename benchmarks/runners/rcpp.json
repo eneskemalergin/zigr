@@ -1,6 +1,6 @@
 {
   "name": "rcpp",
-  "label": "rcpp",
+  "label": "Rcpp (C++)",
   "call_type": ".Call",
   "exports": {
     "01_vectorsum": "rcpp_bench_vectorsum",
@@ -46,7 +46,6 @@
     "40_r_tryeval": "rcpp_bench_r_tryeval",
     "41_serialize_roundtrip": "rcpp_bench_serialize_roundtrip",
     "42_external_ptr": "rcpp_bench_external_ptr",
-    "43_rng_stress": "rcpp_bench_rng_stress",
-  },
-  "needs_r_home": true
+    "43_rng_stress": "rcpp_bench_rng_stress"
+  }
 }

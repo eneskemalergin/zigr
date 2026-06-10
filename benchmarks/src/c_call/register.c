@@ -1,90 +1,101 @@
-// Registration table for all C_Call benchmark tasks.
+// Registration table for all C benchmark tasks.
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 
-// Forward declarations with correct parameter lists
-extern SEXP c_call_bench_fib(SEXP);
 extern SEXP c_call_bench_vectorsum(SEXP);
-extern SEXP c_call_bench_transpose(SEXP);
-extern SEXP c_call_bench_strings(SEXP, SEXP);
-extern SEXP c_call_bench_dataframe(SEXP);
-extern SEXP c_call_bench_na_prop(SEXP);
-extern SEXP c_call_bench_parallel(SEXP);
-extern SEXP c_call_bench_protect_stress(SEXP);
-extern SEXP c_call_bench_blas_matmul(SEXP, SEXP);
+extern SEXP c_call_bench_elem_ops(SEXP);
+extern SEXP c_call_bench_memcpy_bandwidth(SEXP);
+extern SEXP c_call_bench_sort(SEXP);
+extern SEXP c_call_bench_fib_recursive(SEXP);
+extern SEXP c_call_bench_broadcast(SEXP);
+extern SEXP c_call_bench_protect_shallow(SEXP);
+extern SEXP c_call_bench_protect_scaling(SEXP);
+extern SEXP c_call_bench_type_dispatch(SEXP);
+extern SEXP c_call_bench_longjmp_safety(SEXP);
+extern SEXP c_call_bench_sexp_create(SEXP);
+extern SEXP c_call_bench_sexp_inspect(SEXP);
+extern SEXP c_call_bench_matrix_transpose(SEXP);
+extern SEXP c_call_bench_matrix_rowsums(SEXP);
+extern SEXP c_call_bench_matrix_rowcol_means(SEXP);
+extern SEXP c_call_bench_dataframe_filter(SEXP);
+extern SEXP c_call_bench_list_access(SEXP);
+extern SEXP c_call_bench_string_concat(SEXP);
+extern SEXP c_call_bench_string_nchar(SEXP);
+extern SEXP c_call_bench_string_encoding(SEXP);
+extern SEXP c_call_bench_factor_ops(SEXP);
+extern SEXP c_call_bench_attrib_ops(SEXP);
+extern SEXP c_call_bench_s4_slot_access(SEXP);
+extern SEXP c_call_bench_na_propagation(SEXP);
+extern SEXP c_call_bench_long_vector_idx(SEXP);
+extern SEXP c_call_bench_l1_arithmetic(SEXP);
+extern SEXP c_call_bench_matmul(SEXP, SEXP);
 extern SEXP c_call_bench_crossprod(SEXP);
 extern SEXP c_call_bench_cholesky(SEXP);
-extern SEXP c_call_bench_lm(SEXP, SEXP);
-extern SEXP c_call_bench_rowsums(SEXP);
-extern SEXP c_call_bench_elem_ops(SEXP);
-extern SEXP c_call_bench_rowcol_means(SEXP);
-extern SEXP c_call_bench_broadcast(SEXP, SEXP);
-extern SEXP c_call_bench_sort(SEXP);
-extern SEXP c_call_bench_cumsum(SEXP);
-extern SEXP c_call_bench_rnorm(SEXP);
-extern SEXP c_call_bench_string_nchar(SEXP);
-extern SEXP c_call_bench_which_na(SEXP);
-extern SEXP c_call_bench_altrep_sum(SEXP);
-extern SEXP c_call_bench_altrep_read(SEXP);
+extern SEXP c_call_bench_lm_fit(SEXP, SEXP);
 extern SEXP c_call_bench_altrep_create(SEXP);
-extern SEXP c_call_bench_comptime_dispatch(SEXP);
+extern SEXP c_call_bench_altrep_materialize(SEXP);
+extern SEXP c_call_bench_altrep_elt_walk(SEXP);
+extern SEXP c_call_bench_altrep_region_read(SEXP);
+extern SEXP c_call_bench_altrep_sum_via_R(SEXP);
+extern SEXP c_call_bench_altrep_sum_native(SEXP);
+extern SEXP c_call_bench_altrep_min_max(SEXP);
+extern SEXP c_call_bench_altrep_no_na_query(SEXP);
 extern SEXP c_call_bench_struct_convert(SEXP);
-extern SEXP c_call_bench_na_prop_vary(SEXP);
-extern SEXP c_call_bench_scale_law(SEXP);
-extern SEXP c_call_bench_arena_vs_rmalloc(SEXP);
-extern SEXP c_call_bench_prot_overhead(SEXP);
-extern SEXP c_call_bench_longjmp_safety(SEXP);
-extern SEXP c_call_bench_translate_c_cost(SEXP);
-extern SEXP c_call_bench_string_variants(SEXP);
-extern SEXP c_call_bench_parallel_scaling(SEXP);
-extern SEXP c_call_bench_memory_bandwidth(SEXP);
-extern SEXP c_call_bench_owned_altrep_real_sum(SEXP);
-extern SEXP c_call_bench_owned_altrep_int_sum(SEXP);
-extern SEXP c_call_bench_owned_altrep_logical_sum(SEXP);
+extern SEXP c_call_bench_r_eval(SEXP);
+extern SEXP c_call_bench_r_tryeval(SEXP);
+extern SEXP c_call_bench_serialize_roundtrip(SEXP);
+extern SEXP c_call_bench_external_ptr(SEXP);
+extern SEXP c_call_bench_rng_stress(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
-  {"c_call_bench_fib",            (DL_FUNC) &c_call_bench_fib,            1},
-  {"c_call_bench_vectorsum",      (DL_FUNC) &c_call_bench_vectorsum,      1},
-  {"c_call_bench_transpose",         (DL_FUNC) &c_call_bench_transpose,         1},
-  {"c_call_bench_strings",        (DL_FUNC) &c_call_bench_strings,        2},
-  {"c_call_bench_dataframe",      (DL_FUNC) &c_call_bench_dataframe,      1},
-  {"c_call_bench_na_prop",        (DL_FUNC) &c_call_bench_na_prop,        1},
-  {"c_call_bench_parallel",       (DL_FUNC) &c_call_bench_parallel,       1},
-  {"c_call_bench_protect_stress", (DL_FUNC) &c_call_bench_protect_stress, 1},
-  {"c_call_bench_blas_matmul",    (DL_FUNC) &c_call_bench_blas_matmul,    2},
-  {"c_call_bench_crossprod",      (DL_FUNC) &c_call_bench_crossprod,      1},
-  {"c_call_bench_cholesky",       (DL_FUNC) &c_call_bench_cholesky,       1},
-  {"c_call_bench_lm",             (DL_FUNC) &c_call_bench_lm,             2},
-  {"c_call_bench_rowsums",        (DL_FUNC) &c_call_bench_rowsums,        1},
-  {"c_call_bench_elem_ops",       (DL_FUNC) &c_call_bench_elem_ops,       1},
-  {"c_call_bench_rowcol_means",   (DL_FUNC) &c_call_bench_rowcol_means,   1},
-  {"c_call_bench_broadcast",      (DL_FUNC) &c_call_bench_broadcast,      2},
-  {"c_call_bench_sort",           (DL_FUNC) &c_call_bench_sort,           1},
-  {"c_call_bench_cumsum",         (DL_FUNC) &c_call_bench_cumsum,         1},
-  {"c_call_bench_rnorm",          (DL_FUNC) &c_call_bench_rnorm,          1},
-  {"c_call_bench_string_nchar",   (DL_FUNC) &c_call_bench_string_nchar,   1},
-  {"c_call_bench_which_na",       (DL_FUNC) &c_call_bench_which_na,       1},
-  {"c_call_bench_altrep_sum",    (DL_FUNC) &c_call_bench_altrep_sum,    1},
-  {"c_call_bench_altrep_read",   (DL_FUNC) &c_call_bench_altrep_read,   1},
-  {"c_call_bench_altrep_create", (DL_FUNC) &c_call_bench_altrep_create, 1},
-  {"c_call_bench_comptime_dispatch", (DL_FUNC) &c_call_bench_comptime_dispatch, 1},
-  {"c_call_bench_struct_convert", (DL_FUNC) &c_call_bench_struct_convert, 1},
-  {"c_call_bench_na_prop_vary", (DL_FUNC) &c_call_bench_na_prop_vary, 1},
-  {"c_call_bench_scale_law", (DL_FUNC) &c_call_bench_scale_law, 1},
-  {"c_call_bench_arena_vs_rmalloc", (DL_FUNC) &c_call_bench_arena_vs_rmalloc, 1},
-  {"c_call_bench_prot_overhead", (DL_FUNC) &c_call_bench_prot_overhead, 1},
-  {"c_call_bench_longjmp_safety", (DL_FUNC) &c_call_bench_longjmp_safety, 1},
-  {"c_call_bench_translate_c_cost", (DL_FUNC) &c_call_bench_translate_c_cost, 1},
-  {"c_call_bench_string_variants", (DL_FUNC) &c_call_bench_string_variants, 1},
-  {"c_call_bench_parallel_scaling", (DL_FUNC) &c_call_bench_parallel_scaling, 1},
-  {"c_call_bench_memory_bandwidth", (DL_FUNC) &c_call_bench_memory_bandwidth, 1},
-  {"c_call_bench_owned_altrep_real_sum", (DL_FUNC) &c_call_bench_owned_altrep_real_sum, 1},
-  {"c_call_bench_owned_altrep_int_sum", (DL_FUNC) &c_call_bench_owned_altrep_int_sum, 1},
-  {"c_call_bench_owned_altrep_logical_sum", (DL_FUNC) &c_call_bench_owned_altrep_logical_sum, 1},
+  {"c_call_bench_vectorsum",        (DL_FUNC) &c_call_bench_vectorsum,        1},
+  {"c_call_bench_elem_ops",         (DL_FUNC) &c_call_bench_elem_ops,         1},
+  {"c_call_bench_memcpy_bandwidth", (DL_FUNC) &c_call_bench_memcpy_bandwidth, 1},
+  {"c_call_bench_sort",             (DL_FUNC) &c_call_bench_sort,             1},
+  {"c_call_bench_fib_recursive",    (DL_FUNC) &c_call_bench_fib_recursive,    1},
+  {"c_call_bench_broadcast",        (DL_FUNC) &c_call_bench_broadcast,        1},
+  {"c_call_bench_protect_shallow",  (DL_FUNC) &c_call_bench_protect_shallow,  1},
+  {"c_call_bench_protect_scaling",  (DL_FUNC) &c_call_bench_protect_scaling,  1},
+  {"c_call_bench_type_dispatch",    (DL_FUNC) &c_call_bench_type_dispatch,    1},
+  {"c_call_bench_longjmp_safety",   (DL_FUNC) &c_call_bench_longjmp_safety,   1},
+  {"c_call_bench_sexp_create",      (DL_FUNC) &c_call_bench_sexp_create,      1},
+  {"c_call_bench_sexp_inspect",     (DL_FUNC) &c_call_bench_sexp_inspect,     1},
+  {"c_call_bench_matrix_transpose", (DL_FUNC) &c_call_bench_matrix_transpose, 1},
+  {"c_call_bench_matrix_rowsums",   (DL_FUNC) &c_call_bench_matrix_rowsums,   1},
+  {"c_call_bench_matrix_rowcol_means",(DL_FUNC)&c_call_bench_matrix_rowcol_means,1},
+  {"c_call_bench_dataframe_filter", (DL_FUNC) &c_call_bench_dataframe_filter, 1},
+  {"c_call_bench_list_access",      (DL_FUNC) &c_call_bench_list_access,      1},
+  {"c_call_bench_string_concat",    (DL_FUNC) &c_call_bench_string_concat,    1},
+  {"c_call_bench_string_nchar",     (DL_FUNC) &c_call_bench_string_nchar,     1},
+  {"c_call_bench_string_encoding",  (DL_FUNC) &c_call_bench_string_encoding,  1},
+  {"c_call_bench_factor_ops",       (DL_FUNC) &c_call_bench_factor_ops,       1},
+  {"c_call_bench_attrib_ops",       (DL_FUNC) &c_call_bench_attrib_ops,       1},
+  {"c_call_bench_s4_slot_access",   (DL_FUNC) &c_call_bench_s4_slot_access,   1},
+  {"c_call_bench_na_propagation",   (DL_FUNC) &c_call_bench_na_propagation,   1},
+  {"c_call_bench_long_vector_idx",  (DL_FUNC) &c_call_bench_long_vector_idx,  1},
+  {"c_call_bench_l1_arithmetic",    (DL_FUNC) &c_call_bench_l1_arithmetic,    1},
+  {"c_call_bench_matmul",           (DL_FUNC) &c_call_bench_matmul,           2},
+  {"c_call_bench_crossprod",        (DL_FUNC) &c_call_bench_crossprod,        1},
+  {"c_call_bench_cholesky",         (DL_FUNC) &c_call_bench_cholesky,         1},
+  {"c_call_bench_lm_fit",           (DL_FUNC) &c_call_bench_lm_fit,           2},
+  {"c_call_bench_altrep_create",    (DL_FUNC) &c_call_bench_altrep_create,    1},
+  {"c_call_bench_altrep_materialize",(DL_FUNC)&c_call_bench_altrep_materialize,1},
+  {"c_call_bench_altrep_elt_walk",  (DL_FUNC) &c_call_bench_altrep_elt_walk,  1},
+  {"c_call_bench_altrep_region_read",(DL_FUNC)&c_call_bench_altrep_region_read,1},
+  {"c_call_bench_altrep_sum_via_R", (DL_FUNC) &c_call_bench_altrep_sum_via_R, 1},
+  {"c_call_bench_altrep_sum_native",(DL_FUNC) &c_call_bench_altrep_sum_native,1},
+  {"c_call_bench_altrep_min_max",   (DL_FUNC) &c_call_bench_altrep_min_max,   1},
+  {"c_call_bench_altrep_no_na_query",(DL_FUNC)&c_call_bench_altrep_no_na_query,1},
+  {"c_call_bench_struct_convert",   (DL_FUNC) &c_call_bench_struct_convert,   1},
+  {"c_call_bench_r_eval",           (DL_FUNC) &c_call_bench_r_eval,           1},
+  {"c_call_bench_r_tryeval",        (DL_FUNC) &c_call_bench_r_tryeval,        1},
+  {"c_call_bench_serialize_roundtrip",(DL_FUNC)&c_call_bench_serialize_roundtrip,1},
+  {"c_call_bench_external_ptr",     (DL_FUNC) &c_call_bench_external_ptr,     1},
+  {"c_call_bench_rng_stress",       (DL_FUNC) &c_call_bench_rng_stress,       1},
   {NULL, NULL, 0}
 };
 
-void R_init_c_call_benchmarks(DllInfo *dll) {
-  R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
-  R_useDynamicSymbols(dll, FALSE);
+void R_init_bench(DllInfo *dll) {
+    R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
+    R_useDynamicSymbols(dll, FALSE);
 }

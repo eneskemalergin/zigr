@@ -9,8 +9,10 @@
 
 const R = @import("R");
 
-/// Create a weak reference. `finalizer` runs when GC collects the key.
-/// `onexit` runs the finalizer on R shutdown too.
+/// Create a weak reference. `finalizer` receives the weakref SEXP (not the
+/// key) when GC collects the key.  Use `key(wref)` / `value(wref)` inside
+/// the finalizer to access the now-stale key or value.  `onexit` controls
+/// whether the finalizer runs on R shutdown too.
 pub fn make(key_sxp: R.SEXP, val: R.SEXP, comptime finalizer: *const fn (R.SEXP) callconv(.c) void, onexit: bool) R.SEXP {
     return R.R_MakeWeakRefC(key_sxp, val, finalizer, if (onexit) @as(R.Rboolean, 1) else 0);
 }

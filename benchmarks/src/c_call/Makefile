@@ -8,34 +8,52 @@ R_CFLAGS ?= $(shell R CMD config CFLAGS)
 PKG_CFLAGS = -I$(R_INCLUDE) $(R_CFLAGS)
 PKG_LIBS = -L$(R_LIB) -lR -lpthread -lblas
 
-# Detect if running from benchmarks/ or src/c_call/
 SRCDIR = $(dir $(firstword $(MAKEFILE_LIST)))
-SRC = $(addprefix $(SRCDIR),task_01_fib.c task_02_vectorsum.c \
-      task_03_transpose.c task_04_strings.c \
-      task_05_dataframe.c task_06_na_prop.c \
-      task_07_parallel.c task_09_protect.c \
-      task_10_blas_matmul.c task_11_crossprod.c \
-      task_12_cholesky.c task_13_lm.c task_14_rowsums.c \
-      task_15_elem_ops.c task_16_rowcol_means.c \
-      task_17_broadcast.c task_18_sort.c \
-      task_19_cumsum.c task_20_rnorm.c \
-      task_21_string_nchar.c task_22_which_na.c \
-      task_23_altrep_sum.c task_24_altrep_read.c \
-      task_25_altrep_create.c \
-      task_26_comptime_dispatch.c \
-      task_27_struct_convert.c \
-      task_28_na_prop_vary.c \
-      task_29_scale_law.c \
-      task_30_arena_vs_rmalloc.c \
-      task_31_prot_overhead.c \
-      task_32_longjmp_safety.c \
-      task_34_translate_c_cost.c \
-      task_35_string_variants.c \
-      task_36_parallel_scaling.c \
-      task_37_memory_bandwidth.c \
-      task_38_owned_altrep_real_sum.c \
-      task_39_owned_altrep_int_sum.c \
-      task_40_owned_altrep_logical_sum.c \
+SRC = $(addprefix $(SRCDIR), \
+      task_01_vectorsum.c \
+      task_02_elem_ops.c \
+      task_03_memcpy_bandwidth.c \
+      task_04_sort.c \
+      task_05_fib_recursive.c \
+      task_06_broadcast.c \
+      task_07a_protect_shallow.c \
+      task_07b_protect_scaling.c \
+      task_08_type_dispatch.c \
+      task_09_longjmp_safety.c \
+      task_10_sexp_create.c \
+      task_11_sexp_inspect.c \
+      task_12_matrix_transpose.c \
+      task_13_matrix_rowsums.c \
+      task_14_matrix_rowcol_means.c \
+      task_15_dataframe_filter.c \
+      task_16_list_access.c \
+      task_17_string_concat.c \
+      task_18_string_nchar.c \
+      task_19_string_encoding.c \
+      task_20_factor_ops.c \
+      task_21_attrib_ops.c \
+      task_22_s4_slot_access.c \
+      task_23_na_propagation.c \
+      task_24_long_vector_idx.c \
+      task_25_l1_arithmetic.c \
+      task_26_matmul.c \
+      task_27_crossprod.c \
+      task_28_cholesky.c \
+      task_29_lm_fit.c \
+      task_30_altrep_create.c \
+      task_31_altrep_materialize.c \
+      task_32_altrep_elt_walk.c \
+      task_33_altrep_region_read.c \
+      task_34_altrep_sum_via_R.c \
+      task_35_altrep_sum_native.c \
+      task_36_altrep_min_max.c \
+      task_37_altrep_no_na_query.c \
+      task_38_struct_convert.c \
+      task_39_r_eval.c \
+      task_40_r_tryeval.c \
+      task_41_serialize_roundtrip.c \
+      task_42_external_ptr.c \
+      task_43_rng_stress.c \
       register.c)
 OUT = $(SRCDIR)bench.c.so
 

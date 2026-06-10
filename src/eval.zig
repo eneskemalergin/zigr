@@ -2,96 +2,61 @@
 //!
 //! Rf_eval, Rf_findFun can longjmp (R errors). These wrappers don't
 //! allocate Zig memory so longjmp through them is safe.
+//! Uses R 4.6 API functions (R_getVar) instead of non-API Rf_findVar.
+//!
+//! Names are self-explanatory (rEval, findVar, setVar, defineVar, call)
+//! so thin wrappers omit doc comments.
 
 const std = @import("std");
 const R = @import("R");
 const lang = @import("lang.zig");
-
-const Rf_findFun = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findFun" });
-const Rf_findVar = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findVar" });
-const Rf_findVarInFrame = @extern(*const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP, .{ .name = "Rf_findVarInFrame" });
+const symbols = @import("symbols.zig");
 
 fn resolveEnv(envir: ?R.SEXP) R.SEXP {
     return envir orelse R.R_GlobalEnv;
 }
 
-/// Evaluate an R expression. Null envir defaults to the global env.
+/// envir defaults to R_GlobalEnv when null.
 pub fn rEval(expr: R.SEXP, envir: ?R.SEXP) R.SEXP {
     return R.Rf_eval(expr, resolveEnv(envir));
 }
 
-/// Look up a variable by symbol. Null envir defaults to the global env.
+/// envir defaults to R_GlobalEnv when null.
 pub fn findVar(sym: R.SEXP, envir: ?R.SEXP) R.SEXP {
-    return Rf_findVar(sym, resolveEnv(envir));
+    return R.R_getVar(sym, resolveEnv(envir), 1);
 }
 
 fn installSym(name: []const u8) R.SEXP {
-    const S = struct {
-        var cache: [64]struct {
-            hash: u64,
-            name: [256:0]u8,
-            len: usize,
-            sexp: R.SEXP,
-        } = undefined;
-        var count: usize = 0;
-    };
-    const hash = std.hash.Wyhash.hash(0, name);
-    for (0..S.count) |i| {
-        if (S.cache[i].hash == hash and S.cache[i].len == name.len and
-            std.mem.eql(u8, S.cache[i].name[0..name.len], name))
-        {
-            return S.cache[i].sexp;
-        }
-    }
-    var buf: [256:0]u8 = undefined;
-    const n = @min(name.len, buf.len - 1);
-    @memcpy(buf[0..n], name[0..n]);
-    buf[n] = 0;
-    const sxp = R.Rf_install(@ptrCast(&buf));
-    if (S.count < S.cache.len) {
-        const cn = @min(name.len, S.cache[0].name.len - 1);
-        @memcpy(S.cache[S.count].name[0..cn], name[0..cn]);
-        S.cache[S.count].name[cn] = 0;
-        S.cache[S.count].hash = hash;
-        S.cache[S.count].len = cn;
-        S.cache[S.count].sexp = sxp;
-        S.count += 1;
-    }
-    return sxp;
+    return symbols.install(name);
 }
 
-/// Look up a variable by name in the global environment.
 pub fn findVarName(name: []const u8) R.SEXP {
     return findVar(installSym(name), null);
 }
 
-/// Look up a variable in a specific environment frame without searching
-/// the parent chain.
+/// Searches only the given frame, not the parent chain (inherits=FALSE).
 pub fn findVarInFrame(frame: R.SEXP, name: []const u8) R.SEXP {
-    return Rf_findVarInFrame(frame, installSym(name));
+    return R.R_getVar(installSym(name), frame, 0);
 }
 
-/// Look up a function by name in the search path. Errors if not found.
 pub fn findFunction(name: []const u8) R.SEXP {
-    return Rf_findFun(installSym(name), R.R_GlobalEnv);
+    return R.Rf_findFun(installSym(name), R.R_GlobalEnv);
 }
 
-/// Set a variable in an environment (wraps Rf_setVar).
+/// setVar assigns to an existing binding; defineVar creates a new one. envir defaults to R_GlobalEnv when null.
 pub fn setVar(sym: R.SEXP, val: R.SEXP, envir: ?R.SEXP) void {
     R.Rf_setVar(sym, val, resolveEnv(envir));
 }
 
-/// Define a variable in the global environment.
 pub fn defineVar(name: []const u8, value: R.SEXP) void {
     R.Rf_defineVar(installSym(name), value, R.R_GlobalEnv);
 }
 
-/// Define a variable in a given environment.
 pub fn defineVarIn(name: []const u8, value: R.SEXP, envir: R.SEXP) void {
     R.Rf_defineVar(installSym(name), value, envir);
 }
 
-/// Execute a function in a top-level context. Returns false on longjmp.
+/// Wraps R_ToplevelExec. Returns false if the wrapped function longjmps.
 pub fn topLevelExec(func: *const fn (?*anyopaque) callconv(.c) void, data: ?*anyopaque) bool {
     return R.R_ToplevelExec(func, data) != 0;
 }
@@ -99,22 +64,30 @@ pub fn topLevelExec(func: *const fn (?*anyopaque) callconv(.c) void, data: ?*any
 pub const baseEnv: R.SEXP = R.R_BaseEnv;
 pub const emptyEnv: R.SEXP = R.R_EmptyEnv;
 
-/// Call an R function by name with positional arguments.
+/// Looks up function by name, builds call expression, evaluates it.
 pub fn call(name: []const u8, args: []const R.SEXP) R.SEXP {
-    const fun = Rf_findFun(installSym(name), R.R_GlobalEnv);
+    const fun = R.Rf_findFun(installSym(name), R.R_GlobalEnv);
     const call_expr = lang.buildCall(fun, args);
     return R.Rf_eval(call_expr, R.R_GlobalEnv);
 }
 
-/// Evaluate an R expression and catch errors. Returns null if an error
-/// was signaled, otherwise the result SEXP.
+/// Returns null if an error is signaled, instead of longjmp-ing.
 pub fn tryEval(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
     var err: c_int = 0;
     const result = R.R_tryEval(expr, envir, &err);
     return if (err != 0) null else result;
 }
 
-/// Evaluate an R expression and catch errors silently (no error printed).
+/// Uses R_tryEval internally; returns null if the variable is missing. envir defaults to R_GlobalEnv when null.
+pub fn tryFindVar(sym: R.SEXP, envir: ?R.SEXP) ?R.SEXP {
+    return tryEval(sym, resolveEnv(envir));
+}
+
+pub fn tryFindVarName(name: []const u8) ?R.SEXP {
+    return tryFindVar(installSym(name), null);
+}
+
+/// Like tryEval but suppresses the error message printed to stderr.
 pub fn tryEvalSilent(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
     var err: c_int = 0;
     const result = R.R_tryEvalSilent(expr, envir, &err);

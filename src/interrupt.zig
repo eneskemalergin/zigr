@@ -7,19 +7,19 @@
 const builtin = @import("builtin");
 const R = @import("R");
 
-/// Check for user interrupt (Ctrl+C). If pending, R longjmps to
-/// the error handler. Call inside long-running loops.
+/// R_CheckUserInterrupt longjmps if Ctrl+C was pressed. Call inside tight
+/// loops so long computations are cancellable, not just between them.
 pub fn checkInterrupt() void {
     R.R_CheckUserInterrupt();
 }
 
-/// Verify enough C stack space remains for R internal operations.
-/// Call in deep recursion or large stack frame code.
+/// R_CheckStack aborts if the C stack is near overflow. Call before deep
+/// recursion or large alloca frames to get a clear error instead of a SEGV.
 pub fn checkStack() void {
     R.R_CheckStack();
 }
 
-/// Check stack with an estimated frame size in bytes.
+/// Like checkStack but accounts for a specific additional frame size.
 pub fn checkStack2(frameSize: usize) void {
     R.R_CheckStack2(@intCast(frameSize));
 }
@@ -31,10 +31,7 @@ pub const StackChecker = switch (builtin.mode) {
     else => false,
 };
 
-/// Wraps a chunk-based function with interrupt checks between chunks.
-/// The function receives a chunk index and returns `true` if there is
-/// more work, `false` when done. Interrupts are checked before each
-/// chunk so the user can cancel long computations gracefully.
+/// Wraps a chunk-based function with interrupt checks between chunks. The function receives a chunk index and returns `true` if there is more work. Interrupts are checked before each chunk so the user can cancel long computations.
 ///
 /// Usage:
 ///   try interrupt.longRunning(struct {

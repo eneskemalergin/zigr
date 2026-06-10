@@ -34,8 +34,8 @@ static SEXP handle_result(SEXP res_) {
     return handle_result(res);                       \
   }
 
-SEXP savvy_bench_fib__impl(SEXP c_arg__n) {
-  SEXP res = savvy_bench_fib__ffi(c_arg__n);
+SEXP savvy_bench_fib_recursive__impl(SEXP c_arg__n) {
+  SEXP res = savvy_bench_fib_recursive__ffi(c_arg__n);
   return handle_result(res);
 }
 
@@ -86,7 +86,7 @@ SEXP savvy_bench_dataframe__impl(SEXP c_arg__df) {
 }
 
 static const R_CallMethodDef CallEntries[] = {
-  {"savvy_bench_fib__impl", (DL_FUNC)&savvy_bench_fib__impl, 1},
+  {"savvy_bench_fib_recursive__impl", (DL_FUNC)&savvy_bench_fib_recursive__impl, 1},
   {"savvy_bench_vectorsum__impl", (DL_FUNC)&savvy_bench_vectorsum__impl, 1},
   {"savvy_bench_transpose__impl", (DL_FUNC)&savvy_bench_transpose__impl, 1},
   {"savvy_bench_strings__impl", (DL_FUNC)&savvy_bench_strings__impl, 2},

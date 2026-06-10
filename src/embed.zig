@@ -31,6 +31,4 @@ pub fn rCodeEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
 
 /// Evaluate R code via R_ParseEvalString. Semantically identical to
 /// rCodeEval; kept as a distinct function for API compatibility.
-pub fn rRawEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
-    return rCodeEval(code, envir);
-}
+pub const rRawEval = rCodeEval;

@@ -24,6 +24,46 @@ const R = @import("R");
 const convert = @import("convert.zig");
 const cleanup = @import("cleanup");
 
+/// Panics on any allocation. Used when arena_needed is false (all param/return types are scalars or SEXP). If this fires, a code path reached fromSexp with a type needing allocation despite arena_needed=false, which is a bug.
+fn panicAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+    _ = ctx;
+    _ = len;
+    _ = alignment;
+    _ = ra;
+    @panic("allocation triggered without arena. Bug in arena_needed check or fromSexp type routing");
+}
+fn panicFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+    _ = ctx;
+    _ = buf;
+    _ = alignment;
+    _ = ra;
+}
+fn panicResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+    _ = ctx;
+    _ = buf;
+    _ = alignment;
+    _ = new_len;
+    _ = ra;
+    return false;
+}
+fn panicRemap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+    _ = ctx;
+    _ = buf;
+    _ = alignment;
+    _ = new_len;
+    _ = ra;
+    return null;
+}
+const panic_allocator = std.mem.Allocator{
+    .ptr = undefined,
+    .vtable = &.{
+        .alloc = panicAlloc,
+        .free = panicFree,
+        .resize = panicResize,
+        .remap = panicRemap,
+    },
+};
+
 fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
     var buf: [4096:0]u8 = undefined;
     const pn = @min(prefix.len, buf.len - 2);
@@ -47,10 +87,12 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return @as(T, fromSexp(child, sexp, arena));
     }
     if (comptime T == []const f64) {
-        return convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
+        const view = convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
+        return view.constSlice();
     }
     if (comptime T == []const i32) {
-        return convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
+        const view = convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
+        return view.constSlice();
     }
     if (comptime T == []const []const u8) {
         return convert.toStringSlice(arena, sexp) catch |err| signalErrorMsg("toStringSlice", @errorName(err));
@@ -71,7 +113,8 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return convert.toRawSlice(arena, sexp) catch |err| signalErrorMsg("toRawSlice", @errorName(err));
     }
     if (comptime T == []const convert.Rcomplex) {
-        return convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
+        const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
+        return view.constSlice();
     }
     if (comptime T == R.SEXP) {
         return sexp;
@@ -100,9 +143,7 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     @compileError("unsupported return type: " ++ @typeName(T));
 }
 
-/// Two-tier allocator: stack buffer first, heap on spill.
-/// For ~90% of export calls the fixed buffer is sufficient and no
-/// heap allocation occurs. The heap arena exists only for large returns.
+/// Two-tier allocator: stack buffer first, heap on spill. The fixed buffer covers ~90% of export calls; the heap arena exists only for large returns.
 const TwoTierArena = struct {
     fixed_buf: [8192]u8,
     fba: std.heap.FixedBufferAllocator,
@@ -170,7 +211,6 @@ const FreeArena = struct {
     }
 };
 
-/// Returns true if a type requires arena allocation for conversion.
 fn needsArena(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .optional => |info| needsArena(info.child),
@@ -203,7 +243,7 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
             }
             defer if (have_arena) arena.deinit();
             defer if (have_arena) cleanup.popFrame();
-            const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
+            const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
             if (comptime n == 0) return toSexp(func(), ret_type);
             if (comptime n == 1) {
@@ -284,83 +324,84 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     };
 
     const W = struct {
-        fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
-            return cleanup.protectCall(struct {
-                fn call() R.SEXP {
-                    var arena: TwoTierArena = undefined;
-                    var have_arena = false;
-                    if (arena_needed) {
-                        arena = TwoTierArena.init();
-                        cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                        have_arena = true;
-                    }
-                    defer if (have_arena) arena.deinit();
-                    defer if (have_arena) cleanup.popFrame();
-                    const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
+        fn doCall(args_ptr: ?*anyopaque) R.SEXP {
+            const args: R.SEXP = @ptrCast(@alignCast(args_ptr.?));
+            var arena: TwoTierArena = undefined;
+            var have_arena = false;
+            if (arena_needed) {
+                arena = TwoTierArena.init();
+                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
+                have_arena = true;
+            }
+            defer if (have_arena) arena.deinit();
+            defer if (have_arena) cleanup.popFrame();
+            const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
-                    if (comptime n == 1) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        return toSexp(func(p0), ret_type);
-                    }
-                    if (comptime n == 2) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        return toSexp(func(p0, p1), ret_type);
-                    }
-                    if (comptime n == 3) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        return toSexp(func(p0, p1, p2), ret_type);
-                    }
-                    if (comptime n == 4) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                        return toSexp(func(p0, p1, p2, p3), ret_type);
-                    }
-                    if (comptime n == 5) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4), ret_type);
-                    }
-                    if (comptime n == 6) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
-                    }
-                    if (comptime n == 7) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
-                        const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
-                    }
-                    if (comptime n == 8) {
-                        const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                        const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                        const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                        const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                        const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                        const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
-                        const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
-                        const p7 = fromSexp(func_info.params[7].type.?, R.CAR(R.CDR(R.CDDR(R.CDDR(R.CDDR(args))))), alloc);
-                        return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
-                    }
-                    @compileError("unsupported param count, max 8 for .External");
-                }
-            }.call);
+            if (comptime n == 1) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                return toSexp(func(p0), ret_type);
+            }
+            if (comptime n == 2) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                return toSexp(func(p0, p1), ret_type);
+            }
+            if (comptime n == 3) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                return toSexp(func(p0, p1, p2), ret_type);
+            }
+            if (comptime n == 4) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                return toSexp(func(p0, p1, p2, p3), ret_type);
+            }
+            if (comptime n == 5) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
+                return toSexp(func(p0, p1, p2, p3, p4), ret_type);
+            }
+            if (comptime n == 6) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
+            }
+            if (comptime n == 7) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
+            }
+            if (comptime n == 8) {
+                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
+                const p7 = fromSexp(func_info.params[7].type.?, R.CAR(R.CDR(R.CDDR(R.CDDR(R.CDDR(args))))), alloc);
+                return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
+            }
+            @compileError("unsupported param count, max 8 for .External");
+        }
+
+        fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
+            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(args)));
         }
     };
     return W.wrap;
@@ -406,9 +447,9 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             }
             defer if (have_arena) arena.deinit();
             defer if (have_arena) cleanup.popFrame();
-            const alloc = if (have_arena) arena.allocator() else std.heap.page_allocator;
+            const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
-            if (R.Rf_isExternalPtr(a0) == 0) signalError("expected external pointer");
+            if (R.TYPEOF(a0) != R.EXTPTRSXP) signalError("expected external pointer");
             const raw_ptr = R.R_ExternalPtrAddr(a0) orelse signalError("null external pointer");
             const ptr: *T = @ptrCast(@alignCast(raw_ptr));
 
@@ -441,17 +482,14 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     return W.wrap;
 }
 
-/// Generate exports for an R package. `call_exports` register under .Call,
-/// `external_exports` register under .External. Both are comptime slices
-/// of {name, func} pairs. Pass &.{} for empty tables.
-/// Generates R_init_<pkg> and R_unload_<pkg> (no-op) via @export.
+/// Generate exports for an R package. `call_exports` register under .Call, `external_exports` under .External. Both are comptime slices of `{ .name, .func }` pairs. Pass &.{} for empty tables.
 pub fn generateExports(comptime call_exports: anytype, comptime external_exports: anytype) type {
     const call_count = call_exports.len;
     const ext_count = external_exports.len;
 
     return struct {
         var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
-        var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
+        pub var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
         var initialized: bool = false;
 
         /// Call this from your R_init_<pkg> entry point.
@@ -489,12 +527,14 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
 }
 
 fn safeName(comptime T: type) []const u8 {
-    const name = @typeName(T);
-    comptime var buf: [name.len]u8 = undefined;
-    inline for (name, 0..) |c, i| {
-        buf[i] = if (c == '.') '_' else c;
-    }
-    return &buf;
+    return comptime blk: {
+        const name = @typeName(T);
+        var buf: [name.len]u8 = undefined;
+        for (name, 0..) |c, i| {
+            buf[i] = if (c == '.') '_' else c;
+        }
+        break :blk &buf;
+    };
 }
 
 /// Generate method exports for a struct type `T`. Functions receive
@@ -508,18 +548,18 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
     const ext_count = external_exports.len;
 
     return struct {
-        var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
-        var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
+        pub var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
+        pub var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
         var initialized: bool = false;
 
-        fn init(info: *R.DllInfo) callconv(.c) void {
+        pub fn init(info: *R.DllInfo) callconv(.c) void {
             if (initialized) return;
             initialized = true;
 
             inline for (0..call_count) |i| {
                 const exp = call_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                const full_name = safeName(T) ++ "__" ++ exp.name;
+                const full_name = comptime safeName(T) ++ "__" ++ exp.name;
                 call_defs[i] = makeMethodDef(full_name, makeMethodWrapper(T, exp.func), @intCast(fi.params.len));
             }
             call_defs[call_count] = .{ .name = null, .fun = null, .numArgs = 0 };

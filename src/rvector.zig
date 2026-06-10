@@ -38,10 +38,10 @@ pub fn RVector(comptime T: type) type {
 
         pub fn view(self: Self, allocator: std.mem.Allocator) ![]const T {
             return switch (T) {
-                f64 => try convert.toRealSliceView(allocator, self.sexp),
-                i32 => try convert.toIntSliceView(allocator, self.sexp),
+                f64 => (try convert.toRealSliceView(allocator, self.sexp)).constSlice(),
+                i32 => (try convert.toIntSliceView(allocator, self.sexp)).constSlice(),
                 u8 => try convert.toRawSlice(allocator, self.sexp),
-                convert.Rcomplex => try convert.toComplexSliceView(allocator, self.sexp),
+                convert.Rcomplex => (try convert.toComplexSliceView(allocator, self.sexp)).constSlice(),
                 else => unreachable,
             };
         }
@@ -94,10 +94,13 @@ pub fn RVector(comptime T: type) type {
             }.op);
         }
 
-        pub fn sum(self: Self) T {
+        pub fn sum(self: Self) switch (T) {
+            i32 => i64,
+            else => T,
+        } {
             return switch (T) {
+                i32 => convert.sumInt(self.sexp),
                 f64 => convert.sum(self.sexp),
-                i32 => @intCast(convert.sumInt(self.sexp)),
                 else => @compileError("sum is only supported for numeric RVector types"),
             };
         }
@@ -108,7 +111,8 @@ pub fn RVector(comptime T: type) type {
 
         fn resultSlice(result: R.SEXP) []T {
             const rlen = R.XLENGTH(result);
-            return convert.dataPtr(T, result)[0..@as(usize, @intCast(if (rlen < 0) @as(R.R_xlen_t, 0) else rlen))];
+            const ptr = convert.dataPtr(T, result) orelse @panic("dataPtr returned null on freshly allocated SEXP");
+            return ptr[0..@as(usize, @intCast(if (rlen < 0) @as(R.R_xlen_t, 0) else rlen))];
         }
 
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {

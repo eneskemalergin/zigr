@@ -17,6 +17,7 @@
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
 const xlength = @import("sexp.zig").xlength;
+const tryXlength = @import("sexp.zig").tryXlength;
 const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
@@ -52,18 +53,21 @@ const AllocSliceCleanup = struct {
     allocator: std.mem.Allocator,
     memory: []u8,
     alignment: std.mem.Alignment,
+    return_address: usize,
 
-    fn init(comptime T: type, allocator: std.mem.Allocator, slice: []T) AllocSliceCleanup {
+    fn init(comptime T: type, allocator: std.mem.Allocator, slice: []T, ra: usize) AllocSliceCleanup {
         return .{
             .allocator = allocator,
             .memory = std.mem.sliceAsBytes(slice),
             .alignment = .fromByteUnits(@alignOf(T)),
+            .return_address = ra,
         };
     }
 
     fn fire(ptr: ?*anyopaque) void {
-        const self: *const AllocSliceCleanup = @ptrCast(@alignCast(ptr.?));
-        self.allocator.rawFree(self.memory, self.alignment, @returnAddress());
+        const self: *AllocSliceCleanup = @ptrCast(@alignCast(ptr.?));
+        self.allocator.rawFree(self.memory, self.alignment, self.return_address);
+        std.heap.c_allocator.destroy(self);
     }
 };
 
@@ -80,6 +84,9 @@ pub const ConvertError = error{
     ScalarNA,
     AltRepRegionRead,
     MissingField,
+    OutOfMemory,
+    NegativeLength,
+    LengthOverflow,
 };
 
 fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertError!void {
@@ -249,36 +256,70 @@ fn directComplexSliceOrNull(sexp: SEXP) ?[]const Rcomplex {
     return complex_ptr[0..n];
 }
 
-pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const f64 {
+/// Tagged union: borrowed (R-owned) or owned (arena copy). `.constSlice()` returns `[]const T` in either case. `.deinit(allocator)` frees an owned copy, no-op for borrowed.
+pub fn SliceView(comptime T: type) type {
+    return union(enum) {
+        borrowed: []const T,
+        owned: []T,
+
+        pub fn constSlice(self: @This()) []const T {
+            return switch (self) {
+                .borrowed => |s| s,
+                .owned => |s| s,
+            };
+        }
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            switch (self.*) {
+                .owned => |s| allocator.free(s),
+                .borrowed => {},
+            }
+            self.* = undefined;
+        }
+    };
+}
+
+pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    return directRealSliceOrNull(sexp) orelse try toRealSlice(allocator, sexp);
+    if (directRealSliceOrNull(sexp)) |data| return .{ .borrowed = data };
+    return .{ .owned = try toRealSlice(allocator, sexp) };
 }
 
-pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const i32 {
+pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    return directIntSliceOrNull(sexp) orelse try toIntSlice(allocator, sexp);
+    if (directIntSliceOrNull(sexp)) |data| return .{ .borrowed = data };
+    return .{ .owned = try toIntSlice(allocator, sexp) };
 }
 
-/// REALSXP: allocate and copy. Uses REAL_GET_REGION for ALTREP (one C call),
-/// @memcpy from REAL() for non-ALTREP (zero C FFI, matches C baseline).
+/// Loops on REAL_GET_REGION for partial reads (ALTREP). @memcpy from REAL() for non-ALTREP (zero C FFI).
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(f64, n);
     if (directRealSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        var free_result = AllocSliceCleanup.init(f64, allocator, result);
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(&free_result)));
+        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
+            allocator.free(result);
+            return error.OutOfMemory;
+        };
+        state.* = AllocSliceCleanup.init(f64, allocator, result, @returnAddress());
+        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
         defer cleanup.popFrame();
-        _ = R.REAL_GET_REGION(sexp, 0, @intCast(n), result.ptr);
+        defer std.heap.c_allocator.destroy(state);
+        var offset: R.R_xlen_t = 0;
+        const ncast = @as(R.R_xlen_t, @intCast(n));
+        while (offset < ncast) {
+            const got = R.REAL_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
+            if (got == 0) return error.AltRepRegionRead;
+            offset += got;
+        }
     } else {
         @memcpy(result, R.REAL(sexp)[0..n]);
     }
     return result;
 }
 
-/// REALSXP: allocate and copy.
 pub fn fromRealSlice(slice: []const f64) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.REALSXP, len));
@@ -287,26 +328,35 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
     return vec.get();
 }
 
-/// INTSXP: allocate and copy. Uses INTEGER_GET_REGION for ALTREP,
-/// @memcpy from INTEGER() for non-ALTREP.
+/// Loops on INTEGER_GET_REGION for partial reads (ALTREP). @memcpy from INTEGER() for non-ALTREP.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(i32, n);
     if (directIntSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        var free_result = AllocSliceCleanup.init(i32, allocator, result);
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(&free_result)));
+        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
+            allocator.free(result);
+            return error.OutOfMemory;
+        };
+        state.* = AllocSliceCleanup.init(i32, allocator, result, @returnAddress());
+        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
         defer cleanup.popFrame();
-        _ = R.INTEGER_GET_REGION(sexp, 0, @intCast(n), result.ptr);
+        defer std.heap.c_allocator.destroy(state);
+        var offset: R.R_xlen_t = 0;
+        const ncast = @as(R.R_xlen_t, @intCast(n));
+        while (offset < ncast) {
+            const got = R.INTEGER_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
+            if (got == 0) return error.AltRepRegionRead;
+            offset += got;
+        }
     } else {
         @memcpy(result, R.INTEGER(sexp)[0..n]);
     }
     return result;
 }
 
-/// INTSXP: allocate and copy.
 pub fn fromIntSlice(slice: []const i32) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.INTSXP, len));
@@ -316,13 +366,28 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 }
 
 /// STRSXP: borrow CHARSXP data into a Zig slice array.
+/// NA strings become empty strings (NA info is lost).  Use
+/// toStringSliceNullable to preserve the NA/empty distinction.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
         result[i] = if (elt == R.R_NaString) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+    }
+    return result;
+}
+
+/// STRSXP: borrow CHARSXP data into a Zig slice of nullable strings.
+/// NA_STRING elements become `null`, preserving the NA/empty distinction.
+pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]const u8 {
+    try expectType(sexp, R.STRSXP, error.ExpectedString);
+    const n = try tryXlength(sexp);
+    const result = try allocator.alloc(?[]const u8, n);
+    for (0..n) |i| {
+        const elt = R.STRING_ELT(sexp, @intCast(i));
+        result[i] = if (elt == R.R_NaString) null else std.mem.sliceTo(R.R_CHAR(elt), 0);
     }
     return result;
 }
@@ -406,14 +471,14 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     return .{
         .sexp = sexp,
-        .len = xlength(sexp),
+        .len = try tryXlength(sexp),
     };
 }
 
 /// STRSXP: cache per-element string metadata once for repeated multi-pass use.
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const items = try allocator.alloc(StringView, n);
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
@@ -424,7 +489,6 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
     };
 }
 
-/// STRSXP: intern strings and build a vector.
 pub fn fromStringSlice(slice: []const []const u8) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.STRSXP, len));
@@ -443,27 +507,38 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 /// @memcpy from LOGICAL() for non-ALTREP.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(i32, n);
     if (directLogicalSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        var free_result = AllocSliceCleanup.init(i32, allocator, result);
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(&free_result)));
+        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
+            allocator.free(result);
+            return error.OutOfMemory;
+        };
+        state.* = AllocSliceCleanup.init(i32, allocator, result, @returnAddress());
+        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
         defer cleanup.popFrame();
-        _ = R.LOGICAL_GET_REGION(sexp, 0, @intCast(n), result.ptr);
+        defer std.heap.c_allocator.destroy(state);
+        var offset: R.R_xlen_t = 0;
+        const ncast = @as(R.R_xlen_t, @intCast(n));
+        while (offset < ncast) {
+            const got = R.LOGICAL_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
+            if (got == 0) return error.AltRepRegionRead;
+            offset += got;
+        }
     } else {
         @memcpy(result, R.LOGICAL(sexp)[0..n]);
     }
     return result;
 }
 
-pub fn toLogicalSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const i32 {
+pub fn toLogicalSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    return directLogicalSliceOrNull(sexp) orelse try toLogicalSlice(allocator, sexp);
+    if (directLogicalSliceOrNull(sexp)) |data| return .{ .borrowed = data };
+    return .{ .owned = try toLogicalSlice(allocator, sexp) };
 }
 
-/// LGLSXP: build from i32 slice.
 pub fn fromLogicalSlice(slice: []const i32) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.LGLSXP, len));
@@ -475,13 +550,12 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
 /// VECSXP: borrow list elements into a SEXP slice.
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(SEXP, n);
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
     return result;
 }
 
-/// VECSXP: build from a SEXP slice.
 pub fn fromListSlice(slice: []const SEXP) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, len));
@@ -492,24 +566,33 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
     return vec.get();
 }
 
-/// RAWSXP: allocate and copy. Uses RAW_GET_REGION for ALTREP,
-/// @memcpy from RAW() for non-ALTREP.
+/// Loops on RAW_GET_REGION for partial reads (ALTREP). @memcpy from RAW() for non-ALTREP.
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(u8, n);
     if (R.ALTREP(sexp) != 0) {
-        var free_result = AllocSliceCleanup.init(u8, allocator, result);
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(&free_result)));
+        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
+            allocator.free(result);
+            return error.OutOfMemory;
+        };
+        state.* = AllocSliceCleanup.init(u8, allocator, result, @returnAddress());
+        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
         defer cleanup.popFrame();
-        _ = R.RAW_GET_REGION(sexp, 0, @intCast(n), result.ptr);
+        defer std.heap.c_allocator.destroy(state);
+        var offset: R.R_xlen_t = 0;
+        const ncast = @as(R.R_xlen_t, @intCast(n));
+        while (offset < ncast) {
+            const got = R.RAW_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
+            if (got == 0) return error.AltRepRegionRead;
+            offset += got;
+        }
     } else {
         @memcpy(result, R.RAW(sexp)[0..n]);
     }
     return result;
 }
 
-/// RAWSXP: allocate and copy.
 pub fn fromRawSlice(slice: []const u8) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.RAWSXP, len));
@@ -518,35 +601,46 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
     return vec.get();
 }
 
-/// CPLXSXP: allocate and copy. Uses COMPLEX_GET_REGION for ALTREP,
-/// @memcpy from COMPLEX() for non-ALTREP.
-pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
+/// Loops on COMPLEX_GET_REGION for partial reads (ALTREP). @memcpy from COMPLEX() for non-ALTREP.
+pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    const n = xlength(sexp);
+    const n = try tryXlength(sexp);
     const result = try allocator.alloc(Rcomplex, n);
     if (R.ALTREP(sexp) != 0) {
-        var free_result = AllocSliceCleanup.init(Rcomplex, allocator, result);
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(&free_result)));
+        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
+            allocator.free(result);
+            return error.OutOfMemory;
+        };
+        state.* = AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress());
+        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
         defer cleanup.popFrame();
-        _ = R.COMPLEX_GET_REGION(sexp, 0, @intCast(n), @ptrCast(result.ptr));
+        defer std.heap.c_allocator.destroy(state);
+        var offset: R.R_xlen_t = 0;
+        const ncast = @as(R.R_xlen_t, @intCast(n));
+        while (offset < ncast) {
+            const got = R.COMPLEX_GET_REGION(sexp, offset, ncast - offset, @ptrCast(result.ptr + @as(usize, @intCast(offset))));
+            if (got == 0) return error.AltRepRegionRead;
+            offset += got;
+        }
     } else {
-        const src: [*]const Rcomplex = @ptrCast(@alignCast(R.COMPLEX(sexp).?));
-        @memcpy(result, src[0..n]);
+        const src = R.COMPLEX(sexp) orelse return error.AltRepRegionRead;
+        const typed: [*]const Rcomplex = @ptrCast(@alignCast(src));
+        @memcpy(result, typed[0..n]);
     }
     return result;
 }
 
-pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
+pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(Rcomplex) {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    return directComplexSliceOrNull(sexp) orelse try toComplexSlice(allocator, sexp);
+    if (directComplexSliceOrNull(sexp)) |data| return .{ .borrowed = data };
+    return .{ .owned = try toComplexSlice(allocator, sexp) };
 }
 
-/// CPLXSXP: allocate and copy.
 pub fn fromComplexSlice(slice: []const Rcomplex) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.CPLXSXP, len));
     defer vec.deinit();
-    const dst: [*]Rcomplex = @ptrCast(@alignCast(R.COMPLEX(vec.get()).?));
+    const dst: [*]Rcomplex = @ptrCast(@alignCast(R.COMPLEX(vec.get()) orelse @panic("COMPLEX returned null on freshly allocated CPLXSXP")));
     @memcpy(dst[0..slice.len], slice);
     return vec.get();
 }
@@ -563,6 +657,16 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     if (comptime T == []const i32) return fromIntSlice(value);
     if (comptime T == []const []const u8) return fromStringSlice(value);
     if (comptime T == []const u8) return fromRawSlice(value);
+    if (comptime T == []const bool) {
+        const int_slice = arena.alloc(i32, value.len) catch {
+            R.Rf_error("out of memory in struct-to-SEXP bool conversion");
+            return R.R_NilValue;
+        };
+        for (value, 0..) |b, i| int_slice[i] = if (b) 1 else 0;
+        const result = fromLogicalSlice(int_slice);
+        arena.free(int_slice);
+        return result;
+    }
     if (comptime T == []const Rcomplex) return fromComplexSlice(value);
     if (comptime T == SEXP) return value;
     if (comptime @typeInfo(T) == .@"struct") {
@@ -583,6 +687,12 @@ fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     if (comptime T == []const f64) return try toRealSlice(arena, sexp);
     if (comptime T == []const i32) return try toIntSlice(arena, sexp);
     if (comptime T == []const []const u8) return try toStringSlice(arena, sexp);
+    if (comptime T == []const bool) {
+        const int_slice = try toLogicalSlice(arena, sexp);
+        const result = try arena.alloc(bool, int_slice.len);
+        for (int_slice, 0..) |v, i| result[i] = v == 1;
+        return result;
+    }
     if (comptime T == []const u8) return try toRawSlice(arena, sexp);
     if (comptime T == []const Rcomplex) return try toComplexSlice(arena, sexp);
     if (comptime T == SEXP) return sexp;
@@ -733,7 +843,7 @@ const IntChunkIter = struct {
 };
 
 // LogicalChunkIter reuses IntChunk because both store i32 data under the hood.
-// R's LOGICAL() and INTEGER() both return int* -- the difference is semantic only.
+// R's LOGICAL() and INTEGER() both return int* the difference is semantic only.
 const LogicalChunkIter = struct {
     sexp: SEXP,
     n: usize,
@@ -792,17 +902,28 @@ pub fn sum(sexp: SEXP) f64 {
     return total;
 }
 
-/// Sum of an INTSXP using direct owned-backing or INTEGER_GET_REGION.
+/// Sum of an INTSXP using SIMD @Vector reduction on i32 widened to i64.
 pub fn sumInt(sexp: SEXP) i64 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
     const n = xlength(sexp);
     if (n == 0) return 0;
 
+    const lanes = simd.i32_lanes;
     var total: i64 = 0;
     var iter = IntChunkIter.init(sexp);
     while (iter.next()) |chunk| {
-        for (chunk.data) |value| total += value;
+        var i: usize = 0;
+        if (chunk.data.len >= lanes) {
+            var vec_total: @Vector(lanes, i64) = @splat(0);
+            const end = chunk.data.len - (chunk.data.len % lanes);
+            while (i < end) : (i += lanes) {
+                const v: @Vector(lanes, i32) = chunk.data[i..][0..lanes].*;
+                vec_total += @as(@Vector(lanes, i64), @intCast(v));
+            }
+            total += @reduce(.Add, vec_total);
+        }
+        while (i < chunk.data.len) : (i += 1) total += chunk.data[i];
     }
 
     return total;
@@ -827,38 +948,17 @@ pub fn countTrue(sexp: SEXP) i64 {
 }
 
 fn minmaxIntChunks(comptime find_min: bool, iter: anytype, empty_value: i32) i32 {
-    const lanes = simd.i32_lanes;
     var initialized = false;
     var best = empty_value;
 
     while (iter.next()) |chunk| {
-        var local_best = chunk.data[0];
-        var i: usize = 1;
-
-        if (chunk.data.len >= lanes) {
-            var vec: @Vector(lanes, i32) = @splat(chunk.data[0]);
-            i = 0;
-            const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                const values: @Vector(lanes, i32) = chunk.data[i..][0..lanes].*;
-                vec = @select(i32, if (find_min) values < vec else values > vec, values, vec);
+        for (chunk.data) |value| {
+            if (value == R.R_NaInt) continue;
+            if (!initialized or (if (find_min) value < best else value > best)) {
+                best = value;
+                initialized = true;
             }
-            local_best = if (find_min) @reduce(.Min, vec) else @reduce(.Max, vec);
         }
-
-        while (i < chunk.data.len) : (i += 1) {
-            const better = if (find_min) chunk.data[i] < local_best else chunk.data[i] > local_best;
-            if (better) local_best = chunk.data[i];
-        }
-
-        if (!initialized) {
-            initialized = true;
-            best = local_best;
-            continue;
-        }
-
-        const better = if (find_min) local_best < best else local_best > best;
-        if (better) best = local_best;
     }
 
     return best;
@@ -1030,26 +1130,57 @@ pub fn norm2(sexp: SEXP) f64 {
     return total;
 }
 
+/// Scan a chunk for any NA_REAL values. Used before the SIMD loop to pick
+/// the fast path (no masking) for NA-free data.
+fn chunkHasNA(data: []const f64) bool {
+    const lanes = simd.f64_lanes;
+    const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
+    var i: usize = 0;
+    while (i + lanes <= data.len) : (i += lanes) {
+        const bits: @Vector(lanes, u64) = @bitCast(data[i..][0..lanes].*);
+        if (@reduce(.Or, bits == na_bits)) return true;
+    }
+    while (i < data.len) : (i += 1) {
+        if (R.ISNA(data[i]) != 0) return true;
+    }
+    return false;
+}
+
 /// Minimum of a REALSXP using SIMD @Vector reduction.
+/// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn min(sexp: SEXP) f64 {
     const n = xlength(sexp);
     if (n == 0) return std.math.inf(f64);
 
     const lanes = simd.f64_lanes;
+    const inf_vec: @Vector(lanes, f64) = @splat(std.math.inf(f64));
     var value = std.math.inf(f64);
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         var i: usize = 0;
         if (chunk.data.len >= lanes) {
-            var vec: @Vector(lanes, f64) = @splat(std.math.inf(f64));
+            const has_na = chunkHasNA(chunk.data);
+            var vec: @Vector(lanes, f64) = inf_vec;
             const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                vec = @select(f64, chunk.data[i..][0..lanes].* < vec, chunk.data[i..][0..lanes].*, vec);
+            if (has_na) {
+                const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
+                while (i < end) : (i += lanes) {
+                    const vals = chunk.data[i..][0..lanes].*;
+                    const not_na = @as(@Vector(lanes, u64), @bitCast(vals)) != na_bits;
+                    const clean = @select(f64, not_na, vals, inf_vec);
+                    vec = @select(f64, clean < vec, clean, vec);
+                }
+            } else {
+                while (i < end) : (i += lanes) {
+                    const vals = chunk.data[i..][0..lanes].*;
+                    vec = @select(f64, vals < vec, vals, vec);
+                }
             }
             const vec_min = @reduce(.Min, vec);
             if (vec_min < value) value = vec_min;
         }
         while (i < chunk.data.len) : (i += 1) {
+            if (R.ISNA(chunk.data[i]) != 0) continue;
             if (chunk.data[i] < value) value = chunk.data[i];
         }
     }
@@ -1058,25 +1189,40 @@ pub fn min(sexp: SEXP) f64 {
 }
 
 /// Maximum of a REALSXP using SIMD @Vector reduction.
+/// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn max(sexp: SEXP) f64 {
     const n = xlength(sexp);
     if (n == 0) return -std.math.inf(f64);
 
     const lanes = simd.f64_lanes;
+    const neg_inf_vec: @Vector(lanes, f64) = @splat(-std.math.inf(f64));
     var value = -std.math.inf(f64);
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         var i: usize = 0;
         if (chunk.data.len >= lanes) {
-            var vec: @Vector(lanes, f64) = @splat(-std.math.inf(f64));
+            const has_na = chunkHasNA(chunk.data);
+            var vec: @Vector(lanes, f64) = neg_inf_vec;
             const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                vec = @select(f64, chunk.data[i..][0..lanes].* > vec, chunk.data[i..][0..lanes].*, vec);
+            if (has_na) {
+                const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
+                while (i < end) : (i += lanes) {
+                    const vals = chunk.data[i..][0..lanes].*;
+                    const not_na = @as(@Vector(lanes, u64), @bitCast(vals)) != na_bits;
+                    const clean = @select(f64, not_na, vals, neg_inf_vec);
+                    vec = @select(f64, clean > vec, clean, vec);
+                }
+            } else {
+                while (i < end) : (i += lanes) {
+                    const vals = chunk.data[i..][0..lanes].*;
+                    vec = @select(f64, vals > vec, vals, vec);
+                }
             }
             const vec_max = @reduce(.Max, vec);
             if (vec_max > value) value = vec_max;
         }
         while (i < chunk.data.len) : (i += 1) {
+            if (R.ISNA(chunk.data[i]) != 0) continue;
             if (chunk.data[i] > value) value = chunk.data[i];
         }
     }
@@ -1233,13 +1379,12 @@ pub fn mean_narm(sexp: SEXP) f64 {
     return if (count == 0) R.R_NaReal else total / @as(f64, @floatFromInt(count));
 }
 
-/// Element-wise minimum of two REALSXPs. Returns a new REALSXP.
-pub fn pmin(a: SEXP, b: SEXP) SEXP {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    const da = toRealSliceView(arena.allocator(), a) catch |err| signalError(err);
-    const db = toRealSliceView(arena.allocator(), b) catch |err| signalError(err);
+/// Element-wise minimum of two REALSXPs using a caller-provided
+/// arena for internal allocations.  Reuse one arena across many
+/// calls for hot loops.
+pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
+    const da = (toRealSliceView(arena, a) catch |err| signalError(err)).constSlice();
+    const db = (toRealSliceView(arena, b) catch |err| signalError(err)).constSlice();
     const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
@@ -1253,13 +1398,19 @@ pub fn pmin(a: SEXP, b: SEXP) SEXP {
     return result.get();
 }
 
-/// Element-wise maximum of two REALSXPs. Returns a new REALSXP.
-pub fn pmax(a: SEXP, b: SEXP) SEXP {
+/// Element-wise minimum of two REALSXPs.  Creates an internal arena
+/// for each call.  For repeated calls use pminAlloc with a shared arena.
+pub fn pmin(a: SEXP, b: SEXP) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
+    return pminAlloc(a, b, arena.allocator());
+}
 
-    const da = toRealSliceView(arena.allocator(), a) catch |err| signalError(err);
-    const db = toRealSliceView(arena.allocator(), b) catch |err| signalError(err);
+/// Element-wise maximum of two REALSXPs using a caller-provided
+/// arena for internal allocations.
+pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
+    const da = (toRealSliceView(arena, a) catch |err| signalError(err)).constSlice();
+    const db = (toRealSliceView(arena, b) catch |err| signalError(err)).constSlice();
     const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
@@ -1273,6 +1424,14 @@ pub fn pmax(a: SEXP, b: SEXP) SEXP {
     return result.get();
 }
 
+/// Element-wise maximum of two REALSXPs.  Creates an internal arena
+/// for each call.  For repeated calls use pmaxAlloc with a shared arena.
+pub fn pmax(a: SEXP, b: SEXP) SEXP {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    return pmaxAlloc(a, b, arena.allocator());
+}
+
 /// Cumulative sum of a REALSXP. Returns a new REALSXP.
 pub fn cumsum(sexp: SEXP) SEXP {
     const n = xlength(sexp);
@@ -1283,61 +1442,149 @@ pub fn cumsum(sexp: SEXP) SEXP {
     const rp = R.REAL(result.get());
 
     var total: f64 = 0.0;
-    var i: usize = 0;
-    while (i + 3 < n) {
-        total += data[i];
-        rp[i] = total;
-        total += data[i + 1];
-        rp[i + 1] = total;
-        total += data[i + 2];
-        rp[i + 2] = total;
-        total += data[i + 3];
-        rp[i + 3] = total;
-        i += 4;
-    }
-    while (i < n) : (i += 1) {
-        total += data[i];
-        rp[i] = total;
+    var na_seen = false;
+    for (0..n) |i| {
+        if (na_seen or R.ISNAN(data[i]) != 0) {
+            na_seen = true;
+            rp[i] = R.R_NaReal;
+        } else {
+            total += data[i];
+            rp[i] = total;
+        }
     }
 
     return result.get();
 }
 
-/// Convert a Zig struct to an R named list. Field names become list
-/// names. Supports nested structs, slices, scalars, optionals, SEXP.
+/// Convert a Zig struct to an R named list using a caller-owned arena. Reuse the arena across hot-loop calls. Field names become list names. Supports nested structs, slices, scalars, optionals, and SEXP.
+pub fn asSEXPAlloc(st: anytype, arena: std.mem.Allocator) SEXP {
+    return structToSexp(st, @TypeOf(st), arena);
+}
+
+/// Convert a Zig struct to an R named list, creating an internal arena.
+/// For repeated conversions in a loop, use `asSEXPAlloc` with a shared arena.
 pub fn asSEXP(st: anytype) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    return structToSexp(st, @TypeOf(st), arena.allocator());
+    return asSEXPAlloc(st, arena.allocator());
 }
 
-/// Convert an R named list to a Zig struct. Field names are matched
-/// against list names. `arena` is used for any slice allocations in the
-/// struct fields. Missing optional fields default to null; missing
-/// non-optional fields signal an R error.
+/// Convert an R named list to a Zig struct. Matches field names against list names. Missing optional fields default to null. Missing non-optional fields signal an R error. R_NilValue in a VECSXP element is treated as missing, so `?T` fields cannot distinguish "missing" from "present with null."
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
     return structFromSexp(T, sexp, arena) catch |err| signalError(err);
 }
 
-/// Map a Zig numeric type to the corresponding R SEXPTYPE constant.
 pub fn typeToSEXPTYPE(comptime T: type) R.SEXPTYPE {
     return switch (T) {
         f64 => R.REALSXP,
         i32 => R.INTSXP,
+        bool => R.LGLSXP,
         u8 => R.RAWSXP,
         Rcomplex => R.CPLXSXP,
         else => @compileError("unsupported type: " ++ @typeName(T)),
     };
 }
 
-/// Get a mutable pointer to the underlying data array of a SEXP.
-/// The caller is responsible for ensuring the SEXP is of the expected type.
-pub fn dataPtr(comptime T: type, sexp: SEXP) [*]T {
+/// Returns null if COMPLEX returns null (some exotic ALTREP). Caller must ensure the SEXP is the expected type.
+pub fn dataPtr(comptime T: type, sexp: SEXP) ?[*]T {
     return switch (T) {
         f64 => @ptrCast(R.REAL(sexp)),
         i32 => @ptrCast(R.INTEGER(sexp)),
         u8 => @ptrCast(R.RAW(sexp)),
-        Rcomplex => @ptrCast(@alignCast(R.COMPLEX(sexp).?)),
+        Rcomplex => if (R.COMPLEX(sexp)) |ptr| @ptrCast(@alignCast(ptr)) else null,
         else => @compileError("unsupported type: " ++ @typeName(T)),
     };
+}
+
+test "Rcomplex is the expected layout" {
+    try std.testing.expectEqual(@sizeOf(Rcomplex), @sizeOf(extern struct { r: f64, i: f64 }));
+    try std.testing.expectEqual(@alignOf(Rcomplex), @alignOf(f64));
+}
+
+test "SliceView borrowed constSlice returns borrowed data" {
+    const data: [3]f64 = .{ 1.0, 2.0, 3.0 };
+    var view: SliceView(f64) = .{ .borrowed = &data };
+    const slice = view.constSlice();
+    try std.testing.expectEqual(slice.len, 3);
+    try std.testing.expectEqual(slice[0], 1.0);
+    try std.testing.expectEqual(slice[2], 3.0);
+}
+
+test "SliceView owned constSlice and deinit" {
+    const allocator = std.testing.allocator;
+    var data = try allocator.alloc(f64, 3);
+    defer allocator.free(data);
+    data[0] = 1.0;
+    data[1] = 2.0;
+    data[2] = 3.0;
+    var view: SliceView(f64) = .{ .owned = data };
+    const slice = view.constSlice();
+    try std.testing.expectEqual(slice.len, 3);
+    try std.testing.expectEqual(slice[0], 1.0);
+}
+
+test "SliceView deinit owned frees memory" {
+    const allocator = std.testing.allocator;
+    var data = try allocator.alloc(i32, 2);
+    data[0] = 42;
+    data[1] = 43;
+    var view: SliceView(i32) = .{ .owned = data };
+    view.deinit(allocator);
+}
+
+test "SliceView deinit borrowed is no-op" {
+    const data: [2]i32 = .{ 1, 2 };
+    var view: SliceView(i32) = .{ .borrowed = &data };
+    view.deinit(std.testing.allocator);
+}
+
+test "errorMessage covers all ConvertError variants" {
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedReal), "expected REALSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedInteger), "expected INTSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedLogical), "expected LGLSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedString), "expected STRSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedList), "expected VECSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedNamedList), "expected named VECSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedRaw), "expected RAWSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedComplex), "expected CPLXSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ZeroLength), "expected non-empty vector");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ScalarNA), "scalar inputs must not be NA");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.AltRepRegionRead), "ALTREP region read failed");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.MissingField), "missing required field in R list");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.OutOfMemory), "out of memory during SEXP conversion");
+}
+
+test "errorMessage handles unknown error via @errorName" {
+    const msg = errorMessage(error.ExpectedReal);
+    try std.testing.expect(msg.len > 0);
+}
+
+test "typeToSEXPTYPE returns correct R constants" {
+    try std.testing.expectEqual(typeToSEXPTYPE(f64), R.REALSXP);
+    try std.testing.expectEqual(typeToSEXPTYPE(i32), R.INTSXP);
+    try std.testing.expectEqual(typeToSEXPTYPE(bool), R.LGLSXP);
+    try std.testing.expectEqual(typeToSEXPTYPE(u8), R.RAWSXP);
+    try std.testing.expectEqual(typeToSEXPTYPE(Rcomplex), R.CPLXSXP);
+}
+
+test "Rcomplex has the right fields" {
+    const c = Rcomplex{ .r = 1.5, .i = -2.5 };
+    try std.testing.expectEqual(c.r, 1.5);
+    try std.testing.expectEqual(c.i, -2.5);
+}
+
+test "StringView type compiles" {
+    const v = StringView{ .charsxp = undefined, .bytes = "", .len = 0, .is_na = false };
+    try std.testing.expectEqual(@TypeOf(v.is_na), bool);
+}
+
+test "StringSliceView type compiles" {
+    const v = StringSliceView{ .sexp = undefined, .len = 0 };
+    _ = v;
+}
+
+test "CachedStringSliceView type compiles" {
+    const items: []const StringView = &.{};
+    const v = CachedStringSliceView{ .items = items, .len = 0 };
+    try std.testing.expectEqual(@TypeOf(v.len), usize);
 }

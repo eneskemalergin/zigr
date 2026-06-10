@@ -12,7 +12,8 @@ echo "=== C (.Call) ==="
 cd src/c_call && make -f Makefile R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB && cd ../..
 
 echo "=== Rcpp (C++) ==="
-R CMD SHLIB -o src/cpp/rcpp_benchmarks.so src/cpp/main.cpp
+PKG_CPPFLAGS=$(Rscript -e 'cat(paste0("-I", system.file("include", package="Rcpp")))') \
+  R CMD SHLIB -o src/cpp/rcpp_benchmarks.so src/cpp/main.cpp
 
 echo "=== extendr (Rust) ==="
 make -C src/extendr

@@ -3,9 +3,7 @@
 //! R's protection stack is strictly LIFO. Protect pushes, unprotect pops
 //! the top. There is no random-access unprotect in the public R API.
 //!
-//! Depth tracking (leak detection) is zero-cost in ReleaseFast/ReleaseSmall:
-//! the depth variable and warning checks are eliminated at compile time.
-//! In Debug/ReleaseSafe the depth counter warns at >64 and on negative depth.
+//! Depth tracking is zero-cost in ReleaseFast/ReleaseSmall (the depth variable and warning checks are eliminated at compile time). In Debug/ReleaseSafe the depth counter warns at >64 and on negative depth.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -74,9 +72,7 @@ pub fn unprotect() void {
     R.Rf_unprotect(1);
 }
 
-/// Indexed protect: records the stack position so the SEXP can be
-/// replaced later via reprotect(). The index is not for random-access
-/// unprotect (use unprotect() for that).
+/// Records the stack position so the SEXP can be replaced via reprotect(). Not for random-access (use unprotect for that).
 pub fn protectWithIndex(value: SEXP, index: *R.PROTECT_INDEX) void {
     R.R_ProtectWithIndex(value, index);
     if (track_depth) {
@@ -87,17 +83,14 @@ pub fn protectWithIndex(value: SEXP, index: *R.PROTECT_INDEX) void {
     }
 }
 
-/// Replace the value at the given protection index without changing the
-/// stack depth. Used with protectWithIndex to update a protected SEXP
-/// while keeping its stack position.
+/// Replace the value at a protection index without changing stack depth. Used with protectWithIndex.
 pub fn reprotect(value: SEXP, index: R.PROTECT_INDEX) void {
     R.R_Reprotect(value, index);
 }
 
-/// Pop N entries from R's protection stack. Equivalent to N sequential
-/// unprotect() calls but only one FFI boundary crossing.
-/// Zero-cost in ReleaseFast/ReleaseSmall (depth tracking eliminated).
+/// Pop N entries from R's protection stack. One FFI call instead of N.
 pub fn unprotectN(count: usize) void {
+    if (count > std.math.maxInt(c_int)) @panic("unprotectN count exceeds c_int range");
     if (track_depth) {
         const new_depth = depth - @as(i32, @intCast(count));
         if (new_depth < 0) {
@@ -108,10 +101,30 @@ pub fn unprotectN(count: usize) void {
     R.Rf_unprotect(@intCast(count));
 }
 
-/// Read the current protection depth. Useful for leak detection in
-/// debug-mode R sessions. Returns 0 in ReleaseFast/ReleaseSmall
-/// since depth is not tracked there.
+/// Useful for leak detection. Returns 0 in ReleaseFast/ReleaseSmall (depth tracking is eliminated there).
 pub fn getDepth() i32 {
     if (track_depth) return depth;
     return 0;
+}
+
+test "ScopedProtect type" {
+    try std.testing.expectEqual(@TypeOf(ScopedProtect.init), fn (SEXP) ScopedProtect);
+}
+
+test "scoped helper type" {
+    try std.testing.expectEqual(@TypeOf(scoped), fn (SEXP) ScopedProtect);
+}
+
+test "protect and unprotect types" {
+    try std.testing.expectEqual(@TypeOf(protect), fn (SEXP) SEXP);
+    try std.testing.expectEqual(@TypeOf(unprotect), fn () void);
+}
+
+test "protectWithIndex and reprotect types" {
+    try std.testing.expectEqual(@TypeOf(protectWithIndex), fn (SEXP, *R.PROTECT_INDEX) void);
+    try std.testing.expectEqual(@TypeOf(reprotect), fn (SEXP, R.PROTECT_INDEX) void);
+}
+
+test "getDepth returns i32" {
+    try std.testing.expectEqual(@TypeOf(getDepth()), i32);
 }

@@ -9,7 +9,6 @@
 const std = @import("std");
 const R = @import("R");
 
-/// True if the SEXP is an ALTREP vector (has a custom data backend).
 pub fn isAltRep(sexp: R.SEXP) bool {
     return R.ALTREP(sexp) != 0;
 }
@@ -30,6 +29,8 @@ pub fn data2(sexp: R.SEXP) R.SEXP {
 }
 
 /// The ALTREP class name as a string. Returns empty slice if not ALTREP.
+/// The returned slice borrows R's CHARSXP string table. It is stable
+/// (R interns strings permanently) so holding it across GC is safe.
 pub fn className(sexp: R.SEXP) []const u8 {
     if (!isAltRep(sexp)) return "";
     const cn = R.R_altrep_class_name(sexp);

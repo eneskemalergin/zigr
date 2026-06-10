@@ -2,12 +2,10 @@
 # Each function matches the interface expected by the .Call wrapper:
 # first arg is the R object, returns an R object.
 
-# Task 1: Fibonacci
-r_bench_fib <- function(n) {
-  if (n <= 1) return(n)
-  a <- 0; b <- 1
-  for (i in 2:n) { next_val <- a + b; a <- b; b <- next_val }
-  b
+# Task 1: Fibonacci (recursive, to match compiled backends)
+r_bench_fib_recursive <- function(n) {
+  if (n <= 1) return(as.numeric(n))
+  as.numeric(Recall(n - 1)) + as.numeric(Recall(n - 2))
 }
 
 # Task 2: Vector Sum
@@ -33,7 +31,7 @@ r_bench_dataframe <- function(df) {
 # Task 6: NA-safe Mean
 r_bench_na_prop <- function(x) mean(x, na.rm = TRUE)
 
-# Task 7: Parallel Sum (just sum() in R -- R is single-threaded)
+# Task 7: Parallel Sum (just sum() in R because R is single-threaded)
 r_bench_parallel <- function(x) sum(x)
 
 # Task 9: PROTECT Stress
@@ -84,13 +82,13 @@ r_bench_string_nchar <- function(x) sum(nchar(x))
 # Task 22: Which NA
 r_bench_which_na <- function(x) which(is.na(x))
 
-# Task 23: ALTREP sum — R's sum() uses method table, O(1)
+# Task 23: ALTREP sum: R's sum() uses method table, O(1)
 r_bench_altrep_sum <- function(x) sum(x)
 
-# Task 24: ALTREP read — R accesses directly, no materialization
+# Task 24: ALTREP read: R accesses directly, no materialization
 r_bench_altrep_read <- function(x) c(x[1], x[length(x)])
 
-# Task 25: ALTREP create — pure R can create built-in compact intseq ALTREP
+# Task 25: ALTREP create: pure R can create built-in compact intseq ALTREP
 r_bench_altrep_create <- function(n) seq_len(n)
 
 # Task 38: Real create + sum over a numeric vector payload

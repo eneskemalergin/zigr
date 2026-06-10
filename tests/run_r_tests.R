@@ -1,59 +1,39 @@
 #!/usr/bin/env Rscript
 # Run zigr's R-dependent tests.
-# Builds a test .so from tests/r_runtime.zig, loads it in R, and runs every
+# Builds a test .so via `zig build rtest`, loads it in R, and runs every
 # exported test function. Test functions return R.Rf_ScalarReal(1.0) on pass
 # or R.Rf_ScalarReal(0.0) on fail. Functions that deliberately signal R errors
 # are wrapped in tryCatch and expected to fail.
 
-zig <- Sys.getenv("ZIG", "./zig-0.16.0/zig")
-r_include <- Sys.getenv("R_INCLUDE", file.path(R.home(), "include"))
+build_so <- function() {
+  zig <- Sys.getenv("ZIG", "./zig-0.16.0/zig")
+  r_include <- Sys.getenv("R_INCLUDE", file.path(R.home(), "include"))
+  r_lib <- Sys.getenv("R_LIB", file.path(R.home(), "lib"))
 
-tmp_dir <- tempfile("zigr_test_")
-dir.create(tmp_dir)
-dir.create(file.path(tmp_dir, "src"))
-file.copy("tests/r_runtime.zig", file.path(tmp_dir, "r_runtime.zig"))
-file.copy("src/r_imports.h", file.path(tmp_dir, "src", "r_imports.h"))
+  # Build using the project's own build.zig which wires the full module graph
+  cat("Building test .so...\n")
+  build_cmd <- paste(zig, "build", "rtest",
+    "-Doptimize=ReleaseFast",
+    paste0("-Dr-include=", r_include),
+    paste0("-Dr-lib=", r_lib))
+  cat("  ", build_cmd, "\n")
+  exit_code <- system(build_cmd, intern = FALSE)
+  if (exit_code != 0) {
+    stop("zig build rtest failed with exit code ", exit_code)
+  }
 
-writeLines(c(
-  'const std = @import("std");',
-  'pub fn build(b: *std.Build) void {',
-  '    const target = b.standardTargetOptions(.{});',
-  '    const optimize = b.standardOptimizeOption(.{});',
-  '    const rh = b.addTranslateC(.{',
-  '        .root_source_file = b.path("src/r_imports.h"),',
-  '        .target = target,',
-  '        .optimize = optimize,',
-  '    });',
-  paste0('    rh.addIncludePath(.{ .cwd_relative = "', r_include, '" });'),
-  '    const test_so = b.addLibrary(.{',
-  '        .linkage = .dynamic,',
-  '        .name = "zigr_r_test",',
-  '        .root_module = b.createModule(.{',
-  '            .root_source_file = b.path("r_runtime.zig"),',
-  '            .target = target,',
-  '            .optimize = optimize,',
-  '            .imports = &.{',
-  '                .{ .name = "R", .module = rh.addModule("R") },',
-  '            },',
-  '        }),',
-  '    });',
-  '    b.installArtifact(test_so);',
-  '}'
-), file.path(tmp_dir, "build.zig"))
-
-cat("Building test .so...\n")
-build_cmd <- paste(zig, "build", "--build-file", file.path(tmp_dir, "build.zig"), "-Doptimize=ReleaseFast")
-cat("  ", build_cmd, "\n")
-result <- system(build_cmd, intern = TRUE)
-cat(result, sep = "\n")
-
-so_path <- file.path(tmp_dir, "zig-out", "lib", "libzigr_r_test.so")
-if (!file.exists(so_path)) {
-  so_path <- Sys.glob(file.path(tmp_dir, "zig-out", "*", "*.so"))[1]
+  # Locate the built .so in zig-out/lib/
+  so_path <- file.path("zig-out", "lib", "libzigr_r_test.so")
+  if (!file.exists(so_path)) {
+    so_path <- Sys.glob(file.path("zig-out", "*", "*.so"))[1]
+  }
+  if (!file.exists(so_path)) {
+    stop("Test .so not found in zig-out/")
+  }
+  so_path
 }
-if (!file.exists(so_path)) {
-  stop("Test .so not found in zig-out/")
-}
+
+so_path <- build_so()
 
 cat("Loading .so:", so_path, "\n")
 dyn.load(so_path)
@@ -64,16 +44,17 @@ dyn.load(so_path)
 # When expect_error=TRUE, the test passes if the error is caught.
 
 tests <- list(
-  # Phase 2: basic linking and protection
+  # Basic creation and protect tests
   "zigr_test_protect",
   "zigr_test_return42",
-  "zigr_test_longjmp",
+  list(name="zigr_test_longjmp", expect_error=TRUE),
   "zigr_test_longjmp_normal",
 
   # Error signaling
   list(name="zigr_test_error_signal", expect_error=TRUE),
-  list(name="zigr_test_error_warn", expect_error=FALSE),
+  "zigr_test_error_warn",
   list(name="zigr_test_error_signalif", expect_error=TRUE),
+  list(name="zigr_raise_error", expect_error=TRUE),
 
   # Interrupt and stack
   "zigr_test_interrupt",
@@ -91,7 +72,7 @@ tests <- list(
   "zigr_test_ralloc",
 
   # Preserve and longjmp
-  "zigr_test_preserve_longjmp",
+  list(name="zigr_test_preserve_longjmp", expect_error=TRUE),
 
   # Type conversion
   "zigr_test_to_real_slice",
@@ -148,6 +129,7 @@ tests <- list(
   "zigr_test_from_empty",
   "zigr_test_real_huge",
   "zigr_test_str_na",
+  "zigr_test_str_na_nullable",
   "zigr_test_lgl_edge",
   "zigr_test_list_null",
   "zigr_test_df_col_missing",
@@ -222,7 +204,65 @@ tests <- list(
   "zigr_test_rvector_f64_sum",
   "zigr_test_rvector_i32_sum",
   "zigr_test_rvector_recycle",
-  "zigr_test_rvector_empty"
+  "zigr_test_rvector_empty",
+
+  # Export system conversion tests
+  # Export system: multi-parameter unwrapping
+  "zigr_test_export_two_scalars",
+
+  # Export system: complex slice conversion
+  "zigr_test_export_complex_sum",
+
+  # Export system: numeric and string slice conversion
+  "zigr_test_export_sum",
+  "zigr_test_export_string_lengths",
+  "zigr_test_export_string_na",
+  "zigr_test_export_cached_string_lengths",
+  "zigr_test_export_sum_empty",
+  "zigr_test_export_raw_roundtrip",
+
+  # Export system: optional and NA handling
+  "zigr_test_export_optional_null",
+  "zigr_test_export_scalar_na",
+  "zigr_test_export_int_scalar_na",
+  "zigr_test_export_bool_scalar_na",
+  "zigr_test_export_wrong_type_real",
+
+  # Export system: external pointer method dispatch
+  "zigr_test_export_method_call",
+  "zigr_test_export_method_tag",
+
+  # Export system: external interface
+  "zigr_test_export_external",
+
+  # Export system: generateMethods comptime codegen
+  "zigr_test_export_generatemethods",
+
+  # Export system: error signaling
+  list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),
+
+  # Infrastructure and creation tests
+  "zigr_alloc_real",
+  "zigr_alloc_large",
+  "zigr_protect_many",
+  "zigr_protect_index",
+  "zigr_check_na",
+  "zigr_raise_warning",
+  "zigr_typeof_nil",
+
+  # Query functions for longjmp/preserve callback tests
+  # zigr_longjmp_flag, zigr_preserve_flag, zigr_nested_flags
+  # are called internally by the test suite. Not run directly.
+
+  # Longjmp safety (catch internally, no expect_error)
+  "zigr_test_cleanup_fires_on_longjmp",
+  "zigr_test_with_rng_longjmp",
+
+  # Recursive fib (call overhead showcase)
+  "zigr_test_fib_recursive",
+
+  # Additional conversion and call builder tests
+  "zigr_test_lang_builder"
 )
 
 # ── Test runner ──────────────────────────────────────
@@ -237,9 +277,9 @@ for (t in tests) {
   expect_error <- if (is.list(t) && !is.null(t$expect_error)) t$expect_error else FALSE
 
   result <- tryCatch({
-    val <- .Call(name, PACKAGE="zigr_r_test")
+    val <- .Call(name)
     if (expect_error) {
-      # Expected an error but got a return value -- test failed
+      # Expected an error but got a return value, so test failed
       "FAIL"
     } else {
       # Check that the return value indicates pass

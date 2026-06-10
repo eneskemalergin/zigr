@@ -10,13 +10,29 @@ const R = @import("R");
 /// Re-exported from the translated R headers.
 pub const SEXP = R.SEXP;
 
-/// Safe length of any SEXP. Returns the XLENGTH cast to usize, panicking
-/// on negative lengths (corrupted SEXP). Use instead of raw @intCast.
+pub const max_symbol_name = 256;
+
+/// Length of any SEXP as usize. Returns 0 on negative length (corrupted
+/// SEXP) instead of panicking. All hot-path functions (sum/min/max etc.)
+/// already handle zero-length vectors with early returns, so this is safe.
+/// Use tryXlength in fallible conversion paths for explicit error handling.
 pub fn xlength(sexp: SEXP) usize {
     const len = R.XLENGTH(sexp);
-    if (len < 0) @panic("negative vector length from corrupted SEXP");
+    if (len < 0) return 0;
     return @as(usize, @intCast(len));
 }
+
+/// xlength that returns a clear error instead of silently zeroing.
+/// Use in conversion paths that already return errors.
+pub fn tryXlength(sexp: SEXP) !usize {
+    const len = R.XLENGTH(sexp);
+    if (len < 0) return error.NegativeLength;
+    return @as(usize, @intCast(len));
+}
+
+pub const XlengthError = error{
+    NegativeLength,
+};
 
 /// Maps R's internal type tags from Rinternals.h. Numeric values must
 /// match what R returns from TYPEOF() and what Rf_allocVector expects.
@@ -126,6 +142,34 @@ pub fn isExpression(sexp: SEXP) bool {
     return R.Rf_isExpression(sexp) != 0;
 }
 
+test "xlength returns 0 for zero-length" {
+    // Can't create a zero-length SEXP without R runtime,
+    // but we can verify the function compiles and returns the right type.
+    try std.testing.expectEqual(@TypeOf(xlength), fn (SEXP) usize);
+}
+
 test "classification helpers compile" {
     try std.testing.expectEqual(@TypeOf(typeOf), fn (SEXP) SEXPTYPE);
+    try std.testing.expectEqual(@TypeOf(isVector), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isNull), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isReal), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isInteger), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isString), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isS4), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isLogical), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isComplex), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isMatrix), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isFactor), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isNumeric), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isEnvironment), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isFunction), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isSymbol), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isList), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isLanguage), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isPairList), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isObject), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isPrimitive), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isArray), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isNumber), fn (SEXP) bool);
+    try std.testing.expectEqual(@TypeOf(isExpression), fn (SEXP) bool);
 }

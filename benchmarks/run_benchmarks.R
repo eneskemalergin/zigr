@@ -1,6 +1,5 @@
 #!/usr/bin/env Rscript
-# zigR Benchmark Harness — runner-agnostic.
-# Discovers runners from runners/*.json, spawns a fresh R subprocess per runner.
+# Spawns a subprocess per runner from runners/*.json.
 # Usage:
 #   Rscript run_benchmarks.R                          # all runners
 #   Rscript run_benchmarks.R --runners=zigr,c_call    # subset
@@ -19,11 +18,6 @@ for (a in args) {
   if (a == "--build")         do_build      <- TRUE
 }
 
-cat("╔══════════════════════════════════════╗\n")
-cat("║     zigR Benchmark Harness v0.0.7    ║\n")
-cat("╚══════════════════════════════════════╝\n\n")
-
-# Discover runners from JSON configs
 runner_files <- Sys.glob("runners/*.json")
 if (length(runner_files) == 0) stop("no runner configs found in runners/")
 
@@ -40,46 +34,35 @@ if (!is.null(runners_filter)) {
 
 cat(sprintf("Runners: %s\n\n", paste(names(all_runners), collapse = ", ")))
 
-# Build if requested
 if (do_build) {
-  cat("── Build phase ──\n")
+  cat("Build phase\n")
   code <- system("bash build_all.sh", ignore.stdout = FALSE, ignore.stderr = FALSE)
   if (code != 0) stop(sprintf("build phase failed with exit code %d", code))
   cat("\n")
 }
 
-# Run each runner in a fresh subprocess
 blas_env <- c("OPENBLAS_NUM_THREADS=1")
 
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
-  cat(sprintf("── Runner: %s (%s) ──\n", rn, cfg$label))
+  cat(sprintf("Runner: %s (%s)\n", rn, cfg$label))
 
   runner_args <- c("runner_subprocess.R", sprintf("--runner=%s", rn))
   if (!is.null(tasks_filter)) {
     runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
   }
 
-  code <- system2(
-    "Rscript",
-    args = runner_args,
-    env = blas_env,
-    stdout = "",
-    stderr = ""
-  )
-  if (code != 0) {
-    cat(sprintf("  [SUB] exited with code %d\n", code))
-  }
+  code <- system2("Rscript", args = runner_args, env = blas_env, stdout = "", stderr = "")
+  if (code != 0) cat(sprintf("  [SUB] exited with code %d\n", code))
   cat("\n")
 }
 
 if (is.null(runners_filter) && is.null(tasks_filter)) {
-  cat("── Comparative metrics ──\n")
+  cat("Comparative metrics\n")
   code <- system("Rscript export_comparative_metrics.R", ignore.stdout = FALSE, ignore.stderr = FALSE)
   if (code != 0) stop(sprintf("comparative metrics export failed with exit code %d", code))
   cat("\n")
 } else {
-  cat("── Comparative metrics ──\n")
   cat("Skipping comparative export for filtered benchmark runs.\n\n")
 }
 
