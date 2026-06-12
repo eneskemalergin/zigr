@@ -2,6 +2,7 @@
   "name": "rcpp",
   "label": "Rcpp (C++)",
   "call_type": ".Call",
+  "so_path": "src/cpp/rcpp_benchmarks.so",
   "exports": {
     "01_vectorsum": "rcpp_bench_vectorsum",
     "02_elem_ops": "rcpp_bench_elem_ops",

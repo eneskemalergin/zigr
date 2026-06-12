@@ -7,6 +7,7 @@ const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 const xlength = @import("sexp.zig").xlength;
+const sexp_mod = @import("sexp.zig");
 
 /// Wraps an R data.frame with named column access.
 pub const DataFrame = struct {
@@ -36,6 +37,7 @@ pub const DataFrame = struct {
 
     pub fn columnNames(self: DataFrame, allocator: std.mem.Allocator) ![][]const u8 {
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
+        if (ns == R.R_NilValue) return allocator.alloc([]const u8, 0);
         const nlen = R.XLENGTH(ns);
         const n = @as(usize, @intCast(if (nlen < 0) @as(R.R_xlen_t, 0) else nlen));
         const result = try allocator.alloc([]const u8, n);
@@ -50,6 +52,7 @@ pub const DataFrame = struct {
     pub fn columnIndex(self: DataFrame, name: []const u8) ?i64 {
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
+        if (ns == R.R_NilValue) return null;
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
@@ -75,6 +78,7 @@ pub const DataFrame = struct {
         var map = std.StringHashMap(i64).init(allocator);
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
+        if (ns == R.R_NilValue) return map;
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
@@ -86,7 +90,7 @@ pub const DataFrame = struct {
 };
 
 fn sexp_isDataFrame(sexp: R.SEXP) bool {
-    if (R.TYPEOF(sexp) != R.VECSXP) return false;
+    if (sexp_mod.typeTag(sexp) != 19) return false;
     const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
     if (cls == R.R_NilValue) return false;
     const n = R.XLENGTH(cls);
@@ -104,6 +108,7 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
 /// **Safety**: Returns an unprotected SEXP. The caller MUST protect it immediately. R's GC collects unprotected SEXPs between this return and the caller's protect.
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     if (names.len == 0 or columns.len == 0) return R.R_NilValue;
+    if (names.len != columns.len) return R.R_NilValue;
     const ncols: R.R_xlen_t = @intCast(names.len);
 
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, ncols));

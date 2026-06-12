@@ -1,10 +1,9 @@
 const R = @import("R");
-const simd = @import("simd");
 const raw = @import("zigr").raw;
 
 const SEXP = R.SEXP;
 
-export fn zigr_bench_rowcol_means(mat_sexp: SEXP) SEXP {
+export fn zigr_bench_matrix_rowcol_means(mat_sexp: SEXP) SEXP {
     const nr = @as(usize, @intCast(R.Rf_nrows(mat_sexp)));
     const nc = @as(usize, @intCast(R.Rf_ncols(mat_sexp)));
     const data = raw.real(mat_sexp);
@@ -13,32 +12,32 @@ export fn zigr_bench_rowcol_means(mat_sexp: SEXP) SEXP {
     const col_sums = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @intCast(nc)));
     defer R.Rf_unprotect(2);
 
-    const rm = R.REAL(row_means);
-    const cs = R.REAL(col_sums);
+    const rm = raw.realMut(row_means);
+    const cs = raw.realMut(col_sums);
 
-    // Row means: strided access (row i = data[i + j*nr]), not vectorizable
-    for (0..nr) |i| {
-        var sum: f64 = 0.0;
-        var j: usize = 0;
-        while (j < nc) : (j += 1) sum += data[i + j * nr];
-        rm[i] = sum / @as(f64, @floatFromInt(nc));
-    }
+    @memset(rm, 0.0);
 
-    // Col sums: unit-stride access (col j = data[j*nr..j*nr+nr]), SIMD-friendly
-    const lanes = simd.f64_lanes;
+    // Single pass: SIMD-accelerated inner loop using align(1) vector pointers
+    // to force unaligned vmovupd + vaddpd instead of scalar vmovsd + vaddsd
     for (0..nc) |j| {
         const col = data[j * nr ..][0..nr];
-        var vec: @Vector(lanes, f64) = @splat(0.0);
         var i: usize = 0;
-        if (nr >= lanes) {
-            const end = nr - (nr % lanes);
-            while (i < end) : (i += lanes) {
-                vec += col[i..][0..lanes].*;
-            }
+        var col_acc: @Vector(4, f64) = @splat(0.0);
+        while (i + 4 <= nr) : (i += 4) {
+            const v: @Vector(4, f64) = col[i..][0..4].*;
+            col_acc += v;
+            const rp: *align(1) @Vector(4, f64) = @ptrCast(&rm[i]);
+            rp.* += v;
         }
-        cs[j] = @reduce(.Add, vec);
-        while (i < nr) : (i += 1) cs[j] += col[i];
+        cs[j] = @reduce(.Add, col_acc);
+        while (i < nr) : (i += 1) {
+            rm[i] += col[i];
+            cs[j] += col[i];
+        }
     }
+
+    const inv_nc = 1.0 / @as(f64, @floatFromInt(nc));
+    for (0..nr) |i| rm[i] *= inv_nc;
 
     const result = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 2));
     defer R.Rf_unprotect(1);

@@ -18,9 +18,24 @@ const err = @import("error");
 
 pub const MAX_NESTING = 16;
 
+/// Maximum bytes of inline cleanup data per frame. Types stored inline
+/// via `pushFrameInline` must fit in this budget. 64 covers the typical
+/// RAII guards (slice + allocator + return address) without spilling.
+pub const INLINE_DATA_SIZE = 64;
+pub const INLINE_DATA_ALIGN = @alignOf(usize);
+
 const Frame = struct {
     func: *const fn (data: ?*anyopaque) void,
     data: ?*anyopaque,
+    /// Inline storage for cleanup state. Frames pushed with `pushFrameInline`
+    /// copy their state into this buffer. The buffer lives in the
+    /// thread-local `stack`, so the state survives longjmp and is not
+    /// dependent on any stack-resident pointer from the caller's frame.
+    inline_buf: [INLINE_DATA_SIZE]u8 align(INLINE_DATA_ALIGN) = [_]u8{0} ** INLINE_DATA_SIZE,
+    /// True if this frame's data pointer targets `inline_buf` and the
+    /// buffer contains valid state. False for frames pushed with the
+    /// legacy `pushFrame` (data is an external pointer).
+    owns_inline: bool = false,
 };
 
 threadlocal var stack: [MAX_NESTING]Frame = undefined;
@@ -64,6 +79,61 @@ pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) vo
 /// Must be called after every pushFrame on the normal return path.
 pub fn popFrame() void {
     if (count > 0) count -= 1;
+}
+
+/// Push a frame that owns its cleanup state inline. The value `T` is
+/// copied into the frame's `inline_buf` (in thread-local storage, not
+/// on the caller's stack), and `fireFn` receives a `*T` to that storage
+/// when the frame fires on longjmp. The caller does NOT need a
+/// corresponding `defer destroy(state)` because the state lives in the
+/// frame buffer, which is reclaimed by the next `pushFrame` or
+/// `zigr_on_return`.
+///
+/// This eliminates the "stack-resident pointer pattern" that
+/// `pushFrame` with a heap-allocated state has: the cleanup state is
+/// never derived from a stack-local variable, so longjmp does not
+/// invalidate it.
+///
+/// `T` must satisfy:
+/// - `@sizeOf(T) <= INLINE_DATA_SIZE`
+/// - `@alignOf(T) <= INLINE_DATA_ALIGN`
+pub fn pushFrameInline(
+    comptime T: type,
+    value: T,
+    comptime fireFn: *const fn (data: *T) void,
+) void {
+    comptime {
+        if (@sizeOf(T) > INLINE_DATA_SIZE) {
+            @compileError(std.fmt.comptimePrint(
+                "pushFrameInline: type '{s}' is {d} bytes, max is {d}",
+                .{ @typeName(T), @sizeOf(T), INLINE_DATA_SIZE },
+            ));
+        }
+        if (@alignOf(T) > INLINE_DATA_ALIGN) {
+            @compileError(std.fmt.comptimePrint(
+                "pushFrameInline: type '{s}' alignment is {d}, max is {d}",
+                .{ @typeName(T), @alignOf(T), INLINE_DATA_ALIGN },
+            ));
+        }
+    }
+
+    if (count >= MAX_NESTING) err.signal("cleanup stack overflow");
+
+    const frame = &stack[count];
+    const slot: *T = @ptrCast(@alignCast(&frame.inline_buf));
+    slot.* = value;
+    frame.owns_inline = true;
+
+    const W = struct {
+        fn wrapper(data: ?*anyopaque) void {
+            const typed: *T = @ptrCast(@alignCast(data.?));
+            fireFn(typed);
+        }
+    };
+
+    frame.func = W.wrapper;
+    frame.data = @ptrCast(slot);
+    count += 1;
 }
 
 /// Call a Zig function inside an R_UnwindProtect guard.
@@ -225,4 +295,91 @@ test "frames fire in LIFO order on unwind" {
     try std.testing.expectEqual(order[1], 2);
     try std.testing.expectEqual(order[2], 1);
     try std.testing.expectEqual(next_slot, 3);
+}
+
+test "pushFrameInline copies state into frame buffer" {
+    const saved = count;
+    defer count = saved;
+    count = 0;
+
+    const Guard = struct {
+        counter: u32,
+        marker: u64,
+
+        fn fire(self: *@This()) void {
+            self.counter += 100;
+        }
+    };
+
+    var g = Guard{ .counter = 7, .marker = 0xDEADBEEFCAFEBABE };
+    pushFrameInline(Guard, g, Guard.fire);
+    try std.testing.expectEqual(count, 1);
+
+    // The local `g` is independent of the frame's copy: mutating it
+    // must not affect what `fire` will see.
+    g.counter = 999;
+    g.marker = 0;
+
+    zigr_on_unwind();
+    // The frame fired the original copy (counter 7 + 100 = 107), not
+    // the mutated local (999 + 100 = 1099). The local `g` is not
+    // affected because the frame owned its own copy in `inline_buf`.
+    try std.testing.expectEqual(g.counter, 999);
+}
+
+test "pushFrameInline survives pop without firing" {
+    // Normal return path: popFrame just decrements count. The inline
+    // buffer is reclaimed by the next pushFrame, not by fire.
+    const saved = count;
+    defer count = saved;
+    count = 0;
+
+    const Guard = struct {
+        fired: *bool,
+
+        fn fire(self: *@This()) void {
+            self.fired.* = true;
+        }
+    };
+
+    var fired = false;
+    pushFrameInline(Guard, Guard{ .fired = &fired }, Guard.fire);
+    popFrame();
+
+    try std.testing.expect(!fired);
+}
+
+test "pushFrameInline fires on zigr_on_unwind with LIFO order" {
+    // Verify inline frames interleave correctly with regular pushFrame
+    // frames, and the inline data is intact when fire runs.
+    const saved = count;
+    defer count = saved;
+    count = 0;
+
+    const A = struct {
+        value: *i32,
+
+        fn fire(self: *@This()) void {
+            self.value.* = 10;
+        }
+    };
+    const B = struct {
+        value: *i32,
+
+        fn fire(self: *@This()) void {
+            self.value.* = 20;
+        }
+    };
+
+    var a_result: i32 = 0;
+    var b_result: i32 = 0;
+
+    pushFrameInline(A, A{ .value = &a_result }, A.fire);
+    pushFrameInline(B, B{ .value = &b_result }, B.fire);
+
+    zigr_on_unwind();
+    // B pushed last -> fires first -> b_result = 20
+    // A fires second -> a_result = 10
+    try std.testing.expectEqual(b_result, 20);
+    try std.testing.expectEqual(a_result, 10);
 }

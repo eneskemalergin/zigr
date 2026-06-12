@@ -2,7 +2,7 @@
   "name": "c_call",
   "label": "c_call (C)",
   "build_command": "make",
-  "so_path": "bench.c.so",
+  "so_path": "src/c_call/bench.c.so",
   "call_type": ".Call",
   "exports": {
     "01_vectorsum": "c_call_bench_vectorsum",

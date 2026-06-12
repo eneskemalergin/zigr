@@ -19,6 +19,7 @@ benchmarks/**/*.d
 benchmarks/**/*.obj
 
 # Per-iteration benchmark data (large, regenerated every run)
+benchmarks/results/
 benchmarks/results/**/task_*.csv
 benchmarks/results/**/cold_start.csv
 benchmarks/results/**/error_*.csv

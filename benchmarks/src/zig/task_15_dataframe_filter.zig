@@ -4,7 +4,7 @@ const raw = @import("zigr").raw;
 
 const SEXP = R.SEXP;
 
-export fn zigr_bench_dataframe(df_sexp: SEXP) SEXP {
+export fn zigr_bench_dataframe_filter(df_sexp: SEXP) SEXP {
     const df = dataframe.DataFrame.wrap(df_sexp) orelse return R.R_NilValue;
     const nrows = @as(usize, @intCast(df.rowCount()));
 

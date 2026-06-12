@@ -5,7 +5,7 @@ const block_len: usize = 32;
 
 /// Matrix transpose: output[j][i] = input[i][j].
 /// Process tiles so each inner loop writes a contiguous output span.
-export fn zigr_bench_transpose(mat_sexp: SEXP) SEXP {
+export fn zigr_bench_matrix_transpose(mat_sexp: SEXP) SEXP {
     const nr = @as(usize, @intCast(R.Rf_nrows(mat_sexp)));
     const nc = @as(usize, @intCast(R.Rf_ncols(mat_sexp)));
     const data = raw.real(mat_sexp);

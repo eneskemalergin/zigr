@@ -1,0 +1,100 @@
+const std = @import("std");
+const R = @import("R");
+const sexp = @import("sexp.zig");
+
+const max_levels = 1024;
+
+/// Creates a factor from a character vector, analogous to R's `factor(x)`.
+/// Levels are sorted alphabetically (matching R's default behavior).
+/// Returns a properly attributed INTSXP with class "factor" and levels attribute.
+pub fn asFactor(vec: R.SEXP) R.SEXP {
+    const n = sexp.xlength(vec);
+
+    // --- Pass 1: collect unique CHARSXP pointers ---
+    var level_ptrs: [max_levels]R.SEXP = undefined;
+    var level_count: u32 = 0;
+
+    for (0..n) |i| {
+        const elt = sexp.fastVectorElt(vec, @intCast(i));
+        if (elt == R.R_NaString) continue;
+
+        // Linear search CHARSXP pointers (R interns them, pointer equality is valid)
+        var found = false;
+        for (0..level_count) |j| {
+            if (level_ptrs[j] == elt) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (level_count >= max_levels) return R.R_NilValue;
+            level_ptrs[level_count] = elt;
+            level_count += 1;
+        }
+    }
+
+    // --- Sort levels alphabetically by string content ---
+    // Bubble sort is fine for small unique sets
+    if (level_count > 1) {
+        var i: usize = 0;
+        while (i < level_count - 1) {
+            var swapped = false;
+            var j: usize = 0;
+            while (j < level_count - 1 - i) {
+                const a = R.R_CHAR(level_ptrs[j]);
+                const b = R.R_CHAR(level_ptrs[j + 1]);
+                const len_a = sexp.fastLength(level_ptrs[j]);
+                const len_b = sexp.fastLength(level_ptrs[j + 1]);
+                const order = std.mem.order(u8, a[0..@as(usize, @intCast(len_a))], b[0..@as(usize, @intCast(len_b))]);
+                if (order == .gt) {
+                    const tmp = level_ptrs[j];
+                    level_ptrs[j] = level_ptrs[j + 1];
+                    level_ptrs[j + 1] = tmp;
+                    swapped = true;
+                }
+                j += 1;
+            }
+            if (!swapped) break;
+            i += 1;
+        }
+    }
+
+    // --- Pass 2: assign codes ---
+    const codes = R.Rf_protect(R.Rf_allocVector(R.INTSXP, @intCast(n)));
+    defer R.Rf_unprotect(1);
+    const codes_ptr: [*]c_int = @ptrCast(R.INTEGER(codes));
+
+    // Build reverse lookup: CHARSXP → level index (0-based)
+    // Linear search is fine for small level counts
+    for (0..n) |i| {
+        const elt = sexp.fastVectorElt(vec, @intCast(i));
+        if (elt == R.R_NaString) {
+            codes_ptr[i] = R.R_NaInt;
+            continue;
+        }
+        var code: c_int = R.R_NaInt;
+        for (0..level_count) |j| {
+            if (level_ptrs[j] == elt) {
+                code = @as(c_int, @intCast(j + 1)); // 1-based
+                break;
+            }
+        }
+        codes_ptr[i] = code;
+    }
+
+    // --- Set class attribute ---
+    const class = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    R.SET_STRING_ELT(class, 0, R.Rf_mkChar("factor"));
+    _ = R.Rf_setAttrib(codes, R.R_ClassSymbol, class);
+    R.Rf_unprotect(1);
+
+    // --- Set levels attribute ---
+    const lvls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, @intCast(level_count)));
+    for (0..level_count) |j| {
+        R.SET_STRING_ELT(lvls, @intCast(j), level_ptrs[j]);
+    }
+    _ = R.Rf_setAttrib(codes, R.R_LevelsSymbol, lvls);
+    R.Rf_unprotect(1);
+
+    return codes;
+}

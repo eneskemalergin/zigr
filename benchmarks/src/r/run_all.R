@@ -15,7 +15,7 @@ r_bench_vectorsum <- function(x) sum(x)
 r_bench_transpose <- function(m) t(m)
 
 # Task 4: String Concatenation
-r_bench_strings <- function(x, sep) paste0(x, collapse = sep)
+r_bench_strings <- function(x) paste0(x, collapse = ", ")
 
 # Task 5: Data Frame Filtering
 r_bench_dataframe <- function(df) {
@@ -36,6 +36,8 @@ r_bench_parallel <- function(x) sum(x)
 
 # Task 9: PROTECT Stress
 r_bench_protect_stress <- function(n) 0L
+r_bench_protect_shallow <- function(x) 0L
+r_bench_protect_scaling <- function(x) 0L
 
 # Task 10: BLAS Matmul
 r_bench_blas_matmul <- function(A, B) A %*% B
@@ -65,7 +67,7 @@ r_bench_rowcol_means <- function(X) {
 }
 
 # Task 17: Vector + scalar broadcast
-r_bench_broadcast <- function(x, s) x + s
+r_bench_broadcast <- function(x, s) sum(x + s)
 
 # Task 18: Sort
 r_bench_sort <- function(x) sort(x)
@@ -78,6 +80,16 @@ r_bench_rnorm <- function(n) rnorm(n)
 
 # Task 21: String nchar
 r_bench_string_nchar <- function(x) sum(nchar(x))
+
+# Task 22: String encoding (count UTF-8 encoded strings)
+r_bench_string_encoding <- function(x) {
+  sum(Encoding(x) == "UTF-8")
+}
+
+# Task 20: Factor ops
+r_bench_factor_ops <- function(x) {
+  sum(as.integer(factor(x)), na.rm = TRUE)
+}
 
 # Task 22: Which NA
 r_bench_which_na <- function(x) which(is.na(x))
@@ -111,16 +123,28 @@ r_bench_owned_altrep_logical_sum <- function(n) {
 
 # Task 26: Type dispatch over mixed atomic vectors
 r_bench_comptime_dispatch <- function(xs) {
-  total <- 0
-  for (i in seq_len(256L)) {
+  total <- 0L
+  for (i in 1:2048) {
     for (x in xs) {
-      total <- total + switch(
-        typeof(x),
-        double = sum(x),
-        integer = sum(x),
-        logical = sum(x),
-        stop("unsupported type in r_bench_comptime_dispatch")
-      )
+      t <- typeof(x)
+      total <- total + switch(t, double = 1L, integer = 2L, character = 3L, 0L)
+    }
+  }
+  total
+}
+
+.type_code <- function(x) {
+  switch(typeof(x),
+    double = 14L, integer = 13L, character = 16L,
+    logical = 10L, list = 19L,
+    0L)
+}
+
+r_bench_sexp_inspect <- function(xs) {
+  total <- 0L
+  for (iter in 1:10000) {
+    for (x in xs) {
+      total <- total + .type_code(x) + is.vector(x) + is.double(x)
     }
   }
   total

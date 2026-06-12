@@ -18,6 +18,7 @@ const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
 const xlength = @import("sexp.zig").xlength;
 const tryXlength = @import("sexp.zig").tryXlength;
+const sexp_mod = @import("sexp.zig");
 const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
@@ -64,10 +65,13 @@ const AllocSliceCleanup = struct {
         };
     }
 
-    fn fire(ptr: ?*anyopaque) void {
-        const self: *AllocSliceCleanup = @ptrCast(@alignCast(ptr.?));
+    /// Frees the buffer this guard owns. Used as the `fireFn` for
+    /// `pushFrameInline`. The state itself lives in the cleanup frame's
+    /// inline buffer (thread-local), so there is no `c_allocator.destroy`
+    /// here. Compare to the previous heap-allocated pattern, which had
+    /// a stack-resident pointer to a heap-allocated state.
+    fn fire(self: *AllocSliceCleanup) void {
         self.allocator.rawFree(self.memory, self.alignment, self.return_address);
-        std.heap.c_allocator.destroy(self);
     }
 };
 
@@ -90,7 +94,7 @@ pub const ConvertError = error{
 };
 
 fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertError!void {
-    if (@as(c_uint, @intCast(R.TYPEOF(sexp))) != expected) return err;
+    if (@as(c_uint, sexp_mod.typeTag(sexp)) != expected) return err;
 }
 
 fn expectNonEmpty(sexp: SEXP) ConvertError!void {
@@ -119,7 +123,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
 fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedNamedList);
     const ns = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
-    if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP) return error.ExpectedNamedList;
+    if (ns == R.R_NilValue or sexp_mod.typeTag(ns) != 16) return error.ExpectedNamedList;
     if (R.XLENGTH(ns) != R.XLENGTH(sexp)) return error.ExpectedNamedList;
     for (0..xlength(ns)) |i| {
         if (R.STRING_ELT(ns, @intCast(i)) == R.R_NaString) return error.ExpectedNamedList;
@@ -130,13 +134,13 @@ fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
     if (sexp == R.R_NilValue) return true;
     if (comptime T == f64) {
-        return R.TYPEOF(sexp) == R.REALSXP and R.XLENGTH(sexp) > 0 and R.ISNA(R.REAL(sexp)[0]) != 0;
+        return sexp_mod.typeTag(sexp) == 14 and R.XLENGTH(sexp) > 0 and R.ISNA(R.REAL(sexp)[0]) != 0;
     }
     if (comptime T == i32) {
-        return R.TYPEOF(sexp) == R.INTSXP and R.XLENGTH(sexp) > 0 and R.INTEGER(sexp)[0] == R.R_NaInt;
+        return sexp_mod.typeTag(sexp) == 13 and R.XLENGTH(sexp) > 0 and R.INTEGER(sexp)[0] == R.R_NaInt;
     }
     if (comptime T == bool) {
-        return R.TYPEOF(sexp) == R.LGLSXP and R.XLENGTH(sexp) > 0 and R.LOGICAL(sexp)[0] == R.R_NaInt;
+        return sexp_mod.typeTag(sexp) == 10 and R.XLENGTH(sexp) > 0 and R.LOGICAL(sexp)[0] == R.R_NaInt;
     }
     return false;
 }
@@ -178,7 +182,7 @@ fn zigrAltRealSliceOrNull(sexp: SEXP) ?[]const f64 {
     if (R.ALTREP(sexp) == 0) return null;
 
     const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or R.TYPEOF(data1) != R.EXTPTRSXP) return null;
+    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
     if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altreal_slice_tag_name)) return null;
 
     const addr = R.R_ExternalPtrAddr(data1) orelse return null;
@@ -190,7 +194,7 @@ fn zigrAltIntegerSliceOrNull(sexp: SEXP) ?[]const i32 {
     if (R.ALTREP(sexp) == 0) return null;
 
     const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or R.TYPEOF(data1) != R.EXTPTRSXP) return null;
+    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
     if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altinteger_slice_tag_name)) return null;
 
     const addr = R.R_ExternalPtrAddr(data1) orelse return null;
@@ -202,7 +206,7 @@ fn zigrAltLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
     if (R.ALTREP(sexp) == 0) return null;
 
     const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or R.TYPEOF(data1) != R.EXTPTRSXP) return null;
+    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
     if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altlogical_slice_tag_name)) return null;
 
     const addr = R.R_ExternalPtrAddr(data1) orelse return null;
@@ -299,14 +303,8 @@ pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     if (directRealSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
-            allocator.free(result);
-            return error.OutOfMemory;
-        };
-        state.* = AllocSliceCleanup.init(f64, allocator, result, @returnAddress());
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
+        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(f64, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
-        defer std.heap.c_allocator.destroy(state);
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -336,14 +334,8 @@ pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     if (directIntSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
-            allocator.free(result);
-            return error.OutOfMemory;
-        };
-        state.* = AllocSliceCleanup.init(i32, allocator, result, @returnAddress());
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
+        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
-        defer std.heap.c_allocator.destroy(state);
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -420,6 +412,15 @@ pub const StringSliceView = struct {
     len: usize,
 
     pub fn at(self: StringSliceView, index: usize) StringView {
+        if (R.ALTREP(self.sexp) == 0) {
+            const elt = sexp_mod.fastVectorElt(self.sexp, index);
+            const is_na = elt == R.R_NaString;
+            const bytes = if (is_na) "" else blk: {
+                const len = @as(usize, @intCast(sexp_mod.fastLength(elt)));
+                break :blk sexp_mod.fastCharData(elt)[0..len];
+            };
+            return .{ .charsxp = elt, .bytes = bytes, .len = bytes.len, .is_na = is_na };
+        }
         const elt = R.STRING_ELT(self.sexp, @intCast(index));
         return makeStringView(elt);
     }
@@ -512,14 +513,8 @@ pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     if (directLogicalSliceOrNull(sexp)) |data| {
         @memcpy(result, data);
     } else if (R.ALTREP(sexp) != 0) {
-        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
-            allocator.free(result);
-            return error.OutOfMemory;
-        };
-        state.* = AllocSliceCleanup.init(i32, allocator, result, @returnAddress());
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
+        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
-        defer std.heap.c_allocator.destroy(state);
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -572,14 +567,8 @@ pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     const n = try tryXlength(sexp);
     const result = try allocator.alloc(u8, n);
     if (R.ALTREP(sexp) != 0) {
-        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
-            allocator.free(result);
-            return error.OutOfMemory;
-        };
-        state.* = AllocSliceCleanup.init(u8, allocator, result, @returnAddress());
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
+        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
-        defer std.heap.c_allocator.destroy(state);
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -607,14 +596,8 @@ pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]Rcomplex {
     const n = try tryXlength(sexp);
     const result = try allocator.alloc(Rcomplex, n);
     if (R.ALTREP(sexp) != 0) {
-        const state = std.heap.c_allocator.create(AllocSliceCleanup) catch {
-            allocator.free(result);
-            return error.OutOfMemory;
-        };
-        state.* = AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress());
-        cleanup.pushFrame(AllocSliceCleanup.fire, @as(?*anyopaque, @ptrCast(state)));
+        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
-        defer std.heap.c_allocator.destroy(state);
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -1432,24 +1415,28 @@ pub fn pmax(a: SEXP, b: SEXP) SEXP {
     return pmaxAlloc(a, b, arena.allocator());
 }
 
-/// Cumulative sum of a REALSXP. Returns a new REALSXP.
+/// Cumulative sum of a REALSXP using chunked iteration for ALTREP
+/// compatibility. Returns a new REALSXP.
 pub fn cumsum(sexp: SEXP) SEXP {
     const n = xlength(sexp);
-    const data = R.REAL(sexp);
-
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
     defer result.deinit();
     const rp = R.REAL(result.get());
 
     var total: f64 = 0.0;
     var na_seen = false;
-    for (0..n) |i| {
-        if (na_seen or R.ISNAN(data[i]) != 0) {
-            na_seen = true;
-            rp[i] = R.R_NaReal;
-        } else {
-            total += data[i];
-            rp[i] = total;
+    var idx: usize = 0;
+    var iter = RealChunkIter.init(sexp);
+    while (iter.next()) |chunk| {
+        for (chunk.data) |value| {
+            if (na_seen or R.ISNAN(value) != 0) {
+                na_seen = true;
+                rp[idx] = R.R_NaReal;
+            } else {
+                total += value;
+                rp[idx] = total;
+            }
+            idx += 1;
         }
     }
 

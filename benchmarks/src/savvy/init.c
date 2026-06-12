@@ -41,19 +41,36 @@ SEXP savvy_bench_fib_recursive__impl(SEXP c_arg__n) {
 
 SAVVY_WRAP1(bench_vectorsum, c_arg__vec)
 SAVVY_WRAP1(bench_transpose, c_arg__mat)
+SAVVY_WRAP1(bench_matrix_transpose, c_arg__mat)
 SAVVY_WRAP2(bench_strings, c_arg__vec, c_arg__sep)
 SAVVY_WRAP1(bench_na_prop, c_arg__vec)
 SAVVY_WRAP1(bench_parallel, c_arg__vec)
 SAVVY_WRAP1(bench_protect_stress, c_arg__n)
+
+SEXP savvy_bench_protect_shallow__impl(SEXP c_arg__vec) {
+    SEXP res = savvy_bench_protect_shallow__ffi(c_arg__vec);
+    return res;
+}
+
+SEXP savvy_bench_protect_scaling__impl(SEXP c_arg__vec) {
+    SEXP res = savvy_bench_protect_scaling__ffi(c_arg__vec);
+    return res;
+}
+
 SAVVY_WRAP2(bench_blas_matmul, c_arg__a, c_arg__b)
 SAVVY_WRAP1(bench_crossprod, c_arg__x)
 SAVVY_WRAP1(bench_cholesky, c_arg__a)
 SAVVY_WRAP2(bench_lm, c_arg__x, c_arg__y)
 SAVVY_WRAP1(bench_rowsums, c_arg__mat)
+SAVVY_WRAP1(bench_matrix_rowsums, c_arg__mat)
 SAVVY_WRAP1(bench_elem_ops, c_arg__vec)
 SAVVY_WRAP1(bench_rowcol_means, c_arg__mat)
+SAVVY_WRAP1(bench_matrix_rowcol_means, c_arg__mat)
 SAVVY_WRAP2(bench_broadcast, c_arg__vec, c_arg__scalar)
 SAVVY_WRAP1(bench_sort, c_arg__vec)
+SAVVY_WRAP1(bench_list_access, c_arg__vec)
+SAVVY_WRAP1(bench_string_concat, c_arg__vec)
+SAVVY_WRAP1(bench_type_dispatch, c_arg__vec)
 SAVVY_WRAP1(bench_cumsum, c_arg__vec)
 SAVVY_WRAP1(bench_rnorm, c_arg__n)
 SAVVY_WRAP1(bench_string_nchar, c_arg__vec)
@@ -61,6 +78,7 @@ SAVVY_WRAP1(bench_which_na, c_arg__vec)
 SAVVY_WRAP1(bench_altrep_sum, c_arg__vec)
 SAVVY_WRAP1(bench_altrep_read, c_arg__vec)
 SAVVY_WRAP1(bench_altrep_create, c_arg__n)
+SAVVY_WRAP1(bench_sexp_create, c_arg__n)
 SAVVY_WRAP1(bench_owned_altrep_real_sum, c_arg__n)
 SAVVY_WRAP1(bench_owned_altrep_int_sum, c_arg__n)
 SAVVY_WRAP1(bench_owned_altrep_logical_sum, c_arg__n)
@@ -74,6 +92,12 @@ SAVVY_WRAP1(bench_longjmp_safety, c_arg__vec)
 SAVVY_WRAP1(bench_translate_c_cost, c_arg__vec)
 SAVVY_WRAP1(bench_parallel_scaling, c_arg__vec)
 SAVVY_WRAP1(bench_memory_bandwidth, c_arg__vec)
+SAVVY_WRAP1(bench_sexp_inspect, c_arg__vec)
+
+extern SEXP savvy_bench_string_encoding__impl(SEXP);
+// savvy_bench_string_encoding__impl is defined directly in Rust
+extern SEXP savvy_bench_factor_ops__impl(SEXP);
+// savvy_bench_factor_ops__impl is defined directly in Rust
 
 SEXP savvy_bench_string_variants__impl(SEXP c_arg__vec) {
   SEXP res = savvy_bench_string_variants_manual__ffi(c_arg__vec);
@@ -85,31 +109,47 @@ SEXP savvy_bench_dataframe__impl(SEXP c_arg__df) {
   return handle_result(res);
 }
 
+SEXP savvy_bench_dataframe_filter__impl(SEXP c_arg__df) {
+  SEXP res = savvy_bench_dataframe_filter__ffi(c_arg__df);
+  return handle_result(res);
+}
+
 static const R_CallMethodDef CallEntries[] = {
   {"savvy_bench_fib_recursive__impl", (DL_FUNC)&savvy_bench_fib_recursive__impl, 1},
   {"savvy_bench_vectorsum__impl", (DL_FUNC)&savvy_bench_vectorsum__impl, 1},
   {"savvy_bench_transpose__impl", (DL_FUNC)&savvy_bench_transpose__impl, 1},
+  {"savvy_bench_matrix_transpose__impl", (DL_FUNC)&savvy_bench_matrix_transpose__impl, 1},
   {"savvy_bench_strings__impl", (DL_FUNC)&savvy_bench_strings__impl, 2},
   {"savvy_bench_dataframe__impl", (DL_FUNC)&savvy_bench_dataframe__impl, 1},
+  {"savvy_bench_dataframe_filter__impl", (DL_FUNC)&savvy_bench_dataframe_filter__impl, 1},
   {"savvy_bench_na_prop__impl", (DL_FUNC)&savvy_bench_na_prop__impl, 1},
   {"savvy_bench_parallel__impl", (DL_FUNC)&savvy_bench_parallel__impl, 1},
   {"savvy_bench_protect_stress__impl", (DL_FUNC)&savvy_bench_protect_stress__impl, 1},
+  {"savvy_bench_protect_shallow__impl", (DL_FUNC)&savvy_bench_protect_shallow__impl, 1},
+  {"savvy_bench_protect_scaling__impl", (DL_FUNC)&savvy_bench_protect_scaling__impl, 1},
   {"savvy_bench_blas_matmul__impl", (DL_FUNC)&savvy_bench_blas_matmul__impl, 2},
   {"savvy_bench_crossprod__impl", (DL_FUNC)&savvy_bench_crossprod__impl, 1},
   {"savvy_bench_cholesky__impl", (DL_FUNC)&savvy_bench_cholesky__impl, 1},
   {"savvy_bench_lm__impl", (DL_FUNC)&savvy_bench_lm__impl, 2},
   {"savvy_bench_rowsums__impl", (DL_FUNC)&savvy_bench_rowsums__impl, 1},
+  {"savvy_bench_matrix_rowsums__impl", (DL_FUNC)&savvy_bench_matrix_rowsums__impl, 1},
   {"savvy_bench_elem_ops__impl", (DL_FUNC)&savvy_bench_elem_ops__impl, 1},
   {"savvy_bench_rowcol_means__impl", (DL_FUNC)&savvy_bench_rowcol_means__impl, 1},
+  {"savvy_bench_matrix_rowcol_means__impl", (DL_FUNC)&savvy_bench_matrix_rowcol_means__impl, 1},
   {"savvy_bench_broadcast__impl", (DL_FUNC)&savvy_bench_broadcast__impl, 2},
   {"savvy_bench_sort__impl", (DL_FUNC)&savvy_bench_sort__impl, 1},
+  {"savvy_bench_list_access__impl", (DL_FUNC)&savvy_bench_list_access__impl, 1},
+  {"savvy_bench_string_concat__impl", (DL_FUNC)&savvy_bench_string_concat__impl, 1},
+  {"savvy_bench_type_dispatch__impl", (DL_FUNC)&savvy_bench_type_dispatch__impl, 1},
   {"savvy_bench_cumsum__impl", (DL_FUNC)&savvy_bench_cumsum__impl, 1},
   {"savvy_bench_rnorm__impl", (DL_FUNC)&savvy_bench_rnorm__impl, 1},
   {"savvy_bench_string_nchar__impl", (DL_FUNC)&savvy_bench_string_nchar__impl, 1},
+  {"savvy_bench_string_encoding__impl", (DL_FUNC)&savvy_bench_string_encoding__impl, 1},
   {"savvy_bench_which_na__impl", (DL_FUNC)&savvy_bench_which_na__impl, 1},
   {"savvy_bench_altrep_sum__impl", (DL_FUNC)&savvy_bench_altrep_sum__impl, 1},
   {"savvy_bench_altrep_read__impl", (DL_FUNC)&savvy_bench_altrep_read__impl, 1},
   {"savvy_bench_altrep_create__impl", (DL_FUNC)&savvy_bench_altrep_create__impl, 1},
+  {"savvy_bench_sexp_create__impl", (DL_FUNC)&savvy_bench_sexp_create__impl, 1},
   {"savvy_bench_owned_altrep_real_sum__impl", (DL_FUNC)&savvy_bench_owned_altrep_real_sum__impl, 1},
   {"savvy_bench_owned_altrep_int_sum__impl", (DL_FUNC)&savvy_bench_owned_altrep_int_sum__impl, 1},
   {"savvy_bench_owned_altrep_logical_sum__impl", (DL_FUNC)&savvy_bench_owned_altrep_logical_sum__impl, 1},
@@ -123,6 +163,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"savvy_bench_translate_c_cost__impl", (DL_FUNC)&savvy_bench_translate_c_cost__impl, 1},
   {"savvy_bench_parallel_scaling__impl", (DL_FUNC)&savvy_bench_parallel_scaling__impl, 1},
   {"savvy_bench_memory_bandwidth__impl", (DL_FUNC)&savvy_bench_memory_bandwidth__impl, 1},
+  {"savvy_bench_sexp_inspect__impl", (DL_FUNC)&savvy_bench_sexp_inspect__impl, 1},
+  {"savvy_bench_factor_ops__impl", (DL_FUNC)&savvy_bench_factor_ops__impl, 1},
   {"savvy_bench_string_variants__impl", (DL_FUNC)&savvy_bench_string_variants__impl, 1},
   {NULL, NULL, 0}
 };

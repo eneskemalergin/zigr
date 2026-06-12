@@ -7,6 +7,7 @@ const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
+const sexp_mod = @import("sexp.zig");
 
 pub const RCondition = error{RCondition};
 
@@ -86,7 +87,7 @@ pub fn extractMessage(cond: R.SEXP) []const u8 {
     const msg_sym = symbols.install("message");
     const msg_sexp = R.Rf_getAttrib(cond, msg_sym);
     if (msg_sexp == R.R_NilValue) return "";
-    if (R.TYPEOF(msg_sexp) != R.STRSXP) return "";
+    if (sexp_mod.typeTag(msg_sexp) != 16) return "";
     if (R.XLENGTH(msg_sexp) < 1) return "";
     const elt = R.STRING_ELT(msg_sexp, 0);
     if (elt == R.R_NaString) return "";

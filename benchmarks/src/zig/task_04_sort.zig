@@ -17,23 +17,27 @@ fn radixSortF64(items: []f64) void {
         b.* = if (v & sign_bit != 0) ~v else v ^ sign_bit;
     }
 
-    // Allocate temp once, reuse across all 8 passes
+    // Allocate temp once, reuse across all 8 passes of ping-pong sort.
+    // Use c_allocator (malloc), no need for zeroed memory.
     var stack_temp: [256]u64 = undefined;
-    const temp_alloc = if (n <= 256) blk: {
+    const temp = if (n <= 256) blk: {
         break :blk stack_temp[0..n];
     } else blk: {
-        const ptr = @as([*]u64, @ptrCast(@alignCast(R.R_chk_calloc(n, @sizeOf(u64)) orelse unreachable)));
-        break :blk ptr[0..n];
+        const ptr = std.heap.c_allocator.alloc(u64, n) catch unreachable;
+        break :blk ptr;
     };
     const needs_free = n > 256;
 
-    // LSD radix sort, 8 bits per pass, 8 passes for 64-bit
+    // LSD radix sort with ping-pong buffers: read from `src`, write to `dst`,
+    // swap each pass. After 8 passes (even) the data is back in `buf`.
+    var src: []u64 = buf;
+    var dst: []u64 = temp;
     var counts: [256]usize = undefined;
     var shift: usize = 0;
     while (shift < 64) : (shift += 8) {
         const s: u6 = @intCast(shift);
         @memset(counts[0..], 0);
-        for (buf) |v| counts[(v >> s) & 0xFF] += 1;
+        for (src) |v| counts[(v >> s) & 0xFF] += 1;
 
         var total: usize = 0;
         for (&counts) |*c| {
@@ -42,16 +46,18 @@ fn radixSortF64(items: []f64) void {
             total += old;
         }
 
-        for (buf) |v| {
+        for (src) |v| {
             const digit = (v >> s) & 0xFF;
-            temp_alloc[counts[digit]] = v;
+            dst[counts[digit]] = v;
             counts[digit] += 1;
         }
 
-        @memcpy(buf, temp_alloc);
+        const swap = src;
+        src = dst;
+        dst = swap;
     }
 
-    if (needs_free) R.R_chk_free(@ptrCast(temp_alloc.ptr));
+    if (needs_free) std.heap.c_allocator.free(temp);
 
     // Restore: flip sign bit back for positives, flip all bits for negatives
     for (buf) |*b| {

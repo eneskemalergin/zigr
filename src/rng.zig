@@ -29,8 +29,8 @@ pub fn release() void {
 /// frame armed. On normal return the frame pops silently. On longjmp
 /// (Rf_error) the cleanup fires release() before the unwind propagates.
 pub fn withRng(comptime func: *const fn () R.SEXP) R.SEXP {
-    cleanup.pushFrame(releaseRng, null);
     acquire();
+    cleanup.pushFrame(releaseRng, null);
     const result = func();
     cleanup.popFrame();
     release();

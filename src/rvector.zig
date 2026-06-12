@@ -7,6 +7,7 @@ const std = @import("std");
 const R = @import("R");
 const convert = @import("convert.zig");
 const protect = @import("protect.zig");
+const sexp_mod = @import("sexp.zig");
 
 pub fn RVector(comptime T: type) type {
     return struct {
@@ -19,7 +20,8 @@ pub fn RVector(comptime T: type) type {
         }
 
         fn expectType(sexp: R.SEXP) !void {
-            if (R.TYPEOF(sexp) != convert.typeToSEXPTYPE(T)) return error.UnexpectedType;
+            const expected: u5 = @truncate(@as(u6, @intCast(convert.typeToSEXPTYPE(T))));
+            if (expected != sexp_mod.typeTag(sexp)) return error.UnexpectedType;
         }
 
         pub fn init(sexp: R.SEXP) !Self {

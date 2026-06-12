@@ -22,7 +22,7 @@ fn setNames(result: SEXP) void {
     _ = R.Rf_setAttrib(result, R.R_NamesSymbol, names);
 }
 
-export fn zigr_bench_memory_bandwidth(vec: SEXP) SEXP {
+export fn zigr_bench_memcpy_bandwidth(vec: SEXP) SEXP {
     const input = raw.real(vec);
     const result = R.Rf_protect(R.Rf_allocVector(R.REALSXP, strategy_names.len));
     defer R.Rf_unprotect(1);

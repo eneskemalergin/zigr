@@ -23,6 +23,7 @@ const std = @import("std");
 const R = @import("R");
 const convert = @import("convert.zig");
 const cleanup = @import("cleanup");
+const sexp_mod = @import("sexp.zig");
 
 /// Panics on any allocation. Used when arena_needed is false (all param/return types are scalars or SEXP). If this fires, a code path reached fromSexp with a type needing allocation despite arena_needed=false, which is a bug.
 fn panicAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
@@ -449,7 +450,7 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             defer if (have_arena) cleanup.popFrame();
             const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
-            if (R.TYPEOF(a0) != R.EXTPTRSXP) signalError("expected external pointer");
+            if (sexp_mod.typeTag(a0) != 22) signalError("expected external pointer");
             const raw_ptr = R.R_ExternalPtrAddr(a0) orelse signalError("null external pointer");
             const ptr: *T = @ptrCast(@alignCast(raw_ptr));
 

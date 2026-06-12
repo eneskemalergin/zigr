@@ -2,15 +2,10 @@ const R = @import("R");
 
 const SEXP = R.SEXP;
 
-export fn zigr_bench_protect_stress(n_sexp: SEXP) SEXP {
-    const n = R.Rf_asInteger(n_sexp);
-    const limit: usize = @intCast(n);
-
-    for (0..limit) |_| {
-        const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
-        _ = vec;
+export fn zigr_bench_protect_shallow(vec: SEXP) SEXP {
+    for (0..100) |_| {
+        for (0..10) |_| _ = R.Rf_protect(vec);
+        R.Rf_unprotect(10);
     }
-
-    R.Rf_unprotect(@intCast(n));
     return R.Rf_ScalarInteger(0);
 }

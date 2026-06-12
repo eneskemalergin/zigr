@@ -2,6 +2,7 @@
     "name": "extendr",
     "label": "extendr (Rust)",
     "call_type": ".Call",
+    "so_path": "src/extendr/extendr_benchmarks.so",
     "exports": {
         "01_vectorsum": "wrap__extendr_bench_vectorsum",
         "02_elem_ops": "wrap__extendr_bench_elem_ops",

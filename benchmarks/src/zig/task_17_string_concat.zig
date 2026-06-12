@@ -1,36 +1,37 @@
 const std = @import("std");
 const R = @import("R");
-const convert = @import("zigr").convert;
-
+const sexp = @import("zigr").sexp;
 const SEXP = R.SEXP;
-const na_text = "NA";
+const sep = ", ";
 
-export fn zigr_bench_strings(vec: SEXP, sep_sexp: SEXP) SEXP {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    const strings = convert.toCachedStringSliceView(arena.allocator(), vec) catch |err| convert.signalError(err);
-    const sep_view = convert.toStringSliceView(sep_sexp) catch |err| convert.signalError(err);
-    const sep = sep_view.at(0).bytes;
-    const n = strings.len;
+export fn zigr_bench_string_concat(vec: SEXP) SEXP {
+    const n = sexp.xlength(vec);
 
     var total: usize = 0;
     for (0..n) |i| {
-        const value = strings.at(i);
-        total += if (value.is_na) na_text.len else value.bytes.len;
+        const elt = sexp.fastVectorElt(vec, i);
+        total += if (elt == R.R_NaString) @as(usize, 2) else @as(usize, @intCast(sexp.fastLength(elt)));
     }
     if (n > 1) total += (n - 1) * sep.len;
 
-    const buf = R.R_alloc(total, 1);
+    // Use c_allocator (malloc) instead of R_alloc to avoid R's GC interaction
+    const buf = std.heap.c_allocator.alloc(u8, total) catch unreachable;
+    defer std.heap.c_allocator.free(buf);
+
     var pos: usize = 0;
     for (0..n) |i| {
-        const value = strings.at(i);
-        const part = if (value.is_na) na_text else value.bytes;
-        if (part.len > 0) {
-            @memcpy(buf[pos..][0..part.len], part);
-            pos += part.len;
+        const elt = sexp.fastVectorElt(vec, i);
+        if (elt == R.R_NaString) {
+            @memcpy(buf[pos..][0..2], "NA");
+            pos += 2;
+        } else {
+            const len = @as(usize, @intCast(sexp.fastLength(elt)));
+            if (len > 0) {
+                @memcpy(buf[pos..][0..len], sexp.fastCharData(elt)[0..len]);
+                pos += len;
+            }
         }
-        if (i + 1 < n and sep.len > 0) {
+        if (i + 1 < n) {
             @memcpy(buf[pos..][0..sep.len], sep);
             pos += sep.len;
         }
@@ -38,8 +39,7 @@ export fn zigr_bench_strings(vec: SEXP, sep_sexp: SEXP) SEXP {
 
     const out = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
     defer R.Rf_unprotect(1);
-    const cs = R.Rf_mkCharLenCE(buf, @intCast(pos), @as(R.cetype_t, @intCast(R.CE_UTF8)));
+    const cs = R.Rf_mkCharLenCE(buf.ptr, @intCast(pos), @as(R.cetype_t, @intCast(R.CE_UTF8)));
     R.SET_STRING_ELT(out, 0, cs);
-
     return out;
 }

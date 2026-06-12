@@ -2,6 +2,7 @@
     "name": "savvy",
     "label": "savvy (Rust)",
     "call_type": ".Call",
+    "so_path": "src/savvy/savvy_benchmarks.so",
     "exports": {
         "01_vectorsum": "savvy_bench_vectorsum__impl",
         "02_elem_ops": "savvy_bench_elem_ops__impl",

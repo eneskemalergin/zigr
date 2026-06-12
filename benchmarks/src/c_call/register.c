@@ -7,7 +7,7 @@ extern SEXP c_call_bench_elem_ops(SEXP);
 extern SEXP c_call_bench_memcpy_bandwidth(SEXP);
 extern SEXP c_call_bench_sort(SEXP);
 extern SEXP c_call_bench_fib_recursive(SEXP);
-extern SEXP c_call_bench_broadcast(SEXP);
+extern SEXP c_call_bench_broadcast(SEXP, SEXP);
 extern SEXP c_call_bench_protect_shallow(SEXP);
 extern SEXP c_call_bench_protect_scaling(SEXP);
 extern SEXP c_call_bench_type_dispatch(SEXP);
@@ -53,7 +53,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_call_bench_memcpy_bandwidth", (DL_FUNC) &c_call_bench_memcpy_bandwidth, 1},
   {"c_call_bench_sort",             (DL_FUNC) &c_call_bench_sort,             1},
   {"c_call_bench_fib_recursive",    (DL_FUNC) &c_call_bench_fib_recursive,    1},
-  {"c_call_bench_broadcast",        (DL_FUNC) &c_call_bench_broadcast,        1},
+  {"c_call_bench_broadcast",        (DL_FUNC) &c_call_bench_broadcast,        2},
   {"c_call_bench_protect_shallow",  (DL_FUNC) &c_call_bench_protect_shallow,  1},
   {"c_call_bench_protect_scaling",  (DL_FUNC) &c_call_bench_protect_scaling,  1},
   {"c_call_bench_type_dispatch",    (DL_FUNC) &c_call_bench_type_dispatch,    1},
