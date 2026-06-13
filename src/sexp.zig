@@ -46,8 +46,10 @@ pub fn typeOf(sexp: SEXP) SEXPTYPE {
 
 /// Reads vecsxp.length directly from the SEXPREC struct at verified
 /// offset 0x20. Returns R_xlen_t (signed 64-bit), as R does.
+/// Returns 0 on null input (caller should check with typeTag first).
 pub fn fastLength(sexp: SEXP) R.R_xlen_t {
-    const base = @as([*]const u8, @ptrCast(sexp));
+    const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return 0;
+    const base: [*]const u8 = @ptrCast(@alignCast(raw));
     const slot: *const R.R_xlen_t = @ptrCast(@alignCast(base + length_offset));
     return slot.*;
 }
@@ -73,8 +75,10 @@ pub fn fastVectorElt(sexp: SEXP, index: usize) SEXP {
 
 /// Inline R_CHAR: reads the character data pointer from a CHARSXP.
 /// The data field is at verified offset 0x30 from the CHARSXP SEXP.
-pub fn fastCharData(charsxp: SEXP) [*]const u8 {
-    const base = @as([*]const u8, @ptrCast(charsxp));
+/// Returns null on null input.
+pub fn fastCharData(charsxp: SEXP) ?[*]const u8 {
+    const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return null;
+    const base: [*]const u8 = @ptrCast(@alignCast(raw));
     return base + dataptr_offset;
 }
 
@@ -85,8 +89,11 @@ pub fn fastCharData(charsxp: SEXP) [*]const u8 {
 ///   0x02 → CE_BYTES  (3)
 ///   otherwise → CE_NATIVE (0)
 /// No PLT call — verified against Rf_getCharCE disassembly on R 4.6.0.
+/// Returns -1 on null or non-CHARSXP input (safe sentinel).
 pub fn fastGetCharCE(charsxp: SEXP) i32 {
-    const bytes: [*]const u8 = @ptrCast(charsxp);
+    const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return -1;
+    if (typeTag(charsxp) != 9) return -1; // CHARSXP = 9
+    const bytes: [*]const u8 = @ptrCast(@alignCast(raw));
     const b1 = bytes[1];
     if (b1 & 0x08 != 0) return 1;
     if (b1 & 0x04 != 0) return 2;
@@ -94,11 +101,12 @@ pub fn fastGetCharCE(charsxp: SEXP) i32 {
     return 0;
 }
 
-/// Length of any SEXP as usize. Returns 0 on negative length (corrupted
-/// SEXP) instead of panicking. Uses fastLength (inline struct field read)
-/// for non-ALTREP vectors, falls back to R.XLENGTH for ALTREP method
-/// dispatch.
+/// Length of any SEXP as usize. Returns 0 on null, negative length (corrupted
+/// SEXP), or zero-length vector instead of panicking. Uses fastLength (inline
+/// struct field read) for non-ALTREP vectors, falls back to R.XLENGTH for
+/// ALTREP method dispatch.
 pub fn xlength(sexp: SEXP) usize {
+    if (sexp == null) return 0;
     const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
     if (len < 0) return 0;
     return @as(usize, @intCast(len));
@@ -106,12 +114,14 @@ pub fn xlength(sexp: SEXP) usize {
 
 /// xlength that returns a clear error instead of silently zeroing.
 pub fn tryXlength(sexp: SEXP) !usize {
+    if (sexp == null) return error.NullPointer;
     const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
     if (len < 0) return error.NegativeLength;
     return @as(usize, @intCast(len));
 }
 
 pub const XlengthError = error{
+    NullPointer,
     NegativeLength,
 };
 

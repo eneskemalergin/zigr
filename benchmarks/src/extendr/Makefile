@@ -12,7 +12,7 @@ $(STATLIB): rust/Cargo.toml rust/src/lib.rs
 	  cargo build --release --manifest-path rust/Cargo.toml --target-dir $(TARGET_DIR)
 
 $(OUT): $(STATLIB) entrypoint.c
-	PKG_CPPFLAGS="-I$(R_INCLUDE)" R CMD SHLIB -o $(OUT) entrypoint.c -Wl,--whole-archive $(STATLIB) -Wl,--no-whole-archive
+	PKG_CPPFLAGS="-I$(R_INCLUDE)" PKG_LIBS="-lblas" R CMD SHLIB -o $(OUT) entrypoint.c -Wl,--whole-archive $(STATLIB) -Wl,--no-whole-archive
 
 clean:
 	rm -f $(OUT) $(STATLIB) entrypoint.o

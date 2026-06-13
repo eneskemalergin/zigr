@@ -417,7 +417,7 @@ pub const StringSliceView = struct {
             const is_na = elt == R.R_NaString;
             const bytes = if (is_na) "" else blk: {
                 const len = @as(usize, @intCast(sexp_mod.fastLength(elt)));
-                break :blk sexp_mod.fastCharData(elt)[0..len];
+                break :blk (sexp_mod.fastCharData(elt) orelse unreachable)[0..len];
             };
             return .{ .charsxp = elt, .bytes = bytes, .len = bytes.len, .is_na = is_na };
         }
@@ -1328,7 +1328,7 @@ pub fn sum_narm(sexp: SEXP) f64 {
 /// Mean of a REALSXP excluding NA values.
 pub fn mean_narm(sexp: SEXP) f64 {
     const n = xlength(sexp);
-    if (n == 0) return 0.0;
+    if (n == 0) return R.R_NaReal;
 
     const lanes = simd.f64_lanes;
     const na_bits: @Vector(lanes, u64) = @splat(@as(u64, @bitCast(R.R_NaReal)));
@@ -1353,13 +1353,48 @@ pub fn mean_narm(sexp: SEXP) f64 {
             count += @as(i64, @intFromFloat(@reduce(.Add, vec_cnt)));
         }
         while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNA(chunk.data[i]) != 0) continue;
+            if (R.ISNA(chunk.data[i]) != 0) {
+                @branchHint(.unlikely);
+                continue;
+            }
             total += chunk.data[i];
             count += 1;
         }
     }
 
     return if (count == 0) R.R_NaReal else total / @as(f64, @floatFromInt(count));
+}
+
+/// Computes `sum(x * alpha + beta)` using SIMD.
+/// Each element is scaled by `alpha` then shifted by `beta`.
+/// Returns the sum of all `x[i] * alpha + beta`.
+/// ALTREP-aware via RealChunkIter.
+pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
+    const n = xlength(sexp);
+    if (n == 0) return 0.0;
+
+    const lanes = simd.f64_lanes;
+    const valpha: @Vector(lanes, f64) = @splat(alpha);
+    const vbeta: @Vector(lanes, f64) = @splat(beta);
+    var total: f64 = 0.0;
+
+    var iter = RealChunkIter.init(sexp);
+    while (iter.next()) |chunk| {
+        var i: usize = 0;
+        if (chunk.data.len >= lanes) {
+            var vtotal: @Vector(lanes, f64) = @splat(0.0);
+            const end = chunk.data.len - (chunk.data.len % lanes);
+            while (i < end) : (i += lanes) {
+                const v: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
+                vtotal += v * valpha + vbeta;
+            }
+            total += @reduce(.Add, vtotal);
+        }
+        while (i < chunk.data.len) : (i += 1) {
+            total += chunk.data[i] * alpha + beta;
+        }
+    }
+    return total;
 }
 
 /// Element-wise minimum of two REALSXPs using a caller-provided

@@ -97,6 +97,23 @@ SAVVY_WRAP1(bench_sexp_inspect, c_arg__vec)
 extern SEXP savvy_bench_string_encoding__impl(SEXP);
 // savvy_bench_string_encoding__impl is defined directly in Rust
 extern SEXP savvy_bench_factor_ops__impl(SEXP);
+extern SEXP savvy_bench_attrib_ops__impl(SEXP);
+extern SEXP savvy_bench_s4_slot_access__impl(SEXP);
+extern SEXP savvy_bench_na_propagation__impl(SEXP);
+extern SEXP savvy_bench_long_vector_idx__impl(SEXP);
+extern SEXP savvy_bench_l1_arithmetic__impl(SEXP);
+extern SEXP savvy_bench_altrep_materialize__impl(SEXP);
+extern SEXP savvy_bench_altrep_elt_walk__impl(SEXP);
+extern SEXP savvy_bench_altrep_region_read__impl(SEXP);
+extern SEXP savvy_bench_altrep_sum_via_R__impl(SEXP);
+extern SEXP savvy_bench_altrep_sum_native__impl(SEXP);
+extern SEXP savvy_bench_altrep_min_max__impl(SEXP);
+extern SEXP savvy_bench_altrep_no_na_query__impl(SEXP);
+extern SEXP savvy_bench_r_eval__impl(SEXP);
+extern SEXP savvy_bench_r_tryeval__impl(SEXP);
+extern SEXP savvy_bench_serialize_roundtrip__impl(SEXP);
+extern SEXP savvy_bench_external_ptr__impl(SEXP);
+extern SEXP savvy_bench_rng_stress__impl(SEXP);
 // savvy_bench_factor_ops__impl is defined directly in Rust
 
 SEXP savvy_bench_string_variants__impl(SEXP c_arg__vec) {
@@ -165,6 +182,23 @@ static const R_CallMethodDef CallEntries[] = {
   {"savvy_bench_memory_bandwidth__impl", (DL_FUNC)&savvy_bench_memory_bandwidth__impl, 1},
   {"savvy_bench_sexp_inspect__impl", (DL_FUNC)&savvy_bench_sexp_inspect__impl, 1},
   {"savvy_bench_factor_ops__impl", (DL_FUNC)&savvy_bench_factor_ops__impl, 1},
+  {"savvy_bench_attrib_ops__impl", (DL_FUNC)&savvy_bench_attrib_ops__impl, 1},
+  {"savvy_bench_s4_slot_access__impl", (DL_FUNC)&savvy_bench_s4_slot_access__impl, 1},
+  {"savvy_bench_na_propagation__impl", (DL_FUNC)&savvy_bench_na_propagation__impl, 1},
+  {"savvy_bench_altrep_materialize__impl", (DL_FUNC)&savvy_bench_altrep_materialize__impl, 1},
+  {"savvy_bench_altrep_elt_walk__impl", (DL_FUNC)&savvy_bench_altrep_elt_walk__impl, 1},
+  {"savvy_bench_altrep_region_read__impl", (DL_FUNC)&savvy_bench_altrep_region_read__impl, 1},
+  {"savvy_bench_altrep_sum_via_R__impl", (DL_FUNC)&savvy_bench_altrep_sum_via_R__impl, 1},
+  {"savvy_bench_altrep_sum_native__impl", (DL_FUNC)&savvy_bench_altrep_sum_native__impl, 1},
+  {"savvy_bench_altrep_min_max__impl", (DL_FUNC)&savvy_bench_altrep_min_max__impl, 1},
+  {"savvy_bench_altrep_no_na_query__impl", (DL_FUNC)&savvy_bench_altrep_no_na_query__impl, 1},
+  {"savvy_bench_r_eval__impl", (DL_FUNC)&savvy_bench_r_eval__impl, 1},
+  {"savvy_bench_r_tryeval__impl", (DL_FUNC)&savvy_bench_r_tryeval__impl, 1},
+  {"savvy_bench_serialize_roundtrip__impl", (DL_FUNC)&savvy_bench_serialize_roundtrip__impl, 1},
+  {"savvy_bench_external_ptr__impl", (DL_FUNC)&savvy_bench_external_ptr__impl, 1},
+  {"savvy_bench_rng_stress__impl", (DL_FUNC)&savvy_bench_rng_stress__impl, 1},
+  {"savvy_bench_long_vector_idx__impl", (DL_FUNC)&savvy_bench_long_vector_idx__impl, 1},
+  {"savvy_bench_l1_arithmetic__impl", (DL_FUNC)&savvy_bench_l1_arithmetic__impl, 1},
   {"savvy_bench_string_variants__impl", (DL_FUNC)&savvy_bench_string_variants__impl, 1},
   {NULL, NULL, 0}
 };

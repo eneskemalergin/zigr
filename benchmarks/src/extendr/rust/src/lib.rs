@@ -4,11 +4,25 @@ extern "C" {
     fn Rf_getCharCE(x: extendr_ffi::SEXP) -> i32;
     fn Rf_install(name: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
     fn Rf_lang2(fun: extendr_ffi::SEXP, arg: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn Rf_lang3(fun: extendr_ffi::SEXP, arg1: extendr_ffi::SEXP, arg2: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
     fn Rf_mkString(str: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
     fn Rf_ScalarReal(x: f64) -> extendr_ffi::SEXP;
     fn Rf_ScalarInteger(x: i32) -> extendr_ffi::SEXP;
     fn Rf_setAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP, val: extendr_ffi::SEXP);
+    fn Rf_getAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn Rf_classgets(x: extendr_ffi::SEXP, val: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn Rf_duplicate(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn Rf_asInteger(x: extendr_ffi::SEXP) -> i32;
+    fn Rf_asLogical(x: extendr_ffi::SEXP) -> i32;
+    fn Rf_asReal(x: extendr_ffi::SEXP) -> f64;
+    fn R_MakeExternalPtr(data: *mut std::os::raw::c_void, tag: extendr_ffi::SEXP, prot: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn GetRNGstate();
+    fn PutRNGstate();
+    fn norm_rand() -> f64;
+    fn VECTOR_ELT(x: extendr_ffi::SEXP, i: isize) -> extendr_ffi::SEXP;
+    fn LENGTH(x: extendr_ffi::SEXP) -> i32;
     fn Rf_mkChar(str: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
+    fn Rf_allocVector(kind: u32, len: isize) -> extendr_ffi::SEXP;
     fn R_tryEvalSilent(expr: extendr_ffi::SEXP, env: extendr_ffi::SEXP, err: *mut i32) -> extendr_ffi::SEXP;
     fn R_MakeUnwindCont() -> extendr_ffi::SEXP;
     fn R_UnwindProtect(
@@ -18,7 +32,16 @@ extern "C" {
         cldata: *mut std::os::raw::c_void,
         cont2: extendr_ffi::SEXP,
     ) -> extendr_ffi::SEXP;
+    fn R_do_slot(obj: extendr_ffi::SEXP, name: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn R_do_slot_assign(obj: extendr_ffi::SEXP, name: extendr_ffi::SEXP, val: extendr_ffi::SEXP);
+    fn INTEGER_ELT(x: extendr_ffi::SEXP, i: isize) -> i32;
+    fn INTEGER_GET_REGION(x: extendr_ffi::SEXP, i: isize, n: isize, buf: *mut i32) -> isize;
+    fn Rf_nrows(x: extendr_ffi::SEXP) -> i32;
+    fn Rf_ncols(x: extendr_ffi::SEXP) -> i32;
+    fn SET_STRING_ELT(x: extendr_ffi::SEXP, i: isize, v: extendr_ffi::SEXP);
+    fn REAL(x: extendr_ffi::SEXP) -> *mut f64;
     static R_GlobalEnv: extendr_ffi::SEXP;
+    static R_ClassSymbol: extendr_ffi::SEXP;
 }
 
 fn stub() -> Robj { ().into() }
@@ -496,57 +519,444 @@ fn extendr_bench_factor_ops(x: Robj) -> Robj {
     r!(total as i32)
 }
 #[extendr]
-fn extendr_bench_attrib_ops(x: Robj) -> Robj { stub() }
+fn extendr_bench_attrib_ops(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+
+    let cls_val = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1)) };
+    unsafe { extendr_ffi::SET_STRING_ELT(cls_val, 0, Rf_mkChar("bench_class\0".as_ptr() as _)) };
+    unsafe { Rf_classgets(s, cls_val) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    let cr_sym = unsafe { Rf_install("creator\0".as_ptr() as _) };
+    let cr_val = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1)) };
+    unsafe { extendr_ffi::SET_STRING_ELT(cr_val, 0, Rf_mkChar("zigr_bench\0".as_ptr() as _)) };
+    unsafe { Rf_setAttrib(s, cr_sym, cr_val) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    let got_cls = unsafe { Rf_getAttrib(s, R_ClassSymbol) };
+    let got_cr = unsafe { Rf_getAttrib(s, cr_sym) };
+
+    let mut total: i32 = 0;
+    let nc = unsafe { extendr_ffi::Rf_xlength(got_cls) };
+    for i in 0..nc {
+        let elt = unsafe { extendr_ffi::STRING_ELT(got_cls, i) };
+        total += unsafe { extendr_ffi::Rf_xlength(elt) as i32 };
+    }
+    let ncr = unsafe { extendr_ffi::Rf_xlength(got_cr) };
+    for i in 0..ncr {
+        let elt = unsafe { extendr_ffi::STRING_ELT(got_cr, i) };
+        total += unsafe { extendr_ffi::Rf_xlength(elt) as i32 };
+    }
+    r!(total)
+}
 #[extendr]
-fn extendr_bench_s4_slot_access(x: Robj) -> Robj { stub() }
+fn extendr_bench_s4_slot_access(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+
+    let class_expr = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1)) };
+    unsafe { SET_STRING_ELT(class_expr, 0, Rf_mkChar("setClass(\"BenchS4\", representation(slot_x = \"numeric\"))\0".as_ptr() as _)) };
+    let parse_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("parse\0".as_ptr() as _), class_expr)) };
+    let mut err: i32 = 0;
+    let parsed = unsafe { R_tryEvalSilent(parse_call, R_GlobalEnv, &mut err) };
+    if err == 0 { unsafe { R_tryEvalSilent(parsed, R_GlobalEnv, &mut err) }; }
+    unsafe { extendr_ffi::Rf_unprotect(2) };
+
+    let new_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("new\0".as_ptr() as _), Rf_mkString("BenchS4\0".as_ptr() as _))) };
+    err = 0;
+    let obj = unsafe { extendr_ffi::Rf_protect(R_tryEvalSilent(new_call, R_GlobalEnv, &mut err)) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { unsafe { extendr_ffi::Rf_unprotect(1) }; return unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(s) }; }
+
+    let slot_sym = unsafe { Rf_install("slot_x\0".as_ptr() as _) };
+    unsafe { R_do_slot_assign(obj, slot_sym, s) };
+    let result = unsafe { R_do_slot(obj, slot_sym) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(result) }
+}
 #[extendr]
-fn extendr_bench_na_propagation(x: Robj) -> Robj { stub() }
+fn extendr_bench_na_propagation(x: Robj) -> Robj {
+    let mut total = 0.0f64;
+    let mut count = 0i64;
+    if let Some(slice) = x.as_real_slice() {
+        for &v in slice {
+            if !v.is_nan() { total += v; count += 1; }
+        }
+    }
+    r!(if count > 0 { total / count as f64 } else { f64::NAN })
+}
 #[extendr]
-fn extendr_bench_long_vector_idx(x: Robj) -> Robj { stub() }
+fn extendr_bench_long_vector_idx(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let n = unsafe { extendr_ffi::Rf_xlength(s) };
+    let mut total: i64 = 0;
+    let mut i: isize = 0;
+    while i < n {
+        total += unsafe { INTEGER_ELT(s, i) as i64 };
+        i += 10000;
+    }
+    r!(total as f64)
+}
 #[extendr]
-fn extendr_bench_l1_arithmetic(x: Robj) -> Robj { stub() }
+fn extendr_bench_l1_arithmetic(x: Robj) -> Robj {
+    let mut total = 0.0f64;
+    if let Some(slice) = x.as_real_slice() {
+        for _ in 0..2500 {
+            for &v in slice {
+                total += v * 0.5 + 0.5;
+            }
+        }
+    }
+    r!(total)
+}
 
 // Layer 4: Numerical
+extern "C" {
+    fn dgemm_(transa: *mut u8, transb: *mut u8, m: *mut i32, n: *mut i32, k: *mut i32,
+              alpha: *mut f64, a: *mut f64, lda: *mut i32, b: *mut f64, ldb: *mut i32,
+              beta: *mut f64, c: *mut f64, ldc: *mut i32);
+    fn dsyrk_(uplo: *mut u8, trans: *mut u8, n: *mut i32, k: *mut i32,
+              alpha: *mut f64, a: *mut f64, lda: *mut i32,
+              beta: *mut f64, c: *mut f64, ldc: *mut i32);
+    fn dpotrf_(uplo: *mut u8, n: *mut i32, a: *mut f64, lda: *mut i32, info: *mut i32);
+    fn dtrsm_(side: *mut u8, uplo: *mut u8, transa: *mut u8, diag: *mut u8,
+              m: *mut i32, n: *mut i32, alpha: *mut f64, a: *mut f64, lda: *mut i32,
+              b: *mut f64, ldb: *mut i32);
+}
+
 #[extendr]
-fn extendr_bench_matmul(x: Robj) -> Robj { stub() }
+fn extendr_bench_matmul(a: Robj, b: Robj) -> Robj {
+    let sa = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(a) };
+    let sb = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(b) };
+    let mut n = unsafe { extendr_ffi::Rf_nrows(sa) };
+    let mut m = unsafe { extendr_ffi::Rf_ncols(sb) };
+    let mut k = unsafe { extendr_ffi::Rf_ncols(sa) };
+
+    let result = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, (n as isize) * (m as isize))) };
+    let dims = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::INTSXP, 2)) };
+    unsafe {
+        *extendr_ffi::INTEGER(dims).offset(0) = n;
+        *extendr_ffi::INTEGER(dims).offset(1) = m;
+        extendr_ffi::Rf_setAttrib(result, Rf_install("dim\0".as_ptr() as _), dims);
+    }
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    let mut notrans: u8 = b'N';
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    unsafe {
+        dgemm_(&mut notrans, &mut notrans, &mut n, &mut m, &mut k,
+               &mut alpha, extendr_ffi::REAL(sa), &mut n,
+               extendr_ffi::REAL(sb), &mut k,
+               &mut beta, extendr_ffi::REAL(result), &mut n);
+    }
+
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(result) }
+}
 #[extendr]
-fn extendr_bench_crossprod(x: Robj) -> Robj { stub() }
+fn extendr_bench_crossprod(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let mut n = unsafe { extendr_ffi::Rf_ncols(s) };
+    let mut k = unsafe { extendr_ffi::Rf_nrows(s) };
+
+    let mut out = unsafe { Robj::from_sexp(extendr_ffi::Rf_allocMatrix(extendr_ffi::SEXPTYPE::REALSXP, n, n)) };
+    let rp = if let Some(slice) = out.as_real_slice_mut() { slice.as_mut_ptr() } else { return r!(0.0) };
+
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    let mut uplo: u8 = b'U';
+    let mut trans: u8 = b'T';
+    unsafe {
+        dsyrk_(&mut uplo, &mut trans, &mut n, &mut k,
+               &mut alpha, extendr_ffi::REAL(s), &mut k,
+               &mut beta, rp, &mut n);
+    }
+    if let Some(slice) = out.as_real_slice_mut() {
+        let nn = n as usize;
+        for i in 0..nn {
+            for j in 0..i {
+                slice[i * nn + j] = slice[j * nn + i];
+            }
+        }
+    }
+    out
+}
 #[extendr]
-fn extendr_bench_cholesky(x: Robj) -> Robj { stub() }
+fn extendr_bench_cholesky(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let mut n = unsafe { extendr_ffi::Rf_nrows(s) };
+    let n_usize = n as usize;
+    let n_isize = n as isize;
+
+    let mut out = unsafe { Robj::from_sexp(extendr_ffi::Rf_allocMatrix(extendr_ffi::SEXPTYPE::REALSXP, n, n)) };
+    let slice = if let Some(s) = out.as_real_slice_mut() { s } else { return r!(0.0) };
+
+    let src = unsafe { extendr_ffi::REAL(s) };
+    for i in 0..n_usize * n_usize {
+        slice[i] = unsafe { *src.offset(i as isize) };
+    }
+
+    let mut uplo: u8 = b'U';
+    let mut lwork = n;
+    let mut info: i32 = 0;
+    unsafe {
+        dpotrf_(&mut uplo, &mut n, slice.as_mut_ptr(), &mut lwork, &mut info);
+    }
+
+    for col in 0..n_usize {
+        for row in (col + 1)..n_usize {
+            slice[col * n_usize + row] = 0.0;
+        }
+    }
+    out
+}
 #[extendr]
-fn extendr_bench_lm_fit(x: Robj) -> Robj { stub() }
+fn extendr_bench_lm_fit(x: Robj, y: Robj) -> Robj {
+    let sx = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let sy = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(y) };
+    let mut n = unsafe { extendr_ffi::Rf_nrows(sx) };
+    let mut p = unsafe { extendr_ffi::Rf_ncols(sx) };
+
+    let xtx = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocMatrix(extendr_ffi::SEXPTYPE::REALSXP, p, p)) };
+    let xty = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, p as isize)) };
+    let xtx_rp = unsafe { extendr_ffi::REAL(xtx) };
+    let xty_rp = unsafe { extendr_ffi::REAL(xty) };
+
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    let mut notrans: u8 = b'N';
+    let mut trans: u8 = b'T';
+    let mut one: i32 = 1;
+
+    unsafe {
+        dgemm_(&mut trans, &mut notrans, &mut p, &mut p, &mut n, &mut alpha,
+               extendr_ffi::REAL(sx), &mut n, extendr_ffi::REAL(sx), &mut n, &mut beta, xtx_rp, &mut p);
+        dgemm_(&mut trans, &mut notrans, &mut p, &mut one, &mut n, &mut alpha,
+               extendr_ffi::REAL(sx), &mut n, extendr_ffi::REAL(sy), &mut n, &mut beta, xty_rp, &mut p);
+    }
+
+    let mut info: i32 = 0;
+    let mut uplo: u8 = b'U';
+    unsafe { dpotrf_(&mut uplo, &mut p, xtx_rp, &mut p, &mut info); }
+
+    let mut side: u8 = b'L';
+    let mut diag: u8 = b'N';
+    unsafe {
+        dtrsm_(&mut side, &mut uplo, &mut trans, &mut diag, &mut p, &mut one, &mut alpha, xtx_rp, &mut p, xty_rp, &mut p);
+        dtrsm_(&mut side, &mut uplo, &mut notrans, &mut diag, &mut p, &mut one, &mut alpha, xtx_rp, &mut p, xty_rp, &mut p);
+    }
+
+    unsafe { extendr_ffi::Rf_unprotect(2) };
+    unsafe { Robj::from_sexp(xty) }
+}
 
 // Layer 5: ALTREP
 #[extendr]
-fn extendr_bench_altrep_create(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_create(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let result = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    unsafe { Robj::from_sexp(result) }
+}
 #[extendr]
-fn extendr_bench_altrep_materialize(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_materialize(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    let mat = unsafe { extendr_ffi::Rf_duplicate(alt) };
+    let n = unsafe { extendr_ffi::LENGTH(mat) };
+    let data = unsafe { extendr_ffi::INTEGER(mat) };
+    let sum = unsafe { *data.offset(0) as i64 + *data.offset((n - 1) as isize) as i64 };
+    r!(sum as i32)
+}
 #[extendr]
-fn extendr_bench_altrep_elt_walk(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_elt_walk(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    let n = unsafe { extendr_ffi::Rf_xlength(alt) };
+    let mut total: i64 = 0;
+    for i in 0..n {
+        total += unsafe { INTEGER_ELT(alt, i) as i64 };
+    }
+    r!(total as f64)
+}
 #[extendr]
-fn extendr_bench_altrep_region_read(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_region_read(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    let n = unsafe { extendr_ffi::Rf_xlength(alt) };
+    const CHUNK: isize = 4096;
+    let mut buf: Vec<i32> = vec![0; 4096];
+    let mut total: i64 = 0;
+    let mut i: isize = 0;
+    while i < n {
+        let want = if n - i < CHUNK { n - i } else { CHUNK };
+        let got = unsafe { INTEGER_GET_REGION(alt, i, want, buf.as_mut_ptr()) };
+        for j in 0..got {
+            total += buf[j as usize] as i64;
+        }
+        i += got;
+    }
+    r!(total as f64)
+}
 #[extendr]
-fn extendr_bench_altrep_sum_via_R(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_sum_via_R(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    if err != 0 { unsafe { extendr_ffi::Rf_unprotect(1) }; return r!(0i32); }
+    let sum_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("sum\0".as_ptr() as _), alt)) };
+    let res = unsafe { R_tryEvalSilent(sum_call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(2) };
+    if err != 0 { return r!(0i32); }
+    unsafe { Robj::from_sexp(res) }
+}
 #[extendr]
-fn extendr_bench_altrep_sum_native(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_sum_native(x: Robj) -> Robj {
+    extendr_bench_altrep_elt_walk(x)
+}
 #[extendr]
-fn extendr_bench_altrep_min_max(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_min_max(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    let n = unsafe { extendr_ffi::Rf_xlength(alt) };
+    let mut min_val = unsafe { INTEGER_ELT(alt, 0) };
+    let mut max_val = min_val;
+    for i in 1..n {
+        let v = unsafe { INTEGER_ELT(alt, i) };
+        if v < min_val { min_val = v; }
+        if v > max_val { max_val = v; }
+    }
+    r!(max_val - min_val)
+}
 #[extendr]
-fn extendr_bench_altrep_no_na_query(x: Robj) -> Robj { stub() }
+fn extendr_bench_altrep_no_na_query(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let alt = unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    if err != 0 { return r!(0i32); }
+    let n = unsafe { extendr_ffi::Rf_xlength(alt) };
+    let mut has_na: i32 = 0;
+    for i in 0..n {
+        if unsafe { INTEGER_ELT(alt, i) } == i32::MIN { has_na = 1; break; }
+    }
+    r!(has_na)
+}
+#[extendr]
+fn extendr_bench_struct_convert(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let id = unsafe { Rf_asInteger(VECTOR_ELT(s, 0)) };
+    let count = unsafe { Rf_asInteger(VECTOR_ELT(s, 1)) };
+    let level = unsafe { Rf_asInteger(VECTOR_ELT(s, 2)) };
+    let flag = unsafe { Rf_asLogical(VECTOR_ELT(s, 3)) };
+    let enabled = unsafe { Rf_asLogical(VECTOR_ELT(s, 4)) };
+    let ratio = unsafe { Rf_asReal(VECTOR_ELT(s, 5)) };
+    let offset = unsafe { Rf_asReal(VECTOR_ELT(s, 6)) };
+    let scale = unsafe { Rf_asReal(VECTOR_ELT(s, 7)) };
+    let weights = unsafe { VECTOR_ELT(s, 8) };
+    let indices = unsafe { VECTOR_ELT(s, 9) };
+    let wn = unsafe { extendr_ffi::Rf_xlength(weights) };
+    let wp = unsafe { extendr_ffi::REAL(weights) };
+    let mut ws = 0.0f64;
+    for i in 0..wn { ws += unsafe { *wp.offset(i) }; }
+    let isn = unsafe { extendr_ffi::Rf_xlength(indices) };
+    let ip = unsafe { extendr_ffi::INTEGER(indices) };
+    let mut is: i64 = 0;
+    for i in 0..isn { is += unsafe { *ip.offset(i) as i64 }; }
+    r!(id as f64 + count as f64 + level as f64 + flag as f64 + enabled as f64 + ratio + offset + scale + ws + is as f64)
+}
+#[extendr]
+fn extendr_bench_r_eval(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let sum_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("sum\0".as_ptr() as _), s)) };
+    let mut err: i32 = 0;
+    let sum_res = unsafe { R_tryEvalSilent(sum_call, R_GlobalEnv, &mut err) };
+    let sum_val = unsafe { *extendr_ffi::REAL(sum_res) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
 
-// Layer 6: Integration
+    let mean_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("mean\0".as_ptr() as _), s)) };
+    err = 0;
+    let mean_res = unsafe { R_tryEvalSilent(mean_call, R_GlobalEnv, &mut err) };
+    let mean_val = unsafe { *extendr_ffi::REAL(mean_res) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    r!(sum_val + mean_val)
+}
 #[extendr]
-fn extendr_bench_struct_convert(x: Robj) -> Robj { stub() }
+fn extendr_bench_r_tryeval(x: Robj) -> Robj {
+    let _ = x;
+    let mut count: i32 = 0;
+    for _ in 0..512 {
+        let call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("stop\0".as_ptr() as _), Rf_mkString("task40\0".as_ptr() as _))) };
+        let mut err: i32 = 0;
+        unsafe { R_tryEvalSilent(call, R_GlobalEnv, &mut err) };
+        unsafe { extendr_ffi::Rf_unprotect(1) };
+        if err != 0 { count += 1; }
+    }
+    r!(count)
+}
 #[extendr]
-fn extendr_bench_r_eval(x: Robj) -> Robj { stub() }
+fn extendr_bench_serialize_roundtrip(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let ser_call = unsafe { extendr_ffi::Rf_protect(Rf_lang3(Rf_install("serialize\0".as_ptr() as _), s, extendr_ffi::R_NilValue)) };
+    let mut err: i32 = 0;
+    let conn = unsafe { R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    let unser_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("unserialize\0".as_ptr() as _), conn)) };
+    err = 0;
+    let result = unsafe { R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+
+    let n = unsafe { extendr_ffi::Rf_xlength(result) };
+    let xp = unsafe { extendr_ffi::REAL(result) };
+    let mut total = 0.0f64;
+    for i in 0..n { total += unsafe { *xp.offset(i) }; }
+    r!(total)
+}
 #[extendr]
-fn extendr_bench_r_tryeval(x: Robj) -> Robj { stub() }
+fn extendr_bench_external_ptr(x: Robj) -> Robj {
+    let _ = x;
+    let mut dummy: u8 = 0;
+    let ptr = unsafe { extendr_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, extendr_ffi::R_NilValue, extendr_ffi::R_NilValue)) };
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(ptr) }
+}
 #[extendr]
-fn extendr_bench_serialize_roundtrip(x: Robj) -> Robj { stub() }
-#[extendr]
-fn extendr_bench_external_ptr(x: Robj) -> Robj { stub() }
-#[extendr]
-fn extendr_bench_rng_stress(x: Robj) -> Robj { stub() }
+fn extendr_bench_rng_stress(x: Robj) -> Robj {
+    let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
+    let n = unsafe { Rf_asInteger(s) };
+    let result = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, n as isize)) };
+    let rp = unsafe { extendr_ffi::REAL(result) };
+    unsafe { GetRNGstate(); }
+    for i in 0..n {
+        unsafe { *rp.offset(i as isize) = norm_rand(); }
+    }
+    unsafe { PutRNGstate(); }
+    unsafe { extendr_ffi::Rf_unprotect(1) };
+    unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(result) }
+}
 
 extendr_module! {
     mod extendr_benchmarks;

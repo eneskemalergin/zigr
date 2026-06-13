@@ -48,7 +48,7 @@ for (runner in names(runner_tasks)[-1]) {
   }
 }
 
-pass_summaries <- subset(summaries, status == "PASS", select = c(runner, task, mean_ms, cv_pct))
+pass_summaries <- subset(summaries, status == "PASS", select = c(runner, task, mean_ms, median_ms, cv_pct))
 if (nrow(pass_summaries) == 0L) {
   stop(sprintf("no PASS rows found in %s", results_dir))
 }
@@ -81,12 +81,12 @@ task_order <- order(as.integer(sub("_.*$", "", unique(summaries$task))))
 ordered_tasks <- unique(summaries$task)[task_order]
 
 mean_wide <- reshape(
-  summaries[, c("runner", "task", "mean_ms")],
+  summaries[, c("runner", "task", "median_ms")],
   idvar = "task",
   timevar = "runner",
   direction = "wide"
 )
-names(mean_wide) <- c("task", paste0(sub("mean_ms\\.", "", names(mean_wide)[-1]), "_mean"))
+names(mean_wide) <- c("task", paste0(sub("median_ms\\.", "", names(mean_wide)[-1]), "_median"))
 
 cv_wide <- reshape(
   summaries[, c("runner", "task", "cv_pct")],
@@ -109,8 +109,8 @@ merged$comparison_note <- ifelse(
 
 native_runners <- c("zigr", "c_call", "rcpp", "extendr", "savvy")
 all_runners <- c("r", native_runners)
-native_mean_cols <- paste0(native_runners, "_mean")
-all_mean_cols <- paste0(all_runners, "_mean")
+native_median_cols <- paste0(native_runners, "_median")
+all_median_cols <- paste0(all_runners, "_median")
 all_cv_cols <- paste0(all_runners, "_cv")
 
 aggregate_merged <- merged[merged$aggregate_comparable, , drop = FALSE]
@@ -126,33 +126,33 @@ if (nrow(excluded_aggregate_tasks) > 0L) {
   ))
 }
 
-merged$best_native_mean_ms <- apply(merged[, native_mean_cols], 1, min)
-merged$best_all_mean_ms <- apply(merged[, all_mean_cols], 1, min)
+merged$best_native_median_ms <- apply(merged[, native_median_cols], 1, min)
+merged$best_all_median_ms <- apply(merged[, all_median_cols], 1, min)
 merged$max_cv_pct <- apply(merged[, all_cv_cols], 1, max, na.rm = TRUE)
 merged$low_noise <- merged$max_cv_pct <= low_noise_cv_threshold
 
-aggregate_merged$best_native_mean_ms <- apply(aggregate_merged[, native_mean_cols], 1, min)
-aggregate_merged$best_all_mean_ms <- apply(aggregate_merged[, all_mean_cols], 1, min)
+aggregate_merged$best_native_median_ms <- apply(aggregate_merged[, native_median_cols], 1, min)
+aggregate_merged$best_all_median_ms <- apply(aggregate_merged[, all_median_cols], 1, min)
 aggregate_merged$max_cv_pct <- apply(aggregate_merged[, all_cv_cols], 1, max, na.rm = TRUE)
 aggregate_merged$low_noise <- aggregate_merged$max_cv_pct <= low_noise_cv_threshold
 
 merged$best_native_runner <- apply(
-  merged[, native_mean_cols],
+  merged[, native_median_cols],
   1,
   function(row) native_runners[[which.min(row)]]
 )
 
 aggregate_merged$best_native_runner <- apply(
-  aggregate_merged[, native_mean_cols],
+  aggregate_merged[, native_median_cols],
   1,
   function(row) native_runners[[which.min(row)]]
 )
 
 for (runner in native_runners) {
   merged[[paste0(runner, "_vs_best_native")]] <-
-    merged[[paste0(runner, "_mean")]] / merged$best_native_mean_ms
+    merged[[paste0(runner, "_median")]] / merged$best_native_median_ms
   aggregate_merged[[paste0(runner, "_vs_best_native")]] <-
-    aggregate_merged[[paste0(runner, "_mean")]] / aggregate_merged$best_native_mean_ms
+    aggregate_merged[[paste0(runner, "_median")]] / aggregate_merged$best_native_median_ms
 }
 
 runner_metrics <- data.frame(
@@ -163,21 +163,21 @@ runner_metrics <- data.frame(
 runner_metrics$tasks_won <- vapply(
   runner_metrics$runner,
   function(runner) {
-    sum(abs(aggregate_merged[[paste0(runner, "_mean")]] - aggregate_merged$best_all_mean_ms) < 1e-12)
+    sum(abs(aggregate_merged[[paste0(runner, "_median")]] - aggregate_merged$best_all_median_ms) < 1e-12)
   },
   integer(1)
 )
 
-runner_metrics$geomean_vs_r <- c(
+runner_metrics$geomedian_vs_r <- c(
   vapply(
     native_runners,
-    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_mean")]] / aggregate_merged$r_mean))),
+    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_median")]] / aggregate_merged$r_mean))),
     numeric(1)
   ),
   1.0
 )
 
-runner_metrics$geomean_vs_best_native <- c(
+runner_metrics$geomedian_vs_best_native <- c(
   vapply(
     native_runners,
     function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_vs_best_native")]]))),
@@ -199,8 +199,8 @@ runner_metrics$meaningful_native_wins <- c(
   vapply(
     native_runners,
     function(runner) {
-      vals <- aggregate_merged[[paste0(runner, "_mean")]]
-      others <- aggregate_merged[, paste0(setdiff(native_runners, runner), "_mean"), drop = FALSE]
+      vals <- aggregate_merged[[paste0(runner, "_median")]]
+      others <- aggregate_merged[, paste0(setdiff(native_runners, runner), "_median"), drop = FALSE]
       sum(apply(others, 1, min) / vals > meaningful_margin)
     },
     integer(1)
@@ -214,7 +214,7 @@ runner_metrics$low_noise_wins <- c(
     native_runners,
     function(runner) {
       if (nrow(low_noise_subset) == 0L) return(0L)
-      sum(abs(low_noise_subset[[paste0(runner, "_mean")]] - apply(low_noise_subset[, native_mean_cols], 1, min)) < 1e-12)
+      sum(abs(low_noise_subset[[paste0(runner, "_median")]] - apply(low_noise_subset[, native_median_cols], 1, min)) < 1e-12)
     },
     integer(1)
   ),
@@ -230,7 +230,7 @@ runner_metrics$meaningful_margin_ratio <- meaningful_margin
 task_comparisons <- data.frame(
   task = merged$task,
   best_native_runner = merged$best_native_runner,
-  best_native_mean_ms = merged$best_native_mean_ms,
+  best_native_median_ms = merged$best_native_median_ms,
   zigr_vs_best_native = merged$zigr_vs_best_native,
   max_cv_pct = merged$max_cv_pct,
   low_noise = merged$low_noise,

@@ -27,7 +27,7 @@ export fn zigr_bench_string_concat(vec: SEXP) SEXP {
         } else {
             const len = @as(usize, @intCast(sexp.fastLength(elt)));
             if (len > 0) {
-                @memcpy(buf[pos..][0..len], sexp.fastCharData(elt)[0..len]);
+                @memcpy(buf[pos..][0..len], (sexp.fastCharData(elt) orelse unreachable)[0..len]);
                 pos += len;
             }
         }

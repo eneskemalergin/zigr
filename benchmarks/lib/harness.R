@@ -64,13 +64,25 @@ get_nanotime <- function() {
   }
 }
 
-benchmark_call <- function(cfun, args, call_type, warmup = 10L, times = 100L, expr = NULL) {
+benchmark_call <- function(cfun, args, call_type, warmup = 10L, times = NULL, expr = NULL) {
   expr <- expr %||% make_call_expr(cfun, args, call_type)
   peak_rss_val <- NA_integer_
 
+  # Warmup + estimate per-iteration time
+  est_total <- 0
   for (i in seq_len(warmup)) {
+    t0 <- get_nanotime()
     r <- tryCatch(eval(expr), error = function(e) NULL)
+    t1 <- get_nanotime()
     if (is.null(r)) return(list(error = "warmup failed"))
+    est_total <- est_total + (t1 - t0)
+  }
+  est_per_iter <- est_total / warmup / 1e6  # ms
+
+  # Choose iterations: target ~500ms total measurement, clamp [10, 10000]
+  target_total_ms <- 500
+  if (is.null(times)) {
+    times <- min(max(ceiling(target_total_ms / est_per_iter), 10), 10000)
   }
 
   mb <- tryCatch(
@@ -82,6 +94,9 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, times = 100L, ex
   times_vec <- mb$time / 1e6
   n <- length(times_vec)
   mean_ms <- mean(times_vec)
+  median_ms <- median(times_vec)
+  min_ms <- min(times_vec)
+  max_ms <- max(times_vec)
   sd_ms <- sd(times_vec)
   cv_pct <- if (mean_ms > 0) sd_ms / mean_ms * 100 else 0
 
@@ -92,6 +107,9 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, times = 100L, ex
     converged  = TRUE,
     n_runs     = n,
     mean_ms    = mean_ms,
+    median_ms  = median_ms,
+    min_ms     = min_ms,
+    max_ms     = max_ms,
     sd_ms      = sd_ms,
     cv_pct     = cv_pct,
     cv_gap     = 0,

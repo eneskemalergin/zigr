@@ -5,9 +5,19 @@ unsafe extern "C" {
     fn Rf_getCharCE(x: SEXP) -> i32;
     fn Rf_install(name: *const std::os::raw::c_char) -> SEXP;
     fn Rf_lang2(fun: SEXP, arg: SEXP) -> SEXP;
+    fn Rf_lang3(fun: SEXP, arg1: SEXP, arg2: SEXP) -> SEXP;
     fn Rf_mkString(str: *const std::os::raw::c_char) -> SEXP;
     fn Rf_ScalarReal(x: f64) -> SEXP;
     fn Rf_ScalarInteger(x: i32) -> SEXP;
+    fn Rf_duplicate(x: SEXP) -> SEXP;
+    fn Rf_asInteger(x: SEXP) -> i32;
+    fn Rf_asLogical(x: SEXP) -> i32;
+    fn Rf_asReal(x: SEXP) -> f64;
+    fn VECTOR_ELT(x: SEXP, i: isize) -> SEXP;
+    fn R_MakeExternalPtr(data: *mut std::os::raw::c_void, tag: SEXP, prot: SEXP) -> SEXP;
+    fn GetRNGstate();
+    fn PutRNGstate();
+    fn norm_rand() -> f64;
     fn Rf_mkChar(str: *const std::os::raw::c_char) -> SEXP;
     fn R_tryEvalSilent(expr: SEXP, env: SEXP, err: *mut i32) -> SEXP;
     fn R_MakeUnwindCont() -> SEXP;
@@ -18,7 +28,26 @@ unsafe extern "C" {
         cldata: *mut std::os::raw::c_void,
         cont2: SEXP,
     ) -> SEXP;
+    fn R_do_slot(obj: SEXP, name: SEXP) -> SEXP;
+    fn R_do_slot_assign(obj: SEXP, name: SEXP, val: SEXP);
+    fn INTEGER_ELT(x: SEXP, i: isize) -> i32;
+    fn INTEGER_GET_REGION(x: SEXP, i: isize, n: isize, buf: *mut i32) -> isize;
+    fn Rf_nrows(x: SEXP) -> i32;
+    fn Rf_ncols(x: SEXP) -> i32;
     static R_GlobalEnv: SEXP;
+}
+
+unsafe extern "C" {
+    fn dgemm_(transa: *mut u8, transb: *mut u8, m: *mut i32, n: *mut i32, k: *mut i32,
+              alpha: *mut f64, a: *mut f64, lda: *mut i32, b: *mut f64, ldb: *mut i32,
+              beta: *mut f64, c: *mut f64, ldc: *mut i32);
+    fn dsyrk_(uplo: *mut u8, trans: *mut u8, n: *mut i32, k: *mut i32,
+              alpha: *mut f64, a: *mut f64, lda: *mut i32,
+              beta: *mut f64, c: *mut f64, ldc: *mut i32);
+    fn dpotrf_(uplo: *mut u8, n: *mut i32, a: *mut f64, lda: *mut i32, info: *mut i32);
+    fn dtrsm_(side: *mut u8, uplo: *mut u8, transa: *mut u8, diag: *mut u8,
+              m: *mut i32, n: *mut i32, alpha: *mut f64, a: *mut f64, lda: *mut i32,
+              b: *mut f64, ldb: *mut i32);
 }
 
 const SAVVY_REPEATS: isize = 512;
@@ -151,10 +180,112 @@ ffi_stub!(savvy_bench_dataframe_manual__ffi, x: SEXP);
 ffi_stub!(savvy_bench_na_prop__ffi, x: SEXP);
 ffi_stub!(savvy_bench_parallel__ffi, x: SEXP);
 ffi_stub!(savvy_bench_protect_stress__ffi, x: SEXP);
-ffi_stub!(savvy_bench_blas_matmul__ffi, x: SEXP, y: SEXP);
-ffi_stub!(savvy_bench_crossprod__ffi, x: SEXP);
-ffi_stub!(savvy_bench_cholesky__ffi, x: SEXP);
-ffi_stub!(savvy_bench_lm__ffi, x: SEXP, y: SEXP);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_blas_matmul__ffi(a: SEXP, b: SEXP) -> SEXP {
+    let mut n = Rf_nrows(a);
+    let mut m = Rf_ncols(b);
+    let mut k = Rf_ncols(a);
+    let result = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, (n as isize) * (m as isize)));
+    let dims = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    *savvy_ffi::INTEGER(dims).offset(0) = n;
+    *savvy_ffi::INTEGER(dims).offset(1) = m;
+    savvy_ffi::Rf_setAttrib(result, savvy_ffi::R_DimSymbol, dims);
+    savvy_ffi::Rf_unprotect(1);
+    let mut notrans: u8 = b'N';
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    dgemm_(&mut notrans, &mut notrans, &mut n, &mut m, &mut k,
+           &mut alpha, savvy_ffi::REAL(a), &mut n,
+           savvy_ffi::REAL(b), &mut k,
+           &mut beta, savvy_ffi::REAL(result), &mut n);
+    savvy_ffi::Rf_unprotect(1);
+    result
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_crossprod__ffi(x: SEXP) -> SEXP {
+    let mut n = Rf_ncols(x);
+    let mut k = Rf_nrows(x);
+    let result = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, (n as isize) * (n as isize)));
+    let dims = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    *savvy_ffi::INTEGER(dims).offset(0) = n;
+    *savvy_ffi::INTEGER(dims).offset(1) = n;
+    savvy_ffi::Rf_setAttrib(result, savvy_ffi::R_DimSymbol, dims);
+    savvy_ffi::Rf_unprotect(1);
+    let rp = savvy_ffi::REAL(result);
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    let mut uplo: u8 = b'U';
+    let mut trans: u8 = b'T';
+    dsyrk_(&mut uplo, &mut trans, &mut n, &mut k,
+           &mut alpha, savvy_ffi::REAL(x), &mut k,
+           &mut beta, rp, &mut n);
+    for i in 0..n {
+        for j in 0..i {
+            *rp.offset((i as isize) * (n as isize) + j as isize) =
+                *rp.offset((j as isize) * (n as isize) + i as isize);
+        }
+    }
+    savvy_ffi::Rf_unprotect(1);
+    result
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_cholesky__ffi(x: SEXP) -> SEXP {
+    let mut n = Rf_nrows(x);
+    let n_usize = n as usize;
+    let src = savvy_ffi::REAL(x);
+    let result = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, (n as isize) * (n as isize)));
+    let dims = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    *savvy_ffi::INTEGER(dims).offset(0) = n;
+    *savvy_ffi::INTEGER(dims).offset(1) = n;
+    savvy_ffi::Rf_setAttrib(result, savvy_ffi::R_DimSymbol, dims);
+    savvy_ffi::Rf_unprotect(1);
+    let rp = savvy_ffi::REAL(result);
+    for i in 0..n_usize * n_usize {
+        *rp.offset(i as _) = *src.offset(i as _);
+    }
+    let mut info: i32 = 0;
+    let mut uplo: u8 = b'U';
+    dpotrf_(&mut uplo, &mut n, rp, &mut n, &mut info);
+    for col in 0..n_usize {
+        for row in (col + 1)..n_usize {
+            *rp.offset((col * n_usize + row) as _) = 0.0;
+        }
+    }
+    savvy_ffi::Rf_unprotect(1);
+    result
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_lm__ffi(x: SEXP, y: SEXP) -> SEXP {
+    let mut n = Rf_nrows(x);
+    let mut p = Rf_ncols(x);
+    let xtx = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, (p as isize) * (p as isize)));
+    let dims = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    *savvy_ffi::INTEGER(dims).offset(0) = p;
+    *savvy_ffi::INTEGER(dims).offset(1) = p;
+    savvy_ffi::Rf_setAttrib(xtx, savvy_ffi::R_DimSymbol, dims);
+    savvy_ffi::Rf_unprotect(1);
+    let xty = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, p as isize));
+    let xtx_rp = savvy_ffi::REAL(xtx);
+    let xty_rp = savvy_ffi::REAL(xty);
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    let mut notrans: u8 = b'N';
+    let mut trans: u8 = b'T';
+    let mut one: i32 = 1;
+    dgemm_(&mut trans, &mut notrans, &mut p, &mut p, &mut n, &mut alpha,
+           savvy_ffi::REAL(x), &mut n, savvy_ffi::REAL(x), &mut n, &mut beta, xtx_rp, &mut p);
+    dgemm_(&mut trans, &mut notrans, &mut p, &mut one, &mut n, &mut alpha,
+           savvy_ffi::REAL(x), &mut n, savvy_ffi::REAL(y), &mut n, &mut beta, xty_rp, &mut p);
+    let mut info: i32 = 0;
+    let mut uplo: u8 = b'U';
+    dpotrf_(&mut uplo, &mut p, xtx_rp, &mut p, &mut info);
+    let mut side: u8 = b'L';
+    let mut diag: u8 = b'N';
+    dtrsm_(&mut side, &mut uplo, &mut trans, &mut diag, &mut p, &mut one, &mut alpha, xtx_rp, &mut p, xty_rp, &mut p);
+    dtrsm_(&mut side, &mut uplo, &mut notrans, &mut diag, &mut p, &mut one, &mut alpha, xtx_rp, &mut p, xty_rp, &mut p);
+    savvy_ffi::Rf_unprotect(2);
+    xty
+}
 ffi_stub!(savvy_bench_rowsums__ffi, x: SEXP);
 ffi_stub!(savvy_bench_rowcol_means__ffi, x: SEXP);
 #[unsafe(no_mangle)]
@@ -198,12 +329,40 @@ ffi_stub!(savvy_bench_rnorm__ffi, x: SEXP);
 ffi_stub!(savvy_bench_which_na__ffi, x: SEXP);
 ffi_stub!(savvy_bench_altrep_sum__ffi, x: SEXP);
 ffi_stub!(savvy_bench_altrep_read__ffi, x: SEXP);
-ffi_stub!(savvy_bench_altrep_create__ffi, x: SEXP);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_create__ffi(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let result = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    result
+}
 ffi_stub!(savvy_bench_owned_altrep_real_sum__ffi, x: SEXP);
 ffi_stub!(savvy_bench_owned_altrep_int_sum__ffi, x: SEXP);
 ffi_stub!(savvy_bench_owned_altrep_logical_sum__ffi, x: SEXP);
 ffi_stub!(savvy_bench_comptime_dispatch__ffi, x: SEXP);
-ffi_stub!(savvy_bench_struct_convert__ffi, x: SEXP);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_struct_convert__ffi(x: SEXP) -> SEXP {
+    let id = Rf_asInteger(VECTOR_ELT(x, 0)) as f64;
+    let count = Rf_asInteger(VECTOR_ELT(x, 1)) as f64;
+    let level = Rf_asInteger(VECTOR_ELT(x, 2)) as f64;
+    let flag = Rf_asLogical(VECTOR_ELT(x, 3)) as f64;
+    let enabled = Rf_asLogical(VECTOR_ELT(x, 4)) as f64;
+    let ratio = Rf_asReal(VECTOR_ELT(x, 5));
+    let offset = Rf_asReal(VECTOR_ELT(x, 6));
+    let scale = Rf_asReal(VECTOR_ELT(x, 7));
+    let weights = VECTOR_ELT(x, 8);
+    let indices = VECTOR_ELT(x, 9);
+    let wn = savvy_ffi::Rf_xlength(weights);
+    let wp = savvy_ffi::REAL(weights);
+    let mut ws = 0.0f64;
+    for i in 0..wn { ws += *wp.offset(i as _); }
+    let isn = savvy_ffi::Rf_xlength(indices);
+    let ip = savvy_ffi::INTEGER(indices);
+    let mut is: f64 = 0.0;
+    for i in 0..isn { is += *ip.offset(i as _) as f64; }
+    Rf_ScalarReal(id + count + level + flag + enabled + ratio + offset + scale + ws + is)
+}
 ffi_stub!(savvy_bench_na_prop_vary__ffi, x: SEXP);
 ffi_stub!(savvy_bench_scale_law__ffi, x: SEXP);
 ffi_stub!(savvy_bench_arena_vs_rmalloc__ffi, x: SEXP);
@@ -613,11 +772,101 @@ pub unsafe extern "C" fn savvy_bench_factor_ops__impl(x: SEXP) -> SEXP {
     out
 }
 
-fn savvy_bench_attrib_ops(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_s4_slot_access(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_na_propagation(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_long_vector_idx(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_l1_arithmetic(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_attrib_ops__impl(x: SEXP) -> SEXP {
+    let class_sym = Rf_install("class\0".as_ptr() as _);
+    let cls_val = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1));
+    savvy_ffi::SET_STRING_ELT(cls_val, 0, Rf_mkChar("bench_class\0".as_ptr() as _));
+    savvy_ffi::Rf_setAttrib(x, class_sym, cls_val);
+    savvy_ffi::Rf_unprotect(1);
+
+    let cr_sym = Rf_install("creator\0".as_ptr() as _);
+    let cr_val = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1));
+    savvy_ffi::SET_STRING_ELT(cr_val, 0, Rf_mkChar("zigr_bench\0".as_ptr() as _));
+    savvy_ffi::Rf_setAttrib(x, cr_sym, cr_val);
+    savvy_ffi::Rf_unprotect(1);
+
+    let got_cls = savvy_ffi::Rf_getAttrib(x, class_sym);
+    let got_cr = savvy_ffi::Rf_getAttrib(x, cr_sym);
+
+    let mut total: i32 = 0;
+    let nc = savvy_ffi::Rf_xlength(got_cls);
+    for i in 0..nc {
+        let elt = savvy_ffi::STRING_ELT(got_cls, i);
+        total += savvy_ffi::Rf_xlength(elt) as i32;
+    }
+    let ncr = savvy_ffi::Rf_xlength(got_cr);
+    for i in 0..ncr {
+        let elt = savvy_ffi::STRING_ELT(got_cr, i);
+        total += savvy_ffi::Rf_xlength(elt) as i32;
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = total;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_s4_slot_access__impl(x: SEXP) -> SEXP {
+    let class_expr = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1));
+    savvy_ffi::SET_STRING_ELT(class_expr, 0, Rf_mkChar("setClass(\"BenchS4\", representation(slot_x = \"numeric\"))\0".as_ptr() as _));
+    let parse_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("parse\0".as_ptr() as _), class_expr));
+    let mut err: i32 = 0;
+    let parsed = R_tryEvalSilent(parse_call, R_GlobalEnv, &mut err);
+    if err == 0 { R_tryEvalSilent(parsed, R_GlobalEnv, &mut err); }
+    savvy_ffi::Rf_unprotect(2);
+
+    let new_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("new\0".as_ptr() as _), Rf_mkString("BenchS4\0".as_ptr() as _)));
+    err = 0;
+    let obj = savvy_ffi::Rf_protect(R_tryEvalSilent(new_call, R_GlobalEnv, &mut err));
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { savvy_ffi::Rf_unprotect(1); return x; }
+
+    let slot_sym = Rf_install("slot_x\0".as_ptr() as _);
+    R_do_slot_assign(obj, slot_sym, x);
+    let result = R_do_slot(obj, slot_sym);
+    savvy_ffi::Rf_unprotect(1);
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_na_propagation__impl(x: SEXP) -> SEXP {
+    let n = savvy_ffi::Rf_xlength(x);
+    let xp = savvy_ffi::REAL(x);
+    let mut total = 0.0f64;
+    let mut count: i64 = 0;
+    for i in 0..n {
+        let v = *xp.offset(i as _);
+        if !v.is_nan() { total += v; count += 1; }
+    }
+    if count > 0 { Rf_ScalarReal(total / (count as f64)) } else { Rf_ScalarReal(f64::NAN) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_long_vector_idx__impl(x: SEXP) -> SEXP {
+    let n = savvy_ffi::Rf_xlength(x);
+    let mut total: i64 = 0;
+    let mut i: isize = 0;
+    while i < n {
+        total += INTEGER_ELT(x, i) as i64;
+        i += 10000;
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = total as _;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_l1_arithmetic__impl(x: SEXP) -> SEXP {
+    let n = savvy_ffi::Rf_xlength(x);
+    let xp = savvy_ffi::REAL(x);
+    let mut total = 0.0f64;
+    for _ in 0..2500 {
+        for i in 0..n {
+            total += *xp.offset(i as _) * 0.5 + 0.5;
+        }
+    }
+    Rf_ScalarReal(total)
+}
 
 // Layer 4: Numerical
 fn savvy_bench_matmul(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
@@ -627,18 +876,200 @@ fn savvy_bench_lm_fit(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 // Layer 5: ALTREP
 fn savvy_bench_altrep_create(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_materialize(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_elt_walk(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_region_read(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_sum_via_R(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_sum_native(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_min_max(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_altrep_no_na_query(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_materialize__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let mat = Rf_duplicate(alt);
+    let n = savvy_ffi::Rf_xlength(mat);
+    let data = savvy_ffi::INTEGER(mat);
+    let sum = *data.offset(0) as i64 + *data.offset((n - 1) as isize) as i64;
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = sum as _;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_elt_walk__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let n = savvy_ffi::Rf_xlength(alt);
+    let mut total: i64 = 0;
+    for i in 0..n { total += INTEGER_ELT(alt, i) as i64; }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = total as _;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_region_read__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let n = savvy_ffi::Rf_xlength(alt);
+    let mut buf: Vec<i32> = vec![0; 4096];
+    let mut total: i64 = 0;
+    let mut i: isize = 0;
+    while i < n {
+        let want = if n - i < 4096 { n - i } else { 4096 };
+        let got = INTEGER_GET_REGION(alt, i, want, buf.as_mut_ptr());
+        for j in 0..got { total += buf[j as usize] as i64; }
+        i += got;
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = total as _;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_sum_via_R__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    if err != 0 { savvy_ffi::Rf_unprotect(1); return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let sum_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("sum\0".as_ptr() as _), alt));
+    let res = R_tryEvalSilent(sum_call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(2);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    res
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_sum_native__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let n = savvy_ffi::Rf_xlength(alt);
+    let mut total: i64 = 0;
+    for i in 0..n { total += INTEGER_ELT(alt, i) as i64; }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = total as _;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_min_max__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let n = savvy_ffi::Rf_xlength(alt);
+    let mut min_val = INTEGER_ELT(alt, 0);
+    let mut max_val = min_val;
+    for i in 1..n {
+        let v = INTEGER_ELT(alt, i);
+        if v < min_val { min_val = v; }
+        if v > max_val { max_val = v; }
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = max_val - min_val;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_altrep_no_na_query__impl(x: SEXP) -> SEXP {
+    let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let alt = R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1); }
+    let n = savvy_ffi::Rf_xlength(alt);
+    let mut has_na: i32 = 0;
+    for i in 0..n {
+        if INTEGER_ELT(alt, i) == i32::MIN { has_na = 1; break; }
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = has_na;
+    out
+}
 
 // Layer 6: Integration
-fn savvy_bench_struct_convert(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_r_eval(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_r_tryeval(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_serialize_roundtrip(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_external_ptr(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_rng_stress(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_r_eval__impl(x: SEXP) -> SEXP {
+    let sum_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("sum\0".as_ptr() as _), x));
+    let mut err: i32 = 0;
+    let sum_res = R_tryEvalSilent(sum_call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1); }
+    let sum_val = *savvy_ffi::REAL(sum_res);
+
+    let mean_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("mean\0".as_ptr() as _), x));
+    err = 0;
+    let mean_res = R_tryEvalSilent(mean_call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+    if err != 0 { return savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1); }
+    let mean_val = *savvy_ffi::REAL(mean_res);
+
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = sum_val + mean_val;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_r_tryeval__impl(x: SEXP) -> SEXP {
+    let _ = x;
+    let mut count: i32 = 0;
+    for _ in 0..512 {
+        let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("stop\0".as_ptr() as _), Rf_mkString("task40\0".as_ptr() as _)));
+        let mut err: i32 = 0;
+        R_tryEvalSilent(call, R_GlobalEnv, &mut err);
+        savvy_ffi::Rf_unprotect(1);
+        if err != 0 { count += 1; }
+    }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = count;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_serialize_roundtrip__impl(x: SEXP) -> SEXP {
+    let ser_call = savvy_ffi::Rf_protect(Rf_lang3(Rf_install("serialize\0".as_ptr() as _), x, savvy_ffi::R_NilValue));
+    let mut err: i32 = 0;
+    let conn = R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+
+    let unser_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("unserialize\0".as_ptr() as _), conn));
+    err = 0;
+    let result = R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err);
+    savvy_ffi::Rf_unprotect(1);
+
+    let n = savvy_ffi::Rf_xlength(result);
+    let xp = savvy_ffi::REAL(result);
+    let mut total = 0.0f64;
+    for i in 0..n { total += *xp.offset(i as _); }
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
+    *(savvy_ffi::REAL(out)) = total;
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_external_ptr__impl(x: SEXP) -> SEXP {
+    let _ = x;
+    let mut dummy: u8 = 0;
+    let ptr = savvy_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, savvy_ffi::R_NilValue, savvy_ffi::R_NilValue));
+    savvy_ffi::Rf_unprotect(1);
+    ptr
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn savvy_bench_rng_stress__impl(x: SEXP) -> SEXP {
+    let n = Rf_asInteger(x);
+    let result = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, n as isize));
+    let rp = savvy_ffi::REAL(result);
+    GetRNGstate();
+    for i in 0..n { *rp.offset(i as _) = norm_rand(); }
+    PutRNGstate();
+    savvy_ffi::Rf_unprotect(1);
+    result
+}

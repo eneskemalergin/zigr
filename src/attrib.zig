@@ -34,10 +34,10 @@ pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
 }
 
 pub fn setClass(sexp: R.SEXP, class: []const u8) void {
-    var cls = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
-    defer cls.deinit();
-    R.SET_STRING_ELT(cls.get(), 0, R.Rf_mkCharLenCE(@ptrCast(class.ptr), @intCast(class.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
-    _ = R.Rf_classgets(sexp, cls.get());
+    const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    R.SET_STRING_ELT(cls, 0, R.Rf_mkCharLenCE(@ptrCast(class.ptr), @intCast(class.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    _ = R.Rf_classgets(sexp, cls);
+    R.Rf_unprotect(1);
 }
 
 pub fn setDim(sexp: R.SEXP, dims: []const i32) void {

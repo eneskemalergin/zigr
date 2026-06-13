@@ -171,7 +171,8 @@ for (task in all_tasks) {
     cat(sprintf("  %-14s [N/A]\n", tid))
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "N/A",
-      mean_ms = NA, sd_ms = NA, cv_pct = NA, rss_kb = NA,
+      mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+      sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = NA, n_iterations = NA, error = NA_character_,
       stringsAsFactors = FALSE)
     next
@@ -187,28 +188,30 @@ for (task in all_tasks) {
     log_error(runner_name, tid, cs$error, dir = file.path(root_dir, "results"))
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
-      mean_ms = NA, sd_ms = NA, cv_pct = NA, rss_kb = NA,
+      mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+      sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
       error = cs$error, stringsAsFactors = FALSE)
     next
   }
 
-  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, times = 100L, expr = task_expr)
+  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, times = NULL, expr = task_expr)
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, bm$error))
     log_error(runner_name, tid, bm$error, dir = file.path(root_dir, "results"))
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
-      mean_ms = NA, sd_ms = NA, cv_pct = NA, rss_kb = NA,
+      mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+      sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
       error = bm$error, stringsAsFactors = FALSE)
     next
   }
 
   n_pass <- n_pass + 1
-  cat(sprintf("  %-14s mean=%8.4fms sd=%7.4fms cv=%5.2f%% rss=%dKB runs=%d\n",
-              tid, bm$mean_ms, bm$sd_ms, bm$cv_pct, bm$peak_rss, bm$n_runs))
+  cat(sprintf("  %-14s mean=%8.4fms median=%8.4fms sd=%7.4fms cv=%5.2f%% rss=%dKB runs=%d\n",
+              tid, bm$mean_ms, bm$median_ms, bm$sd_ms, bm$cv_pct, bm$peak_rss, bm$n_runs))
 
   runs_df <- data.frame(
     runner      = runner_name,
@@ -226,6 +229,9 @@ for (task in all_tasks) {
     task          = tid,
     status        = "PASS",
     mean_ms       = round(bm$mean_ms, 4),
+    median_ms     = round(bm$median_ms, 4),
+    min_ms        = round(bm$min_ms, 4),
+    max_ms        = round(bm$max_ms, 4),
     sd_ms         = round(bm$sd_ms, 4),
     cv_pct        = round(bm$cv_pct, 2),
     rss_kb        = bm$peak_rss,
@@ -242,6 +248,6 @@ write_csv(summary, file.path(root_dir, "results", sprintf("%s_summary.csv", runn
 cat(sprintf("  Results: %d PASS, %d FAIL, %d N/A\n", n_pass, n_fail, n_na))
 for (i in seq_len(nrow(summary))) {
   s <- summary[i, ]
-  cat(sprintf("  %-14s %8.4f %7.4f %5.2f %8d %5d  %s\n",
-              s$task, s$mean_ms, s$sd_ms, s$cv_pct, s$rss_kb, s$n_iterations, s$status))
+  cat(sprintf("  %-14s %8.4f %7.4f %8.4f %5.2f %8d %5d  %s\n",
+              s$task, s$mean_ms, s$median_ms, s$sd_ms, s$cv_pct, s$rss_kb, s$n_iterations, s$status))
 }

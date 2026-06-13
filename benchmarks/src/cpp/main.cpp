@@ -482,33 +482,344 @@ SEXP rcpp_bench_factor_ops(SEXP arg) {
     UNPROTECT(2);
     return Rf_ScalarInteger((int)total);
 }
-SEXP rcpp_bench_attrib_ops(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_s4_slot_access(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_na_propagation(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_long_vector_idx(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_l1_arithmetic(SEXP x) { return R_NilValue; }
+SEXP rcpp_bench_attrib_ops(SEXP arg) {
+    SEXP cls_val = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(cls_val, 0, Rf_mkChar("bench_class"));
+    Rf_classgets(arg, cls_val);
+    UNPROTECT(1);
+
+    SEXP cr_val = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(cr_val, 0, Rf_mkChar("zigr_bench"));
+    Rf_setAttrib(arg, Rf_install("creator"), cr_val);
+    UNPROTECT(1);
+
+    SEXP got_cls = Rf_getAttrib(arg, R_ClassSymbol);
+    SEXP got_cr = Rf_getAttrib(arg, Rf_install("creator"));
+
+    int total = 0;
+    R_xlen_t nc = XLENGTH(got_cls);
+    for (R_xlen_t i = 0; i < nc; i++)
+        total += LENGTH(STRING_ELT(got_cls, i));
+    R_xlen_t ncr = XLENGTH(got_cr);
+    for (R_xlen_t i = 0; i < ncr; i++)
+        total += LENGTH(STRING_ELT(got_cr, i));
+
+    return Rf_ScalarInteger(total);
+}
+SEXP rcpp_bench_s4_slot_access(SEXP arg) {
+    SEXP class_expr = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(class_expr, 0, Rf_mkChar("setClass(\"BenchS4\", representation(slot_x = \"numeric\"))"));
+    SEXP parse_call = PROTECT(Rf_lang2(Rf_install("parse"), class_expr));
+    int err = 0;
+    SEXP parsed = R_tryEvalSilent(parse_call, R_GlobalEnv, &err);
+    if (err == 0) R_tryEvalSilent(parsed, R_GlobalEnv, &err);
+    UNPROTECT(2);
+
+    SEXP new_call = PROTECT(Rf_lang2(Rf_install("new"), Rf_mkString("BenchS4")));
+    err = 0;
+    SEXP obj = PROTECT(R_tryEvalSilent(new_call, R_GlobalEnv, &err));
+    UNPROTECT(1);
+    if (err != 0) { UNPROTECT(0); return arg; }
+
+    SEXP slot_sym = Rf_install("slot_x");
+    R_do_slot_assign(obj, slot_sym, arg);
+    SEXP result = R_do_slot(obj, slot_sym);
+    UNPROTECT(1);
+    return result;
+}
+SEXP rcpp_bench_na_propagation(SEXP arg) {
+    R_xlen_t n = XLENGTH(arg);
+    double *xp = REAL(arg);
+    double total = 0.0;
+    R_xlen_t count = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+        if (!std::isnan(xp[i])) { total += xp[i]; count++; }
+    }
+    return Rf_ScalarReal(count > 0 ? total / count : NA_REAL);
+}
+#define LONG_IDX_STEP 10000
+SEXP rcpp_bench_long_vector_idx(SEXP arg) {
+    R_xlen_t n = XLENGTH(arg);
+    long long total = 0;
+    for (R_xlen_t i = 0; i < n; i += LONG_IDX_STEP) {
+        total += INTEGER_ELT(arg, i);
+    }
+    return Rf_ScalarReal((double)total);
+}
+#define L1_REP 2500
+SEXP rcpp_bench_l1_arithmetic(SEXP arg) {
+    R_xlen_t n = XLENGTH(arg);
+    double *xp = REAL(arg);
+    double total = 0.0;
+    for (int rep = 0; rep < L1_REP; rep++) {
+        for (R_xlen_t i = 0; i < n; i++) {
+            total += xp[i] * 0.5 + 0.5;
+        }
+    }
+    return Rf_ScalarReal(total);
+}
 
 // Layer 4: Numerical
-SEXP rcpp_bench_matmul(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_crossprod(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_cholesky(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_lm_fit(SEXP x) { return R_NilValue; }
+extern "C" void dgemm_(char *transa, char *transb, int *m, int *n, int *k,
+                       double *alpha, double *a, int *lda, double *b, int *ldb,
+                       double *beta, double *c, int *ldc);
+SEXP rcpp_bench_matmul(SEXP a, SEXP b) {
+    int n = Rf_nrows(a);
+    int m = Rf_ncols(b);
+    int k = Rf_ncols(a);
+    SEXP result = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n * m));
+    SEXP dims = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(dims)[0] = n;
+    INTEGER(dims)[1] = m;
+    Rf_setAttrib(result, R_DimSymbol, dims);
+    UNPROTECT(1);
+    double alpha = 1.0, beta = 0.0;
+    char notrans = 'N';
+    dgemm_(&notrans, &notrans, &n, &m, &k,
+           &alpha, REAL(a), &n, REAL(b), &k,
+           &beta, REAL(result), &n);
+    UNPROTECT(1);
+    return result;
+}
+extern "C" void dsyrk_(char *uplo, char *trans, int *n, int *k,
+                       double *alpha, double *a, int *lda,
+                       double *beta, double *c, int *ldc);
+SEXP rcpp_bench_crossprod(SEXP arg) {
+    int n = Rf_ncols(arg);
+    int k = Rf_nrows(arg);
+    SEXP result = PROTECT(Rf_allocMatrix(REALSXP, n, n));
+    double *rp = REAL(result);
+    double alpha = 1.0, beta = 0.0;
+    char uplo = 'U', trans = 'T';
+    dsyrk_(&uplo, &trans, &n, &k, &alpha, REAL(arg), &k, &beta, rp, &n);
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < i; j++)
+            rp[i * n + j] = rp[j * n + i];
+    UNPROTECT(1);
+    return result;
+}
+extern "C" void dpotrf_(char *uplo, int *n, double *a, int *lda, int *info);
+SEXP rcpp_bench_cholesky(SEXP arg) {
+    int n = Rf_nrows(arg);
+    SEXP result = PROTECT(Rf_allocMatrix(REALSXP, n, n));
+    double *rp = REAL(result);
+    double *src = REAL(arg);
+    R_xlen_t len = (R_xlen_t)n * n;
+    for (R_xlen_t i = 0; i < len; i++) rp[i] = src[i];
+    int info = 0;
+    char uplo = 'U';
+    dpotrf_(&uplo, &n, rp, &n, &info);
+    for (int col = 0; col < n; col++)
+        for (int row = col + 1; row < n; row++)
+            rp[col * n + row] = 0.0;
+    UNPROTECT(1);
+    return result;
+}
+extern "C" void dgemm_(char *transa, char *transb, int *m, int *n, int *k,
+                       double *alpha, double *a, int *lda, double *b, int *ldb,
+                       double *beta, double *c, int *ldc);
+extern "C" void dpotrf_(char *uplo, int *n, double *a, int *lda, int *info);
+extern "C" void dtrsm_(char *side, char *uplo, char *transa, char *diag,
+                       int *m, int *n, double *alpha, double *a, int *lda,
+                       double *b, int *ldb);
+SEXP rcpp_bench_lm_fit(SEXP X, SEXP y) {
+    int n = Rf_nrows(X);
+    int p = Rf_ncols(X);
+    SEXP xtx = PROTECT(Rf_allocMatrix(REALSXP, p, p));
+    SEXP xty = PROTECT(Rf_allocVector(REALSXP, p));
+    double *xtx_rp = REAL(xtx);
+    double *xty_rp = REAL(xty);
+    double alpha = 1.0, beta = 0.0;
+    char notrans = 'N', trans = 'T';
+    int one = 1;
+    dgemm_(&trans, &notrans, &p, &p, &n, &alpha,
+           REAL(X), &n, REAL(X), &n, &beta, xtx_rp, &p);
+    dgemm_(&trans, &notrans, &p, &one, &n, &alpha,
+           REAL(X), &n, REAL(y), &n, &beta, xty_rp, &p);
+    int info = 0;
+    char uplo = 'U';
+    dpotrf_(&uplo, &p, xtx_rp, &p, &info);
+    char side = 'L', diag = 'N';
+    dtrsm_(&side, &uplo, &trans, &diag, &p, &one, &alpha,
+           xtx_rp, &p, xty_rp, &p);
+    dtrsm_(&side, &uplo, &notrans, &diag, &p, &one, &alpha,
+           xtx_rp, &p, xty_rp, &p);
+    UNPROTECT(2);
+    return xty;
+}
 
 // Layer 5: ALTREP
-SEXP rcpp_bench_altrep_create(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_materialize(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_elt_walk(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_region_read(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_sum_via_R(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_sum_native(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_min_max(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_altrep_no_na_query(SEXP x) { return R_NilValue; }
+SEXP rcpp_bench_altrep_create(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP result = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    return result;
+}
+SEXP rcpp_bench_altrep_materialize(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    if (err != 0) { UNPROTECT(1); return R_NilValue; }
+    SEXP mat = Rf_duplicate(alt);
+    UNPROTECT(1);
+    int n = LENGTH(mat);
+    return Rf_ScalarInteger(INTEGER(mat)[0] + INTEGER(mat)[n - 1]);
+}
+SEXP rcpp_bench_altrep_elt_walk(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    R_xlen_t n = XLENGTH(alt);
+    long long total = 0;
+    for (R_xlen_t i = 0; i < n; i++) total += INTEGER_ELT(alt, i);
+    return Rf_ScalarReal((double)total);
+}
+SEXP rcpp_bench_altrep_region_read(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    R_xlen_t n = XLENGTH(alt);
+    #define RCPP_CHUNK 4096
+    int buf[RCPP_CHUNK];
+    long long total = 0;
+    R_xlen_t i = 0;
+    while (i < n) {
+        R_xlen_t want = RCPP_CHUNK;
+        if (n - i < want) want = n - i;
+        R_xlen_t got = INTEGER_GET_REGION(alt, i, want, buf);
+        for (R_xlen_t j = 0; j < got; j++) total += buf[j];
+        i += got;
+    }
+    return Rf_ScalarReal((double)total);
+}
+SEXP rcpp_bench_altrep_sum_via_R(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    if (err != 0) { UNPROTECT(1); return R_NilValue; }
+    SEXP sum_call = PROTECT(Rf_lang2(Rf_install("sum"), alt));
+    SEXP res = R_tryEvalSilent(sum_call, R_GlobalEnv, &err);
+    UNPROTECT(2);
+    if (err != 0) return R_NilValue;
+    return res;
+}
+SEXP rcpp_bench_altrep_sum_native(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    R_xlen_t n = XLENGTH(alt);
+    long long total = 0;
+    for (R_xlen_t i = 0; i < n; i++) total += INTEGER_ELT(alt, i);
+    return Rf_ScalarReal((double)total);
+}
+SEXP rcpp_bench_altrep_min_max(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    R_xlen_t n = XLENGTH(alt);
+    int min_val = INTEGER_ELT(alt, 0);
+    int max_val = min_val;
+    for (R_xlen_t i = 1; i < n; i++) {
+        int v = INTEGER_ELT(alt, i);
+        if (v < min_val) min_val = v;
+        if (v > max_val) max_val = v;
+    }
+    return Rf_ScalarInteger(max_val - min_val);
+}
+SEXP rcpp_bench_altrep_no_na_query(SEXP arg) {
+    SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
+    int err = 0;
+    SEXP alt = R_tryEvalSilent(call, R_GlobalEnv, &err);
+    UNPROTECT(1);
+    if (err != 0) return R_NilValue;
+    R_xlen_t n = XLENGTH(alt);
+    int has_na = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+        if (INTEGER_ELT(alt, i) == NA_INTEGER) { has_na = 1; break; }
+    }
+    return Rf_ScalarInteger(has_na);
+}
 
 // Layer 6: Integration
-SEXP rcpp_bench_struct_convert(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_r_eval(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_r_tryeval(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_serialize_roundtrip(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_external_ptr(SEXP x) { return R_NilValue; }
-SEXP rcpp_bench_rng_stress(SEXP x) { return R_NilValue; }
+SEXP rcpp_bench_struct_convert(SEXP arg) {
+    int id = Rf_asInteger(VECTOR_ELT(arg, 0));
+    int count = Rf_asInteger(VECTOR_ELT(arg, 1));
+    int level = Rf_asInteger(VECTOR_ELT(arg, 2));
+    int flag = Rf_asLogical(VECTOR_ELT(arg, 3));
+    int enabled = Rf_asLogical(VECTOR_ELT(arg, 4));
+    double ratio = Rf_asReal(VECTOR_ELT(arg, 5));
+    double offset = Rf_asReal(VECTOR_ELT(arg, 6));
+    double scale = Rf_asReal(VECTOR_ELT(arg, 7));
+    int weights_len = LENGTH(VECTOR_ELT(arg, 8));
+    double *weights = REAL(VECTOR_ELT(arg, 8));
+    int indices_len = LENGTH(VECTOR_ELT(arg, 9));
+    int *indices = INTEGER(VECTOR_ELT(arg, 9));
+    double ws = 0;
+    for (int i = 0; i < weights_len; i++) ws += weights[i];
+    int is = 0;
+    for (int i = 0; i < indices_len; i++) is += indices[i];
+    return Rf_ScalarReal(id + count + level + flag + enabled + ratio + offset + scale + ws + is);
+}
+SEXP rcpp_bench_r_eval(SEXP arg) {
+    SEXP sum_call = PROTECT(Rf_lang2(Rf_install("sum"), arg));
+    SEXP sum_res = PROTECT(Rf_eval(sum_call, R_GlobalEnv));
+    double sum_val = REAL(sum_res)[0];
+    SEXP mean_call = PROTECT(Rf_lang2(Rf_install("mean"), arg));
+    SEXP mean_res = PROTECT(Rf_eval(mean_call, R_GlobalEnv));
+    double mean_val = REAL(mean_res)[0];
+    UNPROTECT(4);
+    return Rf_ScalarReal(sum_val + mean_val);
+}
+SEXP rcpp_bench_r_tryeval(SEXP arg) {
+    (void)arg;
+    int count = 0;
+    for (int i = 0; i < 512; i++) {
+        SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), Rf_mkString("task40")));
+        int err = 0;
+        R_tryEvalSilent(call, R_GlobalEnv, &err);
+        UNPROTECT(1);
+        if (err != 0) count++;
+    }
+    return Rf_ScalarInteger(count);
+}
+SEXP rcpp_bench_serialize_roundtrip(SEXP arg) {
+    SEXP ser_call = PROTECT(Rf_lang3(Rf_install("serialize"), arg, R_NilValue));
+    SEXP conn = PROTECT(Rf_eval(ser_call, R_GlobalEnv));
+    UNPROTECT(2);
+    SEXP unser_call = PROTECT(Rf_lang2(Rf_install("unserialize"), conn));
+    SEXP result = PROTECT(Rf_eval(unser_call, R_GlobalEnv));
+    double total = 0;
+    double *xp = REAL(result);
+    R_xlen_t n = XLENGTH(result);
+    for (R_xlen_t i = 0; i < n; i++) total += xp[i];
+    UNPROTECT(2);
+    return Rf_ScalarReal(total);
+}
+SEXP rcpp_bench_external_ptr(SEXP arg) {
+    (void)arg;
+    static char dummy;
+    SEXP ptr = PROTECT(R_MakeExternalPtr(&dummy, R_NilValue, R_NilValue));
+    UNPROTECT(1);
+    return ptr;
+}
+SEXP rcpp_bench_rng_stress(SEXP arg) {
+    int n = Rf_asInteger(arg);
+    SEXP result = PROTECT(Rf_allocVector(REALSXP, n));
+    double *rp = REAL(result);
+    GetRNGstate();
+    for (int i = 0; i < n; i++) rp[i] = norm_rand();
+    PutRNGstate();
+    UNPROTECT(1);
+    return result;
+}
 } // extern "C"

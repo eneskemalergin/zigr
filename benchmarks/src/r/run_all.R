@@ -91,8 +91,41 @@ r_bench_factor_ops <- function(x) {
   sum(as.integer(factor(x)), na.rm = TRUE)
 }
 
-# Task 22: Which NA
+# Task 21: Attribute ops
+r_bench_attrib_ops <- function(x) {
+  class(x) <- "bench_class"
+  attr(x, "creator") <- "zigr_bench"
+  sum(nchar(class(x))) + sum(nchar(attr(x, "creator")))
+}
+
+# Task 22: S4 slot access
+r_bench_s4_slot_access <- function(x) {
+  setClass("BenchS4", representation(slot_x = "numeric"))
+  obj <- new("BenchS4", slot_x = x)
+  slot(obj, "slot_x")
+}
 r_bench_which_na <- function(x) which(is.na(x))
+
+# Task 24: Long vector index (ALTREP-aware element access)
+r_bench_long_vector_idx <- function(x) {
+  total <- 0
+  n <- length(x)
+  for (i in seq(1L, n, by = 10000L)) {
+    total <- total + x[i]
+  }
+  total
+}
+
+# Task 25: L1 arithmetic (4000 x 2500 passes)
+r_bench_l1_arithmetic <- function(x) {
+  total <- 0.0
+  for (rep in 1:2500) {
+    for (v in x) {
+      total <- total + v * 0.5 + 0.5
+    }
+  }
+  total
+}
 
 # Task 23: ALTREP sum: R's sum() uses method table, O(1)
 r_bench_altrep_sum <- function(x) sum(x)
@@ -102,6 +135,48 @@ r_bench_altrep_read <- function(x) c(x[1], x[length(x)])
 
 # Task 25: ALTREP create: pure R can create built-in compact intseq ALTREP
 r_bench_altrep_create <- function(n) seq_len(n)
+
+# Task 31: ALTREP materialize
+r_bench_altrep_materialize <- function(n) {
+  x <- seq_len(n)
+  x[]  # force materialization
+  x[1] + x[n]
+}
+
+# Task 32: ALTREP element walk
+r_bench_altrep_elt_walk <- function(n) {
+  x <- seq_len(n)
+  total <- 0
+  for (i in seq_len(n)) total <- total + x[i]
+  total
+}
+
+# Task 33: ALTREP region read
+r_bench_altrep_region_read <- function(n) {
+  x <- seq_len(n)
+  total <- 0
+  for (v in x) total <- total + v
+  total
+}
+
+# Task 34: ALTREP sum via R (uses ALTREP method dispatch)
+# Already defined as r_bench_altrep_sum <- function(x) sum(x)
+# Mapped in runner JSON as "sum"
+
+# Task 35: ALTREP sum native (same as elt_walk)
+r_bench_altrep_sum_native <- r_bench_altrep_elt_walk
+
+# Task 36: ALTREP min/max
+r_bench_altrep_min_max <- function(n) {
+  x <- seq_len(n)
+  max(x) - min(x)
+}
+
+# Task 37: ALTREP no-NA query
+r_bench_altrep_no_na_query <- function(n) {
+  x <- seq_len(n)
+  any(is.na(x))
+}
 
 # Task 38: Real create + sum over a numeric vector payload
 r_bench_owned_altrep_real_sum <- function(n) {
@@ -164,6 +239,35 @@ r_bench_struct_convert <- function(x) {
     weights = as.numeric(x$weights),
     indices = as.integer(x$indices)
   )
+}
+
+# Task 39: R eval (sum + mean via eval)
+r_bench_r_eval <- function(x) {
+  sum(x) + mean(x)
+}
+
+# Task 40: R tryEval (stop error catch)
+r_bench_r_tryeval <- function(x) {
+  count <- 0L
+  for (i in 1:512) {
+    tryCatch(stop("task40"), error = function(e) count <<- count + 1L)
+  }
+  count
+}
+
+# Task 41: Serialize roundtrip
+r_bench_serialize_roundtrip <- function(x) {
+  sum(unserialize(serialize(x, NULL)))
+}
+
+# Task 42: External pointer
+r_bench_external_ptr <- function(x) {
+  x
+}
+
+# Task 43: RNG stress
+r_bench_rng_stress <- function(n) {
+  rnorm(n)
 }
 
 # Task 28: NA proportion sweep
