@@ -1,2 +1,0 @@
-useDynLib(hellozigr, .registration = TRUE)
-exportPattern("^[a-zA-Z]")

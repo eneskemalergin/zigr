@@ -1,4 +1,0 @@
-all:
-
-clean:
-	rm -rf zig-out hellozigr.dll

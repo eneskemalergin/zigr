@@ -1,8 +1,0 @@
-#!/bin/sh
-# Windows variant: same checks
-if ! command -v zig >/dev/null 2>&1; then
-  echo "Error: zig not found. Install Zig >= 0.16.0"
-  exit 1
-fi
-echo "Found zig $(zig version)"
-exit 0
