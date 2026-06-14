@@ -120,6 +120,14 @@ pub fn tryXlength(sexp: SEXP) !usize {
     return @as(usize, @intCast(len));
 }
 
+/// Returns the UTF-8 bytes of a CHARSXP's string value.
+/// Calls Rf_translateCharUTF8 which converts Latin-1/native-encoded
+/// strings to UTF-8. Returns "" for NA_STRING.
+pub fn charsxpBytes(charsxp: SEXP) []const u8 {
+    if (charsxp == R.R_NaString) return "";
+    return std.mem.sliceTo(R.Rf_translateCharUTF8(charsxp), 0);
+}
+
 pub const XlengthError = error{
     NullPointer,
     NegativeLength,

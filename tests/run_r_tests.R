@@ -262,7 +262,52 @@ tests <- list(
   "zigr_test_fib_recursive",
 
   # Additional conversion and call builder tests
-  "zigr_test_lang_builder"
+  "zigr_test_lang_builder",
+
+  # ── Fuzz probes (type guard validation) ──
+  # These signal R errors on wrong type → expected to fail
+  list(name="zigr_fuzz_sum_type", expect_error=TRUE),
+  list(name="zigr_fuzz_norm2_type", expect_error=TRUE),
+  list(name="zigr_fuzz_min_type", expect_error=TRUE),
+  list(name="zigr_fuzz_max_type", expect_error=TRUE),
+  list(name="zigr_fuzz_scaleAdd_type", expect_error=TRUE),
+  list(name="zigr_fuzz_cumsum_type", expect_error=TRUE),
+  list(name="zigr_fuzz_sum_narm_type", expect_error=TRUE),
+  list(name="zigr_fuzz_mean_narm_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argmin_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argmax_type", expect_error=TRUE),
+  list(name="zigr_fuzz_sumInt_type", expect_error=TRUE),
+  list(name="zigr_fuzz_countTrue_type", expect_error=TRUE),
+  list(name="zigr_fuzz_minInt_type", expect_error=TRUE),
+  list(name="zigr_fuzz_maxInt_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argminInt_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argmaxInt_type", expect_error=TRUE),
+  list(name="zigr_fuzz_minLogical_type", expect_error=TRUE),
+  list(name="zigr_fuzz_maxLogical_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argminLogical_type", expect_error=TRUE),
+  list(name="zigr_fuzz_argmaxLogical_type", expect_error=TRUE),
+  list(name="zigr_fuzz_pmin_type", expect_error=TRUE),
+  list(name="zigr_fuzz_pmax_type", expect_error=TRUE),
+  list(name="zigr_fuzz_findVar_unbound", expect_error=TRUE),
+  # These catch errors in Zig and return 1.0 on pass
+  "zigr_fuzz_toRealScalar_type",
+  "zigr_fuzz_toIntScalar_type",
+  "zigr_fuzz_toBoolScalar_type",
+  "zigr_fuzz_toRealSlice_type",
+  "zigr_fuzz_toIntSlice_type",
+  "zigr_fuzz_toStringSlice_type",
+  "zigr_fuzz_toListSlice_type",
+  "zigr_fuzz_toRawSlice_type",
+  "zigr_fuzz_toRealSliceView_type",
+  "zigr_fuzz_toIntSliceView_type",
+  "zigr_fuzz_toComplexSlice_type",
+  "zigr_fuzz_toComplexSliceView_type",
+  "zigr_fuzz_toLogicalSlice_type",
+  "zigr_fuzz_toLogicalSliceView_type",
+  "zigr_fuzz_toStringSliceView_type",
+  "zigr_fuzz_toCachedStringSliceView_type",
+  "zigr_fuzz_scalar_na",
+  "zigr_fuzz_scalar_empty"
 )
 
 # ── Test runner ──────────────────────────────────────

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const sexp_mod = @import("sexp.zig");
 
 pub fn isAltRep(sexp: R.SEXP) bool {
     return R.ALTREP(sexp) != 0;
@@ -35,5 +36,5 @@ pub fn className(sexp: R.SEXP) []const u8 {
     if (!isAltRep(sexp)) return "";
     const cn = R.R_altrep_class_name(sexp);
     if (cn == R.R_NilValue) return "";
-    return std.mem.sliceTo(R.R_CHAR(cn), 0);
+    return sexp_mod.charsxpBytes(cn);
 }

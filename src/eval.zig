@@ -1,7 +1,18 @@
 //! R evaluation and variable lookup from Zig.
 //!
-//! Rf_eval, Rf_findFun can longjmp (R errors). These wrappers don't
-//! allocate Zig memory so longjmp through them is safe.
+//! # Longjmp safety
+//!
+//! - `rEval`, `findFunction`, `call`: call R functions that can longjmp.
+//!   These wrappers don't allocate Zig memory, so longjmp through them
+//!   does not leak Zig resources. Callers must still ensure their own
+//!   cleanup (e.g., PROTECT) is not bypassed.
+//! - `findVar`, `findVarInFrame`: signal an R error on `R_UnboundValue`
+//!   (missing variable). Previously returned the unbound value silently.
+//! - `tryFindVar`, `tryEval`, `tryEvalSilent`, `tryFindVarName`: return
+//!   null on error instead of longjmping. Safe for all usage.
+//! - `topLevelExec`: wraps a callback in `R_ToplevelExec`. Returns false
+//!   if the callback longjmps.
+//!
 //! Uses R 4.6 API functions (R_getVar) instead of non-API Rf_findVar.
 //!
 //! Names are self-explanatory (rEval, findVar, setVar, defineVar, call)
@@ -22,8 +33,13 @@ pub fn rEval(expr: R.SEXP, envir: ?R.SEXP) R.SEXP {
 }
 
 /// envir defaults to R_GlobalEnv when null.
+/// Signals an R error (longjmp) if the variable is unbound.
 pub fn findVar(sym: R.SEXP, envir: ?R.SEXP) R.SEXP {
-    return R.R_getVar(sym, resolveEnv(envir), 1);
+    const result = R.R_getVar(sym, resolveEnv(envir), 1);
+    if (result == R.R_UnboundValue) {
+        R.Rf_error("variable not found");
+    }
+    return result;
 }
 
 fn installSym(name: []const u8) R.SEXP {
@@ -35,8 +51,13 @@ pub fn findVarName(name: []const u8) R.SEXP {
 }
 
 /// Searches only the given frame, not the parent chain (inherits=FALSE).
+/// Signals an R error (longjmp) if the variable is unbound.
 pub fn findVarInFrame(frame: R.SEXP, name: []const u8) R.SEXP {
-    return R.R_getVar(installSym(name), frame, 0);
+    const result = R.R_getVar(installSym(name), frame, 0);
+    if (result == R.R_UnboundValue) {
+        R.Rf_error("variable not found in frame");
+    }
+    return result;
 }
 
 pub fn findFunction(name: []const u8) R.SEXP {

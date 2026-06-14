@@ -43,7 +43,7 @@ pub const DataFrame = struct {
         const result = try allocator.alloc([]const u8, n);
         for (0..n) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
-            result[i] = if (elt == R.R_NaString) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+            result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
         }
         return result;
     }
@@ -56,7 +56,7 @@ pub const DataFrame = struct {
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
-            const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
+            const cn = sexp_mod.charsxpBytes(elt);
             if (std.mem.eql(u8, cn, name)) return @intCast(i);
         }
         return null;
@@ -82,7 +82,7 @@ pub const DataFrame = struct {
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
-            const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
+            const cn = sexp_mod.charsxpBytes(elt);
             try map.put(cn, @intCast(i));
         }
         return map;
@@ -97,7 +97,7 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
     for (0..@as(usize, @intCast(n))) |i| {
         const elt = R.STRING_ELT(cls, @intCast(i));
         if (elt == R.R_NaString) continue;
-        const cn = std.mem.sliceTo(R.R_CHAR(elt), 0);
+        const cn = sexp_mod.charsxpBytes(elt);
         if (std.mem.eql(u8, cn, "data.frame")) return true;
     }
     return false;

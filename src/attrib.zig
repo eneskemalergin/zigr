@@ -7,6 +7,7 @@
 const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
+const sexp_mod = @import("sexp.zig");
 
 /// Names are UTF-8 Zig strings, converted to CHARSXP internally.
 pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
@@ -28,7 +29,7 @@ pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(cls, @intCast(i));
-        result[i] = if (elt == R.R_NaString) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+        result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
     }
     return result;
 }

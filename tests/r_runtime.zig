@@ -2468,3 +2468,324 @@ export fn zigr_test_export_generatemethods() SEXP {
     if (counter.val != 15) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
+
+// ── Fuzz probes ─────────────────────────────────────
+// Each function tests that type guards fire correctly on wrong-type inputs.
+
+fn fuzzExpectTypeRejects(comptime guardFn: *const fn (SEXP) void, sexp: SEXP) SEXP {
+    guardFn(sexp);
+    return R.Rf_ScalarReal(0.0);
+}
+
+fn fuzzExpectTypeAccepts(comptime guardFn: *const fn (SEXP) void, sexp: SEXP) SEXP {
+    guardFn(sexp);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// sum(REALSXP) passes; sum(INTSXP) fails.
+export fn zigr_fuzz_sum_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.sum(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_norm2_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.norm2(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_min_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.min(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_max_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.max(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_scaleAdd_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.scaleAdd(v, 2.0, 1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_cumsum_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.cumsum(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_sum_narm_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.sum_narm(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_mean_narm_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.mean_narm(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argmin_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argmin(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argmax_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argmax(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toRealScalar_type() SEXP {
+    const v = R.Rf_protect(R.Rf_ScalarInteger(42));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toRealScalar(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toIntScalar_type() SEXP {
+    const v = R.Rf_protect(R.Rf_ScalarReal(3.14));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toIntScalar(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toBoolScalar_type() SEXP {
+    const v = R.Rf_protect(R.Rf_ScalarInteger(1));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toBoolScalar(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toRealSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toRealSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toIntSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toIntSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toStringSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toStringSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toListSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toListSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toRawSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toRawSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_sumInt_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.sumInt(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_countTrue_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.countTrue(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_minInt_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.minInt(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_maxInt_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.maxInt(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argminInt_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argminInt(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argmaxInt_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argmaxInt(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_minLogical_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.minLogical(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_maxLogical_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.maxLogical(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argminLogical_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argminLogical(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_argmaxLogical_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.argmaxLogical(v);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toRealSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toRealSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toIntSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toIntSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toComplexSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toComplexSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toLogicalSlice_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toLogicalSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toComplexSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toComplexSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toLogicalSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toLogicalSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_pmin_type() SEXP {
+    const a = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    const b = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(2);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    _ = zigr_convert.pminAlloc(a, b, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_pmax_type() SEXP {
+    const a = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    const b = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    R.Rf_unprotect(2);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    _ = zigr_convert.pmaxAlloc(a, b, arena.allocator());
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toStringSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toStringSliceView(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toCachedStringSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toCachedStringSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_scalar_na() SEXP {
+    // toRealScalar should reject NA values
+    const v = R.Rf_protect(R.Rf_ScalarReal(R.R_NaReal));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toRealScalar(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_scalar_empty() SEXP {
+    // toRealScalar should reject zero-length vectors
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    R.Rf_unprotect(1);
+    _ = zigr_convert.toRealScalar(v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_findVar_unbound() SEXP {
+    // findVar should error on unbound variable
+    const sym = R.Rf_install("__zigr_fuzz_nonexistent__");
+    _ = test_eval.findVar(sym, R.R_EmptyEnv);
+    return R.Rf_ScalarReal(0.0);
+}

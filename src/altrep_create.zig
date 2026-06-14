@@ -510,8 +510,8 @@ fn stringIsSorted(x: R.SEXP) callconv(.c) c_int {
     const wrap = stringWrapFromAltrep(x);
     if (wrap.len <= 1) return 1;
     for (0..wrap.len - 1) |i| {
-        const lhs = std.mem.sliceTo(R.R_CHAR(wrap.ptr[i]), 0);
-        const rhs = std.mem.sliceTo(R.R_CHAR(wrap.ptr[i + 1]), 0);
+        const lhs = std.mem.sliceTo(R.Rf_translateCharUTF8(wrap.ptr[i]), 0);
+        const rhs = std.mem.sliceTo(R.Rf_translateCharUTF8(wrap.ptr[i + 1]), 0);
         if (std.mem.order(u8, lhs, rhs) == .gt) return 0;
     }
     return 1;

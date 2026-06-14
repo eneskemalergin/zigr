@@ -32,12 +32,6 @@ benchmarks/results/**/error_*.csv
 benchmarks/src/extendr/rust/target/
 benchmarks/src/savvy/rust/target/
 
-# hellozigr build artifacts (examples)
-examples/hellozigr/src/hellozigr.so
-examples/hellozigr/src/hellozigr.dll
-examples/hellozigr/src/.zig-cache/
-examples/hellozigr/src/zig-out/
-
 # R build artifacts
 .Rcheck/
 .Rhistory
@@ -57,3 +51,4 @@ experiments/
 *.swp
 *~
 .DS_Store
+zls.json

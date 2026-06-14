@@ -7,10 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Safety-guarantees document covering type, NA, memory, and longjmp safety per module.
+- `tests/r_runtime.zig`: 41 fuzz probes added (200 total runtime tests).
+
 ### Changed
 
-- CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry
+- CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry.
 - CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
+- **Safety model**: safety score updated to 10/10 in PLAN.md, all longjmp gaps closed across `.Call`, `.External`, and method wrappers.
+
+### Removed
+
+- `examples/template/` and `examples/hellozigr/`: moved to their own repository. No longer bundled in-tree.
+
+### Fixed
+
+- `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error (P2 bug).
+- `convert.zig`: 11 stat functions (`sum`, `norm2`, `min`, `max`, `argmin`, `argmax`, `sum_narm`, `mean_narm`, `scaleAdd`, `cumsum`, `argminmax`) now validate SEXP type before access (was missing type guards).
+- **`.Call` wrapper longjmp gap**: `makeWrapper` and `makeMethodWrapper` now use `protectCallData` (R_UnwindProtect), matching the `.External` wrappers. Arena and cleanup frames fire on longjmp instead of leaking.
+- **String encoding**: all 12 string-extraction paths across 7 files now call `Rf_translateCharUTF8` instead of reading raw `CHAR` bytes. Latin-1/native-encoded strings are no longer misinterpreted as UTF-8.
 
 ## [0.0.10] - 2026-06-13
 

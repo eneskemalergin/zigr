@@ -366,7 +366,7 @@ pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     const result = try allocator.alloc([]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
-        result[i] = if (elt == R.R_NaString) "" else std.mem.sliceTo(R.R_CHAR(elt), 0);
+        result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
     }
     return result;
 }
@@ -379,7 +379,7 @@ pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]con
     const result = try allocator.alloc(?[]const u8, n);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
-        result[i] = if (elt == R.R_NaString) null else std.mem.sliceTo(R.R_CHAR(elt), 0);
+        result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
     }
     return result;
 }
@@ -393,12 +393,7 @@ pub const StringView = struct {
 
 fn makeStringView(elt: SEXP) StringView {
     const is_na = elt == R.R_NaString;
-    const bytes = if (is_na)
-        ""
-    else blk: {
-        const len = xlength(elt);
-        break :blk R.R_CHAR(elt)[0..len];
-    };
+    const bytes = if (is_na) "" else sexp_mod.charsxpBytes(elt);
     return .{
         .charsxp = elt,
         .bytes = bytes,
@@ -415,10 +410,7 @@ pub const StringSliceView = struct {
         if (R.ALTREP(self.sexp) == 0) {
             const elt = sexp_mod.fastVectorElt(self.sexp, index);
             const is_na = elt == R.R_NaString;
-            const bytes = if (is_na) "" else blk: {
-                const len = @as(usize, @intCast(sexp_mod.fastLength(elt)));
-                break :blk (sexp_mod.fastCharData(elt) orelse unreachable)[0..len];
-            };
+            const bytes = if (is_na) "" else sexp_mod.charsxpBytes(elt);
             return .{ .charsxp = elt, .bytes = bytes, .len = bytes.len, .is_na = is_na };
         }
         const elt = R.STRING_ELT(self.sexp, @intCast(index));
@@ -706,8 +698,8 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
 }
 
 fn charsxpBytes(elt: SEXP) []const u8 {
-    const len = xlength(elt);
-    return R.R_CHAR(elt)[0..len];
+    if (elt == R.R_NaString) return "";
+    return std.mem.sliceTo(R.Rf_translateCharUTF8(elt), 0);
 }
 
 fn buildNameIndex(ns: SEXP, allocator: std.mem.Allocator) !std.StringHashMapUnmanaged(usize) {
@@ -863,6 +855,7 @@ const LogicalChunkIter = struct {
 /// Sum of a REALSXP using SIMD @Vector reduction.
 /// Up to 2.5x faster than a scalar loop for large vectors.
 pub fn sum(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return 0.0;
 
@@ -1087,6 +1080,7 @@ pub fn mean(sexp: SEXP) f64 {
 
 /// Sum of squares (L2 norm squared) of a REALSXP using SIMD.
 pub fn norm2(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return 0.0;
 
@@ -1132,6 +1126,7 @@ fn chunkHasNA(data: []const f64) bool {
 /// Minimum of a REALSXP using SIMD @Vector reduction.
 /// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn min(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return std.math.inf(f64);
 
@@ -1174,6 +1169,7 @@ pub fn min(sexp: SEXP) f64 {
 /// Maximum of a REALSXP using SIMD @Vector reduction.
 /// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn max(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return -std.math.inf(f64);
 
@@ -1214,6 +1210,7 @@ pub fn max(sexp: SEXP) f64 {
 }
 
 fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return -1;
 
@@ -1296,6 +1293,7 @@ pub fn argmax(sexp: SEXP) i64 {
 
 /// Sum of a REALSXP excluding NA values. Uses @select for branchless NA masking.
 pub fn sum_narm(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return 0.0;
 
@@ -1327,6 +1325,7 @@ pub fn sum_narm(sexp: SEXP) f64 {
 
 /// Mean of a REALSXP excluding NA values.
 pub fn mean_narm(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return R.R_NaReal;
 
@@ -1370,6 +1369,7 @@ pub fn mean_narm(sexp: SEXP) f64 {
 /// Returns the sum of all `x[i] * alpha + beta`.
 /// ALTREP-aware via RealChunkIter.
 pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     if (n == 0) return 0.0;
 
@@ -1453,6 +1453,7 @@ pub fn pmax(a: SEXP, b: SEXP) SEXP {
 /// Cumulative sum of a REALSXP using chunked iteration for ALTREP
 /// compatibility. Returns a new REALSXP.
 pub fn cumsum(sexp: SEXP) SEXP {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
     defer result.deinit();
@@ -1464,7 +1465,7 @@ pub fn cumsum(sexp: SEXP) SEXP {
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         for (chunk.data) |value| {
-            if (na_seen or R.ISNAN(value) != 0) {
+            if (na_seen or R.ISNAN(value)) {
                 na_seen = true;
                 rp[idx] = R.R_NaReal;
             } else {

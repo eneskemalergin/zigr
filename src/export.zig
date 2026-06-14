@@ -3,7 +3,15 @@
 //! Usage:
 //!   const e = zigr.export.generateExports("mypkg", &.{.{ .name = "my_sum", .func = my_sum }}, &.{});
 //!
-//! Generates C wrappers inside R_UnwindProtect (arena freed on longjmp).
+//! # Longjmp safety
+//!
+//! - **.Call wrappers** (`makeWrapper`, `makeMethodWrapper`): use
+//!   `protectCallData` which wraps in `R_UnwindProtect`. Arenas free
+//!   and cleanup frames fire on longjmp. Safe.
+//!
+//! - **.External wrappers** (`makeExternalWrapper`) also use
+//!   `protectCallData`. Safe.
+//!
 //! Errors signal Rf_error instead of panicking.
 //!
 //! Supported types: []const f64, []const i32, []const []const u8,
@@ -233,8 +241,13 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     };
 
     const W = struct {
-        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
-            _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
+        const CallArgs = struct {
+            a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP,
+            a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP,
+        };
+
+        fn doCall(data: ?*anyopaque) R.SEXP {
+            const args: *CallArgs = @ptrCast(@alignCast(data.?));
             var arena: TwoTierArena = undefined;
             var have_arena = false;
             if (arena_needed) {
@@ -248,66 +261,71 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
 
             if (comptime n == 0) return toSexp(func(), ret_type);
             if (comptime n == 1) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
                 return toSexp(func(p0), ret_type);
             }
             if (comptime n == 2) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
                 return toSexp(func(p0, p1), ret_type);
             }
             if (comptime n == 3) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
                 return toSexp(func(p0, p1, p2), ret_type);
             }
             if (comptime n == 4) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
                 return toSexp(func(p0, p1, p2, p3), ret_type);
             }
             if (comptime n == 5) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, args.a4, alloc);
                 return toSexp(func(p0, p1, p2, p3, p4), ret_type);
             }
             if (comptime n == 6) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, args.a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, args.a5, alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
             }
             if (comptime n == 7) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
-                const p6 = fromSexp(func_info.params[6].type.?, a6, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, args.a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, args.a5, alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, args.a6, alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
             }
             if (comptime n == 8) {
-                const p0 = fromSexp(func_info.params[0].type.?, a0, alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, a3, alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, a4, alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, a5, alloc);
-                const p6 = fromSexp(func_info.params[6].type.?, a6, alloc);
-                const p7 = fromSexp(func_info.params[7].type.?, a7, alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, args.a0, alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, args.a4, alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, args.a5, alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, args.a6, alloc);
+                const p7 = fromSexp(func_info.params[7].type.?, args.a7, alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
             }
             @compileError("unsupported param count, max 8");
+        }
+
+        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
+            var call_args = CallArgs{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
+            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(&call_args)));
         }
     };
     return W.wrap;
@@ -437,8 +455,13 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     };
 
     const W = struct {
-        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
-            _ = .{ a0, a1, a2, a3, a4, a5, a6, a7 };
+        const MethodCallArgs = struct {
+            a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP,
+            a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP,
+        };
+
+        fn doCall(data: ?*anyopaque) R.SEXP {
+            const args: *MethodCallArgs = @ptrCast(@alignCast(data.?));
             var arena: TwoTierArena = undefined;
             var have_arena = false;
             if (arena_needed) {
@@ -450,34 +473,39 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             defer if (have_arena) cleanup.popFrame();
             const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
-            if (sexp_mod.typeTag(a0) != 22) signalError("expected external pointer");
-            const raw_ptr = R.R_ExternalPtrAddr(a0) orelse signalError("null external pointer");
+            if (sexp_mod.typeTag(args.a0) != 22) signalError("expected external pointer");
+            const raw_ptr = R.R_ExternalPtrAddr(args.a0) orelse signalError("null external pointer");
             const ptr: *T = @ptrCast(@alignCast(raw_ptr));
 
             if (comptime n == 1) return toSexp(func(ptr), ret_type);
             if (comptime n == 2) {
-                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
+                const p0 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
                 return toSexp(func(ptr, p0), ret_type);
             }
             if (comptime n == 3) {
-                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
+                const p0 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
                 return toSexp(func(ptr, p0, p1), ret_type);
             }
             if (comptime n == 4) {
-                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p2 = fromSexp(func_info.params[3].type.?, a3, alloc);
+                const p0 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p2 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
                 return toSexp(func(ptr, p0, p1, p2), ret_type);
             }
             if (comptime n == 5) {
-                const p0 = fromSexp(func_info.params[1].type.?, a1, alloc);
-                const p1 = fromSexp(func_info.params[2].type.?, a2, alloc);
-                const p2 = fromSexp(func_info.params[3].type.?, a3, alloc);
-                const p3 = fromSexp(func_info.params[4].type.?, a4, alloc);
+                const p0 = fromSexp(func_info.params[1].type.?, args.a1, alloc);
+                const p1 = fromSexp(func_info.params[2].type.?, args.a2, alloc);
+                const p2 = fromSexp(func_info.params[3].type.?, args.a3, alloc);
+                const p3 = fromSexp(func_info.params[4].type.?, args.a4, alloc);
                 return toSexp(func(ptr, p0, p1, p2, p3), ret_type);
             }
             @compileError("method with >4 extra params not supported");
+        }
+
+        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
+            var call_args = MethodCallArgs{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
+            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(&call_args)));
         }
     };
     return W.wrap;

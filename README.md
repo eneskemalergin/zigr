@@ -65,8 +65,6 @@ zig build test    # run standalone tests
 zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.R)
 ```
 
-See `examples/template/` for the per-package setup.
-
 ## What you get
 
 22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
@@ -148,7 +146,7 @@ src/
 
 ## To use zigr in your R package
 
-Copy `template/build.zig` to your package root, point it at R_HOME, and write Zig code in `src/zig/`.
+Write a `build.zig` that imports zigr's module and links R. Use the repo's `build.zig` as a reference. Point zig at R_HOME:
 
 ```bash
 export R_HOME=/usr/lib/R && zig build
@@ -168,8 +166,6 @@ fn stringTotalBytes(strings: zigr.convert.StringSliceView) i32 {
     return @intCast(total);
 }
 ```
-
-See `examples/hellozigr/` for a full package example exposing this through `.Call`.
 
 ## License
 

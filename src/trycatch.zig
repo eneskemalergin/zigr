@@ -91,5 +91,5 @@ pub fn extractMessage(cond: R.SEXP) []const u8 {
     if (R.XLENGTH(msg_sexp) < 1) return "";
     const elt = R.STRING_ELT(msg_sexp, 0);
     if (elt == R.R_NaString) return "";
-    return std.mem.sliceTo(R.R_CHAR(elt), 0);
+    return sexp_mod.charsxpBytes(elt);
 }

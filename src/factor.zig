@@ -56,15 +56,8 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
             while (j < level_count - 1 - i) {
                 const c1 = level_ptrs[j];
                 const c2 = level_ptrs[j + 1];
-                const len_a = sexp.fastLength(c1);
-                const len_b = sexp.fastLength(c2);
-                // Guard against corrupted CHARSXP with negative length
-                const a_len = if (len_a < 0) @as(usize, 0) else @as(usize, @intCast(len_a));
-                const b_len = if (len_b < 0) @as(usize, 0) else @as(usize, @intCast(len_b));
-                const a = sexp.fastCharData(c1) orelse unreachable;
-                const b = sexp.fastCharData(c2) orelse unreachable;
-                const a_slice = a[0..a_len];
-                const b_slice = b[0..b_len];
+                const a_slice = sexp.charsxpBytes(c1);
+                const b_slice = sexp.charsxpBytes(c2);
                 const order = std.mem.order(u8, a_slice, b_slice);
                 if (order == .gt) {
                     level_ptrs[j] = c2;
