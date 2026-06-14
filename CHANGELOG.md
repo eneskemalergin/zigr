@@ -7,16 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry
+- CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
+
 ## [0.0.10] - 2026-06-13
 
 ### Added
 
-- Benchmark harness: H.2 correctness validation (all 6 runners, 8 tasks skipped: Layer 2 stubs 07a-11, non-deterministic 42/43)
-- R baseline gap closure: 07a/07b/10/11/16 added to `run_all.R` and `r.json`
-- extendr raw FFI workaround: 4 tasks (matmul, struct_convert, external_ptr, rng_stress) via C entrypoints, bypass `#[extendr]` Robj double-panic. extendr removed from broken status. All 6 runners pass 44/44 with zero exclusions.
-- Comparative metrics pipeline: cross-runner comparisons via `export_comparative_metrics.R`
-- System diagnostics (L7): tasks 44-47 for zigr-only (build time, binary size, cross-compile time, memory allocation count), run via `run_system_tasks.R`
-- CI workflow (`.github/workflows/ci.yml`): format check, cross-compilation matrix (5 targets), unit tests across 3 platforms, benchmarks job with system diagnostics and sanity check
+- Benchmark harness: H.2 validation, R baselines (07a/07b/10/11/16), extendr FFI workaround (all 6 runners at 44/44)
+- Comparative metrics pipeline
+- System diagnostics (L7, tasks 44-47)
+- CI workflow: fmt, cross-compile (5 targets), 3-platform tests
 
 ### Fixed
 

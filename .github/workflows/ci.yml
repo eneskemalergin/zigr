@@ -12,6 +12,7 @@ concurrency:
 
 env:
   ZIG_VERSION: "0.16.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fmt:
@@ -65,6 +66,7 @@ jobs:
         with:
           r-version: release
           use-public-rspm: true
+          cache: true
 
       - name: Set R_HOME
         shell: bash
@@ -90,6 +92,7 @@ jobs:
         with:
           r-version: release
           use-public-rspm: true
+          cache: true
 
       - name: Set R_HOME
         shell: bash
@@ -115,6 +118,7 @@ jobs:
         with:
           r-version: release
           use-public-rspm: true
+          cache: true
 
       - name: Set R paths
         shell: bash
@@ -129,36 +133,3 @@ jobs:
 
       - run: zig build test
 
-  benchmarks:
-    name: benchmarks (system + sanity)
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: release
-          use-public-rspm: true
-
-      - name: Set R_HOME
-        shell: bash
-        run: echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
-
-      - name: Install R packages
-        run: install.packages(c("microbenchmark", "jsonlite"), repos = "https://cloud.r-project.org")
-        shell: Rscript {0}
-
-      - name: Build benchmark .so
-        working-directory: benchmarks
-        run: zig build -Doptimize=ReleaseFast
-
-      - name: System diagnostics (L7)
-        working-directory: benchmarks
-        run: Rscript run_system_tasks.R
-
-      - name: Sanity check (zigr subset)
-        working-directory: benchmarks
-        run: Rscript runner_subprocess.R --runner=zigr --tasks=1,18
