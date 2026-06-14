@@ -46,6 +46,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq r-base-dev
+      - name: Set R paths
+        run: |
+          echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
+          echo "R_INCLUDE=/usr/share/R/include" >> $GITHUB_ENV
       - run: zig build check -Dtarget=${{ matrix.target }}
 
   build:
@@ -71,9 +75,6 @@ jobs:
         shell: Rscript {0}
 
       - run: zig build test
-      - name: zig build benchmarks
-        working-directory: benchmarks
-        run: zig build -Doptimize=ReleaseFast
 
   build-macos:
     name: build + test (macOS)
@@ -99,9 +100,6 @@ jobs:
         shell: Rscript {0}
 
       - run: zig build test
-      - name: zig build benchmarks
-        working-directory: benchmarks
-        run: zig build -Doptimize=ReleaseFast
 
   build-windows:
     name: build + test (Windows)
@@ -118,18 +116,18 @@ jobs:
           r-version: release
           use-public-rspm: true
 
-      - name: Set R_HOME
+      - name: Set R paths
         shell: bash
-        run: echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
+        run: |
+          rhome=$(R RHOME)
+          echo "R_HOME=$rhome" >> $GITHUB_ENV
+          echo "R_LIB=$rhome/bin/x64" >> $GITHUB_ENV
 
       - name: Install R packages
         run: install.packages(c("microbenchmark", "jsonlite"), repos = "https://cloud.r-project.org")
         shell: Rscript {0}
 
       - run: zig build test
-      - name: zig build benchmarks
-        working-directory: benchmarks
-        run: zig build -Doptimize=ReleaseFast
 
   benchmarks:
     name: benchmarks (system + sanity)

@@ -15,14 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - R baseline gap closure: 07a/07b/10/11/16 added to `run_all.R` and `r.json`
 - extendr raw FFI workaround: 4 tasks (matmul, struct_convert, external_ptr, rng_stress) via C entrypoints, bypass `#[extendr]` Robj double-panic. extendr removed from broken status. All 6 runners pass 44/44 with zero exclusions.
 - Comparative metrics pipeline: cross-runner comparisons via `export_comparative_metrics.R`
+- System diagnostics (L7): tasks 44-47 for zigr-only (build time, binary size, cross-compile time, memory allocation count), run via `run_system_tasks.R`
+- CI workflow (`.github/workflows/ci.yml`): format check, cross-compilation matrix (5 targets), unit tests across 3 platforms, benchmarks job with system diagnostics and sanity check
 
 ### Fixed
 
-- All 5 native backends: crossprod copy-loop direction in DSYRK wrapper, struct_convert now returns structured VECSXP
-- R reference: task 14 (unnamed list), 15 (factor coercion), 34 (seq_len order), 37 (as.integer wrapper)
-- `harness.R`: CSV corruption from commas in error messages
-- `export_comparative_metrics.R`: runner names from data, r_mean to r_median, task ordering regex
-- `runners/extendr.json`: removed `"status": "broken"`, 4 exports rewired to `extendr_ffi_*` symbols
+- **Benchmark harness**: crossprod copy-loop direction and struct_convert return type in all 5 native backends; R reference gaps in tasks 14, 15, 34, 37; CSV corruption from error-message commas; runner-name extraction in `export_comparative_metrics.R`; extendr 4 FFI rewires
+- **Build system**: LTO gated behind `.linux`; `blas`/`dl`/`m` gated behind `!= .windows`; fmt dependency removed from check step
+- **CI workflow**: `actions/checkout` v4->v6; cross-check was a no-op (R_HOME unset); Windows R_LIB set to `$R_HOME/bin/x64`
+- **System diagnostics**: zig binary PATH fallback from hardcoded path; incremental build time no longer overwritten by post-restore rebuild
 
 ## [0.0.9] - 2026-06-12
 

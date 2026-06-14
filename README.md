@@ -16,6 +16,11 @@
 
 <p align="center">
     <img src="https://img.shields.io/badge/build-zig%20build%20test-16a34a?style=for-the-badge&logo=zig&logoColor=white" alt="zig build test" />
+    <img src="https://img.shields.io/github/actions/workflow/status/eneskemalergin/zigr/ci.yml?style=for-the-badge&label=CI&logo=github&logoColor=white" alt="CI" />
+    <img src="https://img.shields.io/badge/cross--check-5%2F5-16a34a?style=for-the-badge" alt="Cross-compilation 5/5" />
+</p>
+
+<p align="center">
     <img src="https://img.shields.io/badge/status-experimental-f59e0b?style=for-the-badge" alt="Experimental" />
 </p>
 
@@ -50,7 +55,7 @@ The test and rtest steps require R development headers on the system. The build 
 | R include dir | `-Dr-include=<path>` | `$R_INCLUDE`         | `$R_HOME/include`                   |
 | R library dir | `-Dr-lib=<path>`     | `$R_LIB`             | `$R_HOME/lib` then `/usr/lib/R/lib` |
 
-On Debian/Ubuntu, `R_HOME` is typically `/usr/lib/R` but the include directory may be at `/usr/share/R/include` instead of `$R_HOME/include`. Either set `R_INCLUDE` explicitly or use `-Dr-include=/usr/share/R/include`.
+On Debian/Ubuntu, `R_HOME` is typically `/usr/lib/R` but the include directory is at `/usr/share/R/include` instead of `$R_HOME/include`. Either set `R_INCLUDE` explicitly or use `-Dr-include=/usr/share/R/include`.
 
 ```bash
 export R_HOME=/usr/lib/R
@@ -64,7 +69,7 @@ See `examples/template/` for the per-package setup.
 
 ## What you get
 
-23 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
+22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
 
 - SEXP types and 24 classification helpers
 - PROTECT/UNPROTECT with R_UnwindProtect longjmp safety
@@ -81,11 +86,23 @@ See `examples/template/` for the per-package setup.
 - generateExports (`.Call` and `.External`) and generateMethods (EXTPTRSXP)
 - Zero dependencies (build.zig.zon is empty)
 
+## CI
+
+Every push and pull request runs:
+
+- `zig fmt` (format compliance)
+- Cross-compilation check (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
+- `zig build test` (unit tests on ubuntu, macOS experimental, Windows experimental)
+- System diagnostics (build time, binary size, cross-compile time, memory allocation count)
+- Sanity check (zigr runner on tasks 1 and 18)
+
+macOS and Windows builds use `continue-on-error`. Native cross-compilation from Linux covers all three CRAN targets plus aarch64 variants.
+
 ## Performance
 
 Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks/README.md`.
 
-- zigr leads the 44-task matrix on geomean vs R. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
+- zigr leads the 44-task matrix on geomean vs R at 0.224x (4.5x faster). SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
 - ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
 - String ops are slower because each `CHAR()` call produces a new Zig slice header. The zero-copy `StringSliceView` avoids this but requires adapter code in export functions.
 

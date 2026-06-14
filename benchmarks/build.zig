@@ -66,11 +66,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    bench_lib.lto = .full;
+    if (target.result.os.tag == .linux) bench_lib.lto = .full;
     bench_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     bench_lib.root_module.linkSystemLibrary("R", .{});
-    bench_lib.root_module.linkSystemLibrary("blas", .{});
     if (target.result.os.tag != .windows) {
+        bench_lib.root_module.linkSystemLibrary("blas", .{});
         bench_lib.root_module.linkSystemLibrary("dl", .{});
         bench_lib.root_module.linkSystemLibrary("m", .{});
     }
@@ -87,10 +87,10 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "R", .module = r_mod }},
         }),
     });
-    task12_lib.lto = .full;
+    if (target.result.os.tag == .linux) task12_lib.lto = .full;
     task12_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     task12_lib.root_module.linkSystemLibrary("R", .{});
-    task12_lib.root_module.linkSystemLibrary("blas", .{});
+    if (target.result.os.tag != .windows) task12_lib.root_module.linkSystemLibrary("blas", .{});
 
     b.installArtifact(task12_lib);
 }
