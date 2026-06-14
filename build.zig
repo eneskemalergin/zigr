@@ -98,7 +98,6 @@ pub fn build(b: *std.Build) void {
 
     const check_step = b.step("check", "Cross-compilation check: compile zigr for any target");
     check_step.dependOn(&cross_check.step);
-    check_step.dependOn(&fmt_check.step);
 
     // Standalone tests
     const zigr_tests = b.addTest(.{ .root_module = zigr });

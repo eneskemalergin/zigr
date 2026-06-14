@@ -79,7 +79,7 @@ r_bench_cumsum <- function(x) cumsum(x)
 r_bench_rnorm <- function(n) rnorm(n)
 
 # Task 21: String nchar
-r_bench_string_nchar <- function(x) sum(nchar(x))
+r_bench_string_nchar <- function(x) sum(nchar(x), na.rm = TRUE)
 
 # Task 22: String encoding (count UTF-8 encoded strings)
 r_bench_string_encoding <- function(x) {

@@ -18,6 +18,10 @@ benchmarks/**/*.a
 benchmarks/**/*.d
 benchmarks/**/*.obj
 
+# System diagnostic binaries
+benchmarks/task47_alloc_count*
+benchmarks/task47_test*
+
 # Per-iteration benchmark data (large, regenerated every run)
 benchmarks/results/
 benchmarks/results/**/task_*.csv

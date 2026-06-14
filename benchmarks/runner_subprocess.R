@@ -63,8 +63,8 @@ all_tasks <- list(
        args = function() list(replicate(1000, runif(100), simplify = FALSE))),
   list(id = "17_string_concat", name = "String Concatenation (10k x 24 chars)",
        args = function() list(replicate(10000, paste0(sample(letters, 24, T), collapse = "")))),
-  list(id = "18_string_nchar", name = "String Nchar (10k)",
-       args = function() list(replicate(10000, paste0(sample(letters, 50, TRUE), collapse = "")))),
+  list(id = "18_string_nchar", name = "String Nchar (10k, 5% NA)",
+       args = function() { x <- replicate(10000, paste0(sample(letters, 50, TRUE), collapse = "")); x[sample(10000, 500)] <- NA_character_; list(x) }),
   list(id = "19_string_encoding", name = "String Encoding (10k ASCII)",
        args = function() list(replicate(10000, paste0(sample(letters, 24, TRUE), collapse = "")))),
   list(id = "20_factor_ops", name = "Factor Ops (10k / 100 levels)",
@@ -244,7 +244,7 @@ for (task in all_tasks) {
     next
   }
 
-  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, times = NULL, expr = task_expr)
+  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, expr = task_expr)
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, bm$error))

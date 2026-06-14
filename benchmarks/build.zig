@@ -70,8 +70,10 @@ pub fn build(b: *std.Build) void {
     bench_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     bench_lib.root_module.linkSystemLibrary("R", .{});
     bench_lib.root_module.linkSystemLibrary("blas", .{});
-    bench_lib.root_module.linkSystemLibrary("dl", .{});
-    bench_lib.root_module.linkSystemLibrary("m", .{});
+    if (target.result.os.tag != .windows) {
+        bench_lib.root_module.linkSystemLibrary("dl", .{});
+        bench_lib.root_module.linkSystemLibrary("m", .{});
+    }
 
     b.installArtifact(bench_lib);
 
