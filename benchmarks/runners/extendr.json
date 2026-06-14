@@ -30,7 +30,7 @@
         "23_na_propagation": "wrap__extendr_bench_na_propagation",
         "24_long_vector_idx": "wrap__extendr_bench_long_vector_idx",
         "25_l1_arithmetic": "wrap__extendr_bench_l1_arithmetic",
-        "26_matmul": "wrap__extendr_bench_matmul",
+        "26_matmul": "extendr_ffi_matmul",
         "27_crossprod": "wrap__extendr_bench_crossprod",
         "28_cholesky": "wrap__extendr_bench_cholesky",
         "29_lm_fit": "wrap__extendr_bench_lm_fit",
@@ -42,11 +42,11 @@
         "35_altrep_sum_native": "wrap__extendr_bench_altrep_sum_native",
         "36_altrep_min_max": "wrap__extendr_bench_altrep_min_max",
         "37_altrep_no_na_query": "wrap__extendr_bench_altrep_no_na_query",
-        "38_struct_convert": "wrap__extendr_bench_struct_convert",
+        "38_struct_convert": "extendr_ffi_struct_convert",
         "39_r_eval": "wrap__extendr_bench_r_eval",
         "40_r_tryeval": "wrap__extendr_bench_r_tryeval",
         "41_serialize_roundtrip": "wrap__extendr_bench_serialize_roundtrip",
-        "42_external_ptr": "wrap__extendr_bench_external_ptr",
-        "43_rng_stress": "wrap__extendr_bench_rng_stress"
+        "42_external_ptr": "extendr_ffi_external_ptr",
+        "43_rng_stress": "extendr_ffi_rng_stress"
     }
 }

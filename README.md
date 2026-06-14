@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.9-0f766e?style=for-the-badge" alt="Version 0.0.9" />
+    <img src="https://img.shields.io/badge/version-0.0.10-0f766e?style=for-the-badge" alt="Version 0.0.10" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -23,7 +23,7 @@ Cross-compile R extensions to all three CRAN targets from a single binary. No Ca
 
 ---
 
-R extensions need compiled code. Normally that means three different build systems depending on backend: autotools + configure for C, R CMD SHLIB for Rcpp, Cargo + rustup for extendr. Each has its own cross-compilation story, and none of them are simple.
+R extensions need compiled code. Normally that means three different build systems depending on backend: autotools + configure for C, R CMD SHLIB for Rcpp, Cargo + rustup for extendr. Each requires a different cross-compilation setup.
 
 zigr is a Zig library that wraps R's C API as Zig structs plus a build.zig that links R headers. Write Zig, run `zig build`, get a shared library. That is the whole flow.
 
@@ -64,7 +64,7 @@ See `examples/template/` for the per-package setup.
 
 ## What you get
 
-25 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
+23 modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
 
 - SEXP types and 24 classification helpers
 - PROTECT/UNPROTECT with R_UnwindProtect longjmp safety
@@ -83,17 +83,15 @@ See `examples/template/` for the per-package setup.
 
 ## Performance
 
-I run benchmarks against 5 other backends (C, Rcpp, extendr, savvy, R). The results are in `benchmarks/README.md`. I will not paste the full table here because the numbers shift as I fix things and add tasks. A few notes:
+Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks/README.md`.
 
-- zigr leads the current 36-task matrix on geomean vs R. The SIMD path is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
+- zigr leads the 44-task matrix on geomean vs R. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
 - ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
-- Strings and per-element math wrappers are the weak spots. I know why and I am working on it.
-
-The benchmark harness is not frozen. Tasks get added, runners get fixed, and the numbers change. Treat them as directional.
+- String ops are slower because each `CHAR()` call produces a new Zig slice header. The zero-copy `StringSliceView` avoids this but requires adapter code in export functions.
 
 ## Philosophy
 
-zigr is not trying to be Rcpp with Zig syntax. It does not wrap every R type in a class hierarchy. It does not hide the SEXP behind a generic `Robj`. It gives you the R C API directly, with comptime helpers that remove the repetitive parts (export registration, type conversion, protection).
+zigr is not trying to be Rcpp with Zig syntax. It does not wrap every R type in a class hierarchy or hide the SEXP behind a generic `Robj`. It gives you the R C API directly, with comptime helpers that remove the repetitive parts (export registration, type conversion, protection).
 
 You write explicit loops, explicit `Rf_protect`, explicit `REAL()` slice access. This is more typing. It is also faster because nothing is hidden.
 

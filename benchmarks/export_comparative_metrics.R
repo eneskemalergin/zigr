@@ -77,7 +77,7 @@ if (length(excluded_tasks) > 0L) {
 
 summaries <- pass_summaries[pass_summaries$task %in% common_pass_tasks, , drop = FALSE]
 
-task_order <- order(as.integer(sub("_.*$", "", unique(summaries$task))))
+task_order <- order(as.integer(gsub("^0*|_.*", "", unique(summaries$task))))
 ordered_tasks <- unique(summaries$task)[task_order]
 
 mean_wide <- reshape(
@@ -107,7 +107,9 @@ merged$comparison_note <- ifelse(
   aggregate_exclusions$comparison_note[matched_exclusions]
 )
 
-native_runners <- c("zigr", "c_call", "rcpp", "extendr", "savvy")
+all_runners_in_data <- colnames(mean_wide)[-1]
+all_runners_in_data <- gsub("_median$", "", all_runners_in_data)
+native_runners <- setdiff(all_runners_in_data, "r")
 all_runners <- c("r", native_runners)
 native_median_cols <- paste0(native_runners, "_median")
 all_median_cols <- paste0(all_runners, "_median")
@@ -171,7 +173,7 @@ runner_metrics$tasks_won <- vapply(
 runner_metrics$geomedian_vs_r <- c(
   vapply(
     native_runners,
-    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_median")]] / aggregate_merged$r_mean))),
+    function(runner) exp(mean(log(aggregate_merged[[paste0(runner, "_median")]] / aggregate_merged$r_median))),
     numeric(1)
   ),
   1.0

@@ -9,6 +9,7 @@ unsafe extern "C" {
     fn Rf_mkString(str: *const std::os::raw::c_char) -> SEXP;
     fn Rf_ScalarReal(x: f64) -> SEXP;
     fn Rf_ScalarInteger(x: i32) -> SEXP;
+    fn Rf_ScalarLogical(x: i32) -> SEXP;
     fn Rf_duplicate(x: SEXP) -> SEXP;
     fn Rf_asInteger(x: SEXP) -> i32;
     fn Rf_asLogical(x: SEXP) -> i32;
@@ -221,8 +222,8 @@ pub unsafe extern "C" fn savvy_bench_crossprod__ffi(x: SEXP) -> SEXP {
            &mut beta, rp, &mut n);
     for i in 0..n {
         for j in 0..i {
-            *rp.offset((i as isize) * (n as isize) + j as isize) =
-                *rp.offset((j as isize) * (n as isize) + i as isize);
+            *rp.offset((j as isize) * (n as isize) + i as isize) =
+                *rp.offset((i as isize) * (n as isize) + j as isize);
         }
     }
     savvy_ffi::Rf_unprotect(1);
@@ -343,25 +344,28 @@ ffi_stub!(savvy_bench_owned_altrep_logical_sum__ffi, x: SEXP);
 ffi_stub!(savvy_bench_comptime_dispatch__ffi, x: SEXP);
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_struct_convert__ffi(x: SEXP) -> SEXP {
-    let id = Rf_asInteger(VECTOR_ELT(x, 0)) as f64;
-    let count = Rf_asInteger(VECTOR_ELT(x, 1)) as f64;
-    let level = Rf_asInteger(VECTOR_ELT(x, 2)) as f64;
-    let flag = Rf_asLogical(VECTOR_ELT(x, 3)) as f64;
-    let enabled = Rf_asLogical(VECTOR_ELT(x, 4)) as f64;
-    let ratio = Rf_asReal(VECTOR_ELT(x, 5));
-    let offset = Rf_asReal(VECTOR_ELT(x, 6));
-    let scale = Rf_asReal(VECTOR_ELT(x, 7));
-    let weights = VECTOR_ELT(x, 8);
-    let indices = VECTOR_ELT(x, 9);
-    let wn = savvy_ffi::Rf_xlength(weights);
-    let wp = savvy_ffi::REAL(weights);
-    let mut ws = 0.0f64;
-    for i in 0..wn { ws += *wp.offset(i as _); }
-    let isn = savvy_ffi::Rf_xlength(indices);
-    let ip = savvy_ffi::INTEGER(indices);
-    let mut is: f64 = 0.0;
-    for i in 0..isn { is += *ip.offset(i as _) as f64; }
-    Rf_ScalarReal(id + count + level + flag + enabled + ratio + offset + scale + ws + is)
+    let field_names: [&[u8]; 10] = [
+        b"id\0", b"count\0", b"level\0", b"flag\0", b"enabled\0",
+        b"ratio\0", b"offset\0", b"scale\0", b"weights\0", b"indices\0",
+    ];
+    let names = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 10));
+    for i in 0usize..10 {
+        savvy_ffi::SET_STRING_ELT(names, i as isize, Rf_mkChar(field_names[i].as_ptr() as _));
+    }
+    let result = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::VECSXP, 10));
+    savvy_ffi::Rf_setAttrib(result, savvy_ffi::R_NamesSymbol, names);
+    savvy_ffi::SET_VECTOR_ELT(result, 0, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 0))));
+    savvy_ffi::SET_VECTOR_ELT(result, 1, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 1))));
+    savvy_ffi::SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 2))));
+    savvy_ffi::SET_VECTOR_ELT(result, 3, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(x, 3))));
+    savvy_ffi::SET_VECTOR_ELT(result, 4, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(x, 4))));
+    savvy_ffi::SET_VECTOR_ELT(result, 5, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 5))));
+    savvy_ffi::SET_VECTOR_ELT(result, 6, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 6))));
+    savvy_ffi::SET_VECTOR_ELT(result, 7, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 7))));
+    savvy_ffi::SET_VECTOR_ELT(result, 8, VECTOR_ELT(x, 8));
+    savvy_ffi::SET_VECTOR_ELT(result, 9, VECTOR_ELT(x, 9));
+    savvy_ffi::Rf_unprotect(2);
+    result
 }
 ffi_stub!(savvy_bench_na_prop_vary__ffi, x: SEXP);
 ffi_stub!(savvy_bench_scale_law__ffi, x: SEXP);

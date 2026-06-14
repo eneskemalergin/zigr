@@ -19,17 +19,24 @@ export fn zigr_bench_crossprod(x_sexp: SEXP) SEXP {
     const trans: u8 = 'T';
 
     dsyrk_(
-        @ptrCast(&uplo), @ptrCast(&trans),
-        @ptrCast(&nc), @ptrCast(&nr),
-        @ptrCast(&alpha), @ptrCast(R.REAL(x_sexp)), @ptrCast(&nr),
-        @ptrCast(&beta), @ptrCast(rp), @ptrCast(&nc),
-        1, 1,
+        @ptrCast(&uplo),
+        @ptrCast(&trans),
+        @ptrCast(&nc),
+        @ptrCast(&nr),
+        @ptrCast(&alpha),
+        @ptrCast(R.REAL(x_sexp)),
+        @ptrCast(&nr),
+        @ptrCast(&beta),
+        @ptrCast(rp),
+        @ptrCast(&nc),
+        1,
+        1,
     );
 
     const nu = @as(usize, @intCast(n));
     for (0..nu) |i| {
         for (0..i) |j| {
-            rp[i * nu + j] = rp[j * nu + i];
+            rp[j * nu + i] = rp[i * nu + j];
         }
     }
 

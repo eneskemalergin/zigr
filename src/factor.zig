@@ -12,16 +12,24 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
     if (vec == null) return R.R_NilValue;
     if (sexp.typeTag(vec) != 16) return R.R_NilValue; // STRSXP = 16
 
-    const n_raw = sexp.fastLength(vec);
+    const is_alt = R.ALTREP(vec) != 0;
+    const n_raw: R.R_xlen_t = if (is_alt) R.XLENGTH(vec) else sexp.fastLength(vec);
     if (n_raw < 0) return R.R_NilValue;
     const n = @as(usize, @intCast(n_raw));
+
+    // --- Branch for element access: R API for ALTREP, fast struct read otherwise ---
+    const getElt = struct {
+        fn at(v: R.SEXP, i: usize, alt: bool) R.SEXP {
+            return if (alt) R.STRING_ELT(v, @intCast(i)) else sexp.fastVectorElt(v, @intCast(i));
+        }
+    }.at;
 
     // --- Pass 1: collect unique CHARSXP pointers ---
     var level_ptrs: [max_levels]R.SEXP = undefined;
     var level_count: u32 = 0;
 
     for (0..n) |i| {
-        const elt = sexp.fastVectorElt(vec, @intCast(i));
+        const elt = getElt(vec, i, is_alt);
         if (elt == null or elt == R.R_NaString) continue;
 
         // Linear search CHARSXP pointers (R interns them, pointer equality is valid)
@@ -76,7 +84,7 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
     const codes_ptr: [*]c_int = @ptrCast(R.INTEGER(codes));
 
     for (0..n) |i| {
-        const elt = sexp.fastVectorElt(vec, @intCast(i));
+        const elt = getElt(vec, i, is_alt);
         if (elt == null or elt == R.R_NaString) {
             codes_ptr[i] = R.R_NaInt;
             continue;

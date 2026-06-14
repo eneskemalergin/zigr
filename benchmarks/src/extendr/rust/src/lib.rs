@@ -8,6 +8,7 @@ extern "C" {
     fn Rf_mkString(str: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
     fn Rf_ScalarReal(x: f64) -> extendr_ffi::SEXP;
     fn Rf_ScalarInteger(x: i32) -> extendr_ffi::SEXP;
+    fn Rf_ScalarLogical(x: i32) -> extendr_ffi::SEXP;
     fn Rf_setAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP, val: extendr_ffi::SEXP);
     fn Rf_getAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
     fn Rf_classgets(x: extendr_ffi::SEXP, val: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
@@ -675,7 +676,7 @@ fn extendr_bench_crossprod(x: Robj) -> Robj {
         let nn = n as usize;
         for i in 0..nn {
             for j in 0..i {
-                slice[i * nn + j] = slice[j * nn + i];
+                slice[j * nn + i] = slice[i * nn + j];
             }
         }
     }
@@ -866,25 +867,30 @@ fn extendr_bench_altrep_no_na_query(x: Robj) -> Robj {
 #[extendr]
 fn extendr_bench_struct_convert(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
-    let id = unsafe { Rf_asInteger(VECTOR_ELT(s, 0)) };
-    let count = unsafe { Rf_asInteger(VECTOR_ELT(s, 1)) };
-    let level = unsafe { Rf_asInteger(VECTOR_ELT(s, 2)) };
-    let flag = unsafe { Rf_asLogical(VECTOR_ELT(s, 3)) };
-    let enabled = unsafe { Rf_asLogical(VECTOR_ELT(s, 4)) };
-    let ratio = unsafe { Rf_asReal(VECTOR_ELT(s, 5)) };
-    let offset = unsafe { Rf_asReal(VECTOR_ELT(s, 6)) };
-    let scale = unsafe { Rf_asReal(VECTOR_ELT(s, 7)) };
-    let weights = unsafe { VECTOR_ELT(s, 8) };
-    let indices = unsafe { VECTOR_ELT(s, 9) };
-    let wn = unsafe { extendr_ffi::Rf_xlength(weights) };
-    let wp = unsafe { extendr_ffi::REAL(weights) };
-    let mut ws = 0.0f64;
-    for i in 0..wn { ws += unsafe { *wp.offset(i) }; }
-    let isn = unsafe { extendr_ffi::Rf_xlength(indices) };
-    let ip = unsafe { extendr_ffi::INTEGER(indices) };
-    let mut is: i64 = 0;
-    for i in 0..isn { is += unsafe { *ip.offset(i) as i64 }; }
-    r!(id as f64 + count as f64 + level as f64 + flag as f64 + enabled as f64 + ratio + offset + scale + ws + is as f64)
+    let field_names: [&[u8]; 10] = [
+        b"id\0", b"count\0", b"level\0", b"flag\0", b"enabled\0",
+        b"ratio\0", b"offset\0", b"scale\0", b"weights\0", b"indices\0",
+    ];
+    let names = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 10)) };
+    for i in 0usize..10 {
+        unsafe { extendr_ffi::SET_STRING_ELT(names, i as isize, Rf_mkChar(field_names[i].as_ptr() as _)) };
+    }
+    let result = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::VECSXP, 10)) };
+    unsafe { extendr_ffi::Rf_setAttrib(result, extendr_ffi::R_NamesSymbol, names) };
+    unsafe {
+        extendr_ffi::SET_VECTOR_ELT(result, 0, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(s, 0))));
+        extendr_ffi::SET_VECTOR_ELT(result, 1, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(s, 1))));
+        extendr_ffi::SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(s, 2))));
+        extendr_ffi::SET_VECTOR_ELT(result, 3, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(s, 3))));
+        extendr_ffi::SET_VECTOR_ELT(result, 4, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(s, 4))));
+        extendr_ffi::SET_VECTOR_ELT(result, 5, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(s, 5))));
+        extendr_ffi::SET_VECTOR_ELT(result, 6, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(s, 6))));
+        extendr_ffi::SET_VECTOR_ELT(result, 7, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(s, 7))));
+        extendr_ffi::SET_VECTOR_ELT(result, 8, VECTOR_ELT(s, 8));
+        extendr_ffi::SET_VECTOR_ELT(result, 9, VECTOR_ELT(s, 9));
+    }
+    unsafe { extendr_ffi::Rf_unprotect(2) };
+    unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(result) }
 }
 #[extendr]
 fn extendr_bench_r_eval(x: Robj) -> Robj {
@@ -956,6 +962,76 @@ fn extendr_bench_rng_stress(x: Robj) -> Robj {
     unsafe { PutRNGstate(); }
     unsafe { extendr_ffi::Rf_unprotect(1) };
     unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(result) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn extendr_ffi_matmul(a: extendr_ffi::SEXP, b: extendr_ffi::SEXP) -> extendr_ffi::SEXP {
+    let mut n = extendr_ffi::Rf_nrows(a);
+    let mut m = extendr_ffi::Rf_ncols(b);
+    let mut k = extendr_ffi::Rf_ncols(a);
+    let result = extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, (n as isize) * (m as isize)));
+    let dims = extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::INTSXP, 2));
+    *extendr_ffi::INTEGER(dims).offset(0) = n;
+    *extendr_ffi::INTEGER(dims).offset(1) = m;
+    extendr_ffi::Rf_setAttrib(result, extendr_ffi::R_DimSymbol, dims);
+    let mut notrans: u8 = b'N';
+    let mut alpha: f64 = 1.0;
+    let mut beta: f64 = 0.0;
+    dgemm_(&mut notrans, &mut notrans, &mut n, &mut m, &mut k,
+           &mut alpha, extendr_ffi::REAL(a), &mut n,
+           extendr_ffi::REAL(b), &mut k,
+           &mut beta, extendr_ffi::REAL(result), &mut n);
+    extendr_ffi::Rf_unprotect(2);
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn extendr_ffi_external_ptr(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP {
+    let _ = x;
+    let mut dummy: u8 = 0;
+    let ptr = extendr_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, extendr_ffi::R_NilValue, extendr_ffi::R_NilValue));
+    extendr_ffi::Rf_unprotect(1);
+    ptr
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn extendr_ffi_struct_convert(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP {
+    let field_names: [&[u8]; 10] = [
+        b"id\0", b"count\0", b"level\0", b"flag\0", b"enabled\0",
+        b"ratio\0", b"offset\0", b"scale\0", b"weights\0", b"indices\0",
+    ];
+    let names = extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 10));
+    for i in 0usize..10 {
+        extendr_ffi::SET_STRING_ELT(names, i as isize, Rf_mkChar(field_names[i].as_ptr() as _));
+    }
+    let result = extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::VECSXP, 10));
+    extendr_ffi::Rf_setAttrib(result, extendr_ffi::R_NamesSymbol, names);
+    extendr_ffi::SET_VECTOR_ELT(result, 0, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 0))));
+    extendr_ffi::SET_VECTOR_ELT(result, 1, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 1))));
+    extendr_ffi::SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(x, 2))));
+    extendr_ffi::SET_VECTOR_ELT(result, 3, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(x, 3))));
+    extendr_ffi::SET_VECTOR_ELT(result, 4, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(x, 4))));
+    extendr_ffi::SET_VECTOR_ELT(result, 5, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 5))));
+    extendr_ffi::SET_VECTOR_ELT(result, 6, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 6))));
+    extendr_ffi::SET_VECTOR_ELT(result, 7, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(x, 7))));
+    extendr_ffi::SET_VECTOR_ELT(result, 8, VECTOR_ELT(x, 8));
+    extendr_ffi::SET_VECTOR_ELT(result, 9, VECTOR_ELT(x, 9));
+    extendr_ffi::Rf_unprotect(2);
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn extendr_ffi_rng_stress(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP {
+    let n = Rf_asInteger(x);
+    let result = extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, n as isize));
+    let rp = extendr_ffi::REAL(result);
+    GetRNGstate();
+    for i in 0..n {
+        *rp.offset(i as isize) = norm_rand();
+    }
+    PutRNGstate();
+    extendr_ffi::Rf_unprotect(1);
+    result
 }
 
 extendr_module! {

@@ -135,6 +135,8 @@ log_cold_start <- function(runner, task, wall_ms, dir = "results") {
 log_error <- function(runner, task, msg, dir = "results") {
   path <- file.path(dir, runner, "errors.csv")
   header <- !file.exists(path)
+  # Replace commas with spaces to avoid CSV corruption
+  msg <- gsub(",", " ", msg)
   df <- data.frame(runner = runner, task = task, error = msg,
                    stringsAsFactors = FALSE)
   write_csv(df, path, append = !header)

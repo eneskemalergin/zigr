@@ -5,9 +5,62 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.9] - Unreleased
+## [Unreleased]
 
-## Added
+## [0.0.10] - 2026-06-13
+
+### Added
+
+- Benchmark harness: H.2 correctness validation (all 6 runners, 8 tasks skipped: Layer 2 stubs 07a-11, non-deterministic 42/43)
+- R baseline gap closure: 07a/07b/10/11/16 added to `run_all.R` and `r.json`
+- extendr raw FFI workaround: 4 tasks (matmul, struct_convert, external_ptr, rng_stress) via C entrypoints, bypass `#[extendr]` Robj double-panic. extendr removed from broken status. All 6 runners pass 44/44 with zero exclusions.
+- Comparative metrics pipeline: cross-runner comparisons via `export_comparative_metrics.R`
+
+### Fixed
+
+- All 5 native backends: crossprod copy-loop direction in DSYRK wrapper, struct_convert now returns structured VECSXP
+- R reference: task 14 (unnamed list), 15 (factor coercion), 34 (seq_len order), 37 (as.integer wrapper)
+- `harness.R`: CSV corruption from commas in error messages
+- `export_comparative_metrics.R`: runner names from data, r_mean to r_median, task ordering regex
+- `runners/extendr.json`: removed `"status": "broken"`, 4 exports rewired to `extendr_ffi_*` symbols
+
+## [0.0.9] - 2026-06-12
+
+### Added
+
+- `src/s4.zig`: `newS4Object` for constructing S4 objects (74 LOC)
+- `src/factor.zig`: Factor creation module with `asFactor` (109 LOC)
+- `src/symbols.zig`: Open-addressing symbol cache with Wyhash
+- `src/cleanup.zig`: `pushFrameInline` (64-byte inline buffer), eliminates P0 stack-escape UB
+- `src/export.zig`: `.External` interface support, optional type mapping (`?f64`, `?i32`, `?bool`), 8-param arity
+- Per-runner summary export for all 6 runners
+
+### Fixed
+
+- `AllocSliceCleanup` stack-variable UB (cleanup.zig:100): replaced with `pushFrameInline`
+- `toComplex/Real/Int/Logical/RawSlice`: rewritten for ALTREP `*_GET_REGION` with offset/count loops
+- `dataframe.zig`: null-guards for unnamed frames, mismatch check in `build`
+- `rng.zig:withRng`: acquire/pushFrame ordering (acquire first)
+- `convert.zig:cumsum`: switched from `R.REAL(sexp)` to `RealChunkIter` (avoid ALTREP materialization)
+- `raw.zig:complex`: returns `&[0]Rcomplex{}` when `COMPLEX` returns null
+- `protect.zig`: `unprotectN` for batch pops, comptime-gated depth tracking
+- Build: `r_include` lazy, `c_call/Makefile` SRC list, `.gitignore`, thread-local hardening
+
+### Changed
+
+- Benchmark backends massively expanded: extendr (+460 LOC), savvy (+479), rcpp (+357). All 6 runners cover 44 tasks.
+- `dataframe.zig`: `build` for constructing data frames
+- `attrib.zig`: `setNames` null-guard
+- `convert.zig`: SIMD `sumInt` with `@Vector(8, i64)` reduction
+- `sexp.zig`: `fastVectorElt`, `fastCharData`, `xlength`/`tryXlength` split
+- `eval.zig`: `rEval` uses `R_getVar` (R 4.6 API)
+- `tests/r_runtime.zig`: 165 exported tests (was 145)
+
+### Performance
+
+- `sumInt`: `@Vector(8, i64)` SIMD reduction
+- `min`/`max`: `chunkHasNA` fast path
+- Benchmark data: zigr leads geomean vs R at 0.224x across 44 tasks (4.5x faster)
 
 ## [0.0.8] - 2026-05-24
 

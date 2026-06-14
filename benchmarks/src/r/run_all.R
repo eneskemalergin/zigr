@@ -24,7 +24,7 @@ r_bench_dataframe <- function(df) {
   if (nrow(sub) == 0) return(data.frame(grp = integer(), z_sum = numeric()))
   agg <- aggregate(z ~ grp, data = sub, FUN = sum)
   names(agg) <- c("grp", "z_sum")
-  agg$grp <- as.integer(as.character(agg$grp))
+  agg$grp <- as.integer(agg$grp)
   agg
 }
 
@@ -63,7 +63,7 @@ r_bench_elem_ops <- function(x) {
 
 # Task 16: Row means and column sums
 r_bench_rowcol_means <- function(X) {
-  list(row_means = rowMeans(X), col_sums = colSums(X))
+  list(rowMeans(X), colSums(X))
 }
 
 # Task 17: Vector + scalar broadcast
@@ -127,8 +127,11 @@ r_bench_l1_arithmetic <- function(x) {
   total
 }
 
-# Task 23: ALTREP sum: R's sum() uses method table, O(1)
-r_bench_altrep_sum <- function(x) sum(x)
+# Task 34: ALTREP sum via R (create seq_len, sum via R)
+r_bench_altrep_sum <- function(n) {
+  x <- seq_len(n)
+  sum(x)
+}
 
 # Task 24: ALTREP read: R accesses directly, no materialization
 r_bench_altrep_read <- function(x) c(x[1], x[length(x)])
@@ -175,7 +178,7 @@ r_bench_altrep_min_max <- function(n) {
 # Task 37: ALTREP no-NA query
 r_bench_altrep_no_na_query <- function(n) {
   x <- seq_len(n)
-  any(is.na(x))
+  as.integer(any(is.na(x)))
 }
 
 # Task 38: Real create + sum over a numeric vector payload
@@ -268,6 +271,23 @@ r_bench_external_ptr <- function(x) {
 # Task 43: RNG stress
 r_bench_rng_stress <- function(n) {
   rnorm(n)
+}
+
+# Task 10: SEXP create (100k small vectors)
+r_bench_sexp_create <- function(n) {
+  for (i in seq_len(n)) {
+    x <- numeric(1)
+  }
+  0L
+}
+
+# Task 16: List access (sum first element of each list item)
+r_bench_list_access <- function(lst) {
+  total <- 0.0
+  for (i in seq_along(lst)) {
+    total <- total + lst[[i]][1]
+  }
+  total
 }
 
 # Task 28: NA proportion sweep

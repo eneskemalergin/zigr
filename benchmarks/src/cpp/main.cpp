@@ -594,7 +594,7 @@ SEXP rcpp_bench_crossprod(SEXP arg) {
     dsyrk_(&uplo, &trans, &n, &k, &alpha, REAL(arg), &k, &beta, rp, &n);
     for (int i = 0; i < n; i++)
         for (int j = 0; j < i; j++)
-            rp[i * n + j] = rp[j * n + i];
+            rp[j * n + i] = rp[i * n + j];
     UNPROTECT(1);
     return result;
 }
@@ -752,23 +752,24 @@ SEXP rcpp_bench_altrep_no_na_query(SEXP arg) {
 
 // Layer 6: Integration
 SEXP rcpp_bench_struct_convert(SEXP arg) {
-    int id = Rf_asInteger(VECTOR_ELT(arg, 0));
-    int count = Rf_asInteger(VECTOR_ELT(arg, 1));
-    int level = Rf_asInteger(VECTOR_ELT(arg, 2));
-    int flag = Rf_asLogical(VECTOR_ELT(arg, 3));
-    int enabled = Rf_asLogical(VECTOR_ELT(arg, 4));
-    double ratio = Rf_asReal(VECTOR_ELT(arg, 5));
-    double offset = Rf_asReal(VECTOR_ELT(arg, 6));
-    double scale = Rf_asReal(VECTOR_ELT(arg, 7));
-    int weights_len = LENGTH(VECTOR_ELT(arg, 8));
-    double *weights = REAL(VECTOR_ELT(arg, 8));
-    int indices_len = LENGTH(VECTOR_ELT(arg, 9));
-    int *indices = INTEGER(VECTOR_ELT(arg, 9));
-    double ws = 0;
-    for (int i = 0; i < weights_len; i++) ws += weights[i];
-    int is = 0;
-    for (int i = 0; i < indices_len; i++) is += indices[i];
-    return Rf_ScalarReal(id + count + level + flag + enabled + ratio + offset + scale + ws + is);
+    const char *field_names[] = {"id", "count", "level", "flag", "enabled",
+                                 "ratio", "offset", "scale", "weights", "indices"};
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 10));
+    for (int i = 0; i < 10; i++) SET_STRING_ELT(names, i, Rf_mkChar(field_names[i]));
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 10));
+    Rf_setAttrib(result, R_NamesSymbol, names);
+    SET_VECTOR_ELT(result, 0, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(arg, 0))));
+    SET_VECTOR_ELT(result, 1, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(arg, 1))));
+    SET_VECTOR_ELT(result, 2, Rf_ScalarInteger(Rf_asInteger(VECTOR_ELT(arg, 2))));
+    SET_VECTOR_ELT(result, 3, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(arg, 3))));
+    SET_VECTOR_ELT(result, 4, Rf_ScalarLogical(Rf_asLogical(VECTOR_ELT(arg, 4))));
+    SET_VECTOR_ELT(result, 5, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(arg, 5))));
+    SET_VECTOR_ELT(result, 6, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(arg, 6))));
+    SET_VECTOR_ELT(result, 7, Rf_ScalarReal(Rf_asReal(VECTOR_ELT(arg, 7))));
+    SET_VECTOR_ELT(result, 8, VECTOR_ELT(arg, 8));
+    SET_VECTOR_ELT(result, 9, VECTOR_ELT(arg, 9));
+    UNPROTECT(2);
+    return result;
 }
 SEXP rcpp_bench_r_eval(SEXP arg) {
     SEXP sum_call = PROTECT(Rf_lang2(Rf_install("sum"), arg));

@@ -20,7 +20,7 @@ SEXP c_call_bench_crossprod(SEXP arg) {
 
     for (int i = 0; i < n; i++)
         for (int j = 0; j < i; j++)
-            rp[i * n + j] = rp[j * n + i];
+            rp[j * n + i] = rp[i * n + j];
 
     UNPROTECT(1);
     return result;

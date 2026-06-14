@@ -147,8 +147,29 @@ if (call_type != "r") {
     tryCatch(dyn.load(extra_path),
              error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
   }
-} else {
-  source(file.path(root_dir, "src/r/run_all.R"))
+}
+
+# ── H.2: Load R baseline as correctness reference ──
+source(file.path(root_dir, "src/r/run_all.R"))
+r_cfg_path <- file.path(root_dir, "runners", "r.json")
+r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
+
+validate_correctness <- function(expected, actual) {
+  if (is.null(expected) && is.null(actual)) return(TRUE)
+  if (is.null(expected) || is.null(actual)) return(FALSE)
+  tol <- sqrt(.Machine$double.eps)
+  if (is.numeric(expected) && is.numeric(actual)) {
+    if (length(expected) != length(actual)) return(FALSE)
+    na_ok <- is.na(expected) == is.na(actual)
+    if (!all(na_ok)) return(FALSE)
+    non_na <- !is.na(expected)
+    all(abs(expected[non_na] - actual[non_na]) <= tol * pmax(1, abs(expected[non_na])))
+  } else if (is.list(expected) && is.list(actual)) {
+    if (length(expected) != length(actual)) return(FALSE)
+    all(mapply(validate_correctness, expected, actual, SIMPLIFY = TRUE, USE.NAMES = FALSE))
+  } else {
+    identical(expected, actual)
+  }
 }
 
 results_list <- list()
@@ -179,6 +200,34 @@ for (task in all_tasks) {
   }
 
   args <- task$args()
+
+  # ── H.2 Correctness validation against R baseline ──
+  skip_h2_tasks <- c("07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch",
+                      "09_longjmp_safety", "10_sexp_create", "11_sexp_inspect",
+                      "42_external_ptr", "43_rng_stress")
+  if (call_type != "r" && !(tid %in% skip_h2_tasks)) {
+    ref_name <- r_ref[[tid]]
+    if (!is.null(ref_name) && exists(ref_name, mode = "function")) {
+      ref_fun <- get(ref_name, mode = "function")
+      ref_result <- tryCatch(do.call(ref_fun, args), error = function(e) NULL)
+      call_result <- tryCatch(do.call(.Call, c(list(cfun), args)), error = function(e) NULL)
+      if (!is.null(ref_result) && !is.null(call_result) && !identical(validate_correctness(ref_result, call_result), TRUE)) {
+        ref_str <- gsub(",", " ", substr(paste(deparse(ref_result), collapse = ""), 1, 120))
+        call_str <- gsub(",", " ", substr(paste(deparse(call_result), collapse = ""), 1, 120))
+        msg <- sprintf("H.2 mismatch: expected '%s' got '%s'", ref_str, call_str)
+        n_fail <- n_fail + 1
+        cat(sprintf("  %-14s [FAIL] H.2 %s\n", tid, msg))
+        log_error(runner_name, tid, msg, dir = file.path(root_dir, "results"))
+        results_list[[length(results_list) + 1]] <- data.frame(
+          runner = runner_name, task = tid, status = "FAIL",
+          mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+          sd_ms = NA, cv_pct = NA, rss_kb = NA,
+          cold_start_ms = NA, n_iterations = NA,
+          error = msg, stringsAsFactors = FALSE)
+        next
+      }
+    }
+  }
 
   cs <- timed_call(cfun, args, call_type, expr = task_expr)
   log_cold_start(runner_name, tid, cs$wall_ms, dir = file.path(root_dir, "results"))

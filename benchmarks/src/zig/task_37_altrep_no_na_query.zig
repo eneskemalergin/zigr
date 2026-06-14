@@ -10,7 +10,10 @@ export fn zigr_bench_altrep_no_na_query(vec: R.SEXP) R.SEXP {
     var has_na: c_int = 0;
     var i: i64 = 0;
     while (i < n) {
-        if (R.INTEGER_ELT(alt, i) == R.R_NaInt) { has_na = 1; break; }
+        if (R.INTEGER_ELT(alt, i) == R.R_NaInt) {
+            has_na = 1;
+            break;
+        }
         i += 1;
     }
     return R.Rf_ScalarInteger(has_na);

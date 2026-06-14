@@ -88,7 +88,7 @@ pub fn fastCharData(charsxp: SEXP) ?[*]const u8 {
 ///   0x04 → CE_LATIN1 (2)
 ///   0x02 → CE_BYTES  (3)
 ///   otherwise → CE_NATIVE (0)
-/// No PLT call — verified against Rf_getCharCE disassembly on R 4.6.0.
+/// No PLT call,  verified against Rf_getCharCE disassembly on R 4.6.0.
 /// Returns -1 on null or non-CHARSXP input (safe sentinel).
 pub fn fastGetCharCE(charsxp: SEXP) i32 {
     const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return -1;
