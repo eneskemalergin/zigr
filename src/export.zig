@@ -242,8 +242,14 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
 
     const W = struct {
         const CallArgs = struct {
-            a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP,
-            a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP,
+            a0: R.SEXP,
+            a1: R.SEXP,
+            a2: R.SEXP,
+            a3: R.SEXP,
+            a4: R.SEXP,
+            a5: R.SEXP,
+            a6: R.SEXP,
+            a7: R.SEXP,
         };
 
         fn doCall(data: ?*anyopaque) R.SEXP {
@@ -456,8 +462,14 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
 
     const W = struct {
         const MethodCallArgs = struct {
-            a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP,
-            a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP,
+            a0: R.SEXP,
+            a1: R.SEXP,
+            a2: R.SEXP,
+            a3: R.SEXP,
+            a4: R.SEXP,
+            a5: R.SEXP,
+            a6: R.SEXP,
+            a7: R.SEXP,
         };
 
         fn doCall(data: ?*anyopaque) R.SEXP {

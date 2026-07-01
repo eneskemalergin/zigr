@@ -283,12 +283,49 @@ pub fn SliceView(comptime T: type) type {
     };
 }
 
+/// Recommended boundary helper for REALSXP -> Zig (W4.1).
+///
+/// Returns a `SliceView(f64)` that is either borrowed from R memory (for
+/// non-ALTREP SEXPs that have a direct data pointer) or owned by the
+/// caller (for ALTREP SEXPs that need a one-time materialization). Use
+/// `.constSlice()` to get a uniform `[]const f64` regardless of which
+/// branch was taken, and `.deinit(allocator)` to free the owned copy.
+///
+/// Cost (x86_64-linux, 1M elements, see plan/PLAN.md W4.1 Findings):
+///   - non-ALTREP REALSXP: ~600us median, same as toRealSlice (delegates)
+///   - ALTREP-backed REALSXP: zero-copy borrowed path; the 600us copy
+///     is avoided because the ALTREP is materialized in place by R's
+///     own data pointer
+///
+/// When to use:
+///   - The input may be ALTREP-backed (e.g. `seq_len`, `rep`, or any
+///     `convert.altrep_create`-built vector). This is the win.
+///   - The caller can tolerate a borrowed slice (no caller ownership of
+///     the underlying bytes; the SEXP must outlive the slice).
+///
+/// When to prefer `toRealSlice` instead:
+///   - The input is known to be non-ALTREP. The view is overhead.
+///   - The caller needs a stable owned slice (e.g. to pass across an
+///     arena boundary).
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     if (directRealSliceOrNull(sexp)) |data| return .{ .borrowed = data };
     return .{ .owned = try toRealSlice(allocator, sexp) };
 }
 
+/// Recommended boundary helper for INTSXP -> Zig (W4.1, parallels toRealSliceView).
+///
+/// Returns a `SliceView(i32)` that is borrowed from R memory (for non-ALTREP
+/// INTSXP with a direct data pointer) or owned by the caller (for ALTREP).
+/// Use `.constSlice()` for a uniform `[]const i32`, `.deinit(allocator)`
+/// to free the owned copy.
+///
+/// Cost (x86_64-linux, 1M elements, see plan/PLAN.md W4.1 Findings):
+///   - non-ALTREP INTSXP: ~275us median, same as toIntSlice (delegates)
+///   - ALTREP-backed INTSXP: zero-copy borrowed path
+///
+/// See `toRealSliceView` for the full rationale. The same use/don't-use
+/// rules apply, swapped for i32 and 4 bytes per element instead of 8.
 pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     if (directIntSliceOrNull(sexp)) |data| return .{ .borrowed = data };
@@ -357,9 +394,32 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
     return vec.get();
 }
 
-/// STRSXP: borrow CHARSXP data into a Zig slice array.
-/// NA strings become empty strings (NA info is lost).  Use
-/// toStringSliceNullable to preserve the NA/empty distinction.
+/// Default string boundary helper (W4.2).
+///
+/// Allocates a `[][]const u8` of slice headers. Each slice points into
+/// the CHARSXP bytes after a call to `Rf_translateCharUTF8` (Latin-1 and
+/// native-encoded strings are normalized to UTF-8 on the way in).
+/// NA strings map to empty slices; the NA/empty distinction is lost.
+/// Use `toStringSliceNullable` to preserve it, or `toStringSliceView`
+/// or `toCachedStringSliceView` if you need `is_na` on each element.
+///
+/// Cost (x86_64-linux, 1M STRSXP, see plan/PLAN.md W4.2 Findings):
+///   - create + iterate: ~14ms median, 1 alloc/call, 16MB (1M slice
+///     headers, 16 bytes each on 64-bit)
+///   - iterate only (reuse the slice): ~0.6ms per pass, memory-bandwidth
+///     bound
+///
+/// When to use:
+///   - Single-pass or multi-pass over a STRSXP. Pays the per-element
+///     R API cost upfront, then iterate is a plain Zig loop.
+///   - Familiar Zig slice-of-slices API; you can pass `[]const u8` to
+///     downstream code without per-element dereference.
+///
+/// When to prefer the view variants:
+///   - Memory-constrained single-pass: `toStringSliceView`. No alloc,
+///     but each pass costs ~15ms (R API call per access).
+///   - NA preservation with multi-pass: `toCachedStringSliceView`.
+///     40MB peak, 2ms per pass, but NA preserved as `StringView.is_na`.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
@@ -1479,7 +1539,30 @@ pub fn cumsum(sexp: SEXP) SEXP {
     return result.get();
 }
 
-/// Convert a Zig struct to an R named list using a caller-owned arena. Reuse the arena across hot-loop calls. Field names become list names. Supports nested structs, slices, scalars, optionals, and SEXP.
+/// Convert a Zig struct to an R named list using a caller-owned arena.
+/// Reuse the arena across hot-loop calls. Field names become list names.
+/// Supports nested structs, slices, scalars, optionals, and SEXP.
+///
+/// Recommended boundary helper for Zig struct -> R list (W4.3).
+///
+/// Cost (x86_64-linux, see plan/PLAN.md W4.3 Findings):
+///   - 5 fields:  0.25us median, 0 Zig allocs, ~8 R-heap calls
+///   - 10 fields: 0.48us median, 0 Zig allocs, ~14 R-heap calls
+///   - 20 fields: 0.93us median, 0 Zig allocs, ~25 R-heap calls
+///   - ~50ns per field, dominated by R's allocator (`Rf_allocVector`,
+///     `Rf_mkChar`). The Zig overhead is real but small.
+///
+/// Use `asSEXP` if you do not have a hot loop (it creates an internal
+/// arena). Use `asSEXPAlloc` with a shared arena in any loop that
+/// produces a struct per iteration; the per-call alloc count is 0
+/// because the arena amortizes its chunk growth.
+///
+/// Allocations on the R heap (not counted in Zig-heap metrics):
+///   1 VECSXP for the list + 1 STRSXP for field names + N
+///   `Rf_allocVector` calls for slice fields + N `Rf_mkChar` calls
+///   for field names. The result SEXP is not protected; the caller
+///   must `Rf_protect` it if it should survive past the next R
+///   allocation.
 pub fn asSEXPAlloc(st: anytype, arena: std.mem.Allocator) SEXP {
     return structToSexp(st, @TypeOf(st), arena);
 }
@@ -1492,7 +1575,31 @@ pub fn asSEXP(st: anytype) SEXP {
     return asSEXPAlloc(st, arena.allocator());
 }
 
-/// Convert an R named list to a Zig struct. Matches field names against list names. Missing optional fields default to null. Missing non-optional fields signal an R error. R_NilValue in a VECSXP element is treated as missing, so `?T` fields cannot distinguish "missing" from "present with null."
+/// Convert an R named list to a Zig struct. Matches field names against
+/// list names. Missing optional fields default to null. Missing
+/// non-optional fields signal an R error. R_NilValue in a VECSXP
+/// element is treated as missing, so `?T` fields cannot distinguish
+/// "missing" from "present with null."
+///
+/// Recommended boundary helper for R list -> Zig struct (W4.3).
+///
+/// Cost (x86_64-linux, see plan/PLAN.md W4.3 Findings):
+///   - 5 fields:  0.27us median, 1 Zig alloc/call (408 bytes, arena
+///     chunk 1)
+///   - 10 fields: 0.67us median, 2 Zig allocs/call (1692 bytes, arena
+///     chunks 1+2)
+///   - 20 fields: 1.30us median, 3 Zig allocs/call (3750 bytes, arena
+///     chunks 1+2+3)
+///   - ~65ns per field. Alloc count is logarithmic in field count
+///     because the arena grows geometrically; 100+ field structs are
+///     fine.
+///
+/// Use a fresh arena per call. The arena is freed on `deinit`. The
+/// returned struct borrows any slice fields from the SEXP - the SEXP
+/// must outlive the struct. Slice elements are validated against the
+/// expected type; mismatches signal an R error.
+///
+/// There is no R-heap allocation on this path. All work is in Zig.
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
     return structFromSexp(T, sexp, arena) catch |err| signalError(err);
 }
