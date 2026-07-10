@@ -6,18 +6,41 @@
 # are wrapped in tryCatch and expected to fail.
 
 build_so <- function() {
-  zig <- Sys.getenv("ZIG", "./zig-0.16.0/zig")
-  r_include <- Sys.getenv("R_INCLUDE", file.path(R.home(), "include"))
+  zig <- Sys.getenv("ZIG", "")
+  if (!nzchar(zig)) zig <- Sys.which("zig")
+  if (!nzchar(zig)) zig <- file.path("zig-0.16.0", "zig")
+  if (!file.exists(zig)) stop("zig executable not found; set ZIG or install zig")
+  zig <- normalizePath(zig)
+
+  r_include <- Sys.getenv("R_INCLUDE", "")
+  if (!nzchar(r_include)) {
+    candidates <- c(file.path(R.home(), "include"), file.path(R.home(), "../share/R/include"), "/usr/share/R/include")
+    candidates <- candidates[dir.exists(candidates)]
+    if (length(candidates) == 0L) stop("R include directory not found; set R_INCLUDE")
+    r_include <- normalizePath(candidates[[1L]])
+  }
   r_lib <- Sys.getenv("R_LIB", file.path(R.home(), "lib"))
+  if (!dir.exists(r_include) || !dir.exists(r_lib)) stop("invalid R include/lib directories")
+  global_cache <- Sys.getenv("ZIG_GLOBAL_CACHE_DIR", file.path("benchmarks", ".zig-global-cache"))
+  dir.create(global_cache, recursive = TRUE, showWarnings = FALSE)
+  optimize <- Sys.getenv("ZIGR_OPTIMIZE", "ReleaseFast")
+  build_args <- c(
+    "build", "rtest",
+    paste0("-Doptimize=", optimize),
+    paste0("-Dr-include=", r_include),
+    paste0("-Dr-lib=", r_lib),
+    "--cache-dir", ".zig-cache",
+    "--global-cache-dir", global_cache
+  )
+  target <- Sys.getenv("ZIGR_TARGET", "")
+  if (nzchar(target) && target != "native") build_args <- c(build_args, paste0("-Dtarget=", target))
+  cpu_features <- Sys.getenv("ZIGR_CPU_FEATURES", "")
+  if (nzchar(cpu_features) && cpu_features != "default") build_args <- c(build_args, paste0("-Dcpu=", cpu_features))
 
   # Build using the project's own build.zig which wires the full module graph
   cat("Building test .so...\n")
-  build_cmd <- paste(zig, "build", "rtest",
-    "-Doptimize=ReleaseFast",
-    paste0("-Dr-include=", r_include),
-    paste0("-Dr-lib=", r_lib))
-  cat("  ", build_cmd, "\n")
-  exit_code <- system(build_cmd, intern = FALSE)
+  cat("  ", paste(c(zig, build_args), collapse = " "), "\n")
+  exit_code <- system2(zig, args = build_args)
   if (exit_code != 0) {
     stop("zig build rtest failed with exit code ", exit_code)
   }

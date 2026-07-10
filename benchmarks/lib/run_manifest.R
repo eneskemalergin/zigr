@@ -85,15 +85,19 @@ validate_run_artifacts <- function(run_dir, metadata) {
     stop("run contains unpromoted staging artifacts")
   }
 
-  summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
+  all_summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
   expected_files <- file.path(run_dir, paste0(expected_runners, "_summary.csv"))
-  if (!identical(sort(summary_files), sort(expected_files))) {
+  allowed_derived_files <- file.path(run_dir, "analysis_summary.csv")
+  missing_files <- expected_files[!file.exists(expected_files)]
+  unexpected_files <- setdiff(all_summary_files, c(expected_files, allowed_derived_files))
+  if (length(missing_files) > 0L || length(unexpected_files) > 0L) {
     stop(sprintf(
       "run summary set differs from the run manifest; expected: %s; got: %s",
       paste(basename(expected_files), collapse = ", "),
-      paste(basename(summary_files), collapse = ", ")
+      paste(basename(c(setdiff(expected_files, missing_files), unexpected_files)), collapse = ", ")
     ))
   }
+  summary_files <- expected_files
 
   summaries <- do.call(rbind, lapply(summary_files, read.csv, stringsAsFactors = FALSE))
   required <- c("run_id", "runner", "task", "status")
@@ -115,7 +119,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
     runner_dir <- file.path(run_dir, runner)
     raw_files <- sort(list.files(runner_dir, pattern = "^task_.*\\.csv$", full.names = TRUE))
     expected_raw_tasks <- sort(as.character(summaries$task[summaries$runner == runner & summaries$status == "PASS"]))
-    actual_raw_tasks <- sort(sub("^task_|\\.csv$", "", basename(raw_files)))
+    actual_raw_tasks <- sort(sub("\\.csv$", "", sub("^task_", "", basename(raw_files))))
     if (!identical(expected_raw_tasks, actual_raw_tasks)) {
       stop(sprintf("raw timing coverage for %s differs from PASS summaries", runner))
     }

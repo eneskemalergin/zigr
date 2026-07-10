@@ -3,6 +3,10 @@ environment_scalar <- function(value, fallback = "") {
   if (length(value) == 0L || is.na(value[[1L]]) || !nzchar(value[[1L]])) fallback else value[[1L]]
 }
 
+environment_extension <- function(extensions, name) {
+  if (is.null(extensions) || is.null(names(extensions)) || !(name %in% names(extensions))) "" else extensions[[name]]
+}
+
 resolve_zig_executable <- function(root_dir) {
   configured <- Sys.getenv("ZIG", unset = "")
   candidates <- c(
@@ -17,9 +21,9 @@ resolve_zig_executable <- function(root_dir) {
   normalizePath(existing[[1L]])
 }
 
-command_version <- function(executable, label) {
+command_version <- function(executable, label, arguments = "version") {
   output <- tryCatch(
-    system2(executable, "--version", stdout = TRUE, stderr = TRUE),
+    system2(executable, arguments, stdout = TRUE, stderr = TRUE),
     error = function(error) stop(sprintf("cannot read %s version: %s", label, conditionMessage(error)))
   )
   status <- attr(output, "status")
@@ -55,7 +59,7 @@ source_tree_identity <- function(root_dir) {
   files <- files[!is.na(info$isdir) & !info$isdir]
   relative <- gsub("\\\\", "/", substring(files, nchar(root_dir) + 2L))
   excluded <- grepl(
-    "^(results|analysis|benchmarks/results|benchmarks/analysis|\\.git|\\.zig-cache|zig-out|benchmarks/\\.zig-cache|benchmarks/zig-out|rust/target)(/|$)|^(src|benchmarks/src)/[^/]+\\.(so|dll|dylib)$|^(src|benchmarks/src)/zig_built\\.stamp$",
+    "^(results|analysis|benchmarks/results|benchmarks/analysis|\\.git|\\.zig-cache|zig-out|benchmarks/\\.zig-cache|benchmarks/\\.zig-global-cache|benchmarks/zig-out|rust/target)(/|$)|^(src|benchmarks/src)/[^/]+\\.(so|dll|dylib)$|^(src|benchmarks/src)/zig_built\\.stamp$",
     relative
   )
   files <- files[!excluded]
@@ -71,7 +75,7 @@ source_tree_identity <- function(root_dir) {
   on.exit(unlink(temporary), add = TRUE)
   writeLines(lines, temporary, useBytes = TRUE)
   digest <- as.character(tools::md5sum(temporary))
-  list(method = "md5", digest = unname(digest[[1L]]), file_count = length(files), excluded_prefixes = c("results", "analysis", "benchmarks/results", "benchmarks/analysis", ".git", ".zig-cache", "zig-out", "benchmarks/.zig-cache", "benchmarks/zig-out", "rust/target", "src/*.so", "benchmarks/src/*.so", "src/*.dll", "benchmarks/src/*.dll", "src/*.dylib", "benchmarks/src/*.dylib", "src/zig_built.stamp", "benchmarks/src/zig_built.stamp"))
+  list(method = "md5", digest = unname(digest[[1L]]), file_count = length(files), excluded_prefixes = c("results", "analysis", "benchmarks/results", "benchmarks/analysis", ".git", ".zig-cache", "zig-out", "benchmarks/.zig-cache", "benchmarks/.zig-global-cache", "benchmarks/zig-out", "rust/target", "src/*.so", "benchmarks/src/*.so", "src/*.dll", "benchmarks/src/*.dll", "src/*.dylib", "benchmarks/src/*.dylib", "src/zig_built.stamp", "benchmarks/src/zig_built.stamp"))
 }
 
 shared_library_metadata <- function(root_dir, relative_path) {
@@ -123,7 +127,8 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
     parts <- strsplit(entry, "=", fixed = TRUE)[[1L]]
     if (length(parts) >= 2L) process_environment[[parts[[1L]]]] <- paste(parts[-1L], collapse = "=")
   }
-  blas_value <- environment_scalar(r_extensions[["BLAS"]], "")
+  blas_value <- environment_scalar(environment_extension(r_extensions, "BLAS"), "")
+  lapack_value <- environment_scalar(environment_extension(r_extensions, "LAPACK"), "")
   host_info <- Sys.info()
   safe_locale <- function(category) {
     tryCatch(Sys.getlocale(category), error = function(error) "")
@@ -157,7 +162,7 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
     blas = list(
       vendor = environment_scalar(Sys.getenv("BLAS_VENDOR", unset = ""), blas_value),
       version_or_path = blas_value,
-      lapack = environment_scalar(r_extensions[["LAPACK"]], ""),
+      lapack = lapack_value,
       configured_threads = process_environment[c("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_NUM_THREADS")]
     ),
     locale = list(

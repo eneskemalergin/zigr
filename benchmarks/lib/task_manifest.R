@@ -21,7 +21,7 @@ validate_task_manifest <- function(manifest) {
   if (nrow(manifest) != 44L) stop(sprintf("task manifest must contain 44 rows, got %d", nrow(manifest)))
   if (anyDuplicated(manifest$task)) stop("task manifest contains duplicate task IDs")
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
-  if (any(!grepl("^([0-9]{2}_[a-z0-9_]+|07[ab]_[a-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
+  if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
   if (!all(manifest$input_factory == "task_spec.args")) stop("task manifest has an unsupported input factory")
   if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 1) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
   if (!all(manifest$layer %in% paste0("L", 1:6))) stop("task manifest has an invalid layer")

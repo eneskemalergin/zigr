@@ -155,7 +155,7 @@ pub unsafe extern "C" fn savvy_bench_matrix_transpose__ffi(x: SEXP) -> SEXP {
     while nr * nr < n { nr += 1; }
     let nc = nr;
     let xp = savvy_ffi::REAL(x);
-    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, n as _);
+    let out = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, n as _));
     let rp = savvy_ffi::REAL(out);
     const BLOCK: usize = 32;
     let mut jj: usize = 0;
@@ -173,6 +173,12 @@ pub unsafe extern "C" fn savvy_bench_matrix_transpose__ffi(x: SEXP) -> SEXP {
         }
         jj += BLOCK;
     }
+    let dim = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    let dimp = savvy_ffi::INTEGER(dim);
+    *dimp = nc as i32;
+    *dimp.add(1) = nr as i32;
+    savvy_ffi::Rf_setAttrib(out, savvy_ffi::R_DimSymbol, dim);
+    savvy_ffi::Rf_unprotect(2);
     out
 }
 ffi_stub!(savvy_bench_transpose__ffi, x: SEXP);
@@ -515,16 +521,16 @@ fn savvy_bench_broadcast(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_protect_shallow__ffi(x: SEXP) -> SEXP {
     let _ = x;
-    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
-    *(savvy_ffi::REAL(out)) = 0.0;
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = 0;
     out
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_protect_scaling__ffi(x: SEXP) -> SEXP {
     let _ = x;
-    let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
-    *(savvy_ffi::REAL(out)) = 0.0;
+    let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
+    *(savvy_ffi::INTEGER(out)) = 0;
     out
 }
 #[unsafe(no_mangle)]
@@ -674,8 +680,8 @@ pub unsafe extern "C" fn savvy_bench_dataframe_filter__ffi(x: SEXP) -> SEXP {
         }
     }
     let ng = max_grp as usize;
-    let gout = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, ng as _);
-    let sout = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, ng as _);
+    let gout = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, ng as _));
+    let sout = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, ng as _));
     let gop = savvy_ffi::INTEGER(gout);
     let sop = savvy_ffi::REAL(sout);
     for i in 0..ng { *gop.add(i) = (i + 1) as _; *sop.add(i) = 0.0; }
@@ -686,9 +692,22 @@ pub unsafe extern "C" fn savvy_bench_dataframe_filter__ffi(x: SEXP) -> SEXP {
             if g < ng { *sop.add(g) += v / *yp.add(i); }
         }
     }
-    let out = savvy_ffi::Rf_allocVector(savvy_ffi::VECSXP, 2);
+    let out = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::VECSXP, 2));
     savvy_ffi::SET_VECTOR_ELT(out, 0, gout);
     savvy_ffi::SET_VECTOR_ELT(out, 1, sout);
+    let names = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 2));
+    savvy_ffi::SET_STRING_ELT(names, 0, Rf_mkChar("grp\0".as_ptr() as _));
+    savvy_ffi::SET_STRING_ELT(names, 1, Rf_mkChar("z_sum\0".as_ptr() as _));
+    savvy_ffi::Rf_setAttrib(out, savvy_ffi::R_NamesSymbol, names);
+    let class = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1));
+    savvy_ffi::SET_STRING_ELT(class, 0, Rf_mkChar("data.frame\0".as_ptr() as _));
+    savvy_ffi::Rf_setAttrib(out, savvy_ffi::Rf_install("class\0".as_ptr() as _), class);
+    let row_names = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2));
+    let row_name_ptr = savvy_ffi::INTEGER(row_names);
+    *row_name_ptr = i32::MIN;
+    *row_name_ptr.add(1) = -(ng as i32);
+    savvy_ffi::Rf_setAttrib(out, savvy_ffi::Rf_install("row.names\0".as_ptr() as _), row_names);
+    savvy_ffi::Rf_unprotect(6);
     out
 }
 
@@ -811,16 +830,8 @@ pub unsafe extern "C" fn savvy_bench_attrib_ops__impl(x: SEXP) -> SEXP {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_s4_slot_access__impl(x: SEXP) -> SEXP {
-    let class_expr = savvy_ffi::Rf_protect(savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1));
-    savvy_ffi::SET_STRING_ELT(class_expr, 0, Rf_mkChar("setClass(\"BenchS4\", representation(slot_x = \"numeric\"))\0".as_ptr() as _));
-    let parse_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("parse\0".as_ptr() as _), class_expr));
     let mut err: i32 = 0;
-    let parsed = R_tryEvalSilent(parse_call, R_GlobalEnv, &mut err);
-    if err == 0 { R_tryEvalSilent(parsed, R_GlobalEnv, &mut err); }
-    savvy_ffi::Rf_unprotect(2);
-
     let new_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("new\0".as_ptr() as _), Rf_mkString("BenchS4\0".as_ptr() as _)));
-    err = 0;
     let obj = savvy_ffi::Rf_protect(R_tryEvalSilent(new_call, R_GlobalEnv, &mut err));
     savvy_ffi::Rf_unprotect(1);
     if err != 0 { savvy_ffi::Rf_unprotect(1); return x; }

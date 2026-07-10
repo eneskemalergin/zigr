@@ -138,7 +138,7 @@ update_run_manifest(run_dir, "complete")
 if (is.null(runners_filter) && is.null(tasks_filter)) {
   cat("Comparative metrics\n")
   code <- system2("Rscript", args = c("export_comparative_metrics.R", sprintf("--run-dir=%s", run_dir)),
-                  ignore.stdout = FALSE, ignore.stderr = FALSE)
+                  stdout = "", stderr = "")
   if (code != 0) {
     run_error <- sprintf("comparative metrics export failed with exit code %d", code)
     stop(run_error)

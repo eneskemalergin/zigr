@@ -413,8 +413,8 @@ fn extendr_bench_dataframe_filter(x: Robj) -> Robj {
         }
     }
     let ng = max_grp as usize;
-    let gout = unsafe { extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::INTSXP, ng as _) };
-    let sout = unsafe { extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, ng as _) };
+    let gout = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::INTSXP, ng as _)) };
+    let sout = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::REALSXP, ng as _)) };
     let gop = unsafe { extendr_ffi::INTEGER(gout) };
     let sop = unsafe { extendr_ffi::REAL(sout) };
     for i in 0..ng { unsafe { *gop.add(i) = (i + 1) as _; *sop.add(i) = 0.0; } }
@@ -425,9 +425,27 @@ fn extendr_bench_dataframe_filter(x: Robj) -> Robj {
             if g < ng { unsafe { *sop.add(g) += v / *yp.add(i); } }
         }
     }
-    let out = unsafe { extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::VECSXP, 2) };
+    let out = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::VECSXP, 2)) };
     unsafe { extendr_ffi::SET_VECTOR_ELT(out, 0, gout); }
     unsafe { extendr_ffi::SET_VECTOR_ELT(out, 1, sout); }
+    let names = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 2)) };
+    unsafe {
+        SET_STRING_ELT(names, 0, Rf_mkChar("grp\0".as_ptr() as _));
+        SET_STRING_ELT(names, 1, Rf_mkChar("z_sum\0".as_ptr() as _));
+        Rf_setAttrib(out, Rf_install("names\0".as_ptr() as _), names);
+    }
+    let class = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1)) };
+    unsafe {
+        SET_STRING_ELT(class, 0, Rf_mkChar("data.frame\0".as_ptr() as _));
+        Rf_setAttrib(out, Rf_install("class\0".as_ptr() as _), class);
+    }
+    let row_names = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::INTSXP, 2)) };
+    unsafe {
+        *extendr_ffi::INTEGER(row_names) = i32::MIN;
+        *extendr_ffi::INTEGER(row_names).add(1) = -(ng as i32);
+        Rf_setAttrib(out, Rf_install("row.names\0".as_ptr() as _), row_names);
+        extendr_ffi::Rf_unprotect(6);
+    }
     unsafe { Robj::from_sexp(out) }
 }
 
@@ -554,16 +572,8 @@ fn extendr_bench_attrib_ops(x: Robj) -> Robj {
 fn extendr_bench_s4_slot_access(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
 
-    let class_expr = unsafe { extendr_ffi::Rf_protect(extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1)) };
-    unsafe { SET_STRING_ELT(class_expr, 0, Rf_mkChar("setClass(\"BenchS4\", representation(slot_x = \"numeric\"))\0".as_ptr() as _)) };
-    let parse_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("parse\0".as_ptr() as _), class_expr)) };
     let mut err: i32 = 0;
-    let parsed = unsafe { R_tryEvalSilent(parse_call, R_GlobalEnv, &mut err) };
-    if err == 0 { unsafe { R_tryEvalSilent(parsed, R_GlobalEnv, &mut err) }; }
-    unsafe { extendr_ffi::Rf_unprotect(2) };
-
     let new_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("new\0".as_ptr() as _), Rf_mkString("BenchS4\0".as_ptr() as _))) };
-    err = 0;
     let obj = unsafe { extendr_ffi::Rf_protect(R_tryEvalSilent(new_call, R_GlobalEnv, &mut err)) };
     unsafe { extendr_ffi::Rf_unprotect(1) };
     if err != 0 { unsafe { extendr_ffi::Rf_unprotect(1) }; return unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(s) }; }

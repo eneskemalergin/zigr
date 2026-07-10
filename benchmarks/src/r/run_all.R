@@ -99,10 +99,16 @@ r_bench_attrib_ops <- function(x) {
 }
 
 # Task 22: S4 slot access
+ensure_bench_s4_class <- function() {
+  if (!methods::isClass("BenchS4")) {
+    methods::setClass("BenchS4", representation(slot_x = "numeric"))
+  }
+  invisible(NULL)
+}
+ensure_bench_s4_class()
 r_bench_s4_slot_access <- function(x) {
-  setClass("BenchS4", representation(slot_x = "numeric"))
-  obj <- new("BenchS4", slot_x = x)
-  slot(obj, "slot_x")
+  obj <- methods::new("BenchS4", slot_x = x)
+  methods::slot(obj, "slot_x")
 }
 r_bench_which_na <- function(x) which(is.na(x))
 

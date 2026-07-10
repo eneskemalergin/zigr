@@ -12,6 +12,7 @@ $(STATLIB): rust/Cargo.toml rust/src/lib.rs api.h init.c
 	  cargo build --release --manifest-path rust/Cargo.toml --target-dir $(TARGET_DIR)
 
 $(OUT): $(STATLIB) init.c api.h
+	rm -f $(OUT)
 	PKG_CPPFLAGS="-I$(R_INCLUDE)" PKG_LIBS="-lblas" R CMD SHLIB -o $(OUT) init.c $(STATLIB)
 
 clean:

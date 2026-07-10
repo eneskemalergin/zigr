@@ -44,9 +44,9 @@ if (length(legacy_entries) > 0L) {
 }
 dir.create(target_dir, recursive = TRUE, showWarnings = FALSE)
 entries <- list.files(run_dir, all.files = TRUE, full.names = TRUE, no.. = TRUE)
+entries <- entries[basename(entries) != ".staging"]
 for (entry in entries) {
-  destination <- file.path(target_dir, basename(entry))
-  if (!file.copy(entry, destination, recursive = TRUE, overwrite = TRUE)) {
+  if (!file.copy(entry, target_dir, recursive = TRUE, overwrite = TRUE)) {
     stop(sprintf("cannot copy run artifact: %s", entry))
   }
 }

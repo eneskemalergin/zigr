@@ -9,5 +9,5 @@ SEXP c_call_bench_sexp_create(SEXP arg) {
         }
         UNPROTECT(10000);
     }
-    return Rf_ScalarReal(0.0);
+    return Rf_ScalarInteger(0);
 }

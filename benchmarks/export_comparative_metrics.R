@@ -31,9 +31,10 @@ validate_run_artifacts(results_dir, run_metadata)
 expected_tasks <- sort(run_manifest_values(run_metadata$tasks))
 expected_runners <- sort(run_manifest_values(run_metadata$runners))
 
-summary_files <- sort(list.files(results_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
-if (length(summary_files) == 0L) {
-  stop(sprintf("no runner summaries found in %s", results_dir))
+summary_files <- file.path(results_dir, paste0(expected_runners, "_summary.csv"))
+missing_summary_files <- summary_files[!file.exists(summary_files)]
+if (length(missing_summary_files) > 0L) {
+  stop(sprintf("run is missing runner summaries: %s", paste(basename(missing_summary_files), collapse = ", ")))
 }
 
 summaries <- do.call(
@@ -111,8 +112,7 @@ if (length(excluded_tasks) > 0L) {
 
 summaries <- pass_summaries[pass_summaries$task %in% common_pass_tasks, , drop = FALSE]
 
-task_order <- order(as.integer(gsub("^0*|_.*", "", unique(summaries$task))))
-ordered_tasks <- unique(summaries$task)[task_order]
+ordered_tasks <- manifest$task[manifest$task %in% unique(summaries$task)]
 
 mean_wide <- reshape(
   summaries[, c("runner", "task", "median_ms")],

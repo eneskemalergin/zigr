@@ -1,12 +1,47 @@
 #!/bin/bash
 # Build benchmark runners for zigr testing.
-set -e
+set -euo pipefail
 
-R_INCLUDE=$(Rscript -e 'cat(R.home("include"))')
-R_LIB=$(Rscript -e 'cat(R.home("lib"))')
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+
+ZIG_BIN=${ZIG:-}
+if [ -z "$ZIG_BIN" ]; then
+  ZIG_BIN=$(command -v zig || true)
+fi
+if [ -z "$ZIG_BIN" ] && [ -x "$SCRIPT_DIR/../zig-0.16.0/zig" ]; then
+  ZIG_BIN="$SCRIPT_DIR/../zig-0.16.0/zig"
+fi
+if [ -z "$ZIG_BIN" ] || [ ! -x "$ZIG_BIN" ]; then
+  echo "zig executable not found; set ZIG or install zig" >&2
+  exit 1
+fi
+
+if [ -z "${R_INCLUDE:-}" ]; then
+  R_INCLUDE=$(Rscript -e 'p <- c(file.path(R.home(), "include"), file.path(R.home(), "../share/R/include"), "/usr/share/R/include"); p <- p[dir.exists(p)]; if (!length(p)) quit(status = 1); cat(normalizePath(p[[1]]))')
+fi
+if [ -z "${R_LIB:-}" ]; then
+  R_LIB=$(Rscript -e 'p <- file.path(R.home(), "lib"); if (!dir.exists(p)) quit(status = 1); cat(normalizePath(p))')
+fi
+if [ ! -d "$R_INCLUDE" ] || [ ! -d "$R_LIB" ]; then
+  echo "R include/lib directories are invalid: R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB" >&2
+  exit 1
+fi
+
+OPTIMIZE=${ZIGR_OPTIMIZE:-ReleaseFast}
+ZIG_ARGS=("-Doptimize=$OPTIMIZE" "-Dr-include=$R_INCLUDE" "-Dr-lib=$R_LIB")
+if [ -n "${ZIGR_TARGET:-}" ] && [ "$ZIGR_TARGET" != "native" ]; then
+  ZIG_ARGS+=("-Dtarget=$ZIGR_TARGET")
+fi
+if [ -n "${ZIGR_CPU_FEATURES:-}" ] && [ "$ZIGR_CPU_FEATURES" != "default" ]; then
+  ZIG_ARGS+=("-Dcpu=$ZIGR_CPU_FEATURES")
+fi
+ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR:-$SCRIPT_DIR/.zig-global-cache}
+mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+ZIG_CACHE_ARGS=("--cache-dir" "$SCRIPT_DIR/.zig-cache" "--global-cache-dir" "$ZIG_GLOBAL_CACHE_DIR")
 
 echo "=== Zig (zigR) ==="
-R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB zig build -Doptimize=ReleaseFast
+R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB "$ZIG_BIN" build "${ZIG_ARGS[@]}" "${ZIG_CACHE_ARGS[@]}"
 
 echo "=== C (.Call) ==="
 cd src/c_call && make -f Makefile R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB && cd ../..
