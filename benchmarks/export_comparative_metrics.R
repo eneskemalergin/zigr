@@ -4,12 +4,9 @@ args <- commandArgs(trailingOnly = TRUE)
 results_dir <- "results"
 low_noise_cv_threshold <- 20
 meaningful_margin <- 1.05
-
-aggregate_exclusions <- data.frame(
-  task = character(0),
-  comparison_note = character(0),
-  stringsAsFactors = FALSE
-)
+root_dir <- normalizePath(".")
+source(file.path(root_dir, "lib", "task_manifest.R"))
+manifest <- load_task_manifest(root_dir)
 
 for (arg in args) {
   if (grepl("^--results-dir=", arg)) {
@@ -30,6 +27,22 @@ summaries <- do.call(
   rbind,
   lapply(summary_files, read.csv, stringsAsFactors = FALSE)
 )
+
+expected_tasks <- sort(manifest$task)
+expected_runners <- sort(sub("\\.json$", "", basename(list.files(file.path(root_dir, "runners"), pattern = "\\.json$"))))
+actual_runners <- sort(unique(summaries$runner))
+if (!identical(expected_runners, actual_runners)) {
+  stop(sprintf("summary runner set differs from runner configs; expected: %s; got: %s",
+               paste(expected_runners, collapse = ", "), paste(actual_runners, collapse = ", ")))
+}
+for (runner in expected_runners) {
+  actual_tasks <- sort(unique(summaries$task[summaries$runner == runner]))
+  if (!identical(expected_tasks, actual_tasks)) {
+    stop(sprintf("summary coverage for %s differs from task manifest; missing: %s; extra: %s",
+                 runner, paste(setdiff(expected_tasks, actual_tasks), collapse = ", "),
+                 paste(setdiff(actual_tasks, expected_tasks), collapse = ", ")))
+  }
+}
 
 runner_tasks <- split(summaries$task, summaries$runner)
 runner_tasks <- lapply(runner_tasks, function(tasks) sort(unique(tasks)))
@@ -99,13 +112,10 @@ names(cv_wide) <- c("task", paste0(sub("cv_pct\\.", "", names(cv_wide)[-1]), "_c
 merged <- merge(mean_wide, cv_wide, by = "task")
 merged <- merged[match(ordered_tasks, merged$task), ]
 
-matched_exclusions <- match(merged$task, aggregate_exclusions$task)
-merged$aggregate_comparable <- is.na(matched_exclusions)
-merged$comparison_note <- ifelse(
-  is.na(matched_exclusions),
-  "",
-  aggregate_exclusions$comparison_note[matched_exclusions]
-)
+manifest_rows <- match(merged$task, manifest$task)
+if (anyNA(manifest_rows)) stop("comparative data contains a task absent from the task manifest")
+merged$aggregate_comparable <- manifest$aggregate[manifest_rows]
+merged$comparison_note <- manifest$comparison_note[manifest_rows]
 
 all_runners_in_data <- colnames(mean_wide)[-1]
 all_runners_in_data <- gsub("_median$", "", all_runners_in_data)

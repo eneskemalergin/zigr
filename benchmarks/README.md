@@ -24,6 +24,10 @@ Six runner backends. All 44 tasks pass across all runners. extendr uses raw FFI 
 - **Layer 6 extra** (task 42): external pointer (non-deterministic, H.2 skipped)
 - **Layer 7** (tasks 44-47): system diagnostics (build time, binary size, cross-compile time, memory allocation counts) (zigr only)
 
+`task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, layers, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
+
+The manifest distinguishes `r_reference`, `native_invariant`, and `nondeterministic` correctness policies. It marks API-overhead and nondeterministic tasks as `non_comparable` for the primary aggregate while retaining them in task-level reports. Runner configurations and task specs must match the manifest before timing starts.
+
 Runner JSONs in `runners/` map task IDs to exported symbols. Input generators live in `runner_subprocess.R`. They are shared across all runners.
 
 ## Correctness validation (H.2)

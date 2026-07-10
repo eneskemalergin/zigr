@@ -121,6 +121,12 @@ all_tasks <- list(
        args = function() list(1000000L))
 )
 
+source(file.path(root_dir, "lib", "task_manifest.R"))
+manifest <- load_task_manifest(root_dir)
+validate_runner_config(manifest, cfg, runner_name)
+validate_task_specs(manifest, all_tasks)
+all_tasks <- order_task_specs(manifest, all_tasks)
+
 if (!is.null(task_filter)) {
   task_numbers <- vapply(
     all_tasks,
@@ -153,6 +159,7 @@ if (call_type != "r") {
 source(file.path(root_dir, "src/r/run_all.R"))
 r_cfg_path <- file.path(root_dir, "runners", "r.json")
 r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
+validate_r_reference_map(manifest, r_ref)
 
 validate_correctness <- function(expected, actual) {
   if (is.null(expected) && is.null(actual)) return(TRUE)
@@ -202,9 +209,7 @@ for (task in all_tasks) {
   args <- task$args()
 
   # ── H.2 Correctness validation against R baseline ──
-  skip_h2_tasks <- c("07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch",
-                      "09_longjmp_safety", "10_sexp_create", "11_sexp_inspect",
-                      "42_external_ptr", "43_rng_stress")
+  skip_h2_tasks <- manifest$task[manifest$correctness_policy != "r_reference"]
   if (call_type != "r" && !(tid %in% skip_h2_tasks)) {
     ref_name <- r_ref[[tid]]
     if (!is.null(ref_name) && exists(ref_name, mode = "function")) {

@@ -1,0 +1,45 @@
+task,layer,display_name,category,input_factory,expected_return,correctness_policy,comparison_policy,aggregate,comparison_note
+01_vectorsum,L1,Vector sum,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+02_elem_ops,L1,Element operations,numeric_kernel,task_spec.args,real_matrix,r_reference,comparable,TRUE,
+03_memcpy_bandwidth,L1,Memory bandwidth,numeric_kernel,task_spec.args,named_real_vector,r_reference,comparable,TRUE,
+04_sort,L1,Sort,numeric_kernel,task_spec.args,real_vector,r_reference,comparable,TRUE,
+05_fib_recursive,L1,Recursive Fibonacci,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+06_broadcast,L1,Vector broadcast,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+07a_protect_shallow,L2,Shallow protection loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R API loop with no shared R semantic reference
+07b_protect_scaling,L2,Protection scaling loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R API loop with no shared R semantic reference
+08_type_dispatch,L2,Type dispatch,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,Direct SEXP type inspection with no shared R semantic reference
+09_longjmp_safety,L2,Longjmp safety,api_overhead,task_spec.args,named_real_vector,native_invariant,non_comparable,FALSE,Compares native error and unwind strategies
+10_sexp_create,L2,SEXP creation,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R allocation loop with no shared R semantic reference
+11_sexp_inspect,L2,SEXP inspection,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,Direct SEXP inspection with no shared R semantic reference
+12_matrix_transpose,L3,Matrix transpose,data_structure,task_spec.args,real_matrix,r_reference,comparable,TRUE,
+13_matrix_rowsums,L3,Matrix row sums,data_structure,task_spec.args,real_vector,r_reference,comparable,TRUE,
+14_matrix_rowcol_means,L3,Matrix row and column means,data_structure,task_spec.args,real_list,r_reference,comparable,TRUE,
+15_dataframe_filter,L3,Data-frame filter,data_structure,task_spec.args,data_frame_list,r_reference,comparable,TRUE,
+16_list_access,L3,List access,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+17_string_concat,L3,String concatenation,data_structure,task_spec.args,r_object,r_reference,comparable,TRUE,
+18_string_nchar,L3,String length,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+19_string_encoding,L3,String encoding,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+20_factor_ops,L3,Factor operations,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+21_attrib_ops,L3,Attribute operations,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+22_s4_slot_access,L3,S4 slot access,data_structure,task_spec.args,r_object,r_reference,comparable,TRUE,
+23_na_propagation,L3,NA propagation,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+24_long_vector_idx,L3,Long-vector indexing,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+25_l1_arithmetic,L4,Level-one arithmetic,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+26_matmul,L4,Matrix multiplication,linear_algebra,task_spec.args,real_matrix,r_reference,comparable,TRUE,
+27_crossprod,L4,Cross-product,linear_algebra,task_spec.args,real_matrix,r_reference,comparable,TRUE,
+28_cholesky,L4,Cholesky factorization,linear_algebra,task_spec.args,real_matrix,r_reference,comparable,TRUE,
+29_lm_fit,L4,Linear-model fit,linear_algebra,task_spec.args,real_vector,r_reference,comparable,TRUE,
+30_altrep_create,L5,ALTREP creation,altrep,task_spec.args,r_object,r_reference,comparable,TRUE,
+31_altrep_materialize,L5,ALTREP materialization,altrep,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+32_altrep_elt_walk,L5,ALTREP element walk,altrep,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+33_altrep_region_read,L5,ALTREP region read,altrep,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+34_altrep_sum_via_R,L5,ALTREP sum via R,altrep,task_spec.args,r_object,r_reference,comparable,TRUE,
+35_altrep_sum_native,L5,ALTREP native sum,altrep,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+36_altrep_min_max,L5,ALTREP minimum and maximum,altrep,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+37_altrep_no_na_query,L5,ALTREP no-NA query,altrep,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+38_struct_convert,L6,Struct conversion,integration,task_spec.args,named_list,r_reference,comparable,TRUE,
+39_r_eval,L6,R evaluation,integration,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+40_r_tryeval,L6,R try-evaluation,integration,task_spec.args,integer_scalar,r_reference,comparable,TRUE,
+41_serialize_roundtrip,L6,Serialization round trip,integration,task_spec.args,real_scalar,r_reference,comparable,TRUE,
+42_external_ptr,L6,External pointer,integration,task_spec.args,external_pointer,native_invariant,non_comparable,FALSE,Pointer identity and finalization are not shared R values
+43_rng_stress,L6,RNG stress,integration,task_spec.args,nondeterministic_vector,nondeterministic,non_comparable,FALSE,Random output is not compared by value
