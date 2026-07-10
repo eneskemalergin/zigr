@@ -11,7 +11,7 @@ load_task_manifest <- function(root_dir = normalizePath(".")) {
 }
 
 validate_task_manifest <- function(manifest) {
-  required <- c("task", "layer", "display_name", "category", "input_factory",
+  required <- c("task", "layer", "display_name", "category", "input_factory", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
                 "aggregate", "comparison_note")
   missing <- setdiff(required, names(manifest))
@@ -23,6 +23,7 @@ validate_task_manifest <- function(manifest) {
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
   if (any(!grepl("^([0-9]{2}_[a-z0-9_]+|07[ab]_[a-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
   if (!all(manifest$input_factory == "task_spec.args")) stop("task manifest has an unsupported input factory")
+  if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 1) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
   if (!all(manifest$layer %in% paste0("L", 1:6))) stop("task manifest has an invalid layer")
   if (!all(manifest$category %in% c("numeric_kernel", "api_overhead", "data_structure", "linear_algebra", "altrep", "integration"))) stop("task manifest has an invalid category")
   if (!all(manifest$correctness_policy %in% c("r_reference", "native_invariant", "nondeterministic"))) stop("task manifest has an invalid correctness policy")
@@ -50,6 +51,24 @@ validate_task_specs <- function(manifest, task_specs) {
   invisible(task_specs)
 }
 
+validate_task_arguments <- function(manifest, task_specs) {
+  ids <- vapply(task_specs, function(task) task$id, character(1))
+  rows <- match(ids, manifest$task)
+  if (anyNA(rows)) stop("task argument validation found an unmanifested task")
+  for (i in seq_along(task_specs)) {
+    task_id <- ids[[i]]
+    values <- tryCatch(task_specs[[i]]$args(), error = function(e) {
+      stop(sprintf("input factory failed for %s: %s", task_id, conditionMessage(e)))
+    })
+    if (!is.list(values)) stop(sprintf("input factory for %s did not return a list", task_id))
+    expected <- manifest$input_arity[[rows[[i]]]]
+    if (length(values) != expected) stop(sprintf("input factory for %s returned %d arguments; expected %d", task_id, length(values), expected))
+    rm(values)
+    gc(verbose = FALSE)
+  }
+  invisible(task_specs)
+}
+
 validate_runner_config <- function(manifest, cfg, runner_name) {
   exports <- if (is.null(cfg$exports)) character(0) else names(cfg$exports)
   missing <- setdiff(manifest$task, exports)
@@ -66,6 +85,24 @@ validate_r_reference_map <- function(manifest, r_ref) {
   missing <- required[vapply(required, function(task) is.null(r_ref[[task]]) || !nzchar(r_ref[[task]]), logical(1))]
   if (length(missing) > 0L) stop(sprintf("R reference map missing tasks: %s", paste(missing, collapse = ", ")))
   invisible(r_ref)
+}
+
+validate_result_contract <- function(value, contract) {
+  ok <- switch(contract,
+    real_scalar = is.double(value) && is.null(dim(value)) && length(value) == 1L,
+    integer_scalar = is.integer(value) && is.null(dim(value)) && length(value) == 1L,
+    real_vector = is.double(value) && is.null(dim(value)),
+    named_real_vector = is.double(value) && is.null(dim(value)) && !is.null(names(value)),
+    real_matrix = is.double(value) && !is.null(dim(value)) && length(dim(value)) == 2L,
+    real_list = is.list(value),
+    data_frame_list = is.data.frame(value),
+    named_list = is.list(value) && !is.null(names(value)),
+    r_object = !is.null(value),
+    external_pointer = identical(typeof(value), "externalptr"),
+    nondeterministic_vector = is.double(value) && is.null(dim(value)) && length(value) > 0L,
+    FALSE
+  )
+  list(ok = ok, message = if (ok) "" else sprintf("expected result contract %s", contract))
 }
 
 order_task_specs <- function(manifest, task_specs) {

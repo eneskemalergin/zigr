@@ -9,9 +9,11 @@ library(jsonlite)
 cli <- commandArgs(trailingOnly = TRUE)
 runner_name <- NA
 task_filter <- NULL
+check_only <- FALSE
 for (a in cli) {
   if (grepl("^--runner=", a)) runner_name <- sub("^--runner=", "", a)
   if (grepl("^--tasks=", a))  task_filter <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
+  if (a == "--check-only") check_only <- TRUE
 }
 if (is.na(runner_name)) stop("--runner= required")
 
@@ -161,6 +163,12 @@ r_cfg_path <- file.path(root_dir, "runners", "r.json")
 r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
 validate_r_reference_map(manifest, r_ref)
 
+if (check_only) {
+  validate_task_arguments(manifest, all_tasks)
+  cat(sprintf("Coverage preflight passed for %s (%d task specs)\n", runner_name, length(all_tasks)))
+  quit(save = "no", status = 0, runLast = FALSE)
+}
+
 validate_correctness <- function(expected, actual) {
   if (is.null(expected) && is.null(actual)) return(TRUE)
   if (is.null(expected) || is.null(actual)) return(FALSE)
@@ -179,12 +187,31 @@ validate_correctness <- function(expected, actual) {
   }
 }
 
+capture_result <- function(fn) {
+  error <- NA_character_
+  value <- tryCatch(fn(), error = function(e) {
+    error <<- conditionMessage(e)
+    NULL
+  })
+  list(ok = is.na(error), value = value, error = error)
+}
+
+result_preview <- function(value) {
+  gsub(",", " ", substr(paste(deparse(value), collapse = ""), 1, 120))
+}
+
 results_list <- list()
 exports <- cfg$exports
 n_pass <- 0; n_fail <- 0; n_na <- 0
 
 for (task in all_tasks) {
   tid <- task$id
+  manifest_row <- match(tid, manifest$task)
+  if (is.na(manifest_row)) stop(sprintf("task %s is absent from the manifest", tid))
+  correctness_policy <- manifest$correctness_policy[[manifest_row]]
+  expected_return <- manifest$expected_return[[manifest_row]]
+  correctness_status <- if (call_type == "r") "REFERENCE" else "NOT_VALIDATED"
+  correctness_message <- if (call_type == "r") "R reference runner" else ""
   task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
   cfun <- exports[[tid]]
   if (call_type == ".Call" && !is.null(cfun)) {
@@ -202,36 +229,74 @@ for (task in all_tasks) {
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = NA, n_iterations = NA, error = NA_character_,
+      correctness_status = "NOT_APPLICABLE",
+      correctness_policy = correctness_policy,
+      correctness_message = "no executable for this runner",
       stringsAsFactors = FALSE)
     next
   }
 
   args <- task$args()
 
-  # ── H.2 Correctness validation against R baseline ──
-  skip_h2_tasks <- manifest$task[manifest$correctness_policy != "r_reference"]
-  if (call_type != "r" && !(tid %in% skip_h2_tasks)) {
-    ref_name <- r_ref[[tid]]
-    if (!is.null(ref_name) && exists(ref_name, mode = "function")) {
-      ref_fun <- get(ref_name, mode = "function")
-      ref_result <- tryCatch(do.call(ref_fun, args), error = function(e) NULL)
-      call_result <- tryCatch(do.call(.Call, c(list(cfun), args)), error = function(e) NULL)
-      if (!is.null(ref_result) && !is.null(call_result) && !identical(validate_correctness(ref_result, call_result), TRUE)) {
-        ref_str <- gsub(",", " ", substr(paste(deparse(ref_result), collapse = ""), 1, 120))
-        call_str <- gsub(",", " ", substr(paste(deparse(call_result), collapse = ""), 1, 120))
-        msg <- sprintf("H.2 mismatch: expected '%s' got '%s'", ref_str, call_str)
-        n_fail <- n_fail + 1
-        cat(sprintf("  %-14s [FAIL] H.2 %s\n", tid, msg))
-        log_error(runner_name, tid, msg, dir = file.path(root_dir, "results"))
-        results_list[[length(results_list) + 1]] <- data.frame(
-          runner = runner_name, task = tid, status = "FAIL",
-          mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-          sd_ms = NA, cv_pct = NA, rss_kb = NA,
-          cold_start_ms = NA, n_iterations = NA,
-          error = msg, stringsAsFactors = FALSE)
-        next
+  # ── H.2 Correctness validation is a hard timing prerequisite ──
+  if (call_type != "r") {
+    invoke_native <- function() {
+      if (call_type == ".Call") return(do.call(.Call, c(list(cfun), args)))
+      if (call_type == ".C") return(do.call(.C, c(list(cfun), args)))
+      stop(sprintf("unsupported correctness call type: %s", call_type))
+    }
+    native_eval <- capture_result(invoke_native)
+    if (!native_eval$ok) {
+      correctness_status <- "FAIL"
+      correctness_message <- sprintf("native call failed: %s", native_eval$error)
+    } else {
+      native_contract <- validate_result_contract(native_eval$value, expected_return)
+      if (!native_contract$ok) {
+        correctness_status <- "FAIL"
+        correctness_message <- paste("native result:", native_contract$message)
+      } else if (identical(correctness_policy, "r_reference")) {
+        ref_name <- r_ref[[tid]]
+        if (is.null(ref_name) || !nzchar(ref_name) || !exists(ref_name, mode = "function")) {
+          correctness_status <- "NOT_VALIDATED"
+          correctness_message <- "R reference function is missing"
+        } else {
+          ref_eval <- capture_result(function() do.call(get(ref_name, mode = "function"), args))
+          if (!ref_eval$ok) {
+            correctness_status <- "FAIL"
+            correctness_message <- sprintf("R reference failed: %s", ref_eval$error)
+          } else {
+            ref_contract <- validate_result_contract(ref_eval$value, expected_return)
+            if (!ref_contract$ok) {
+              correctness_status <- "FAIL"
+              correctness_message <- paste("R reference result:", ref_contract$message)
+            } else if (!isTRUE(validate_correctness(ref_eval$value, native_eval$value))) {
+              correctness_status <- "FAIL"
+              correctness_message <- sprintf("H.2 mismatch: expected '%s' got '%s'", result_preview(ref_eval$value), result_preview(native_eval$value))
+            } else {
+              correctness_status <- "PASS"
+            }
+          }
+        }
+      } else {
+        correctness_status <- "PASS"
       }
     }
+  }
+
+  if (correctness_status %in% c("FAIL", "NOT_VALIDATED")) {
+    n_fail <- n_fail + 1
+    cat(sprintf("  %-14s [%s] correctness: %s\n", tid, correctness_status, correctness_message))
+    log_error(runner_name, tid, correctness_message, dir = file.path(root_dir, "results"))
+    results_list[[length(results_list) + 1]] <- data.frame(
+      runner = runner_name, task = tid, status = "FAIL",
+      mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+      sd_ms = NA, cv_pct = NA, rss_kb = NA,
+      cold_start_ms = NA, n_iterations = NA, error = correctness_message,
+      correctness_status = correctness_status,
+      correctness_policy = correctness_policy,
+      correctness_message = correctness_message,
+      stringsAsFactors = FALSE)
+    next
   }
 
   cs <- timed_call(cfun, args, call_type, expr = task_expr)
@@ -245,7 +310,11 @@ for (task in all_tasks) {
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
-      error = cs$error, stringsAsFactors = FALSE)
+      error = cs$error,
+      correctness_status = correctness_status,
+      correctness_policy = correctness_policy,
+      correctness_message = correctness_message,
+      stringsAsFactors = FALSE)
     next
   }
 
@@ -259,7 +328,11 @@ for (task in all_tasks) {
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
-      error = bm$error, stringsAsFactors = FALSE)
+      error = bm$error,
+      correctness_status = correctness_status,
+      correctness_policy = correctness_policy,
+      correctness_message = correctness_message,
+      stringsAsFactors = FALSE)
     next
   }
 
@@ -274,6 +347,9 @@ for (task in all_tasks) {
     wall_ms     = round(bm$times, 4),
     peak_rss_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$peak_rss),
     error       = NA_character_,
+    correctness_status = correctness_status,
+    correctness_policy = correctness_policy,
+    correctness_message = correctness_message,
     stringsAsFactors = FALSE
   )
   write_csv(runs_df, file.path(root_dir, "results", runner_name, sprintf("task_%s.csv", tid)))
@@ -292,6 +368,9 @@ for (task in all_tasks) {
     cold_start_ms = round(cs$wall_ms, 3),
     n_iterations  = bm$n_runs,
     error         = NA_character_,
+    correctness_status = correctness_status,
+    correctness_policy = correctness_policy,
+    correctness_message = correctness_message,
     stringsAsFactors = FALSE
   )
 }

@@ -26,13 +26,15 @@ Six runner backends. All 44 tasks pass across all runners. extendr uses raw FFI 
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, layers, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 
-The manifest distinguishes `r_reference`, `native_invariant`, and `nondeterministic` correctness policies. It marks API-overhead and nondeterministic tasks as `non_comparable` for the primary aggregate while retaining them in task-level reports. Runner configurations and task specs must match the manifest before timing starts.
+The manifest distinguishes `r_reference`, `native_invariant`, and `nondeterministic` correctness policies. It marks API-overhead and nondeterministic tasks as `non_comparable` for the primary aggregate while retaining them in task-level reports. Runner configurations and task specs must match the manifest before timing starts. Run `Rscript check_coverage.R` for the focused preflight; `run_benchmarks.R` runs it automatically before any runner.
 
 Runner JSONs in `runners/` map task IDs to exported symbols. Input generators live in `runner_subprocess.R`. They are shared across all runners.
 
 ## Correctness validation (H.2)
 
-Before timing, every native task is validated against the R baseline. The R reference gets the same arguments. The return value is compared per type: numeric uses relative tolerance (`sqrt(.Machine$double.eps)`), integer/logical/character uses exact `identical`, lists recurse element-wise.
+Before timing, every native task is validated against the R baseline or its manifest result contract. The R reference gets the same arguments. The return value is compared per type: numeric uses relative tolerance (`sqrt(.Machine$double.eps)`), integer/logical/character uses exact `identical`, and lists recurse element-wise. Reference errors, native errors, missing references, contract mismatches, and value mismatches stop timing for that task.
+
+Each summary and raw timing file records `correctness_status`, `correctness_policy`, and `correctness_message`. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, `FAIL` records a failed validation, and `NOT_VALIDATED` is never eligible for comparative aggregation. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
 
 Eight tasks skip H.2. Layer 2 (07a through 11) uses C API idioms that R cannot express. PROTECT, longjmp, SEXP create/inspect use R stubs returning `0L`. Non-deterministic tasks (42 external pointer, 43 RNG stress) differ on every call.
 

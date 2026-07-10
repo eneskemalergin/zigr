@@ -28,6 +28,16 @@ summaries <- do.call(
   lapply(summary_files, read.csv, stringsAsFactors = FALSE)
 )
 
+correctness_columns <- c("correctness_status", "correctness_policy", "correctness_message")
+missing_correctness_columns <- setdiff(correctness_columns, names(summaries))
+if (length(missing_correctness_columns) > 0L) {
+  stop(sprintf("runner summaries missing correctness columns: %s", paste(missing_correctness_columns, collapse = ", ")))
+}
+invalid_pass_rows <- summaries[summaries$status == "PASS" & !(summaries$correctness_status %in% c("PASS", "REFERENCE")), , drop = FALSE]
+if (nrow(invalid_pass_rows) > 0L) {
+  stop(sprintf("timing summaries contain unapproved correctness rows: %s", paste(unique(invalid_pass_rows$task), collapse = ", ")))
+}
+
 expected_tasks <- sort(manifest$task)
 expected_runners <- sort(sub("\\.json$", "", basename(list.files(file.path(root_dir, "runners"), pattern = "\\.json$"))))
 actual_runners <- sort(unique(summaries$runner))
@@ -61,7 +71,7 @@ for (runner in names(runner_tasks)[-1]) {
   }
 }
 
-pass_summaries <- subset(summaries, status == "PASS", select = c(runner, task, mean_ms, median_ms, cv_pct))
+pass_summaries <- subset(summaries, status == "PASS" & correctness_status %in% c("PASS", "REFERENCE"), select = c(runner, task, mean_ms, median_ms, cv_pct))
 if (nrow(pass_summaries) == 0L) {
   stop(sprintf("no PASS rows found in %s", results_dir))
 }

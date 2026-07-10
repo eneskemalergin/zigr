@@ -7,6 +7,7 @@
 #   Rscript run_benchmarks.R --build                  # rebuild all runners first
 
 library(jsonlite)
+source("lib/task_manifest.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 runners_filter <- NULL
@@ -42,6 +43,11 @@ if (do_build) {
 }
 
 blas_env <- c("OPENBLAS_NUM_THREADS=1")
+
+coverage_args <- c("check_coverage.R")
+if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+coverage_code <- system2("Rscript", args = coverage_args, env = blas_env, stdout = "", stderr = "")
+if (!identical(coverage_code, 0L)) stop(sprintf("coverage preflight failed with exit code %d", coverage_code))
 
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
