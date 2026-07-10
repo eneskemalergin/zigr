@@ -64,6 +64,8 @@ Rscript run_system_tasks.R
 
 `run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted. Existing root-level CSVs are legacy evidence.
 
+Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, BLAS details and thread settings, locale, relevant environment variables, runner configuration, and shared-library fingerprints. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, and `ZIGR_CPU_FEATURES` when the build differs from the native `ReleaseFast` defaults.
+
 ## Output files
 
 The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.

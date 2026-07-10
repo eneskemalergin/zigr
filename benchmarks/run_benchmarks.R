@@ -9,6 +9,7 @@
 library(jsonlite)
 source("lib/task_manifest.R")
 source("lib/run_manifest.R")
+source("lib/environment_manifest.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 runners_filter <- NULL
@@ -67,6 +68,7 @@ run_metadata <- list(
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()
 )
+blas_env <- c("OPENBLAS_NUM_THREADS=1")
 write_run_manifest(run_dir, run_metadata)
 run_complete <- FALSE
 run_error <- NULL
@@ -88,7 +90,22 @@ if (do_build) {
   cat("\n")
 }
 
-blas_env <- c("OPENBLAS_NUM_THREADS=1")
+build_settings <- list(
+  optimization = Sys.getenv("ZIGR_OPTIMIZE", unset = "ReleaseFast"),
+  target = Sys.getenv("ZIGR_TARGET", unset = "native"),
+  cpu_features = Sys.getenv("ZIGR_CPU_FEATURES", unset = "default"),
+  command = if (do_build) "bash build_all.sh" else "prebuilt runner libraries",
+  requested_rebuild = do_build
+)
+run_metadata$environment <- capture_environment_manifest(
+  root_dir,
+  all_runners,
+  blas_env,
+  build_settings,
+  source_root = normalizePath("..")
+)
+validate_environment_manifest(run_metadata$environment)
+write_run_manifest(run_dir, run_metadata)
 
 coverage_args <- c("check_coverage.R")
 if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
