@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry.
 - CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
+- **Benchmark H.2 validation**: compare attributes, recursive structure, character encoding, and NA versus NaN; correctness or timing failures and undeclared `N/A` rows can no longer complete, export, or promote a run.
 - **Safety model**: safety score updated to 10/10 in PLAN.md, all longjmp gaps closed across `.Call`, `.External`, and method wrappers.
 
 ### Removed

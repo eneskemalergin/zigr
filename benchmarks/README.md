@@ -32,9 +32,9 @@ Runner JSONs in `runners/` map task IDs to exported symbols. Input generators li
 
 ## Correctness validation (H.2)
 
-Before timing, every native task is validated against the R baseline or its manifest result contract. The R reference gets the same arguments. The return value is compared per type: numeric uses relative tolerance (`sqrt(.Machine$double.eps)`), integer/logical/character uses exact `identical`, and lists recurse element-wise. Reference errors, native errors, missing references, contract mismatches, and value mismatches stop timing for that task.
+Before timing, every native task is validated against the R baseline or its manifest result contract. The R reference gets the same arguments. The return value comparison checks type, attributes, recursive list structure, numeric tolerance, exact missing-value kind (NA versus NaN), and character encoding. Reference errors, native errors, missing references, contract mismatches, and value mismatches stop timing for that task.
 
-Each summary and raw timing file records `correctness_status`, `correctness_policy`, and `correctness_message`. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, `FAIL` records a failed validation, and `NOT_VALIDATED` is never eligible for comparative aggregation. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
+Each summary and raw timing file records `correctness_status`, `correctness_policy`, and `correctness_message`. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, and `NOT_VALIDATED` is never eligible for comparative aggregation. A correctness or timing `FAIL` causes the runner subprocess and parent run to fail; it cannot become a complete, exportable, or promotable run. `N/A` is rejected unless explicitly allowed by the run manifest. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
 
 Eight tasks skip H.2. Layer 2 (07a through 11) uses C API idioms that R cannot express. PROTECT, longjmp, SEXP create/inspect use R stubs returning `0L`. Non-deterministic tasks (42 external pointer, 43 RNG stress) differ on every call.
 
@@ -64,7 +64,7 @@ Rscript run_system_tasks.R
 
 `run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted. Existing root-level CSVs are legacy evidence.
 
-Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, BLAS details and thread settings, locale, relevant environment variables, runner configuration, and shared-library fingerprints. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, and `ZIGR_CPU_FEATURES` when the build differs from the native `ReleaseFast` defaults.
+Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, BLAS details and thread settings, locale, relevant environment variables, runner configuration, shared-library fingerprints, and the explicitly allowed `N/A` task set. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, and `ZIGR_CPU_FEATURES` when the build differs from the native `ReleaseFast` defaults.
 
 ## Output files
 

@@ -65,6 +65,7 @@ run_metadata <- list(
   started_at = run_manifest_timestamp(),
   runners = sort(names(all_runners)),
   tasks = selected_tasks,
+  allowed_na_tasks = character(0),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()
 )

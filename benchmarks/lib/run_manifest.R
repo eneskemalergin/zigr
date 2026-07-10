@@ -78,8 +78,13 @@ validate_run_artifacts <- function(run_dir, metadata) {
   expected_run_id <- as.character(metadata$run_id)
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
+  allowed_na_tasks <- sort(run_manifest_values(metadata$allowed_na_tasks))
   if (length(expected_runners) == 0L) stop("run manifest has no runners")
   if (length(expected_tasks) == 0L) stop("run manifest has no tasks")
+  unknown_allowed_na <- setdiff(allowed_na_tasks, expected_tasks)
+  if (length(unknown_allowed_na) > 0L) {
+    stop(sprintf("run manifest allows N/A for undeclared tasks: %s", paste(unknown_allowed_na, collapse = ", ")))
+  }
   staging_dir <- file.path(run_dir, ".staging")
   if (dir.exists(staging_dir) && length(list.files(staging_dir, all.files = TRUE, no.. = TRUE, recursive = TRUE)) > 0L) {
     stop("run contains unpromoted staging artifacts")
@@ -100,10 +105,46 @@ validate_run_artifacts <- function(run_dir, metadata) {
   summary_files <- expected_files
 
   summaries <- do.call(rbind, lapply(summary_files, read.csv, stringsAsFactors = FALSE))
-  required <- c("run_id", "runner", "task", "status")
+  required <- c(
+    "run_id", "runner", "task", "status",
+    "correctness_status", "correctness_policy", "correctness_message"
+  )
   missing <- setdiff(required, names(summaries))
   if (length(missing) > 0L) stop(sprintf("run summaries missing columns: %s", paste(missing, collapse = ", ")))
   if (!all(as.character(summaries$run_id) == expected_run_id)) stop("run summaries contain mixed run IDs")
+
+  if (anyNA(summaries$status) || any(!nzchar(as.character(summaries$status)))) {
+    stop("run summaries contain blank or missing statuses")
+  }
+  allowed_statuses <- c("PASS", "N/A")
+  invalid_status <- summaries[!(summaries$status %in% allowed_statuses), , drop = FALSE]
+  if (nrow(invalid_status) > 0L) {
+    stop(sprintf(
+      "run summaries contain non-completable statuses: %s",
+      paste(unique(invalid_status$status), collapse = ", ")
+    ))
+  }
+  invalid_pass <- summaries[
+    summaries$status == "PASS" & !(summaries$correctness_status %in% c("PASS", "REFERENCE")),
+    , drop = FALSE
+  ]
+  if (nrow(invalid_pass) > 0L) {
+    stop(sprintf(
+      "run summaries contain unapproved correctness rows: %s",
+      paste(unique(invalid_pass$task), collapse = ", ")
+    ))
+  }
+  invalid_na <- summaries[
+    summaries$status == "N/A" &
+      (!(summaries$task %in% allowed_na_tasks) | summaries$correctness_status != "NOT_APPLICABLE"),
+    , drop = FALSE
+  ]
+  if (nrow(invalid_na) > 0L) {
+    stop(sprintf(
+      "run summaries contain undeclared or malformed N/A rows: %s",
+      paste(unique(invalid_na$task), collapse = ", ")
+    ))
+  }
 
   actual_runners <- sort(unique(as.character(summaries$runner)))
   if (!identical(expected_runners, actual_runners)) stop("run summaries contain an unexpected runner set")

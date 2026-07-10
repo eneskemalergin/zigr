@@ -29,9 +29,11 @@ source(file.path(root_dir, "lib", "run_manifest.R"))
 if (!check_only && is.null(results_dir_arg)) stop("--results-dir= is required for benchmark execution")
 results_dir <- normalizePath(if (is.null(results_dir_arg)) file.path(root_dir, "results") else results_dir_arg, mustWork = FALSE)
 run_id <- NA_character_
+allowed_na_tasks <- character(0)
 if (!check_only) {
   run_metadata <- read_run_manifest(results_dir)
   run_id <- as.character(run_metadata$run_id)
+  allowed_na_tasks <- sort(run_manifest_values(run_metadata$allowed_na_tasks))
   if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
     stop(sprintf("runner %s is not declared by run manifest %s", runner_name, run_manifest_path(results_dir)))
   }
@@ -184,22 +186,57 @@ if (check_only) {
   quit(save = "no", status = 0, runLast = FALSE)
 }
 
-validate_correctness <- function(expected, actual) {
-  if (is.null(expected) && is.null(actual)) return(TRUE)
-  if (is.null(expected) || is.null(actual)) return(FALSE)
-  tol <- sqrt(.Machine$double.eps)
-  if (is.numeric(expected) && is.numeric(actual)) {
-    if (length(expected) != length(actual)) return(FALSE)
-    na_ok <- is.na(expected) == is.na(actual)
-    if (!all(na_ok)) return(FALSE)
-    non_na <- !is.na(expected)
-    all(abs(expected[non_na] - actual[non_na]) <= tol * pmax(1, abs(expected[non_na])))
-  } else if (is.list(expected) && is.list(actual)) {
-    if (length(expected) != length(actual)) return(FALSE)
-    all(mapply(validate_correctness, expected, actual, SIMPLIFY = TRUE, USE.NAMES = FALSE))
-  } else {
-    identical(expected, actual)
+# H.2 comparison stays beside the runner because it has one production caller.
+same_attributes <- function(expected, actual) {
+  expected_names <- names(expected)
+  actual_names <- names(actual)
+  if (!identical(sort(expected_names), sort(actual_names))) return(FALSE)
+  if (length(expected_names) == 0L) return(TRUE)
+  all(vapply(expected_names, function(name) identical(expected[[name]], actual[[name]]), logical(1)))
+}
+
+compare_correctness <- function(expected, actual, path = "result") {
+  result <- function(ok, message = "") list(ok = isTRUE(ok), message = message)
+  if (is.null(expected) && is.null(actual)) return(result(TRUE))
+  if (is.null(expected) || is.null(actual)) return(result(FALSE, sprintf("%s is NULL on one side", path)))
+  if (!identical(typeof(expected), typeof(actual))) {
+    return(result(FALSE, sprintf("%s type differs", path)))
   }
+  if (!same_attributes(attributes(expected), attributes(actual))) {
+    return(result(FALSE, sprintf("%s attributes differ", path)))
+  }
+  if (length(expected) != length(actual)) return(result(FALSE, sprintf("%s length differs", path)))
+
+  if (is.numeric(expected) || is.complex(expected)) {
+    if (!identical(is.na(expected), is.na(actual))) return(result(FALSE, sprintf("%s NA positions differ", path)))
+    if (!identical(is.nan(expected), is.nan(actual))) return(result(FALSE, sprintf("%s NA and NaN kinds differ", path)))
+    if (!isTRUE(all.equal(
+      expected,
+      actual,
+      tolerance = sqrt(.Machine$double.eps),
+      check.attributes = FALSE
+    ))) {
+      return(result(FALSE, sprintf("%s values differ", path)))
+    }
+    return(result(TRUE))
+  }
+  if (is.character(expected)) {
+    if (!identical(is.na(expected), is.na(actual))) return(result(FALSE, sprintf("%s NA positions differ", path)))
+    if (!identical(Encoding(expected), Encoding(actual))) return(result(FALSE, sprintf("%s encodings differ", path)))
+    if (!identical(expected[!is.na(expected)], actual[!is.na(actual)])) {
+      return(result(FALSE, sprintf("%s string values differ", path)))
+    }
+    return(result(TRUE))
+  }
+  if (is.list(expected)) {
+    for (index in seq_along(expected)) {
+      nested <- compare_correctness(expected[[index]], actual[[index]], sprintf("%s[[%d]]", path, index))
+      if (!isTRUE(nested$ok)) return(nested)
+    }
+    return(result(TRUE))
+  }
+  if (identical(expected, actual)) return(result(TRUE))
+  result(FALSE, sprintf("%s values differ", path))
 }
 
 capture_result <- function(fn) {
@@ -238,6 +275,11 @@ for (task in all_tasks) {
   }
   if (is.null(task_expr) && is.null(cfun)) {
     n_na <- n_na + 1
+    na_allowed <- tid %in% allowed_na_tasks
+    if (!na_allowed) {
+      n_fail <- n_fail + 1
+      correctness_message <- "no executable for this runner and task is not explicitly allowed N/A"
+    }
     cat(sprintf("  %-14s [N/A]\n", tid))
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "N/A",
@@ -246,7 +288,7 @@ for (task in all_tasks) {
       cold_start_ms = NA, n_iterations = NA, error = NA_character_,
       correctness_status = "NOT_APPLICABLE",
       correctness_policy = correctness_policy,
-      correctness_message = "no executable for this runner",
+      correctness_message = if (na_allowed) "no executable for this runner" else correctness_message,
       stringsAsFactors = FALSE)
     next
   }
@@ -284,11 +326,19 @@ for (task in all_tasks) {
             if (!ref_contract$ok) {
               correctness_status <- "FAIL"
               correctness_message <- paste("R reference result:", ref_contract$message)
-            } else if (!isTRUE(validate_correctness(ref_eval$value, native_eval$value))) {
-              correctness_status <- "FAIL"
-              correctness_message <- sprintf("H.2 mismatch: expected '%s' got '%s'", result_preview(ref_eval$value), result_preview(native_eval$value))
             } else {
-              correctness_status <- "PASS"
+              comparison <- compare_correctness(ref_eval$value, native_eval$value)
+              if (!isTRUE(comparison$ok)) {
+                correctness_status <- "FAIL"
+                correctness_message <- sprintf(
+                  "H.2 mismatch: %s; expected '%s' got '%s'",
+                  comparison$message,
+                  result_preview(ref_eval$value),
+                  result_preview(native_eval$value)
+                )
+              } else {
+                correctness_status <- "PASS"
+              }
             }
           }
         }
@@ -313,6 +363,13 @@ for (task in all_tasks) {
       stringsAsFactors = FALSE)
     next
   }
+
+  # Do not retain large correctness results while timing the same input.
+  native_eval <- NULL
+  ref_eval <- NULL
+  native_contract <- NULL
+  ref_contract <- NULL
+  comparison <- NULL
 
   cs <- timed_call(cfun, args, call_type, expr = task_expr)
   log_cold_start(runner_name, tid, cs$wall_ms, dir = staging_results_dir)
@@ -395,6 +452,12 @@ summary <- do.call(rbind, results_list)
 summary$run_id <- run_id
 staged_summary <- file.path(staging_results_dir, sprintf("%s_summary.csv", runner_name))
 write_csv(summary, staged_summary)
+if (n_fail > 0L) {
+  stop(sprintf(
+    "runner %s failed correctness or timing validation for %d task(s); run cannot be completed",
+    runner_name, n_fail
+  ))
+}
 final_runner_dir <- file.path(results_dir, runner_name)
 final_summary <- file.path(results_dir, sprintf("%s_summary.csv", runner_name))
 if (dir.exists(final_runner_dir) || file.exists(final_summary)) {

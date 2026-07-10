@@ -74,6 +74,7 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
     t1 <- get_nanotime()
     if (is.null(r)) return(list(error = "warmup failed"))
   }
+  r <- NULL
 
   # Adaptive blocks
   all_times <- numeric()
