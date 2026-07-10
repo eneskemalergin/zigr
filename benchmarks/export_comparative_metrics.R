@@ -1,16 +1,19 @@
 #!/usr/bin/env Rscript
 
 args <- commandArgs(trailingOnly = TRUE)
-results_dir <- "results"
+results_dir <- NULL
 low_noise_cv_threshold <- 20
 meaningful_margin <- 1.05
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "task_manifest.R"))
+source(file.path(root_dir, "lib", "run_manifest.R"))
 manifest <- load_task_manifest(root_dir)
 
 for (arg in args) {
-  if (grepl("^--results-dir=", arg)) {
-    results_dir <- sub("^--results-dir=", "", arg)
+  if (grepl("^--run-dir=", arg)) {
+    results_dir <- sub("^--run-dir=", "", arg)
+  } else if (grepl("^--results-dir=", arg)) {
+    stop("--results-dir is retired; pass one completed run with --run-dir=")
   } else if (grepl("^--low-noise-cv=", arg)) {
     low_noise_cv_threshold <- as.numeric(sub("^--low-noise-cv=", "", arg))
   } else if (grepl("^--meaningful-margin=", arg)) {
@@ -18,7 +21,17 @@ for (arg in args) {
   }
 }
 
-summary_files <- Sys.glob(file.path(results_dir, "*_summary.csv"))
+if (is.null(results_dir)) stop("--run-dir= is required; export never reads a results glob")
+results_dir <- normalizePath(results_dir, mustWork = FALSE)
+run_metadata <- read_run_manifest(results_dir)
+if (!identical(as.character(run_metadata$status), "complete")) {
+  stop(sprintf("run %s is not complete; comparative export is refused", run_metadata$run_id))
+}
+validate_run_artifacts(results_dir, run_metadata)
+expected_tasks <- sort(run_manifest_values(run_metadata$tasks))
+expected_runners <- sort(run_manifest_values(run_metadata$runners))
+
+summary_files <- sort(list.files(results_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
 if (length(summary_files) == 0L) {
   stop(sprintf("no runner summaries found in %s", results_dir))
 }
@@ -38,8 +51,6 @@ if (nrow(invalid_pass_rows) > 0L) {
   stop(sprintf("timing summaries contain unapproved correctness rows: %s", paste(unique(invalid_pass_rows$task), collapse = ", ")))
 }
 
-expected_tasks <- sort(manifest$task)
-expected_runners <- sort(sub("\\.json$", "", basename(list.files(file.path(root_dir, "runners"), pattern = "\\.json$"))))
 actual_runners <- sort(unique(summaries$runner))
 if (!identical(expected_runners, actual_runners)) {
   stop(sprintf("summary runner set differs from runner configs; expected: %s; got: %s",

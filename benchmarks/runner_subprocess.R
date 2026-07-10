@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # Loads a runner.json, runs tasks, outputs CSV. Called per-runner by run_benchmarks.R.
-# Usage: Rscript runner_subprocess.R --runner=zigr [--tasks=1,2]
+# Usage: Rscript runner_subprocess.R --runner=zigr --results-dir=results/runs/<run_id> [--tasks=1,2]
 
 source("lib/harness.R")
 library(methods)
@@ -10,10 +10,12 @@ cli <- commandArgs(trailingOnly = TRUE)
 runner_name <- NA
 task_filter <- NULL
 check_only <- FALSE
+results_dir_arg <- NULL
 for (a in cli) {
   if (grepl("^--runner=", a)) runner_name <- sub("^--runner=", "", a)
   if (grepl("^--tasks=", a))  task_filter <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
   if (a == "--check-only") check_only <- TRUE
+  if (grepl("^--results-dir=", a)) results_dir_arg <- sub("^--results-dir=", "", a)
 }
 if (is.na(runner_name)) stop("--runner= required")
 
@@ -23,7 +25,20 @@ if (!file.exists(cfg_path)) stop(sprintf("runner config not found: %s", cfg_path
 cfg <- fromJSON(cfg_path, simplifyVector = FALSE)
 
 root_dir <- normalizePath(file.path(cfg_dir, ".."))
-unlink(file.path(root_dir, "results", runner_name, "errors.csv"))
+source(file.path(root_dir, "lib", "run_manifest.R"))
+if (!check_only && is.null(results_dir_arg)) stop("--results-dir= is required for benchmark execution")
+results_dir <- normalizePath(if (is.null(results_dir_arg)) file.path(root_dir, "results") else results_dir_arg, mustWork = FALSE)
+run_id <- NA_character_
+if (!check_only) {
+  run_metadata <- read_run_manifest(results_dir)
+  run_id <- as.character(run_metadata$run_id)
+  if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
+    stop(sprintf("runner %s is not declared by run manifest %s", runner_name, run_manifest_path(results_dir)))
+  }
+  staging_results_dir <- file.path(results_dir, ".staging")
+  dir.create(file.path(staging_results_dir, runner_name), recursive = TRUE, showWarnings = FALSE)
+  unlink(file.path(staging_results_dir, runner_name, "errors.csv"))
+}
 
 # Tasks are shared across all runners. IDs match exports in runner JSONs.
 all_tasks <- list(
@@ -286,7 +301,7 @@ for (task in all_tasks) {
   if (correctness_status %in% c("FAIL", "NOT_VALIDATED")) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [%s] correctness: %s\n", tid, correctness_status, correctness_message))
-    log_error(runner_name, tid, correctness_message, dir = file.path(root_dir, "results"))
+    log_error(runner_name, tid, correctness_message, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
@@ -300,11 +315,11 @@ for (task in all_tasks) {
   }
 
   cs <- timed_call(cfun, args, call_type, expr = task_expr)
-  log_cold_start(runner_name, tid, cs$wall_ms, dir = file.path(root_dir, "results"))
+  log_cold_start(runner_name, tid, cs$wall_ms, dir = staging_results_dir)
   if (!is.na(cs$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, cs$error))
-    log_error(runner_name, tid, cs$error, dir = file.path(root_dir, "results"))
+    log_error(runner_name, tid, cs$error, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
@@ -322,7 +337,7 @@ for (task in all_tasks) {
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, bm$error))
-    log_error(runner_name, tid, bm$error, dir = file.path(root_dir, "results"))
+    log_error(runner_name, tid, bm$error, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
@@ -347,12 +362,13 @@ for (task in all_tasks) {
     wall_ms     = round(bm$times, 4),
     peak_rss_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$peak_rss),
     error       = NA_character_,
+    run_id      = run_id,
     correctness_status = correctness_status,
     correctness_policy = correctness_policy,
     correctness_message = correctness_message,
     stringsAsFactors = FALSE
   )
-  write_csv(runs_df, file.path(root_dir, "results", runner_name, sprintf("task_%s.csv", tid)))
+  write_csv(runs_df, file.path(staging_results_dir, runner_name, sprintf("task_%s.csv", tid)))
 
   results_list[[length(results_list) + 1]] <- data.frame(
     runner        = runner_name,
@@ -376,7 +392,20 @@ for (task in all_tasks) {
 }
 
 summary <- do.call(rbind, results_list)
-write_csv(summary, file.path(root_dir, "results", sprintf("%s_summary.csv", runner_name)))
+summary$run_id <- run_id
+staged_summary <- file.path(staging_results_dir, sprintf("%s_summary.csv", runner_name))
+write_csv(summary, staged_summary)
+final_runner_dir <- file.path(results_dir, runner_name)
+final_summary <- file.path(results_dir, sprintf("%s_summary.csv", runner_name))
+if (dir.exists(final_runner_dir) || file.exists(final_summary)) {
+  stop(sprintf("final result path already exists for runner %s", runner_name))
+}
+if (!file.rename(file.path(staging_results_dir, runner_name), final_runner_dir)) {
+  stop(sprintf("cannot promote staged results for runner %s", runner_name))
+}
+if (!file.rename(staged_summary, final_summary)) {
+  stop(sprintf("cannot promote staged summary for runner %s", runner_name))
+}
 
 cat(sprintf("  Results: %d PASS, %d FAIL, %d N/A\n", n_pass, n_fail, n_na))
 for (i in seq_len(nrow(summary))) {

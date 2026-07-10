@@ -2,7 +2,7 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. All 44 tasks pass across all runners. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
+Six runner backends. The result tables below are historical pre-P0.4 evidence, not a current validated run. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
 
 - **r** (R baseline): 44 task implementations in `src/r/run_all.R`
 - **zigr** (Zig): 44 `task_*.zig` under `src/zig/`, built via `build.zig`
@@ -44,7 +44,7 @@ Eight tasks skip H.2. Layer 2 (07a through 11) uses C API idioms that R cannot e
 # Build all native runners
 bash build_all.sh
 
-# Run all configured runners
+# Run all configured runners into a unique results/runs/<run_id> directory
 Rscript run_benchmarks.R
 
 # Quick subset
@@ -52,15 +52,21 @@ Rscript run_benchmarks.R --runners=zigr,c_call
 Rscript run_benchmarks.R --tasks=1,2,6
 Rscript run_benchmarks.R --build    # rebuild then run
 
+# Promote a completed full-matrix run explicitly
+Rscript promote_run.R --run-dir=results/runs/<run_id>
+
+# Summarize one completed run
+Rscript analysis/summarize.R --run-dir=results/runs/<run_id>
+
 # Run system diagnostics (zigr-only)
 Rscript run_system_tasks.R
 ```
 
-`run_benchmarks.R` iterates over runner JSONs, spawns `runner_subprocess.R` per runner, then runs `export_comparative_metrics.R` to produce cross-runner comparisons.
+`run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted. Existing root-level CSVs are legacy evidence.
 
 ## Output files
 
-The pipeline writes per-task timing CSVs, per-runner summaries, and cross-runner comparisons. `analysis/summarize.R` regenerates the per-task summary from the raw data.
+The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
 
 ## Results (latest run)
 

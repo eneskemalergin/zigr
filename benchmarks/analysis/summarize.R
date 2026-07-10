@@ -1,15 +1,26 @@
 #!/usr/bin/env Rscript
 #
-# Aggregate results/CSV files into summary tables.
-# Usage: Rscript analysis/summarize.R
+# Aggregate one completed run into a summary table.
+# Usage: Rscript analysis/summarize.R --run-dir=results/runs/<run_id>
 
-results_dir <- file.path("results")
-out_dir     <- file.path("analysis")
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+args <- commandArgs(trailingOnly = TRUE)
+run_dir <- NULL
+for (arg in args) {
+  if (grepl("^--run-dir=", arg)) run_dir <- sub("^--run-dir=", "", arg)
+}
+if (is.null(run_dir)) stop("--run-dir= is required")
+
+root_dir <- normalizePath(".")
+source(file.path(root_dir, "lib", "run_manifest.R"))
+results_dir <- normalizePath(run_dir, mustWork = FALSE)
+run_metadata <- read_run_manifest(results_dir)
+if (!identical(as.character(run_metadata$status), "complete")) stop("run must be complete before analysis")
+validate_run_artifacts(results_dir, run_metadata)
+out_csv <- file.path(results_dir, "analysis_summary.csv")
 
 # ── Collect all result CSVs ──────────────────────────────────
 
-runner_dirs <- list.dirs(results_dir, recursive = FALSE)
+runner_dirs <- file.path(results_dir, run_manifest_values(run_metadata$runners))
 
 rows <- list()
 
@@ -69,7 +80,6 @@ if (!is.null(cold_all)) {
 
 # ── Write summary ─────────────────────────────────────────────
 
-out_csv <- file.path(out_dir, "summary.csv")
 write.csv(agg, out_csv, row.names = FALSE)
 cat(sprintf("Summary written to %s\n", out_csv))
 
