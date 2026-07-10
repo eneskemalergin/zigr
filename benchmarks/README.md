@@ -2,7 +2,7 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. The result tables below are historical pre-P0.4 evidence, not a current validated run. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
+Six runner backends. The current published baseline is `p0-7-20260710-full`, referenced by `results/CANONICAL_RUN.json`. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
 
 - **r** (R baseline): 44 task implementations in `src/r/run_all.R`
 - **zigr** (Zig): 44 `task_*.zig` under `src/zig/`, built via `build.zig`
@@ -70,74 +70,75 @@ Each run manifest records a source-tree digest, host and CPU identity, R and Zig
 
 The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. Comparative export also writes `task_comparisons.csv` with noise and median-interval fields plus `category_metrics.csv`. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
 
-## Results (latest run)
+## Results (canonical baseline)
 
-All 6 runners pass all 44 tasks. extendr required raw FFI workarounds for 4 tasks where the `#[extendr]` Robj wrapper triggered Rust double-panics.
+Run `p0-7-20260710-full` completed on 2026-07-10 with `ReleaseFast`, native target, Zig 0.16.0, R 4.6.1, and single-threaded OpenBLAS. All six runners passed all 44 tasks: `264 PASS, 0 FAIL, 0 N/A`. The primary aggregate contains 36 manifest-approved tasks; eight strategy-sensitive or nondeterministic tasks remain visible in task reports but are excluded from aggregate ratios.
 
 ### Comparative metrics
 
-| Runner  | Tasks won | Geomedian vs R | Geomedian vs best native | Meaningful native wins | Low-noise wins |
-| ------- | --------- | -------------- | ------------------------ | ---------------------- | -------------- |
-| r       | 8         | 1.000          | NA                       | NA                     | NA             |
-| c_call  | 1         | 0.338          | 2.072                    | 0                      | 0              |
-| rcpp    | 2         | 0.346          | 2.123                    | 0                      | 1              |
-| extendr | 1         | 0.360          | 2.207                    | 1                      | 0              |
-| savvy   | 13        | 0.249          | 1.530                    | 8                      | 7              |
-| zigr    | 19        | 0.224          | 1.373                    | 18                     | 11             |
+Ratios are runner median divided by the reference median; lower is better. Aggregate ratios use only the 36 manifest-approved tasks.
 
-Column notes:
+| Runner  | Tasks won | Median vs R | Geomedian vs R | Median vs best native | Geomedian vs best native | Meaningful native wins | Low-noise wins |
+| ------- | --------- | ----------- | -------------- | --------------------- | ------------------------ | ---------------------- | -------------- |
+| r       | 5         | 1.000       | 1.000          | NA                    | NA                       | NA                     | NA             |
+| c_call  | 1         | 0.398       | 0.299          | 1.125                 | 1.525                    | 0                      | 0              |
+| rcpp    | 1         | 0.397       | 0.303          | 1.151                 | 1.548                    | 1                      | 1              |
+| extendr | 3         | 0.389       | 0.321          | 1.212                 | 1.638                    | 2                      | 1              |
+| savvy   | 9         | 0.388       | 0.283          | 1.100                 | 1.445                    | 0                      | 7              |
+| zigr    | 17        | 0.263       | 0.212          | 1.003                 | 1.082                    | 16                     | 10             |
 
-- **Tasks won**: tasks where the runner tied for the lowest median (including exact ties)
-- **Geomedian vs R**: geometric mean of `runner_median / r_median` across all tasks. Lower is better. 0.231 means zigr is 1 / 0.231 = 4.3x faster than R
-- **Geomedian vs best native**: same ratio vs the fastest native runner per task. 1.398 means zigr averages 1.4x slower than the per-task best
-- **Meaningful native wins**: tasks where the runner won by more than 5% (the noise floor)
-- **Low-noise wins**: tasks won within the low-noise subset (CV <= 20%), where comparisons are most reliable
+`Tasks won` includes exact median ties. The low-noise set contains 19 aggregate tasks with CV <= 20%. zigr's aggregate result is approximately 3.8x faster than R by median and 4.7x by geomedian, while remaining 1.003x slower by median and 1.082x slower by geomedian than the per-task best native runner.
 
-zigr leads overall: 19 of 44 tasks won, 4.5x faster than R, 1.4x slower than the best native on average. savvy holds second place (13 wins), especially on ALTREP tasks and BLAS wrappers. R wins 8 tasks (Layer 2 stubs and a few it matches at).
+### Category results for zigr
 
-### Task-level highlights (zigr wins)
+| Category       | Tasks | Aggregate tasks | Low-noise aggregate tasks | Median vs R | Geomedian vs R | Median vs best native | Geomedian vs best native |
+| ------------- | -----: | --------------: | --------------: | -----------: | --------------: | ---------------------: | ------------------------: |
+| kernels       | 11    | 11              | 8               | 0.297        | 0.222           | 1.110                  | 1.110                     |
+| boundary      | 13    | 13              | 3               | 0.166        | 0.108           | 1.043                  | 1.043                     |
+| altrep        | 8     | 8               | 6               | 1.232        | 0.519           | 1.149                  | 1.116                     |
+| r_runtime     | 6     | 4               | 2               | 0.975        | 0.805           | 1.010                  | 1.065                     |
+| synthetic_api | 6     | 0               | 0               | NA           | NA              | NA                     | NA                        |
 
-| Task                   | median (ms) | Best native runner | zigr vs best |
-| ---------------------- | ----------- | ------------------ | ------------ |
-| 01_vectorsum           | 4.32        | zigr               | 1.000        |
-| 04_sort                | 33.17       | zigr               | 1.000        |
-| 06_broadcast           | 4.09        | zigr               | 1.000        |
-| 08_type_dispatch       | 0.01        | zigr               | 1.000        |
-| 11_sexp_inspect        | 0.04        | zigr               | 1.000        |
-| 13_matrix_rowsums      | 0.08        | zigr               | 1.000        |
-| 14_matrix_rowcol_means | 0.10        | zigr               | 1.000        |
-| 15_dataframe_filter    | 0.51        | zigr               | 1.000        |
-| 16_list_access         | 0.01        | zigr               | 1.000        |
-| 17_string_concat       | 0.42        | zigr               | 1.000        |
-| 18_string_nchar        | 0.02        | zigr               | 1.000        |
-| 19_string_encoding     | 0.03        | zigr               | 1.000        |
-| 20_factor_ops          | 0.12        | zigr               | 1.000        |
-| 22_s4_slot_access      | 0.01        | zigr               | 1.000        |
-| 23_na_propagation      | 0.14        | zigr               | 1.000        |
-| 25_l1_arithmetic       | 1.06        | zigr               | 1.000        |
-| 26_matmul              | 0.73        | zigr               | 1.000        |
-| 29_lm_fit              | 0.21        | zigr               | 1.000        |
-| 33_altrep_region_read  | 0.33        | zigr               | 1.000        |
+### Task-level wins and parity
 
-savvy wins on ALTREP element walk, min/max, no-NA query, and crossprod/Cholesky wraps. c_call and rcpp split wins on BLAS wrappers, ALTREP materialize, and serialization.
+zigr is the fastest native runner on 17 aggregate tasks: `01_vectorsum`, `04_sort`, `06_broadcast`, `13_matrix_rowsums`, `14_matrix_rowcol_means`, `15_dataframe_filter`, `16_list_access`, `17_string_concat`, `18_string_nchar`, `19_string_encoding`, `20_factor_ops`, `22_s4_slot_access`, `23_na_propagation`, `25_l1_arithmetic`, `26_matmul`, `29_lm_fit`, and `33_altrep_region_read`.
 
-### Where zigr trails
+### Material losses and low-noise review
 
-| Task                  | Best native      | zigr vs best |
-| --------------------- | ---------------- | ------------ |
-| 07a_protect_shallow   | savvy (0.002 ms) | 3.31x        |
-| 07b_protect_scaling   | savvy (0.002 ms) | 15833x       |
-| 24_long_vector_idx    | savvy            | 1.41x        |
-| 32_altrep_elt_walk    | savvy            | 1.44x        |
-| 35_altrep_sum_native  | savvy            | 1.40x        |
-| 36_altrep_min_max     | savvy            | 1.42x        |
-| 37_altrep_no_na_query | savvy            | 1.52x        |
+| Task                  | Best native | zigr vs best | Signal |
+| --------------------- | ----------- | -----------: | ------ |
+| 03_memcpy_bandwidth   | extendr     | 1.868x       | noisy, CV 42.92% |
+| 21_attrib_ops         | savvy       | 1.429x       | below timer floor, CV 151.69% |
+| 05_fib_recursive      | rcpp        | 1.424x       | low-noise, CV 6.69% |
+| 38_struct_convert     | extendr     | 1.258x       | below timer floor, CV 147.91% |
+| 30_altrep_create      | savvy       | 1.207x       | below timer floor, CV 156.81% |
+| 34_altrep_sum_via_R   | c_call      | 1.182x       | below timer floor, CV 133.75% |
+| 32_altrep_elt_walk    | extendr     | 1.156x       | low-noise, CV 3.27% |
+| 36_altrep_min_max     | savvy       | 1.150x       | low-noise, CV 5.21% |
+| 35_altrep_sum_native  | savvy       | 1.149x       | low-noise, CV 3.84% |
+| 02_elem_ops           | c_call      | 1.148x       | noisy, CV 35.92% |
+| 24_long_vector_idx    | savvy       | 1.145x       | noisy/below floor, CV 60.29% |
+| 37_altrep_no_na_query | savvy       | 1.101x       | low-noise, CV 9.06% |
 
-07b is the outlier. savvy uses compact PROTECT tracking (O(1) batch calls to `Rf_protect`) while zigr calls `Rf_protect` per element (O(100k)). This is a structural gap in the binding design, not a measurement artifact.
+The remaining low-noise losses are near parity: `39_r_eval` (1.001x), `31_altrep_materialize` (1.005x), and `28_cholesky` (1.007x). `09_longjmp_safety` and `43_rng_stress` are also low-noise task-level losses but are excluded because their strategies or outputs are not directly comparable. The largest non-comparable outlier is `07b_protect_scaling`; it measures a 100k-element protection loop, where zigr performs per-element protection while savvy batches protection work. This is a binding-design gap, not a timing artifact.
+
+### Exclusions and skipped correctness comparisons
+
+| Tasks | Policy | Reason |
+| ----- | ------ | ------ |
+| 07a, 07b | native invariant | R API protection loops have no shared R semantic reference |
+| 08, 10, 11 | native invariant | Direct SEXP inspection/allocation has no shared R semantic reference |
+| 09 | native invariant | Native error and unwind strategies differ |
+| 42 | native invariant | Pointer identity and finalization are not shared R values |
+| 43 | nondeterministic | Random output is not compared by value |
+
+These tasks still passed their declared structural or native-invariant correctness contracts and remain available in `task_comparisons.csv`; they simply do not define the primary aggregate.
 
 ### System diagnostics (L7)
 
 Layer 7 tasks are zigr-only, not comparative. They measure build and memory characteristics of the zigr backend. Run via `run_system_tasks.R`.
+
+The table below is retained historical Layer 7 evidence; P0.7's canonical run covers the 44-task comparative matrix and does not rerun these four standalone diagnostics.
 
 | Task                  | Metric                          | Result                |
 | --------------------- | ------------------------------- | --------------------- |

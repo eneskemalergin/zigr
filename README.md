@@ -100,7 +100,7 @@ macOS and Windows builds use `continue-on-error`. Native cross-compilation from 
 
 Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks/README.md`.
 
-- zigr leads the 44-task matrix on geomean vs R at 0.224x (4.5x faster). SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
+- The published P0 baseline (`p0-7-20260710-full`) covers 36 comparable tasks: zigr is `0.212x` versus R by geomedian (`0.263x` by median), and `1.082x` versus the best native runner by geomedian (`1.003x` by median), with 17 aggregate wins or ties. These are handwritten/direct-entry benchmark results; generated public API performance is a P1 workstream. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
 - ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
 - String ops are slower because each `CHAR()` call produces a new Zig slice header. The zero-copy `StringSliceView` avoids this but requires adapter code in export functions.
 
