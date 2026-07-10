@@ -2,8 +2,8 @@
 
 args <- commandArgs(trailingOnly = TRUE)
 results_dir <- NULL
-low_noise_cv_threshold <- 20
-meaningful_margin <- 1.05
+low_noise_cv_threshold <- NULL
+meaningful_margin <- NULL
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "task_manifest.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
@@ -28,6 +28,11 @@ if (!identical(as.character(run_metadata$status), "complete")) {
   stop(sprintf("run %s is not complete; comparative export is refused", run_metadata$run_id))
 }
 validate_run_artifacts(results_dir, run_metadata)
+timing_policy <- if (is.null(run_metadata$timing_policy)) benchmark_timing_policy() else run_metadata$timing_policy
+validate_timing_policy(timing_policy)
+if (is.null(low_noise_cv_threshold)) low_noise_cv_threshold <- as.numeric(timing_policy$low_noise_cv_threshold_pct)
+if (is.null(meaningful_margin)) meaningful_margin <- as.numeric(timing_policy$meaningful_margin_ratio)
+timer_noise_floor_ms <- as.numeric(timing_policy$timer_noise_floor_ms)
 expected_tasks <- sort(run_manifest_values(run_metadata$tasks))
 expected_runners <- sort(run_manifest_values(run_metadata$runners))
 
@@ -41,6 +46,11 @@ summaries <- do.call(
   rbind,
   lapply(summary_files, read.csv, stringsAsFactors = FALSE)
 )
+
+if (!"timer_noise_floor_ms" %in% names(summaries)) summaries$timer_noise_floor_ms <- timer_noise_floor_ms
+if (!"timer_noise_status" %in% names(summaries)) {
+  summaries$timer_noise_status <- ifelse(summaries$median_ms < timer_noise_floor_ms, "below_floor", "above_floor")
+}
 
 correctness_columns <- c("correctness_status", "correctness_policy", "correctness_message")
 missing_correctness_columns <- setdiff(correctness_columns, names(summaries))
@@ -83,9 +93,31 @@ for (runner in names(runner_tasks)[-1]) {
   }
 }
 
-pass_summaries <- subset(summaries, status == "PASS" & correctness_status %in% c("PASS", "REFERENCE"), select = c(runner, task, mean_ms, median_ms, cv_pct))
+pass_summaries <- subset(
+  summaries,
+  status == "PASS" & correctness_status %in% c("PASS", "REFERENCE"),
+  select = c(runner, task, mean_ms, median_ms, cv_pct, timer_noise_floor_ms, timer_noise_status)
+)
 if (nrow(pass_summaries) == 0L) {
   stop(sprintf("no PASS rows found in %s", results_dir))
+}
+
+median_confidence_interval <- function(values, level) {
+  values <- sort(as.numeric(values[is.finite(values)]))
+  n <- length(values)
+  if (n < 2L) return(c(low = NA_real_, high = NA_real_))
+  alpha <- 1 - level
+  low_rank <- max(1L, as.integer(qbinom(alpha / 2, n, 0.5)))
+  high_rank <- min(n, as.integer(qbinom(1 - alpha / 2, n, 0.5)) + 1L)
+  c(low = values[[low_rank]], high = values[[high_rank]])
+}
+
+read_task_samples <- function(runner, task) {
+  path <- file.path(results_dir, runner, sprintf("task_%s.csv", task))
+  if (!file.exists(path)) stop(sprintf("raw timing samples missing: %s", path))
+  samples <- read.csv(path, stringsAsFactors = FALSE)
+  if (!"wall_ms" %in% names(samples)) stop(sprintf("raw timing samples missing wall_ms: %s", path))
+  samples$wall_ms
 }
 
 all_runners_in_results <- sort(unique(summaries$runner))
@@ -135,8 +167,15 @@ merged <- merged[match(ordered_tasks, merged$task), ]
 
 manifest_rows <- match(merged$task, manifest$task)
 if (anyNA(manifest_rows)) stop("comparative data contains a task absent from the task manifest")
+merged$category <- manifest$category[manifest_rows]
+merged$report_category <- task_report_category(merged$category)
 merged$aggregate_comparable <- manifest$aggregate[manifest_rows]
 merged$comparison_note <- manifest$comparison_note[manifest_rows]
+below_floor_by_task <- tapply(summaries$timer_noise_status == "below_floor", summaries$task, any)
+merged$timer_noise_floor_ms <- timer_noise_floor_ms
+below_floor <- as.logical(below_floor_by_task[merged$task])
+below_floor[is.na(below_floor)] <- FALSE
+merged$timer_noise_status <- ifelse(below_floor, "below_floor", "above_floor")
 
 all_runners_in_data <- colnames(mean_wide)[-1]
 all_runners_in_data <- gsub("_median$", "", all_runners_in_data)
@@ -145,6 +184,31 @@ all_runners <- c("r", native_runners)
 native_median_cols <- paste0(native_runners, "_median")
 all_median_cols <- paste0(all_runners, "_median")
 all_cv_cols <- paste0(all_runners, "_cv")
+
+ci_cache <- list()
+for (runner in all_runners) {
+  for (task in merged$task) {
+    key <- paste(runner, task, sep = "\r")
+    ci_cache[[key]] <- median_confidence_interval(
+      read_task_samples(runner, task),
+      level = timing_policy$median_ci_level
+    )
+  }
+}
+for (runner in all_runners) {
+  ci_low_name <- paste0(runner, "_median_ci_low_ms")
+  ci_high_name <- paste0(runner, "_median_ci_high_ms")
+  merged[[ci_low_name]] <- vapply(
+    merged$task,
+    function(task) ci_cache[[paste(runner, task, sep = "\r")]][["low"]],
+    numeric(1)
+  )
+  merged[[ci_high_name]] <- vapply(
+    merged$task,
+    function(task) ci_cache[[paste(runner, task, sep = "\r")]][["high"]],
+    numeric(1)
+  )
+}
 
 aggregate_merged <- merged[merged$aggregate_comparable, , drop = FALSE]
 if (nrow(aggregate_merged) == 0L) {
@@ -159,27 +223,42 @@ if (nrow(excluded_aggregate_tasks) > 0L) {
   ))
 }
 
-merged$best_native_median_ms <- apply(merged[, native_median_cols], 1, min)
-merged$best_all_median_ms <- apply(merged[, all_median_cols], 1, min)
-merged$max_cv_pct <- apply(merged[, all_cv_cols], 1, max, na.rm = TRUE)
+merged$best_native_median_ms <- apply(merged[, native_median_cols, drop = FALSE], 1, min)
+merged$best_all_median_ms <- apply(merged[, all_median_cols, drop = FALSE], 1, min)
+merged$max_cv_pct <- apply(merged[, all_cv_cols, drop = FALSE], 1, max, na.rm = TRUE)
 merged$low_noise <- merged$max_cv_pct <= low_noise_cv_threshold
 
-aggregate_merged$best_native_median_ms <- apply(aggregate_merged[, native_median_cols], 1, min)
-aggregate_merged$best_all_median_ms <- apply(aggregate_merged[, all_median_cols], 1, min)
-aggregate_merged$max_cv_pct <- apply(aggregate_merged[, all_cv_cols], 1, max, na.rm = TRUE)
+aggregate_merged$best_native_median_ms <- apply(aggregate_merged[, native_median_cols, drop = FALSE], 1, min)
+aggregate_merged$best_all_median_ms <- apply(aggregate_merged[, all_median_cols, drop = FALSE], 1, min)
+aggregate_merged$max_cv_pct <- apply(aggregate_merged[, all_cv_cols, drop = FALSE], 1, max, na.rm = TRUE)
 aggregate_merged$low_noise <- aggregate_merged$max_cv_pct <= low_noise_cv_threshold
 
 merged$best_native_runner <- apply(
-  merged[, native_median_cols],
+  merged[, native_median_cols, drop = FALSE],
   1,
   function(row) native_runners[[which.min(row)]]
 )
 
 aggregate_merged$best_native_runner <- apply(
-  aggregate_merged[, native_median_cols],
+  aggregate_merged[, native_median_cols, drop = FALSE],
   1,
   function(row) native_runners[[which.min(row)]]
 )
+
+merged$best_native_median_ci_low_ms <- vapply(
+  seq_len(nrow(merged)),
+  function(index) merged[[paste0(merged$best_native_runner[[index]], "_median_ci_low_ms")]][[index]],
+  numeric(1)
+)
+merged$best_native_median_ci_high_ms <- vapply(
+  seq_len(nrow(merged)),
+  function(index) merged[[paste0(merged$best_native_runner[[index]], "_median_ci_high_ms")]][[index]],
+  numeric(1)
+)
+merged$zigr_vs_best_native_ci_low <- merged$zigr_median_ci_low_ms / merged$best_native_median_ci_high_ms
+merged$zigr_vs_best_native_ci_high <- merged$zigr_median_ci_high_ms / merged$best_native_median_ci_low_ms
+merged$zigr_vs_r_ci_low <- merged$zigr_median_ci_low_ms / merged$r_median_ci_high_ms
+merged$zigr_vs_r_ci_high <- merged$zigr_median_ci_high_ms / merged$r_median_ci_low_ms
 
 for (runner in native_runners) {
   merged[[paste0(runner, "_vs_best_native")]] <-
@@ -210,6 +289,15 @@ runner_metrics$geomedian_vs_r <- c(
   1.0
 )
 
+runner_metrics$median_vs_r <- c(
+  vapply(
+    native_runners,
+    function(runner) median(aggregate_merged[[paste0(runner, "_median")]] / aggregate_merged$r_median),
+    numeric(1)
+  ),
+  1.0
+)
+
 runner_metrics$geomedian_vs_best_native <- c(
   vapply(
     native_runners,
@@ -233,7 +321,9 @@ runner_metrics$meaningful_native_wins <- c(
     native_runners,
     function(runner) {
       vals <- aggregate_merged[[paste0(runner, "_median")]]
-      others <- aggregate_merged[, paste0(setdiff(native_runners, runner), "_median"), drop = FALSE]
+      other_runners <- setdiff(native_runners, runner)
+      if (length(other_runners) == 0L) return(0L)
+      others <- aggregate_merged[, paste0(other_runners, "_median"), drop = FALSE]
       sum(apply(others, 1, min) / vals > meaningful_margin)
     },
     integer(1)
@@ -247,7 +337,7 @@ runner_metrics$low_noise_wins <- c(
     native_runners,
     function(runner) {
       if (nrow(low_noise_subset) == 0L) return(0L)
-      sum(abs(low_noise_subset[[paste0(runner, "_median")]] - apply(low_noise_subset[, native_median_cols], 1, min)) < 1e-12)
+      sum(abs(low_noise_subset[[paste0(runner, "_median")]] - apply(low_noise_subset[, native_median_cols, drop = FALSE], 1, min)) < 1e-12)
     },
     integer(1)
   ),
@@ -259,14 +349,54 @@ runner_metrics$aggregate_task_count <- nrow(aggregate_merged)
 runner_metrics$excluded_shared_task_count <- nrow(merged) - nrow(aggregate_merged)
 runner_metrics$low_noise_cv_threshold_pct <- low_noise_cv_threshold
 runner_metrics$meaningful_margin_ratio <- meaningful_margin
+runner_metrics$timer_noise_floor_ms <- timer_noise_floor_ms
+runner_metrics$median_ci_level <- timing_policy$median_ci_level
+runner_metrics$median_ci_method <- timing_policy$median_ci_method
+
+category_rows <- list()
+for (category in sort(unique(merged$report_category))) {
+  all_category <- merged[merged$report_category == category, , drop = FALSE]
+  aggregate_category <- aggregate_merged[aggregate_merged$report_category == category, , drop = FALSE]
+  for (runner in all_runners) {
+    has_aggregate <- nrow(aggregate_category) > 0L
+    vs_r <- if (has_aggregate) aggregate_category[[paste0(runner, "_median")]] / aggregate_category$r_median else numeric(0)
+    vs_best <- if (has_aggregate && runner != "r") aggregate_category[[paste0(runner, "_vs_best_native")]] else numeric(0)
+    category_rows[[length(category_rows) + 1L]] <- data.frame(
+      report_category = category,
+      runner = runner,
+      task_count = nrow(all_category),
+      aggregate_task_count = nrow(aggregate_category),
+      low_noise_task_count = sum(all_category$low_noise),
+      timer_floor_task_count = sum(all_category$timer_noise_status == "below_floor"),
+      median_vs_r = if (has_aggregate) median(vs_r) else NA_real_,
+      geomedian_vs_r = if (has_aggregate) exp(mean(log(vs_r))) else NA_real_,
+      median_vs_best_native = if (length(vs_best) > 0L) median(vs_best) else NA_real_,
+      geomedian_vs_best_native = if (length(vs_best) > 0L) exp(mean(log(vs_best))) else NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+category_metrics <- do.call(rbind, category_rows)
 
 task_comparisons <- data.frame(
   task = merged$task,
+  category = merged$category,
+  report_category = merged$report_category,
   best_native_runner = merged$best_native_runner,
   best_native_median_ms = merged$best_native_median_ms,
+  best_native_median_ci_low_ms = merged$best_native_median_ci_low_ms,
+  best_native_median_ci_high_ms = merged$best_native_median_ci_high_ms,
   zigr_vs_best_native = merged$zigr_vs_best_native,
+  zigr_vs_best_native_ci_low = merged$zigr_vs_best_native_ci_low,
+  zigr_vs_best_native_ci_high = merged$zigr_vs_best_native_ci_high,
+  zigr_vs_r_ci_low = merged$zigr_vs_r_ci_low,
+  zigr_vs_r_ci_high = merged$zigr_vs_r_ci_high,
   max_cv_pct = merged$max_cv_pct,
   low_noise = merged$low_noise,
+  timer_noise_floor_ms = merged$timer_noise_floor_ms,
+  timer_noise_status = merged$timer_noise_status,
+  median_ci_level = timing_policy$median_ci_level,
+  median_ci_method = timing_policy$median_ci_method,
   aggregate_comparable = merged$aggregate_comparable,
   comparison_note = merged$comparison_note,
   stringsAsFactors = FALSE
@@ -275,6 +405,8 @@ task_comparisons <- data.frame(
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 write.csv(runner_metrics, file.path(results_dir, "comparative_metrics.csv"), row.names = FALSE)
 write.csv(task_comparisons, file.path(results_dir, "task_comparisons.csv"), row.names = FALSE)
+write.csv(category_metrics, file.path(results_dir, "category_metrics.csv"), row.names = FALSE)
 
 cat(sprintf("Wrote %s\n", file.path(results_dir, "comparative_metrics.csv")))
 cat(sprintf("Wrote %s\n", file.path(results_dir, "task_comparisons.csv")))
+cat(sprintf("Wrote %s\n", file.path(results_dir, "category_metrics.csv")))

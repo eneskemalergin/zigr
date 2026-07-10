@@ -48,6 +48,7 @@ timed_call <- function(cfun, args, call_type = ".Call", expr = NULL) {
   wall_start <- get_nanotime()
   tryCatch(eval(expr), error = function(e) { error <<- conditionMessage(e) })
   wall_end <- get_nanotime()
+  gc(full = TRUE)
   rss_after <- current_rss_kb()
   list(
     wall_ms     = (wall_end - wall_start) / 1e6,
@@ -61,7 +62,9 @@ get_nanotime <- function() {
 }
 
 benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L,
-                           max_iter = 500L, cv_threshold = 1.0, expr = NULL) {
+                           max_iter = 500L, cv_threshold = 1.0, convergence_blocks = 5L,
+                           timer_noise_floor_ms = 0.01,
+                           rss_metric = "post_gc_endpoint_delta_kb", expr = NULL) {
   expr <- expr %||% make_call_expr(cfun, args, call_type)
 
   gc(full = TRUE)
@@ -79,6 +82,8 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
   # Adaptive blocks
   all_times <- numeric()
   n_blocks <- 0L
+  convergence_cv_pct <- NA_real_
+  stopping_condition <- "max_iterations"
   repeat {
     mb <- tryCatch(
       microbenchmark(eval(expr), times = block_size, unit = "ms"),
@@ -89,14 +94,20 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
     n_blocks <- n_blocks + 1L
     n <- length(all_times)
 
-    if (n >= block_size * 5L) {
-      # CV across the last 5 blocks (rolling window)
-      window <- tail(all_times, block_size * 5L)
-      cv_window <- sd(window) / mean(window) * 100
-      if (cv_window < cv_threshold) break
+    if (n >= block_size * convergence_blocks) {
+      window <- tail(all_times, block_size * convergence_blocks)
+      window_mean <- mean(window)
+      convergence_cv_pct <- if (window_mean > 0) sd(window) / window_mean * 100 else 0
+      if (convergence_cv_pct < cv_threshold) {
+        stopping_condition <- "rolling_cv"
+        break
+      }
     }
 
-    if (n >= max_iter) break
+    if (n >= max_iter) {
+      stopping_condition <- "max_iterations"
+      break
+    }
   }
 
   n <- length(all_times)
@@ -107,21 +118,31 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
   sd_ms <- sd(all_times)
   cv_pct <- if (mean_ms > 0) sd_ms / mean_ms * 100 else 0
 
+  gc(full = TRUE)
   rss_after <- current_rss_kb()
   rss_delta <- max(0, rss_after - rss_before, na.rm = TRUE)
 
   list(
     times      = all_times,
-    converged  = n_blocks >= 5L && cv_pct < cv_threshold,
+    converged  = identical(stopping_condition, "rolling_cv"),
     n_runs     = n,
     n_blocks   = n_blocks,
+    warmup_iterations = warmup,
+    block_size = block_size,
+    max_iterations = max_iter,
+    convergence_window_blocks = convergence_blocks,
+    convergence_cv_threshold_pct = cv_threshold,
+    convergence_cv_pct = convergence_cv_pct,
+    stopping_condition = stopping_condition,
     mean_ms    = mean_ms,
     median_ms  = median_ms,
     min_ms     = min_ms,
     max_ms     = max_ms,
     sd_ms      = sd_ms,
     cv_pct     = cv_pct,
-    cv_gap     = 0,
+    timer_noise_floor_ms = timer_noise_floor_ms,
+    timer_noise_status = if (median_ms < timer_noise_floor_ms) "below_floor" else "above_floor",
+    rss_metric = rss_metric,
     peak_rss   = rss_delta,
     error      = NA_character_
   )
@@ -133,10 +154,10 @@ write_csv <- function(df, path, append = FALSE) {
               append = append, col.names = !append)
 }
 
-log_cold_start <- function(runner, task, wall_ms, dir = "results") {
+log_cold_start <- function(runner, task, wall_ms, run_id = NA_character_, dir = "results") {
   path <- file.path(dir, runner, "cold_start.csv")
   header <- !file.exists(path)
-  df <- data.frame(runner = runner, task = task, wall_ms = round(wall_ms, 3),
+  df <- data.frame(runner = runner, task = task, wall_ms = round(wall_ms, 3), run_id = run_id,
                    stringsAsFactors = FALSE)
   write_csv(df, path, append = !header)
 }

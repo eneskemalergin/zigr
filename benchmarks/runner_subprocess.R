@@ -30,10 +30,13 @@ if (!check_only && is.null(results_dir_arg)) stop("--results-dir= is required fo
 results_dir <- normalizePath(if (is.null(results_dir_arg)) file.path(root_dir, "results") else results_dir_arg, mustWork = FALSE)
 run_id <- NA_character_
 allowed_na_tasks <- character(0)
+timing_policy <- benchmark_timing_policy()
 if (!check_only) {
   run_metadata <- read_run_manifest(results_dir)
   run_id <- as.character(run_metadata$run_id)
   allowed_na_tasks <- sort(run_manifest_values(run_metadata$allowed_na_tasks))
+  if (!is.null(run_metadata$timing_policy)) timing_policy <- run_metadata$timing_policy
+  validate_timing_policy(timing_policy)
   if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
     stop(sprintf("runner %s is not declared by run manifest %s", runner_name, run_manifest_path(results_dir)))
   }
@@ -158,6 +161,39 @@ cat(sprintf("Runner: %s (%s)\n", runner_name, cfg$label))
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 call_type <- cfg$call_type %||% ".Call"
+
+timing_summary_fields <- function(bm = NULL) {
+  if (is.null(bm)) {
+    return(list(
+      warmup_iterations = as.integer(timing_policy$warmup_iterations),
+      block_size = as.integer(timing_policy$block_size),
+      max_iterations = as.integer(timing_policy$max_iterations),
+      convergence_window_blocks = as.integer(timing_policy$convergence_window_blocks),
+      convergence_cv_threshold_pct = as.numeric(timing_policy$convergence_cv_threshold_pct),
+      convergence_cv_pct = NA_real_,
+      stopping_condition = "not_measured",
+      converged = NA,
+      timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
+      timer_noise_status = "not_measured",
+      rss_metric = as.character(timing_policy$rss_metric),
+      gc_policy = as.character(timing_policy$gc_policy)
+    ))
+  }
+  list(
+    warmup_iterations = as.integer(bm$warmup_iterations),
+    block_size = as.integer(bm$block_size),
+    max_iterations = as.integer(bm$max_iterations),
+    convergence_window_blocks = as.integer(bm$convergence_window_blocks),
+    convergence_cv_threshold_pct = as.numeric(bm$convergence_cv_threshold_pct),
+    convergence_cv_pct = as.numeric(bm$convergence_cv_pct),
+    stopping_condition = as.character(bm$stopping_condition),
+    converged = isTRUE(bm$converged),
+    timer_noise_floor_ms = as.numeric(bm$timer_noise_floor_ms),
+    timer_noise_status = as.character(bm$timer_noise_status),
+    rss_metric = as.character(bm$rss_metric),
+    gc_policy = as.character(timing_policy$gc_policy)
+  )
+}
 
 if (call_type != "r") {
   so_path <- file.path(root_dir, cfg$so_path)
@@ -289,7 +325,8 @@ for (task in all_tasks) {
       correctness_status = "NOT_APPLICABLE",
       correctness_policy = correctness_policy,
       correctness_message = if (na_allowed) "no executable for this runner" else correctness_message,
-      stringsAsFactors = FALSE)
+      stringsAsFactors = FALSE,
+      timing_summary_fields())
     next
   }
 
@@ -360,7 +397,8 @@ for (task in all_tasks) {
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
       correctness_message = correctness_message,
-      stringsAsFactors = FALSE)
+      stringsAsFactors = FALSE,
+      timing_summary_fields())
     next
   }
 
@@ -372,7 +410,7 @@ for (task in all_tasks) {
   comparison <- NULL
 
   cs <- timed_call(cfun, args, call_type, expr = task_expr)
-  log_cold_start(runner_name, tid, cs$wall_ms, dir = staging_results_dir)
+  log_cold_start(runner_name, tid, cs$wall_ms, run_id = run_id, dir = staging_results_dir)
   if (!is.na(cs$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, cs$error))
@@ -386,11 +424,24 @@ for (task in all_tasks) {
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
       correctness_message = correctness_message,
-      stringsAsFactors = FALSE)
+      stringsAsFactors = FALSE,
+      timing_summary_fields())
     next
   }
 
-  bm <- benchmark_call(cfun, args, call_type, warmup = 10L, expr = task_expr)
+  bm <- benchmark_call(
+    cfun,
+    args,
+    call_type,
+    warmup = as.integer(timing_policy$warmup_iterations),
+    block_size = as.integer(timing_policy$block_size),
+    max_iter = as.integer(timing_policy$max_iterations),
+    cv_threshold = as.numeric(timing_policy$convergence_cv_threshold_pct),
+    convergence_blocks = as.integer(timing_policy$convergence_window_blocks),
+    timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
+    rss_metric = as.character(timing_policy$rss_metric),
+    expr = task_expr
+  )
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
     cat(sprintf("  %-14s [FAIL] %s\n", tid, bm$error))
@@ -404,7 +455,8 @@ for (task in all_tasks) {
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
       correctness_message = correctness_message,
-      stringsAsFactors = FALSE)
+      stringsAsFactors = FALSE,
+      timing_summary_fields())
     next
   }
 
@@ -444,7 +496,8 @@ for (task in all_tasks) {
     correctness_status = correctness_status,
     correctness_policy = correctness_policy,
     correctness_message = correctness_message,
-    stringsAsFactors = FALSE
+    stringsAsFactors = FALSE,
+    timing_summary_fields(bm)
   )
 }
 

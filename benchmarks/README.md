@@ -62,13 +62,13 @@ Rscript analysis/summarize.R --run-dir=results/runs/<run_id>
 Rscript run_system_tasks.R
 ```
 
-`run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted. Existing root-level CSVs are legacy evidence.
+`run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted; a later project run marks `running` manifests older than six hours as incomplete while retaining their artifacts. Existing root-level CSVs are legacy evidence.
 
 Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, BLAS details and thread settings, locale, relevant environment variables, runner configuration, shared-library fingerprints, and the explicitly allowed `N/A` task set. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, and `ZIGR_CPU_FEATURES` when the build differs from the native `ReleaseFast` defaults.
 
 ## Output files
 
-The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
+The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. Comparative export also writes `task_comparisons.csv` with noise and median-interval fields plus `category_metrics.csv`. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
 
 ## Results (latest run)
 
@@ -168,10 +168,14 @@ A GitHub Actions workflow building zigr on Linux (x86_64), macOS (aarch64), and 
 
 ## Methodology
 
-- Timing: adaptive convergence via `microbenchmark` (runs in blocks of 10, stops when rolling CV drops below 1% across last 5 blocks (50 iterations) or max 500 iterations). 10 warm-up iterations before measurement.
-- RSS: per-task VmRSS delta (max 0, after - before), read from `/proc/self/status VmRSS`. `gc(full=TRUE)` runs before each RSS reading.
-- Cold start: single run before warm-up, logged separately
-- GC control: `gc(full=TRUE)` runs before each measurement block
+- Timing: 10 warm-up iterations, then `microbenchmark` blocks of 10. The runner stops when CV over the last 5 blocks falls below 1%, or at 500 measured iterations; summaries record the warmups, block size, measured sample count (`n_iterations`), stopping condition, and stopping-window CV.
+- Timer floor: medians below the fixed 0.01 ms floor are labeled `below_floor`; the floor is a reporting label and does not force extra repeats.
+- RSS: post-GC VmRSS endpoint delta (max 0, after - before), read from `/proc/self/status VmRSS`; it is not a peak-memory measurement.
+- Cold start: one post-correctness call before warm-up, logged separately with the run ID; it is a call cold-start measure, not process launch time.
+- GC control: full GC before warm-up and both RSS endpoints; no forced GC occurs between timed samples.
+- Allocation: Task 47's standalone allocator counts remain a separate diagnostic; RSS is never used as an allocation or timing substitute.
 - BLAS: single-threaded (`OPENBLAS_NUM_THREADS=1`)
 - Low-noise threshold: CV <= 20% across all runners
 - Meaningful margin: gap must exceed 5% (ratio > 1.05)
+- Confidence intervals: exact 95% order-statistic intervals for per-task medians, computed from existing samples without rerunning tasks; task-level ratio bounds use those intervals, while aggregate rankings remain descriptive over the fixed manifest task set.
+- Category reports: `category_metrics.csv` groups results into kernels, boundary, ALTREP, R runtime, and synthetic API categories.

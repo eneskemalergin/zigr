@@ -58,6 +58,17 @@ if (file.exists(run_manifest_path(run_dir))) stop(sprintf("run directory already
 existing_entries <- if (dir.exists(run_dir)) list.files(run_dir, all.files = TRUE, no.. = TRUE) else character(0)
 if (length(existing_entries) > 0L) stop(sprintf("run directory is not empty: %s", run_dir))
 
+project_runs_root <- normalizePath(file.path(root_dir, "results", "runs"), mustWork = FALSE)
+if (identical(dirname(run_dir), project_runs_root)) {
+  stale_runs <- reconcile_running_runs(
+    file.path(root_dir, "results"),
+    replacement_run_id = run_id
+  )
+  if (length(stale_runs) > 0L) {
+    cat(sprintf("Reconciled stale runs: %s\n\n", paste(stale_runs, collapse = ", ")))
+  }
+}
+
 run_metadata <- list(
   schema_version = 1L,
   run_id = run_id,
@@ -66,6 +77,7 @@ run_metadata <- list(
   runners = sort(names(all_runners)),
   tasks = selected_tasks,
   allowed_na_tasks = character(0),
+  timing_policy = benchmark_timing_policy(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()
 )

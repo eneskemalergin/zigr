@@ -8,6 +8,60 @@ run_manifest_values <- function(value) {
   if (is.null(value)) character(0) else as.character(unlist(value, use.names = FALSE))
 }
 
+benchmark_timing_policy <- function() {
+  list(
+    warmup_iterations = 10L,
+    block_size = 10L,
+    max_iterations = 500L,
+    convergence_window_blocks = 5L,
+    convergence_cv_threshold_pct = 1.0,
+    timer_noise_floor_ms = 0.01,
+    timer_noise_floor_method = "fixed 0.01 ms floor rounded above empty-eval p99 calibration",
+    low_noise_cv_threshold_pct = 20.0,
+    meaningful_margin_ratio = 1.05,
+    median_ci_level = 0.95,
+    median_ci_method = "exact order-statistic interval",
+    rss_metric = "post_gc_endpoint_delta_kb",
+    gc_policy = "full before cold/warmup and both RSS endpoints; no forced GC between timed samples"
+  )
+}
+
+validate_timing_policy <- function(policy) {
+  if (is.null(policy)) stop("run manifest has no timing policy")
+  required <- c(
+    "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
+    "convergence_cv_threshold_pct", "timer_noise_floor_ms", "timer_noise_floor_method",
+    "low_noise_cv_threshold_pct",
+    "meaningful_margin_ratio", "median_ci_level", "median_ci_method", "rss_metric", "gc_policy"
+  )
+  missing <- required[vapply(required, function(name) is.null(policy[[name]]), logical(1))]
+  if (length(missing) > 0L) stop(sprintf("timing policy missing fields: %s", paste(missing, collapse = ", ")))
+  integer_fields <- c("warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks")
+  for (name in integer_fields) {
+    value <- as.numeric(policy[[name]])
+    if (length(value) != 1L || is.na(value) || value < 1 || value != as.integer(value)) {
+      stop(sprintf("timing policy has invalid %s", name))
+    }
+  }
+  numeric_fields <- c(
+    "convergence_cv_threshold_pct", "timer_noise_floor_ms", "low_noise_cv_threshold_pct",
+    "meaningful_margin_ratio", "median_ci_level"
+  )
+  for (name in numeric_fields) {
+    value <- as.numeric(policy[[name]])
+    if (length(value) != 1L || is.na(value) || !is.finite(value) || value <= 0) {
+      stop(sprintf("timing policy has invalid %s", name))
+    }
+  }
+  if (as.numeric(policy$median_ci_level) >= 1) stop("timing policy median CI level must be below 1")
+  for (name in c("timer_noise_floor_method", "median_ci_method", "rss_metric", "gc_policy")) {
+    if (length(policy[[name]]) != 1L || !nzchar(as.character(policy[[name]]))) {
+      stop(sprintf("timing policy has invalid %s", name))
+    }
+  }
+  invisible(policy)
+}
+
 write_run_manifest <- function(run_dir, metadata) {
   dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
   path <- run_manifest_path(run_dir)
@@ -41,6 +95,34 @@ update_run_manifest <- function(run_dir, status, message = NULL) {
   write_run_manifest(run_dir, metadata)
 }
 
+reconcile_running_runs <- function(results_root, replacement_run_id, stale_after_seconds = 6 * 60 * 60) {
+  runs_root <- file.path(results_root, "runs")
+  if (!dir.exists(runs_root)) return(character(0))
+
+  run_dirs <- list.dirs(runs_root, full.names = TRUE, recursive = FALSE)
+  reconciled <- character(0)
+  for (run_dir in run_dirs) {
+    manifest_path <- run_manifest_path(run_dir)
+    if (!file.exists(manifest_path)) next
+    metadata <- tryCatch(read_run_manifest(run_dir), error = function(e) NULL)
+    if (is.null(metadata) || !identical(as.character(metadata$status), "running")) next
+
+    started_at <- if (is.null(metadata$started_at)) "" else as.character(metadata$started_at)
+    started_at <- sub("Z$", "", started_at)
+    started <- suppressWarnings(as.POSIXct(started_at, format = "%Y-%m-%dT%H:%OS", tz = "UTC"))
+    age_seconds <- as.numeric(difftime(Sys.time(), started, units = "secs"))
+    if (is.na(age_seconds) || age_seconds < stale_after_seconds) next
+
+    update_run_manifest(
+      run_dir,
+      "incomplete",
+      sprintf("stale running run superseded by %s; artifacts retained", replacement_run_id)
+    )
+    reconciled <- c(reconciled, basename(run_dir))
+  }
+  reconciled
+}
+
 validate_environment_manifest <- function(environment) {
   if (is.null(environment)) stop("run manifest has no environment metadata")
   require_scalar <- function(container, name, label) {
@@ -49,7 +131,21 @@ validate_environment_manifest <- function(environment) {
       stop(sprintf("environment metadata missing %s", label))
     }
   }
-  require_scalar(environment$source_tree, "digest", "source tree digest")
+  source_tree <- environment$source_tree
+  require_scalar(source_tree, "method", "source tree identity method")
+  require_scalar(source_tree, "digest", "source tree digest")
+  file_count <- source_tree$file_count
+  if (is.null(file_count) || length(file_count) != 1L || is.na(file_count) || as.numeric(file_count) < 1) {
+    stop("environment metadata has an invalid source tree file count")
+  }
+  if (identical(as.character(source_tree$method), "git-worktree-md5")) {
+    for (field in c("included_prefixes", "excluded_patterns")) {
+      values <- source_tree[[field]]
+      if (is.null(values) || length(values) == 0L || any(!nzchar(as.character(values)))) {
+        stop(sprintf("environment metadata missing source tree %s", field))
+      }
+    }
+  }
   require_scalar(environment$host, "sysname", "host OS")
   require_scalar(environment$host, "release", "kernel release")
   require_scalar(environment$host, "machine", "host architecture")
@@ -79,6 +175,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
   allowed_na_tasks <- sort(run_manifest_values(metadata$allowed_na_tasks))
+  if (!is.null(metadata$timing_policy)) validate_timing_policy(metadata$timing_policy)
   if (length(expected_runners) == 0L) stop("run manifest has no runners")
   if (length(expected_tasks) == 0L) stop("run manifest has no tasks")
   unknown_allowed_na <- setdiff(allowed_na_tasks, expected_tasks)
@@ -109,6 +206,14 @@ validate_run_artifacts <- function(run_dir, metadata) {
     "run_id", "runner", "task", "status",
     "correctness_status", "correctness_policy", "correctness_message"
   )
+  if (!is.null(metadata$timing_policy)) {
+    required <- c(
+      required,
+      "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
+      "convergence_cv_threshold_pct", "convergence_cv_pct", "stopping_condition", "converged",
+      "timer_noise_floor_ms", "timer_noise_status", "rss_metric", "gc_policy"
+    )
+  }
   missing <- setdiff(required, names(summaries))
   if (length(missing) > 0L) stop(sprintf("run summaries missing columns: %s", paste(missing, collapse = ", ")))
   if (!all(as.character(summaries$run_id) == expected_run_id)) stop("run summaries contain mixed run IDs")
@@ -168,6 +273,18 @@ validate_run_artifacts <- function(run_dir, metadata) {
       raw <- read.csv(raw_file, stringsAsFactors = FALSE)
       if (!"run_id" %in% names(raw)) stop(sprintf("raw result lacks run_id: %s", raw_file))
       if (!all(as.character(raw$run_id) == expected_run_id)) stop("raw results contain mixed run IDs")
+    }
+    if (!is.null(metadata$timing_policy)) {
+      cold_file <- file.path(runner_dir, "cold_start.csv")
+      if (!file.exists(cold_file)) stop(sprintf("cold-start results missing for %s", runner))
+      cold <- read.csv(cold_file, stringsAsFactors = FALSE)
+      missing_cold <- setdiff(c("runner", "task", "wall_ms", "run_id"), names(cold))
+      if (length(missing_cold) > 0L) stop(sprintf("cold-start results missing columns: %s", paste(missing_cold, collapse = ", ")))
+      if (!all(as.character(cold$run_id) == expected_run_id)) stop("cold-start results contain mixed run IDs")
+      actual_cold_tasks <- sort(as.character(cold$task))
+      if (!identical(expected_raw_tasks, actual_cold_tasks)) {
+        stop(sprintf("cold-start coverage for %s differs from PASS summaries", runner))
+      }
     }
   }
 

@@ -10,6 +10,20 @@ load_task_manifest <- function(root_dir = normalizePath(".")) {
   manifest
 }
 
+task_report_category <- function(category) {
+  mapping <- c(
+    numeric_kernel = "kernels",
+    api_overhead = "synthetic_api",
+    data_structure = "boundary",
+    linear_algebra = "kernels",
+    altrep = "altrep",
+    integration = "r_runtime"
+  )
+  values <- unname(mapping[as.character(category)])
+  if (anyNA(values)) stop("task manifest has an unmapped report category")
+  values
+}
+
 validate_task_manifest <- function(manifest) {
   required <- c("task", "layer", "display_name", "category", "input_factory", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
@@ -26,6 +40,7 @@ validate_task_manifest <- function(manifest) {
   if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 1) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
   if (!all(manifest$layer %in% paste0("L", 1:6))) stop("task manifest has an invalid layer")
   if (!all(manifest$category %in% c("numeric_kernel", "api_overhead", "data_structure", "linear_algebra", "altrep", "integration"))) stop("task manifest has an invalid category")
+  task_report_category(manifest$category)
   if (!all(manifest$correctness_policy %in% c("r_reference", "native_invariant", "nondeterministic"))) stop("task manifest has an invalid correctness policy")
   if (!all(manifest$comparison_policy %in% c("comparable", "non_comparable"))) stop("task manifest has an invalid comparison policy")
   if (!is.logical(manifest$aggregate)) stop("task manifest aggregate column must be logical")

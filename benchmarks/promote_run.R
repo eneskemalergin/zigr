@@ -21,7 +21,7 @@ metadata <- read_run_manifest(run_dir)
 if (!identical(as.character(metadata$status), "complete")) stop("only complete runs can be promoted")
 if (!isTRUE(metadata$full_matrix)) stop("only an unfiltered full-matrix run can be promoted")
 validate_run_artifacts(run_dir, metadata)
-for (name in c("comparative_metrics.csv", "task_comparisons.csv")) {
+for (name in c("comparative_metrics.csv", "task_comparisons.csv", "category_metrics.csv")) {
   if (!file.exists(file.path(run_dir, name))) stop(sprintf("run is missing %s", name))
 }
 
