@@ -5,8 +5,8 @@ task,workload_group,display_name,category,input_factory,expected_return,correctn
 04_sort,core_compute,Sort,numeric_kernel,task_spec.args,real_vector,r_reference,comparable,TRUE,,1
 05_fib_recursive,core_compute,Recursive Fibonacci,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
 06_broadcast,core_compute,Vector broadcast,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,,2
-07a_protect_shallow,api_boundary,Shallow protection loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R API loop with no shared R semantic reference,1
-07b_protect_scaling,api_boundary,Protection scaling loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R API loop with no shared R semantic reference,1
+07a_protect_shallow,api_boundary,Shallow protection loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,Native implementations differ and the Savvy fixture does not execute the protection loop,1
+07b_protect_scaling,api_boundary,Protection scaling loop,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,Native implementations differ and the Savvy fixture does not execute the protection loop,1
 08_type_dispatch,api_boundary,Type dispatch,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,Direct SEXP type inspection with no shared R semantic reference,1
 09_longjmp_safety,api_boundary,Longjmp safety,api_overhead,task_spec.args,named_real_vector,native_invariant,non_comparable,FALSE,Compares native error and unwind strategies,1
 10_sexp_create,api_boundary,SEXP creation,api_overhead,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,R allocation loop with no shared R semantic reference,1

@@ -8,7 +8,7 @@ Six runner backends. `results/CANONICAL_RUN.json` identifies the current publish
 - **zigr** (Zig): 44 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
 - **c_call** (C): 44 task files plus boundary fixtures in `register.c` under `src/c_call/`
 - **rcpp** (C++): Single `main.cpp` under `src/cpp/`
-- **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`
+- **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`; most canonical tasks use handwritten raw R FFI behind Savvy-style C result handling, so they compare runner implementations rather than the cost of Savvy's typed wrappers
 - **extendr** (Rust): `rust/src/lib.rs` + `entrypoint.c` under `src/extendr/`, with raw FFI entrypoints for 4 tasks
 
 ## Task matrix
@@ -29,6 +29,8 @@ Six runner backends. `results/CANONICAL_RUN.json` identifies the current publish
 The boundary fixtures run in `r`, `c_call`, and `zigr`. The representation rows run in `r` and `zigr`; other runners report them as `N/A` instead of timing a substitute with different ownership.
 
 The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows compare zigr's contiguous copy with a handwritten region stream, so they describe a conversion choice rather than wrapper overhead. The generated schema row parses a declared fixed schema through `SEXP`; the handwritten and R rows validate the same plain names and scalar-field contract. The generated method row times a valid typed `.Call` receiver with the same small state update as its handwritten pair. Missing or tampered metadata, wrong tags, foreign pointers, cleared pointers, GC retention, and finalizers are preflight and runtime safety cases, not timing claims.
+
+Core task 42 constructs raw untagged external pointers. It does not measure Savvy's owned wrapper or zigr's typed metadata, receiver validation, or finalizer contract.
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, task groups, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 
@@ -127,7 +129,7 @@ zigr is the fastest native runner on 17 aggregate tasks: `01_vectorsum`, `04_sor
 | 24_long_vector_idx    | savvy       | 1.145x       | noisy/below floor, CV 60.29% |
 | 37_altrep_no_na_query | savvy       | 1.101x       | low-noise, CV 9.06% |
 
-The remaining low-noise losses are near parity: `39_r_eval` (1.001x), `31_altrep_materialize` (1.005x), and `28_cholesky` (1.007x). `09_longjmp_safety` and `43_rng_stress` are also low-noise task-level losses but are excluded because their strategies or outputs are not directly comparable. The largest non-comparable outlier is `07b_protect_scaling`; it measures a 100k-element protection loop, where zigr performs per-element protection while savvy batches protection work. This is a binding-design gap, not a timing artifact.
+The remaining low-noise losses are near parity: `39_r_eval` (1.001x), `31_altrep_materialize` (1.005x), and `28_cholesky` (1.007x). `09_longjmp_safety` and `43_rng_stress` are also low-noise task-level losses but are excluded because their strategies or outputs are not directly comparable. Task `07b_protect_scaling` is not evidence about binding design: zigr executes the protection loop, while the Savvy fixture returns a scalar without performing it. The task remains excluded, and its cross-runner timing must not be interpreted.
 
 ### Exclusions and skipped correctness comparisons
 
