@@ -98,13 +98,10 @@ fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertE
     if (@as(c_uint, sexp_mod.typeTag(sexp)) != expected) return err;
 }
 
-fn expectNonEmpty(sexp: SEXP) ConvertError!void {
-    if (R.XLENGTH(sexp) == 0) return error.ZeroLength;
-}
-
 fn expectScalarLength(sexp: SEXP) ConvertError!void {
-    try expectNonEmpty(sexp);
-    if (R.XLENGTH(sexp) != 1) return error.ScalarLength;
+    const len = R.XLENGTH(sexp);
+    if (len == 0) return error.ZeroLength;
+    if (len != 1) return error.ScalarLength;
 }
 
 pub fn errorMessage(err: anyerror) []const u8 {
@@ -138,16 +135,24 @@ fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
     return ns;
 }
 
+/// Reports whether `sexp` is `NULL` or the one typed `NA` accepted by a
+/// supported optional scalar. It does not validate any other input.
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
     if (sexp == R.R_NilValue) return true;
     if (comptime T == f64) {
-        return sexp_mod.typeTag(sexp) == 14 and R.XLENGTH(sexp) == 1 and R.ISNA(R.REAL(sexp)[0]) != 0;
+        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.REALSXP and
+            R.XLENGTH(sexp) == 1 and
+            R.ISNA(R.REAL(sexp)[0]) != 0;
     }
     if (comptime T == i32) {
-        return sexp_mod.typeTag(sexp) == 13 and R.XLENGTH(sexp) == 1 and R.INTEGER(sexp)[0] == R.R_NaInt;
+        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.INTSXP and
+            R.XLENGTH(sexp) == 1 and
+            R.INTEGER(sexp)[0] == R.R_NaInt;
     }
     if (comptime T == bool) {
-        return sexp_mod.typeTag(sexp) == 10 and R.XLENGTH(sexp) == 1 and R.LOGICAL(sexp)[0] == R.R_NaInt;
+        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.LGLSXP and
+            R.XLENGTH(sexp) == 1 and
+            R.LOGICAL(sexp)[0] == R.R_NaInt;
     }
     return false;
 }
@@ -161,6 +166,8 @@ pub fn signalError(err: anyerror) noreturn {
     R.Rf_error(&buf);
 }
 
+/// Converts a one-element, non-`NA` `REALSXP` to `f64`. IEEE `NaN` remains a
+/// value because R's `ISNA` recognizes only R `NA`.
 pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     try expectScalarLength(sexp);
@@ -169,6 +176,7 @@ pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
     return value;
 }
 
+/// Converts a one-element, non-`NA` `INTSXP` to `i32`.
 pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     try expectScalarLength(sexp);
@@ -177,11 +185,45 @@ pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
     return value;
 }
 
+/// Converts a one-element, non-`NA` `LGLSXP` to `bool`.
 pub fn toBoolScalar(sexp: SEXP) ConvertError!bool {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     try expectScalarLength(sexp);
     const value = R.LOGICAL(sexp)[0];
     if (value == R.R_NaInt) return error.ScalarNA;
+    return value != 0;
+}
+
+/// Converts `NULL` or one typed `NA` to `null`; otherwise applies the exact
+/// required-real contract. IEEE `NaN` remains a non-null value.
+pub fn toOptionalRealScalar(sexp: SEXP) ConvertError!?f64 {
+    if (sexp == R.R_NilValue) return null;
+    try expectType(sexp, R.REALSXP, error.ExpectedReal);
+    try expectScalarLength(sexp);
+    const value = R.REAL(sexp)[0];
+    if (R.ISNA(value) != 0) return null;
+    return value;
+}
+
+/// Converts `NULL` or one `NA_INTEGER` to `null`; otherwise applies the exact
+/// required-integer contract.
+pub fn toOptionalIntScalar(sexp: SEXP) ConvertError!?i32 {
+    if (sexp == R.R_NilValue) return null;
+    try expectType(sexp, R.INTSXP, error.ExpectedInteger);
+    try expectScalarLength(sexp);
+    const value = R.INTEGER(sexp)[0];
+    if (value == R.R_NaInt) return null;
+    return value;
+}
+
+/// Converts `NULL` or one `NA_LOGICAL` to `null`; otherwise applies the exact
+/// required-logical contract.
+pub fn toOptionalBoolScalar(sexp: SEXP) ConvertError!?bool {
+    if (sexp == R.R_NilValue) return null;
+    try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
+    try expectScalarLength(sexp);
+    const value = R.LOGICAL(sexp)[0];
+    if (value == R.R_NaInt) return null;
     return value != 0;
 }
 
@@ -718,6 +760,9 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
 }
 
 fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
+    if (comptime T == ?f64) return try toOptionalRealScalar(sexp);
+    if (comptime T == ?i32) return try toOptionalIntScalar(sexp);
+    if (comptime T == ?bool) return try toOptionalBoolScalar(sexp);
     if (comptime @typeInfo(T) == .optional) {
         const child = @typeInfo(T).optional.child;
         if (optionalInputIsNullish(child, sexp)) return null;

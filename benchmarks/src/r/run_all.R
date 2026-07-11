@@ -285,9 +285,15 @@ r_bench_rng_stress <- function(n) {
 # diagnostics are supplied by the runner; generated and handwritten rows share
 # each reference by design.
 r_p13_zero <- function() 1.0
-r_p13_scalar <- function(x) as.double(x[[1L]])
+r_p13_scalar <- function(x) {
+  if (typeof(x) != "double" || length(x) != 1L) stop("P1.3 scalar expected one REAL value")
+  if (is.na(x) && !is.nan(x)) stop("P1.3 scalar expected a non-missing REAL value")
+  x
+}
 r_p13_optional <- function(x) {
-  if (is.null(x) || isTRUE(is.na(x[[1L]]))) 0L else 1L
+  if (is.null(x)) return(0L)
+  if (typeof(x) != "double" || length(x) != 1L) stop("P1.3 optional expected NULL or one REAL value")
+  if (is.na(x) && !is.nan(x)) 0L else 1L
 }
 r_p13_numeric <- function(x) sum(x)
 r_p13_altrep_integer <- function(x) as.double(sum(x))

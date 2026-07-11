@@ -34,6 +34,7 @@
 //! and NA values.
 //! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as nullish;
 //! non-null values use the same exact-length rule.
+//! IEEE NaN is a non-null f64 value and passes through unchanged.
 //! Use R.SEXP or a vector parameter when NA values need custom handling.
 //! []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar strings,
 //! extract via R.STRING_ELT inside the function body.
@@ -106,6 +107,17 @@ fn signalError(msg: []const u8) noreturn {
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime T == R.SEXP) {
         return sexp;
+    }
+    // These must precede the generic optional path. A valid non-null optional
+    // scalar otherwise pays for one nullish probe and a second full conversion.
+    if (comptime T == ?f64) {
+        return convert.toOptionalRealScalar(sexp) catch |err| convert.signalError(err);
+    }
+    if (comptime T == ?i32) {
+        return convert.toOptionalIntScalar(sexp) catch |err| convert.signalError(err);
+    }
+    if (comptime T == ?bool) {
+        return convert.toOptionalBoolScalar(sexp) catch |err| convert.signalError(err);
     }
     if (comptime @typeInfo(T) == .optional) {
         const child = @typeInfo(T).optional.child;
@@ -659,4 +671,13 @@ const CompileExampleExports = generateExports(&.{.{ .name = "my_sum", .func = co
 test "generateExports .Call usage example compiles" {
     const init_fn = CompileExampleExports.init;
     _ = init_fn;
+}
+
+test "scalar and optional scalar wrappers do not need an arena" {
+    try std.testing.expect(!needsArena(f64));
+    try std.testing.expect(!needsArena(i32));
+    try std.testing.expect(!needsArena(bool));
+    try std.testing.expect(!needsArena(?f64));
+    try std.testing.expect(!needsArena(?i32));
+    try std.testing.expect(!needsArena(?bool));
 }

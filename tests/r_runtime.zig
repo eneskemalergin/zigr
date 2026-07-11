@@ -1229,6 +1229,75 @@ export fn zigr_test_bool_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
+/// Required scalars preserve valid values and reject each scalar failure class.
+export fn zigr_test_scalar_contract() SEXP {
+    const real = R.Rf_protect(R.Rf_ScalarReal(3.5));
+    const integer = R.Rf_protect(R.Rf_ScalarInteger(-7));
+    const logical = R.Rf_protect(R.Rf_ScalarLogical(0));
+    const nan = R.Rf_protect(R.Rf_ScalarReal(R.R_NaN));
+    const empty = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    const multi = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    const missing = R.Rf_protect(R.Rf_ScalarReal(R.NA_REAL()));
+    defer R.Rf_unprotect(7);
+    R.REAL(multi)[0] = 1.0;
+    R.REAL(multi)[1] = 2.0;
+
+    const real_value = zigr_convert.toRealScalar(real) catch return R.Rf_ScalarReal(0.0);
+    const int_value = zigr_convert.toIntScalar(integer) catch return R.Rf_ScalarReal(0.0);
+    const bool_value = zigr_convert.toBoolScalar(logical) catch return R.Rf_ScalarReal(0.0);
+    const nan_value = zigr_convert.toRealScalar(nan) catch return R.Rf_ScalarReal(0.0);
+
+    if (real_value != 3.5 or int_value != -7 or bool_value) return R.Rf_ScalarReal(0.0);
+    if (!std.math.isNan(nan_value) or R.ISNA(nan_value) != 0) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toRealScalar(integer) != error.ExpectedReal) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toRealScalar(empty) != error.ZeroLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toRealScalar(multi) != error.ScalarLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toRealScalar(missing) != error.ScalarNA) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// Optional scalars map only `NULL` and one typed `NA` to null.
+export fn zigr_test_optional_scalar_contract() SEXP {
+    const real_na = R.Rf_protect(R.Rf_ScalarReal(R.NA_REAL()));
+    const real_nan = R.Rf_protect(R.Rf_ScalarReal(R.R_NaN));
+    const int_na = R.Rf_protect(R.Rf_ScalarInteger(R.R_NaInt));
+    const integer = R.Rf_protect(R.Rf_ScalarInteger(7));
+    const logical_na = R.Rf_protect(R.Rf_ScalarLogical(R.R_NaInt));
+    const logical = R.Rf_protect(R.Rf_ScalarLogical(0));
+    const empty = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    const multi_real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    const multi_int = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    const multi_logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 2));
+    defer R.Rf_unprotect(10);
+    R.REAL(multi_real)[0] = R.NA_REAL();
+    R.REAL(multi_real)[1] = 1.0;
+    R.INTEGER(multi_int)[0] = R.R_NaInt;
+    R.INTEGER(multi_int)[1] = 1;
+    R.LOGICAL(multi_logical)[0] = R.R_NaInt;
+    R.LOGICAL(multi_logical)[1] = 1;
+
+    if ((zigr_convert.toOptionalRealScalar(R.R_NilValue) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+    if ((zigr_convert.toOptionalIntScalar(R.R_NilValue) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+    if ((zigr_convert.toOptionalBoolScalar(R.R_NilValue) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+    if ((zigr_convert.toOptionalRealScalar(real_na) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+    if ((zigr_convert.toOptionalIntScalar(int_na) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+    if ((zigr_convert.toOptionalBoolScalar(logical_na) catch return R.Rf_ScalarReal(0.0)) != null) return R.Rf_ScalarReal(0.0);
+
+    const nan_value = zigr_convert.toOptionalRealScalar(real_nan) catch return R.Rf_ScalarReal(0.0);
+    const int_value = zigr_convert.toOptionalIntScalar(integer) catch return R.Rf_ScalarReal(0.0);
+    const bool_value = zigr_convert.toOptionalBoolScalar(logical) catch return R.Rf_ScalarReal(0.0);
+
+    if (nan_value == null or !std.math.isNan(nan_value.?) or R.ISNA(nan_value.?) != 0) return R.Rf_ScalarReal(0.0);
+    if (int_value == null or int_value.? != 7) return R.Rf_ScalarReal(0.0);
+    if (bool_value == null or bool_value.?) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toOptionalRealScalar(empty) != error.ZeroLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toOptionalRealScalar(multi_real) != error.ScalarLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toOptionalIntScalar(multi_int) != error.ScalarLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toOptionalBoolScalar(multi_logical) != error.ScalarLength) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.toOptionalBoolScalar(integer) != error.ExpectedLogical) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
 /// Test optional REAL field maps NA to null.
 export fn zigr_test_optional_real_na_to_null() SEXP {
     const Test = struct { x: ?f64 };

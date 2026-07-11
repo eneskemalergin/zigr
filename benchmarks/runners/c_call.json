@@ -8,7 +8,12 @@
   "package_name": "bench",
   "registration_fixture": {
     "scalar": "c_fixture_scalar",
+    "integer": "c_fixture_int_scalar",
+    "logical": "c_fixture_bool_scalar",
+    "scalar_after_allocation": "c_fixture_scalar_after_allocation",
     "optional": "c_p13_optional",
+    "optional_integer": "c_p13_optional_int",
+    "optional_logical": "c_p13_optional_bool",
     "vector": "c_fixture_vector",
     "new": "c_fixture_new",
     "method": "c_fixture_method",

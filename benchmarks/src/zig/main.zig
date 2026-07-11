@@ -129,6 +129,19 @@ fn fixtureScalar(value: f64) f64 {
     return value;
 }
 
+fn fixtureIntScalar(value: i32) i32 {
+    return value;
+}
+
+fn fixtureBoolScalar(value: bool) bool {
+    return value;
+}
+
+fn fixtureScalarAfterAllocation(value: f64) f64 {
+    _ = R.Rf_allocVector(R.INTSXP, 1);
+    return value;
+}
+
 fn fixtureVector(values: []const f64) f64 {
     var total: f64 = 0;
     for (values) |value| total += value;
@@ -164,6 +177,14 @@ fn fixtureZero() f64 {
 }
 
 fn fixtureOptional(value: ?f64) i32 {
+    return if (value == null) 0 else 1;
+}
+
+fn fixtureOptionalInt(value: ?i32) i32 {
+    return if (value == null) 0 else 1;
+}
+
+fn fixtureOptionalBool(value: ?bool) i32 {
     return if (value == null) 0 else 1;
 }
 
@@ -378,12 +399,17 @@ fn directExternal(args: R.SEXP) R.SEXP {
 
 const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_fixture_scalar", .func = fixtureScalar },
+    .{ .name = "zigr_fixture_int_scalar", .func = fixtureIntScalar },
+    .{ .name = "zigr_fixture_bool_scalar", .func = fixtureBoolScalar },
+    .{ .name = "zigr_fixture_scalar_after_allocation", .func = fixtureScalarAfterAllocation },
     .{ .name = "zigr_fixture_vector", .func = fixtureVector },
     .{ .name = "zigr_fixture_new", .func = fixtureNew },
     .{ .name = "zigr_fixture_method", .func = fixtureMethod },
     .{ .name = "zigr_fixture_error", .func = fixtureError },
     .{ .name = "zigr_fixture_zero", .func = fixtureZero },
     .{ .name = "zigr_fixture_optional", .func = fixtureOptional },
+    .{ .name = "zigr_fixture_optional_int", .func = fixtureOptionalInt },
+    .{ .name = "zigr_fixture_optional_bool", .func = fixtureOptionalBool },
     .{ .name = "zigr_fixture_int_vector", .func = fixtureIntVector },
     .{ .name = "zigr_fixture_string_view", .func = fixtureStringView },
     .{ .name = "zigr_fixture_raw", .func = fixtureRaw },

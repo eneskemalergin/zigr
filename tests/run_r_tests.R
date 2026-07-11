@@ -173,6 +173,8 @@ tests <- list(
   "zigr_test_real_scalar_na",
   "zigr_test_int_scalar_na",
   "zigr_test_bool_scalar_na",
+  "zigr_test_scalar_contract",
+  "zigr_test_optional_scalar_contract",
   "zigr_test_optional_real_na_to_null",
   "zigr_test_optional_int_na_to_null",
   "zigr_test_optional_bool_na_to_null",

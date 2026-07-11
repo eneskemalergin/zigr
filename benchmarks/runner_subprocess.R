@@ -311,7 +311,11 @@ resolve_registered_exports <- function(export_names, cfg) {
 validate_registration_fixture <- function(cfg) {
   fixture <- cfg$registration_fixture
   if (is.null(fixture)) return(invisible(NULL))
-  required <- c("scalar", "optional", "vector", "new", "method", "error", "external", "wrong_tag", "cleared", "misaligned")
+  required <- c(
+    "scalar", "integer", "logical", "scalar_after_allocation",
+    "optional", "optional_integer", "optional_logical",
+    "vector", "new", "method", "error", "external", "wrong_tag", "cleared", "misaligned"
+  )
   missing <- required[vapply(required, function(key) is.null(fixture[[key]]) || !nzchar(fixture[[key]]), logical(1))]
   if (length(missing) > 0L) stop(sprintf(
     "runner %s registration_fixture is missing: %s", runner_name, paste(missing, collapse = ", ")
@@ -332,7 +336,12 @@ validate_registration_fixture <- function(cfg) {
     info$address
   }
   call_symbol <- symbol("scalar")
+  integer_symbol <- symbol("integer")
+  logical_symbol <- symbol("logical")
+  scalar_after_allocation_symbol <- symbol("scalar_after_allocation")
   optional_symbol <- symbol("optional")
+  optional_integer_symbol <- symbol("optional_integer")
+  optional_logical_symbol <- symbol("optional_logical")
   vector_symbol <- symbol("vector")
   new_symbol <- symbol("new")
   method_symbol <- symbol("method")
@@ -342,18 +351,77 @@ validate_registration_fixture <- function(cfg) {
   cleared_symbol <- symbol("cleared")
   misaligned_symbol <- symbol("misaligned")
 
+  expect_fixture_error <- function(result, label, expected_message = NULL) {
+    if (result$ok) stop(sprintf("registration fixture accepted %s for %s", label, runner_name))
+    if (!is.null(expected_message) && !grepl(expected_message, result$error, fixed = TRUE)) stop(sprintf(
+      "registration fixture error message changed for %s (%s): %s",
+      runner_name, label, result$error %||% "no message"
+    ))
+  }
+
   scalar <- capture_result(function() do.call(.Call, list(call_symbol, 3.5)))
   if (!scalar$ok || !isTRUE(all.equal(scalar$value, 3.5))) stop(sprintf(
     "registration fixture scalar check failed for %s: %s", runner_name, scalar$error %||% "wrong result"
   ))
+  # Preflight only: repeated independent calls must not add a timed inner loop.
+  for (value in c(-3.5, 0, 7.25)) {
+    repeated_scalar <- capture_result(function() do.call(.Call, list(call_symbol, value)))
+    if (!repeated_scalar$ok || !isTRUE(all.equal(repeated_scalar$value, value))) stop(sprintf(
+      "registration fixture repeated scalar check failed for %s", runner_name
+    ))
+  }
+  scalar_nan <- capture_result(function() do.call(.Call, list(call_symbol, NaN)))
+  if (!scalar_nan$ok || !isTRUE(is.nan(scalar_nan$value))) stop(sprintf(
+    "registration fixture scalar NaN check failed for %s", runner_name
+  ))
+  scalar_after_allocation <- capture_result(function() do.call(.Call, list(scalar_after_allocation_symbol, 3.5)))
+  if (!scalar_after_allocation$ok || !isTRUE(all.equal(scalar_after_allocation$value, 3.5))) stop(sprintf(
+    "registration fixture scalar-after-allocation check failed for %s", runner_name
+  ))
   bad_scalar_type <- capture_result(function() do.call(.Call, list(call_symbol, 1L)))
-  if (bad_scalar_type$ok) stop(sprintf("registration fixture accepted a wrong scalar type for %s", runner_name))
+  expect_fixture_error(
+    bad_scalar_type,
+    "a wrong scalar type",
+    if (identical(runner_name, "zigr")) "expected REALSXP" else NULL
+  )
   bad_scalar_length <- capture_result(function() do.call(.Call, list(call_symbol, c(1.0, 2.0))))
-  if (bad_scalar_length$ok) stop(sprintf("registration fixture accepted an invalid scalar length for %s", runner_name))
+  expect_fixture_error(
+    bad_scalar_length,
+    "an invalid scalar length",
+    if (identical(runner_name, "zigr")) "scalar inputs must have length one" else NULL
+  )
   bad_scalar_empty <- capture_result(function() do.call(.Call, list(call_symbol, numeric())))
-  if (bad_scalar_empty$ok) stop(sprintf("registration fixture accepted an empty scalar for %s", runner_name))
+  expect_fixture_error(
+    bad_scalar_empty,
+    "an empty scalar",
+    if (identical(runner_name, "zigr")) "expected non-empty vector" else NULL
+  )
   bad_scalar_na <- capture_result(function() do.call(.Call, list(call_symbol, NA_real_)))
-  if (bad_scalar_na$ok) stop(sprintf("registration fixture accepted a required scalar NA for %s", runner_name))
+  expect_fixture_error(
+    bad_scalar_na,
+    "a required scalar NA",
+    if (identical(runner_name, "zigr")) "scalar inputs must not be NA" else NULL
+  )
+
+  integer <- capture_result(function() do.call(.Call, list(integer_symbol, -7L)))
+  if (!integer$ok || !identical(integer$value, -7L)) stop(sprintf(
+    "registration fixture integer scalar check failed for %s", runner_name
+  ))
+  expect_fixture_error(capture_result(function() do.call(.Call, list(integer_symbol, 3.5))), "a wrong integer scalar type")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(integer_symbol, c(1L, 2L)))), "an overlong integer scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(integer_symbol, integer()))), "an empty integer scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(integer_symbol, NA_integer_))), "a required integer NA")
+
+  logical_false <- capture_result(function() do.call(.Call, list(logical_symbol, FALSE)))
+  logical_true <- capture_result(function() do.call(.Call, list(logical_symbol, TRUE)))
+  if (!logical_false$ok || !identical(logical_false$value, FALSE) || !logical_true$ok || !identical(logical_true$value, TRUE)) stop(sprintf(
+    "registration fixture logical scalar check failed for %s", runner_name
+  ))
+  expect_fixture_error(capture_result(function() do.call(.Call, list(logical_symbol, 1L))), "a wrong logical scalar type")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(logical_symbol, c(TRUE, FALSE)))), "an overlong logical scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(logical_symbol, logical()))), "an empty logical scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(logical_symbol, NA))), "a required logical NA")
+
   optional_null <- capture_result(function() do.call(.Call, list(optional_symbol, NULL)))
   if (!optional_null$ok || !isTRUE(all.equal(optional_null$value, 0L))) stop(sprintf(
     "registration fixture NULL optional check failed for %s", runner_name
@@ -362,8 +430,32 @@ validate_registration_fixture <- function(cfg) {
   if (!optional_na$ok || !isTRUE(all.equal(optional_na$value, 0L))) stop(sprintf(
     "registration fixture typed-NA optional check failed for %s", runner_name
   ))
+  optional_nan <- capture_result(function() do.call(.Call, list(optional_symbol, NaN)))
+  if (!optional_nan$ok || !identical(optional_nan$value, 1L)) stop(sprintf(
+    "registration fixture optional NaN check failed for %s", runner_name
+  ))
   bad_optional_length <- capture_result(function() do.call(.Call, list(optional_symbol, c(NA_real_, 1.0))))
-  if (bad_optional_length$ok) stop(sprintf("registration fixture accepted an invalid optional scalar length for %s", runner_name))
+  expect_fixture_error(bad_optional_length, "an invalid optional scalar length")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(optional_symbol, numeric()))), "an empty optional scalar")
+
+  optional_integer_null <- capture_result(function() do.call(.Call, list(optional_integer_symbol, NULL)))
+  optional_integer_na <- capture_result(function() do.call(.Call, list(optional_integer_symbol, NA_integer_)))
+  optional_integer_value <- capture_result(function() do.call(.Call, list(optional_integer_symbol, 7L)))
+  if (!optional_integer_null$ok || !identical(optional_integer_null$value, 0L) || !optional_integer_na$ok || !identical(optional_integer_na$value, 0L) || !optional_integer_value$ok || !identical(optional_integer_value$value, 1L)) stop(sprintf(
+    "registration fixture optional integer check failed for %s", runner_name
+  ))
+  expect_fixture_error(capture_result(function() do.call(.Call, list(optional_integer_symbol, c(NA_integer_, 1L)))), "an overlong optional integer scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(optional_integer_symbol, NA_real_))), "a wrong optional integer scalar type")
+
+  optional_logical_null <- capture_result(function() do.call(.Call, list(optional_logical_symbol, NULL)))
+  optional_logical_na <- capture_result(function() do.call(.Call, list(optional_logical_symbol, NA)))
+  optional_logical_value <- capture_result(function() do.call(.Call, list(optional_logical_symbol, FALSE)))
+  if (!optional_logical_null$ok || !identical(optional_logical_null$value, 0L) || !optional_logical_na$ok || !identical(optional_logical_na$value, 0L) || !optional_logical_value$ok || !identical(optional_logical_value$value, 1L)) stop(sprintf(
+    "registration fixture optional logical check failed for %s", runner_name
+  ))
+  expect_fixture_error(capture_result(function() do.call(.Call, list(optional_logical_symbol, c(NA, TRUE)))), "an overlong optional logical scalar")
+  expect_fixture_error(capture_result(function() do.call(.Call, list(optional_logical_symbol, NA_integer_))), "a wrong optional logical scalar type")
+
   invalid_result_contract <- validate_result_contract(1L, "real_scalar")
   if (invalid_result_contract$ok) stop(sprintf("result-contract preflight accepted an invalid shape for %s", runner_name))
   vector <- capture_result(function() do.call(.Call, list(vector_symbol, c(1.0, 2.0, 3.0))))

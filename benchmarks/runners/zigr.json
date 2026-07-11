@@ -11,7 +11,12 @@
   "package_name": "zigr_benchmarks",
   "registration_fixture": {
     "scalar": "zigr_fixture_scalar",
+    "integer": "zigr_fixture_int_scalar",
+    "logical": "zigr_fixture_bool_scalar",
+    "scalar_after_allocation": "zigr_fixture_scalar_after_allocation",
     "optional": "zigr_fixture_optional",
+    "optional_integer": "zigr_fixture_optional_int",
+    "optional_logical": "zigr_fixture_optional_bool",
     "vector": "zigr_fixture_vector",
     "new": "zigr_fixture_new",
     "method": "zigr_fixture_method",

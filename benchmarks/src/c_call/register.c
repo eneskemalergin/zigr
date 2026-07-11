@@ -67,6 +67,39 @@ static SEXP c_fixture_scalar(SEXP value) {
     return Rf_ScalarReal(REAL(value)[0]);
 }
 
+static SEXP c_fixture_int_scalar(SEXP value) {
+    if (TYPEOF(value) != INTSXP || XLENGTH(value) != 1) {
+        Rf_error("c fixture scalar expected one INTEGER value");
+    }
+    if (INTEGER(value)[0] == NA_INTEGER) {
+        Rf_error("c fixture scalar expected a non-missing INTEGER value");
+    }
+    return Rf_ScalarInteger(INTEGER(value)[0]);
+}
+
+static SEXP c_fixture_bool_scalar(SEXP value) {
+    if (TYPEOF(value) != LGLSXP || XLENGTH(value) != 1) {
+        Rf_error("c fixture scalar expected one LOGICAL value");
+    }
+    if (LOGICAL(value)[0] == NA_LOGICAL) {
+        Rf_error("c fixture scalar expected a non-missing LOGICAL value");
+    }
+    return Rf_ScalarLogical(LOGICAL(value)[0] != 0);
+}
+
+static SEXP c_fixture_scalar_after_allocation(SEXP value) {
+    double scalar;
+    if (TYPEOF(value) != REALSXP || XLENGTH(value) != 1) {
+        Rf_error("c fixture scalar expected one REAL value");
+    }
+    scalar = REAL(value)[0];
+    if (ISNA(scalar)) {
+        Rf_error("c fixture scalar expected a non-missing REAL value");
+    }
+    (void) Rf_allocVector(INTSXP, 1);
+    return Rf_ScalarReal(scalar);
+}
+
 static SEXP c_fixture_vector(SEXP value) {
     if (TYPEOF(value) != REALSXP) {
         Rf_error("c fixture vector expected a REAL vector");
@@ -141,6 +174,24 @@ static SEXP c_p13_optional(SEXP value) {
         Rf_error("c P1.3 optional expected NULL or one REAL value");
     }
     if (ISNA(REAL(value)[0])) return Rf_ScalarInteger(0);
+    return Rf_ScalarInteger(1);
+}
+
+static SEXP c_p13_optional_int(SEXP value) {
+    if (value == R_NilValue) return Rf_ScalarInteger(0);
+    if (TYPEOF(value) != INTSXP || XLENGTH(value) != 1) {
+        Rf_error("c P1.4 optional expected NULL or one INTEGER value");
+    }
+    if (INTEGER(value)[0] == NA_INTEGER) return Rf_ScalarInteger(0);
+    return Rf_ScalarInteger(1);
+}
+
+static SEXP c_p13_optional_bool(SEXP value) {
+    if (value == R_NilValue) return Rf_ScalarInteger(0);
+    if (TYPEOF(value) != LGLSXP || XLENGTH(value) != 1) {
+        Rf_error("c P1.4 optional expected NULL or one LOGICAL value");
+    }
+    if (LOGICAL(value)[0] == NA_LOGICAL) return Rf_ScalarInteger(0);
     return Rf_ScalarInteger(1);
 }
 
@@ -259,6 +310,9 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_call_bench_external_ptr",     (DL_FUNC) &c_call_bench_external_ptr,     1},
   {"c_call_bench_rng_stress",       (DL_FUNC) &c_call_bench_rng_stress,       1},
   {"c_fixture_scalar",               (DL_FUNC) &c_fixture_scalar,               1},
+  {"c_fixture_int_scalar",           (DL_FUNC) &c_fixture_int_scalar,           1},
+  {"c_fixture_bool_scalar",          (DL_FUNC) &c_fixture_bool_scalar,          1},
+  {"c_fixture_scalar_after_allocation", (DL_FUNC) &c_fixture_scalar_after_allocation, 1},
   {"c_fixture_vector",               (DL_FUNC) &c_fixture_vector,               1},
   {"c_fixture_new",                  (DL_FUNC) &c_fixture_new,                  0},
   {"c_fixture_method",               (DL_FUNC) &c_fixture_method,               2},
@@ -269,6 +323,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_p13_zero",                     (DL_FUNC) &c_p13_zero,                     0},
   {"c_p13_scalar",                   (DL_FUNC) &c_p13_scalar,                   1},
   {"c_p13_optional",                 (DL_FUNC) &c_p13_optional,                 1},
+  {"c_p13_optional_int",             (DL_FUNC) &c_p13_optional_int,             1},
+  {"c_p13_optional_bool",            (DL_FUNC) &c_p13_optional_bool,            1},
   {"c_p13_numeric",                  (DL_FUNC) &c_p13_numeric,                  1},
   {"c_p13_altrep_integer",           (DL_FUNC) &c_p13_altrep_integer,           1},
   {"c_p13_string_view",              (DL_FUNC) &c_p13_string_view,              1},
