@@ -92,6 +92,18 @@ Use `tryFromSEXP` when Zig code needs a conversion error. Use `fromSEXP` inside 
 
 Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R errors, and call-scoped native storage is released when R longjmps. Handle Zig error unions inside your function or an explicit adapter before returning to the generated boundary. A Zig panic cannot be caught there, so exported functions must not panic. Returned slices are converted to R objects before call-scoped storage is released; do not retain borrowed R slices after the call.
 
+### R runtime services
+
+The core service layer stays close to the R C API:
+
+- `attrib` provides checked string attributes and allocating setters over `Rf_getAttrib`, `Rf_setAttrib`, `Rf_namesgets`, `Rf_classgets`, and `Rf_dimgets`. Returned header arrays are caller-freed; their string bytes remain R-owned. `getString` maps `NA` to empty, while `getOptionalString` preserves it as `null`. R allocation and ALTREP access can longjmp, so native cleanup needs an outer unwind boundary.
+- `symbols.install` wraps `Rf_install` with a fixed 64-entry thread-local cache. R owns and roots each symbol for the session, so callers do not protect it. Installation can longjmp. Names containing NUL or longer than 255 bytes become R errors instead of being truncated.
+- `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. Constructed calls are returned unprotected, so protect them before another R allocation.
+- `eval` wraps lookup, call evaluation, `R_tryEval`, and `R_tryEvalSilent`. Results are borrowed, unprotected `SEXP` values. Evaluation can longjmp; use a generated entry point or another unwind boundary when native cleanup is live.
+- `interrupt` is a thin wrapper over `R_CheckUserInterrupt`, `R_CheckStack`, and `R_CheckStack2`. These checks can longjmp and do not create their own unwind boundary.
+
+Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conversion layer does not cover an R object. They add no ownership or type guarantee.
+
 ### Native-state methods
 
 I keep native state explicit. `generateMethods(T, ...)` accepts a method only when its first parameter is exactly `*T`; both `.Call` and `.External` take that receiver first and validate its R type, per-type tag, typed protected metadata, address, and alignment before casting it.

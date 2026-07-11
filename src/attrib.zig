@@ -1,9 +1,65 @@
-//! R attributes and names.
+//! Checked names, class, and dimension helpers plus raw attribute access.
+//!
+//! Allocating setters may longjmp. Call them inside a generated entry point or
+//! another unwind boundary.
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 const sexp_mod = @import("sexp.zig");
+
+pub const AttributeError = error{ExpectedStringAttribute};
+
+const HeaderCleanup = struct {
+    allocator: std.mem.Allocator,
+    values: [][]const u8,
+
+    fn fire(self: *@This()) void {
+        self.allocator.free(self.values);
+    }
+};
+
+const OptionalHeaderCleanup = struct {
+    allocator: std.mem.Allocator,
+    values: []?[]const u8,
+
+    fn fire(self: *@This()) void {
+        self.allocator.free(self.values);
+    }
+};
+
+/// The returned headers are caller-owned. R owns the bytes; `NA` becomes empty.
+pub fn getString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
+    const value = R.Rf_getAttrib(sexp, symbol);
+    if (value == R.R_NilValue) return allocator.alloc([]const u8, 0);
+    if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
+    const n: usize = @intCast(R.XLENGTH(value));
+    const result = try allocator.alloc([]const u8, n);
+    _ = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator, .values = result }, HeaderCleanup.fire);
+    defer cleanup.popFrame();
+    for (0..n) |i| {
+        const elt = R.STRING_ELT(value, @intCast(i));
+        result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
+    }
+    return result;
+}
+
+/// The returned headers are caller-owned. R owns present bytes; `NA` stays null.
+pub fn getOptionalString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.SEXP) (AttributeError || std.mem.Allocator.Error)![]?[]const u8 {
+    const value = R.Rf_getAttrib(sexp, symbol);
+    if (value == R.R_NilValue) return allocator.alloc(?[]const u8, 0);
+    if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
+    const n: usize = @intCast(R.XLENGTH(value));
+    const result = try allocator.alloc(?[]const u8, n);
+    _ = cleanup.pushFrameInline(OptionalHeaderCleanup, .{ .allocator = allocator, .values = result }, OptionalHeaderCleanup.fire);
+    defer cleanup.popFrame();
+    for (0..n) |i| {
+        const elt = R.STRING_ELT(value, @intCast(i));
+        result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
+    }
+    return result;
+}
 
 pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     var ns = protect.scoped(R.Rf_allocVector(R.STRSXP, @as(R.R_xlen_t, @intCast(names.len))));
@@ -15,17 +71,14 @@ pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     _ = R.Rf_namesgets(sexp, ns.get());
 }
 
-pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
-    const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
-    if (cls == R.R_NilValue) return &.{};
-    const clen = R.XLENGTH(cls);
-    const n = @as(usize, @intCast(if (clen < 0) @as(R.R_xlen_t, 0) else clen));
-    const result = try allocator.alloc([]const u8, n);
-    for (0..n) |i| {
-        const elt = R.STRING_ELT(cls, @intCast(i));
-        result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
-    }
-    return result;
+/// The returned headers are caller-owned and their bytes remain R-owned.
+pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
+    return getString(allocator, sexp, R.R_ClassSymbol);
+}
+
+/// The returned headers are caller-owned and their bytes remain R-owned.
+pub fn getNames(allocator: std.mem.Allocator, sexp: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
+    return getString(allocator, sexp, R.R_NamesSymbol);
 }
 
 pub fn setClass(sexp: R.SEXP, class: []const u8) void {

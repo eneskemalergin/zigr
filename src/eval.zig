@@ -80,7 +80,7 @@ pub fn tryEval(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
 }
 
 pub fn tryFindVar(sym: R.SEXP, envir: ?R.SEXP) ?R.SEXP {
-    return tryEval(sym, resolveEnv(envir));
+    return tryEvalSilent(sym, resolveEnv(envir));
 }
 
 pub fn tryFindVarName(name: []const u8) ?R.SEXP {

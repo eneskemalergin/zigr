@@ -166,6 +166,31 @@ export fn zigr_test_check_stack() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+var stack_check_cleanup_fired = false;
+
+fn markStackCheckCleanup(_: ?*anyopaque) void {
+    stack_check_cleanup_fired = true;
+}
+
+export fn zigr_test_check_stack_longjmp() SEXP {
+    stack_check_cleanup_fired = false;
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return cleanup.protectCall(struct {
+                fn check() SEXP {
+                    cleanup.pushFrame(markStackCheckCleanup, null);
+                    ict.checkStack2(std.math.maxInt(usize));
+                    cleanup.popFrame();
+                    return R.R_NilValue;
+                }
+            }.check);
+        }
+    }.call)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    return R.Rf_ScalarReal(if (stack_check_cleanup_fired) 1.0 else 0.0);
+}
+
 export fn zigr_test_rev_eval() SEXP {
     const plus = test_lang.symbol("+");
     const one = R.Rf_ScalarReal(1.0);
@@ -192,6 +217,55 @@ export fn zigr_test_rev_lang3() SEXP {
     const result = test_eval.rEval(call, null);
     const val = R.REAL(result)[0];
     if (val != 30.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn installLongSymbol() SEXP {
+    var name = [_]u8{'x'} ** zigr.sexp.max_symbol_name;
+    return zigr.symbols.install(&name);
+}
+
+fn installNulSymbol() SEXP {
+    const name = [_]u8{ 'x', 0, 'y' };
+    return zigr.symbols.install(&name);
+}
+
+export fn zigr_test_symbol_contract() SEXP {
+    const first = zigr.symbols.install("zigr_service_symbol");
+    if (first != zigr.symbols.install("zigr_service_symbol")) return R.Rf_ScalarReal(0.0);
+
+    var buf: [64]u8 = undefined;
+    var installed: [80]SEXP = undefined;
+    for (0..80) |i| {
+        const name = std.fmt.bufPrint(&buf, "zigr_service_symbol_{d}", .{i}) catch return R.Rf_ScalarReal(0.0);
+        installed[i] = zigr.symbols.install(name);
+    }
+    for (0..80) |i| {
+        const name = std.fmt.bufPrint(&buf, "zigr_service_symbol_{d}", .{i}) catch return R.Rf_ScalarReal(0.0);
+        if (installed[i] != zigr.symbols.install(name)) return R.Rf_ScalarReal(0.0);
+    }
+    if (first != zigr.symbols.install("zigr_service_symbol")) return R.Rf_ScalarReal(0.0);
+
+    if (trycatch_mod.tryCatch(installLongSymbol)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (trycatch_mod.tryCatch(installNulSymbol)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_eval_contract() SEXP {
+    if (test_eval.tryFindVarName("__zigr_missing_service_value__") != null) return R.Rf_ScalarReal(0.0);
+
+    const one = R.Rf_protect(R.Rf_ScalarReal(1.0));
+    defer R.Rf_unprotect(1);
+    const call = R.Rf_protect(test_lang.buildNamedCall("sum", .{ one, one }));
+    defer R.Rf_unprotect(1);
+    for (0..8) |_| {
+        const noise = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 131_072));
+        R.REAL(noise)[0] = 1.0;
+        R.Rf_unprotect(1);
+    }
+    const result = test_eval.tryEval(call, R.R_GlobalEnv) orelse return R.Rf_ScalarReal(0.0);
+    if (R.REAL(result)[0] != 2.0) return R.Rf_ScalarReal(0.0);
+    if (test_eval.tryEvalSilent(call, one) != null) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -513,6 +587,7 @@ export fn zigr_test_attrib_class() SEXP {
     defer R.Rf_unprotect(1);
     attrib.setClass(vec, "myclass");
     const cls = attrib.getClass(std.heap.page_allocator, vec) catch return R.Rf_ScalarReal(0.0);
+    defer std.heap.page_allocator.free(cls);
     if (cls.len > 0 and std.mem.eql(u8, cls[0], "myclass")) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
@@ -522,10 +597,48 @@ export fn zigr_test_attrib_names() SEXP {
     defer R.Rf_unprotect(1);
     const names = [_][]const u8{ "a", "b", "c" };
     attrib.setNames(vec, names[0..]);
-    const ns = R.Rf_getAttrib(vec, R.R_NamesSymbol);
-    if (ns == R.R_NilValue) return R.Rf_ScalarReal(0.0);
-    const ok = R.XLENGTH(ns) == 3;
+    const ns = attrib.getNames(std.heap.page_allocator, vec) catch return R.Rf_ScalarReal(0.0);
+    defer std.heap.page_allocator.free(ns);
+    const ok = ns.len == 3 and std.mem.eql(u8, ns[0], "a") and std.mem.eql(u8, ns[2], "c");
+    var no_space: [0]u8 = .{};
+    var no_alloc = std.heap.FixedBufferAllocator.init(&no_space);
+    if (attrib.getNames(no_alloc.allocator(), vec)) |unexpected| {
+        no_alloc.allocator().free(unexpected);
+        return R.Rf_ScalarReal(0.0);
+    } else |get_err| {
+        if (get_err != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
+    }
     return if (ok) R.Rf_ScalarReal(1.0) else R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_test_attrib_contract() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
+    defer R.Rf_unprotect(1);
+
+    const missing = attrib.getNames(std.heap.page_allocator, vec) catch return R.Rf_ScalarReal(0.0);
+    defer std.heap.page_allocator.free(missing);
+    if (missing.len != 0) return R.Rf_ScalarReal(0.0);
+
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(names, 0, R.R_NaString);
+    attrib.setAttrib(vec, R.R_NamesSymbol, names);
+    const optional = attrib.getOptionalString(std.heap.page_allocator, vec, R.R_NamesSymbol) catch return R.Rf_ScalarReal(0.0);
+    defer std.heap.page_allocator.free(optional);
+    if (optional.len != 1 or optional[0] != null) return R.Rf_ScalarReal(0.0);
+
+    const bad = R.Rf_protect(R.Rf_ScalarInteger(1));
+    defer R.Rf_unprotect(1);
+    const marker = zigr.symbols.install("zigr_service_bad_attribute");
+    attrib.setAttrib(vec, marker, bad);
+
+    if (attrib.getString(std.heap.page_allocator, vec, marker)) |value| {
+        std.heap.page_allocator.free(value);
+        return R.Rf_ScalarReal(0.0);
+    } else |get_err| {
+        if (get_err != error.ExpectedStringAttribute) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
 }
 
 const MyAlt = altrep_create.AltReal("zigr", "test_real");
@@ -1332,6 +1445,40 @@ export fn zigr_test_conversion_allocation_longjmp() SEXP {
         conversion_cleanup_input = null;
         if (string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     }
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var attribute_cleanup_object: SEXP = null;
+threadlocal var attribute_cleanup_symbol: SEXP = null;
+
+fn attributeReadThenError() SEXP {
+    _ = attrib.getString(StringCleanupAllocator.allocator(), attribute_cleanup_object, attribute_cleanup_symbol) catch return R.R_NilValue;
+    R.Rf_error("attribute read unexpectedly returned");
+}
+
+export fn zigr_test_attrib_allocation_longjmp() SEXP {
+    const object = R.Rf_protect(R.Rf_ScalarReal(1.0));
+    defer R.Rf_unprotect(1);
+    const value = R.Rf_protect(stringErrorAltString());
+    defer R.Rf_unprotect(1);
+    const marker = zigr.symbols.install("zigr_service_altstring_attribute");
+    attrib.setAttrib(object, marker, value);
+    attribute_cleanup_object = object;
+    attribute_cleanup_symbol = marker;
+    string_cleanup_state = .{};
+    string_cleanup_elt_calls = 0;
+
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return cleanup.protectCall(attributeReadThenError);
+        }
+    }.call)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+
+    attribute_cleanup_object = null;
+    attribute_cleanup_symbol = null;
+    if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

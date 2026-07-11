@@ -1,6 +1,7 @@
 //! R language nodes and call construction.
 //!
-//! Intermediate nodes stay protected while a call is being linked.
+//! `car` and related helpers are unchecked C API access. Constructors may
+//! allocate and longjmp; built calls are returned unprotected.
 
 const R = @import("R");
 const protect = @import("protect.zig");

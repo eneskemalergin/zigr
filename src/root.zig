@@ -17,6 +17,7 @@ pub const altrep_create = @import("altrep_create.zig");
 pub const externalptr = @import("externalptr.zig");
 pub const @"export" = @import("export.zig");
 pub const lang = @import("lang.zig");
+pub const symbols = @import("symbols.zig");
 pub const eval = @import("eval.zig");
 pub const trycatch = @import("trycatch.zig");
 pub const serialize = @import("serialize.zig");
@@ -41,6 +42,7 @@ test {
     _ = externalptr;
     _ = @"export";
     _ = lang;
+    _ = symbols;
     _ = eval;
     _ = trycatch;
     _ = serialize;

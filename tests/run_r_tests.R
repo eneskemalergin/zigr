@@ -68,10 +68,13 @@ tests <- list(
 
   "zigr_test_interrupt",
   "zigr_test_check_stack",
+  "zigr_test_check_stack_longjmp",
 
   "zigr_test_rev_eval",
   "zigr_test_rev_define_find",
   "zigr_test_rev_lang3",
+  "zigr_test_symbol_contract",
+  "zigr_test_eval_contract",
 
   "zigr_test_rng",
 
@@ -101,6 +104,8 @@ tests <- list(
 
   "zigr_test_attrib_class",
   "zigr_test_attrib_names",
+  "zigr_test_attrib_contract",
+  "zigr_test_attrib_allocation_longjmp",
 
   "zigr_test_altrep_create",
   "zigr_test_altrep_sum_simd",
