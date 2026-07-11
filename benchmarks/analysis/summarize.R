@@ -36,9 +36,13 @@ for (runner_dir in runner_dirs) {
   rows[[length(rows) + 1L]] <- data.frame(
     runner = runner,
     task = as.character(summary$task),
+    call_type = summary_column(summary, "call_type", NA_character_),
+    matrix_group = task_matrix_group(summary$task),
+    matrix_variant = task_matrix_variant(summary$task),
     category = manifest$category[manifest_rows],
     report_category = task_report_category(manifest$category[manifest_rows]),
     aggregate_comparable = manifest$aggregate[manifest_rows],
+    comparison_note = manifest$comparison_note[manifest_rows],
     mean_ms = summary$mean_ms,
     median_ms = summary$median_ms,
     min_ms = summary$min_ms,

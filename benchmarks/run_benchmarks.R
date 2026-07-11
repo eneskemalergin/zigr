@@ -40,6 +40,10 @@ if (!is.null(runners_filter)) {
 }
 if (length(all_runners) == 0L) stop("no active runners selected")
 
+optional_tasks <- unique(unlist(lapply(all_runners, function(cfg) {
+  if (is.null(cfg$optional_tasks)) character(0) else as.character(unlist(cfg$optional_tasks, use.names = FALSE))
+}), use.names = FALSE))
+
 task_numbers <- as.integer(sub("([0-9]+).*", "\\1", manifest$task))
 selected_tasks <- manifest$task
 if (!is.null(tasks_filter)) {
@@ -76,7 +80,7 @@ run_metadata <- list(
   started_at = run_manifest_timestamp(),
   runners = sort(names(all_runners)),
   tasks = selected_tasks,
-  allowed_na_tasks = character(0),
+  allowed_na_tasks = sort(intersect(selected_tasks, optional_tasks)),
   timing_policy = benchmark_timing_policy(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()

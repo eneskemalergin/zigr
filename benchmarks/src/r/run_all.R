@@ -279,6 +279,25 @@ r_bench_rng_stress <- function(n) {
   rnorm(n)
 }
 
+# P1.3 generated-boundary references.  These intentionally do the smallest
+# useful kernel so the measured native rows expose boundary cost rather than
+# an application algorithm. Materialized numeric inputs and ALTREP strategy
+# diagnostics are supplied by the runner; generated and handwritten rows share
+# each reference by design.
+r_p13_zero <- function() 1.0
+r_p13_scalar <- function(x) as.double(x[[1L]])
+r_p13_optional <- function(x) {
+  if (is.null(x) || isTRUE(is.na(x[[1L]]))) 0L else 1L
+}
+r_p13_numeric <- function(x) sum(x)
+r_p13_altrep_integer <- function(x) as.double(sum(x))
+r_p13_string_view <- function(x) as.integer(sum(!is.na(x)))
+r_p13_raw <- function(x) as.integer(sum(as.integer(x)))
+r_p13_complex <- function(x) sum(Re(x))
+r_p13_schema <- function(x) x
+r_p13_external_method <- function(receiver, amount) as.integer(amount)
+r_p13_external <- function(x) as.double(x + 1.0)
+
 # Task 10: SEXP create (100k small vectors)
 r_bench_sexp_create <- function(n) {
   for (i in seq_len(n)) {

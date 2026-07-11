@@ -85,6 +85,7 @@ pub const ConvertError = error{
     ExpectedRaw,
     ExpectedComplex,
     ZeroLength,
+    ScalarLength,
     ScalarNA,
     AltRepRegionRead,
     MissingField,
@@ -101,6 +102,11 @@ fn expectNonEmpty(sexp: SEXP) ConvertError!void {
     if (R.XLENGTH(sexp) == 0) return error.ZeroLength;
 }
 
+fn expectScalarLength(sexp: SEXP) ConvertError!void {
+    try expectNonEmpty(sexp);
+    if (R.XLENGTH(sexp) != 1) return error.ScalarLength;
+}
+
 pub fn errorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.ExpectedReal => "expected REALSXP",
@@ -112,6 +118,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.ExpectedRaw => "expected RAWSXP",
         error.ExpectedComplex => "expected CPLXSXP",
         error.ZeroLength => "expected non-empty vector",
+        error.ScalarLength => "scalar inputs must have length one",
         error.ScalarNA => "scalar inputs must not be NA",
         error.AltRepRegionRead => "ALTREP region read failed",
         error.MissingField => "missing required field in R list",
@@ -134,13 +141,13 @@ fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
     if (sexp == R.R_NilValue) return true;
     if (comptime T == f64) {
-        return sexp_mod.typeTag(sexp) == 14 and R.XLENGTH(sexp) > 0 and R.ISNA(R.REAL(sexp)[0]) != 0;
+        return sexp_mod.typeTag(sexp) == 14 and R.XLENGTH(sexp) == 1 and R.ISNA(R.REAL(sexp)[0]) != 0;
     }
     if (comptime T == i32) {
-        return sexp_mod.typeTag(sexp) == 13 and R.XLENGTH(sexp) > 0 and R.INTEGER(sexp)[0] == R.R_NaInt;
+        return sexp_mod.typeTag(sexp) == 13 and R.XLENGTH(sexp) == 1 and R.INTEGER(sexp)[0] == R.R_NaInt;
     }
     if (comptime T == bool) {
-        return sexp_mod.typeTag(sexp) == 10 and R.XLENGTH(sexp) > 0 and R.LOGICAL(sexp)[0] == R.R_NaInt;
+        return sexp_mod.typeTag(sexp) == 10 and R.XLENGTH(sexp) == 1 and R.LOGICAL(sexp)[0] == R.R_NaInt;
     }
     return false;
 }
@@ -156,7 +163,7 @@ pub fn signalError(err: anyerror) noreturn {
 
 pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    try expectNonEmpty(sexp);
+    try expectScalarLength(sexp);
     const value = R.REAL(sexp)[0];
     if (R.ISNA(value) != 0) return error.ScalarNA;
     return value;
@@ -164,7 +171,7 @@ pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
 
 pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    try expectNonEmpty(sexp);
+    try expectScalarLength(sexp);
     const value = R.INTEGER(sexp)[0];
     if (value == R.R_NaInt) return error.ScalarNA;
     return value;
@@ -172,7 +179,7 @@ pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
 
 pub fn toBoolScalar(sexp: SEXP) ConvertError!bool {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    try expectNonEmpty(sexp);
+    try expectScalarLength(sexp);
     const value = R.LOGICAL(sexp)[0];
     if (value == R.R_NaInt) return error.ScalarNA;
     return value != 0;
@@ -1678,6 +1685,7 @@ test "errorMessage covers all ConvertError variants" {
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedRaw), "expected RAWSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedComplex), "expected CPLXSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ZeroLength), "expected non-empty vector");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ScalarLength), "scalar inputs must have length one");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ScalarNA), "scalar inputs must not be NA");
     try std.testing.expectEqualSlices(u8, errorMessage(error.AltRepRegionRead), "ALTREP region read failed");
     try std.testing.expectEqualSlices(u8, errorMessage(error.MissingField), "missing required field in R list");

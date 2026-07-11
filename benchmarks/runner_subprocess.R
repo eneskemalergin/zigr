@@ -140,7 +140,63 @@ all_tasks <- list(
   list(id = "42_external_ptr", name = "External Pointer",
        args = function() list(1L)),
   list(id = "43_rng_stress", name = "RNG Stress (1M norm_rand)",
-       args = function() list(1000000L))
+       args = function() list(1000000L)),
+  list(id = "50_p13_zero_generated", name = "P1.3 generated zero-argument boundary",
+       args = function() list()),
+  list(id = "51_p13_zero_handwritten", name = "P1.3 handwritten zero-argument boundary",
+       args = function() list()),
+  list(id = "52_p13_scalar_generated", name = "P1.3 generated scalar boundary",
+       args = function() list(3.5)),
+  list(id = "53_p13_scalar_handwritten", name = "P1.3 handwritten scalar boundary",
+       args = function() list(3.5)),
+  list(id = "54_p13_optional_null_generated", name = "P1.3 generated optional NULL boundary",
+       args = function() list(NULL)),
+  list(id = "55_p13_optional_null_handwritten", name = "P1.3 handwritten optional NULL boundary",
+       args = function() list(NULL)),
+  list(id = "56_p13_optional_typed_na_generated", name = "P1.3 generated optional typed-NA boundary",
+       args = function() list(NA_real_)),
+  list(id = "57_p13_optional_typed_na_handwritten", name = "P1.3 handwritten optional typed-NA boundary",
+       args = function() list(NA_real_)),
+  # as.double(seq_len()) is compact ALTREP in current R; arithmetic makes the
+  # ordinary REALSXP required by the materialized numeric pair.
+  list(id = "58_p13_numeric_small_generated", name = "P1.3 generated small numeric boundary",
+       args = function() list(as.double(seq_len(16L)) + 0.0)),
+  list(id = "59_p13_numeric_small_handwritten", name = "P1.3 handwritten small numeric boundary",
+       args = function() list(as.double(seq_len(16L)) + 0.0)),
+  list(id = "60_p13_numeric_large_generated", name = "P1.3 generated large numeric boundary",
+       args = function() list(as.double(seq_len(100000L)) + 0.0)),
+  list(id = "61_p13_numeric_large_handwritten", name = "P1.3 handwritten large numeric boundary",
+       args = function() list(as.double(seq_len(100000L)) + 0.0)),
+  list(id = "62_p13_altrep_integer_generated", name = "P1.3 generated integer ALTREP owned-copy diagnostic",
+       args = function() list(seq_len(100000L))),
+  list(id = "63_p13_altrep_integer_handwritten", name = "P1.3 handwritten integer ALTREP region-stream diagnostic",
+       args = function() list(seq_len(100000L))),
+  list(id = "64_p13_string_view_generated", name = "P1.3 generated string-view boundary",
+       args = function() list(rep(c("zigr", "boundary", NA_character_), length.out = 32L))),
+  list(id = "65_p13_string_view_handwritten", name = "P1.3 handwritten string-view boundary",
+       args = function() list(rep(c("zigr", "boundary", NA_character_), length.out = 32L))),
+  list(id = "66_p13_raw_generated", name = "P1.3 generated raw boundary",
+       args = function() list(as.raw(seq_len(64L) %% 251L))),
+  list(id = "67_p13_raw_handwritten", name = "P1.3 handwritten raw boundary",
+       args = function() list(as.raw(seq_len(64L) %% 251L))),
+  list(id = "68_p13_complex_generated", name = "P1.3 generated complex boundary",
+       args = function() list(complex(real = as.double(seq_len(32L)), imaginary = as.double(seq_len(32L)) * 0.5))),
+  list(id = "69_p13_complex_handwritten", name = "P1.3 handwritten complex boundary",
+       args = function() list(complex(real = as.double(seq_len(32L)), imaginary = as.double(seq_len(32L)) * 0.5))),
+  list(id = "70_p13_schema_generated", name = "P1.3 generated fixed-schema boundary",
+       args = function() list(list(id = 42L, count = 7L, ratio = 1.25, enabled = TRUE))),
+  list(id = "71_p13_schema_handwritten", name = "P1.3 handwritten fixed-schema boundary",
+       args = function() list(list(id = 42L, count = 7L, ratio = 1.25, enabled = TRUE))),
+  list(id = "72_p13_external_method_generated", name = "P1.3 generated external-pointer method",
+       args = function() list(p13_method_receiver(), 7L)),
+  list(id = "73_p13_external_method_handwritten", name = "P1.3 handwritten external-pointer method",
+       args = function() list(p13_method_receiver(), 7L)),
+  list(id = "74_p13_external_generated", name = "P1.3 generated .External boundary",
+       call_type = ".External",
+       args = function() list(4.0)),
+  list(id = "75_p13_external_handwritten", name = "P1.3 handwritten .External boundary",
+       call_type = ".External",
+       args = function() list(4.0))
 )
 
 source(file.path(root_dir, "lib", "task_manifest.R"))
@@ -255,7 +311,7 @@ resolve_registered_exports <- function(export_names, cfg) {
 validate_registration_fixture <- function(cfg) {
   fixture <- cfg$registration_fixture
   if (is.null(fixture)) return(invisible(NULL))
-  required <- c("scalar", "vector", "new", "method", "error", "external")
+  required <- c("scalar", "optional", "vector", "new", "method", "error", "external", "wrong_tag", "cleared", "misaligned")
   missing <- required[vapply(required, function(key) is.null(fixture[[key]]) || !nzchar(fixture[[key]]), logical(1))]
   if (length(missing) > 0L) stop(sprintf(
     "runner %s registration_fixture is missing: %s", runner_name, paste(missing, collapse = ", ")
@@ -276,16 +332,40 @@ validate_registration_fixture <- function(cfg) {
     info$address
   }
   call_symbol <- symbol("scalar")
+  optional_symbol <- symbol("optional")
   vector_symbol <- symbol("vector")
   new_symbol <- symbol("new")
   method_symbol <- symbol("method")
   error_symbol <- symbol("error")
   external_symbol <- symbol("external")
+  wrong_tag_symbol <- symbol("wrong_tag")
+  cleared_symbol <- symbol("cleared")
+  misaligned_symbol <- symbol("misaligned")
 
   scalar <- capture_result(function() do.call(.Call, list(call_symbol, 3.5)))
   if (!scalar$ok || !isTRUE(all.equal(scalar$value, 3.5))) stop(sprintf(
     "registration fixture scalar check failed for %s: %s", runner_name, scalar$error %||% "wrong result"
   ))
+  bad_scalar_type <- capture_result(function() do.call(.Call, list(call_symbol, 1L)))
+  if (bad_scalar_type$ok) stop(sprintf("registration fixture accepted a wrong scalar type for %s", runner_name))
+  bad_scalar_length <- capture_result(function() do.call(.Call, list(call_symbol, c(1.0, 2.0))))
+  if (bad_scalar_length$ok) stop(sprintf("registration fixture accepted an invalid scalar length for %s", runner_name))
+  bad_scalar_empty <- capture_result(function() do.call(.Call, list(call_symbol, numeric())))
+  if (bad_scalar_empty$ok) stop(sprintf("registration fixture accepted an empty scalar for %s", runner_name))
+  bad_scalar_na <- capture_result(function() do.call(.Call, list(call_symbol, NA_real_)))
+  if (bad_scalar_na$ok) stop(sprintf("registration fixture accepted a required scalar NA for %s", runner_name))
+  optional_null <- capture_result(function() do.call(.Call, list(optional_symbol, NULL)))
+  if (!optional_null$ok || !isTRUE(all.equal(optional_null$value, 0L))) stop(sprintf(
+    "registration fixture NULL optional check failed for %s", runner_name
+  ))
+  optional_na <- capture_result(function() do.call(.Call, list(optional_symbol, NA_real_)))
+  if (!optional_na$ok || !isTRUE(all.equal(optional_na$value, 0L))) stop(sprintf(
+    "registration fixture typed-NA optional check failed for %s", runner_name
+  ))
+  bad_optional_length <- capture_result(function() do.call(.Call, list(optional_symbol, c(NA_real_, 1.0))))
+  if (bad_optional_length$ok) stop(sprintf("registration fixture accepted an invalid optional scalar length for %s", runner_name))
+  invalid_result_contract <- validate_result_contract(1L, "real_scalar")
+  if (invalid_result_contract$ok) stop(sprintf("result-contract preflight accepted an invalid shape for %s", runner_name))
   vector <- capture_result(function() do.call(.Call, list(vector_symbol, c(1.0, 2.0, 3.0))))
   if (!vector$ok || !isTRUE(all.equal(vector$value, 6.0))) stop(sprintf(
     "registration fixture vector check failed for %s: %s", runner_name, vector$error %||% "wrong result"
@@ -317,6 +397,24 @@ validate_registration_fixture <- function(cfg) {
   if (bad_external_arity$ok) stop(sprintf("registration fixture accepted invalid .External arity for %s", runner_name))
   bad_receiver <- capture_result(function() do.call(.Call, list(method_symbol, 1L, 7L)))
   if (bad_receiver$ok) stop(sprintf("registration fixture accepted an invalid method receiver for %s", runner_name))
+  wrong_tag <- capture_result(function() do.call(.Call, list(wrong_tag_symbol)))
+  if (!wrong_tag$ok || !identical(typeof(wrong_tag$value), "externalptr")) stop(sprintf(
+    "registration fixture wrong-tag constructor check failed for %s", runner_name
+  ))
+  wrong_tag_method <- capture_result(function() do.call(.Call, list(method_symbol, wrong_tag$value, 7L)))
+  if (wrong_tag_method$ok) stop(sprintf("registration fixture accepted an external pointer with the wrong tag for %s", runner_name))
+  cleared <- capture_result(function() do.call(.Call, list(cleared_symbol)))
+  if (!cleared$ok || !identical(typeof(cleared$value), "externalptr")) stop(sprintf(
+    "registration fixture cleared-pointer constructor check failed for %s", runner_name
+  ))
+  cleared_method <- capture_result(function() do.call(.Call, list(method_symbol, cleared$value, 7L)))
+  if (cleared_method$ok) stop(sprintf("registration fixture accepted a cleared external pointer for %s", runner_name))
+  misaligned <- capture_result(function() do.call(.Call, list(misaligned_symbol)))
+  if (!misaligned$ok || !identical(typeof(misaligned$value), "externalptr")) stop(sprintf(
+    "registration fixture misaligned-pointer constructor check failed for %s", runner_name
+  ))
+  misaligned_method <- capture_result(function() do.call(.Call, list(method_symbol, misaligned$value, 7L)))
+  if (misaligned_method$ok) stop(sprintf("registration fixture accepted a misaligned external pointer for %s", runner_name))
   missing_symbol <- capture_result(function() getNativeSymbolInfo("zigr_or_c_fixture_missing", PACKAGE = dll, withRegistrationInfo = TRUE))
   if (missing_symbol$ok) stop(sprintf("registration fixture exposed an unregistered symbol for %s", runner_name))
   cat(sprintf("Registration preflight passed for %s\n", runner_name))
@@ -328,6 +426,17 @@ if (isTRUE(cfg$registered_symbols)) {
   registered_export_names <- cfg$exports
   cfg$exports <- resolve_registered_exports(registered_export_names, cfg)
   validate_registration_fixture(cfg)
+}
+
+p13_method_receiver <- function() {
+  if (call_type == "r") return(NULL)
+  fixture <- cfg$registration_fixture
+  package_name <- cfg$package_name %||% ""
+  if (is.null(fixture) || is.null(fixture$new) || !nzchar(package_name)) return(NULL)
+  dll <- loaded_dlls[[package_name]]
+  if (is.null(dll)) stop(sprintf("runner %s has no loaded package DLL for the P1.3 method receiver", runner_name))
+  new_address <- getNativeSymbolInfo(fixture$new, PACKAGE = dll, withRegistrationInfo = TRUE)$address
+  do.call(.Call, list(new_address))
 }
 
 if (check_only) {
@@ -405,6 +514,7 @@ for (task in all_tasks) {
   expected_return <- manifest$expected_return[[manifest_row]]
   correctness_status <- if (call_type == "r") "REFERENCE" else "NOT_VALIDATED"
   correctness_message <- if (call_type == "r") "R reference runner" else ""
+  task_call_type <- if (call_type == "r") "r" else (task$call_type %||% call_type)
   task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
   cfun <- exports[[tid]]
   if (call_type == ".Call" && is.null(registered_export_names) && !is.null(cfun)) {
@@ -424,6 +534,7 @@ for (task in all_tasks) {
     cat(sprintf("  %-14s [N/A]\n", tid))
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "N/A",
+      call_type = task_call_type,
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = NA, n_iterations = NA, error = NA_character_,
@@ -438,11 +549,12 @@ for (task in all_tasks) {
   args <- task$args()
 
   # ── H.2 Correctness validation is a hard timing prerequisite ──
-  if (call_type != "r") {
+  if (task_call_type != "r") {
     invoke_native <- function() {
-      if (call_type == ".Call") return(do.call(.Call, c(list(cfun), args)))
-      if (call_type == ".C") return(do.call(.C, c(list(cfun), args)))
-      stop(sprintf("unsupported correctness call type: %s", call_type))
+      if (task_call_type == ".Call") return(do.call(.Call, c(list(cfun), args)))
+      if (task_call_type == ".C") return(do.call(.C, c(list(cfun), args)))
+      if (task_call_type == ".External") return(do.call(.External, c(list(cfun), args)))
+      stop(sprintf("unsupported correctness call type: %s", task_call_type))
     }
     native_eval <- capture_result(invoke_native)
     if (!native_eval$ok) {
@@ -496,6 +608,7 @@ for (task in all_tasks) {
     log_error(runner_name, tid, correctness_message, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
+      call_type = task_call_type,
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = NA, n_iterations = NA, error = correctness_message,
@@ -514,7 +627,7 @@ for (task in all_tasks) {
   ref_contract <- NULL
   comparison <- NULL
 
-  cs <- timed_call(cfun, args, call_type, expr = task_expr)
+  cs <- timed_call(cfun, args, task_call_type, expr = task_expr)
   log_cold_start(runner_name, tid, cs$wall_ms, run_id = run_id, dir = staging_results_dir)
   if (!is.na(cs$error)) {
     n_fail <- n_fail + 1
@@ -522,6 +635,7 @@ for (task in all_tasks) {
     log_error(runner_name, tid, cs$error, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
+      call_type = task_call_type,
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
@@ -537,7 +651,7 @@ for (task in all_tasks) {
   bm <- benchmark_call(
     cfun,
     args,
-    call_type,
+    task_call_type,
     warmup = as.integer(timing_policy$warmup_iterations),
     block_size = as.integer(timing_policy$block_size),
     max_iter = as.integer(timing_policy$max_iterations),
@@ -553,6 +667,7 @@ for (task in all_tasks) {
     log_error(runner_name, tid, bm$error, dir = staging_results_dir)
     results_list[[length(results_list) + 1]] <- data.frame(
       runner = runner_name, task = tid, status = "FAIL",
+      call_type = task_call_type,
       mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
       sd_ms = NA, cv_pct = NA, rss_kb = NA,
       cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
@@ -572,6 +687,7 @@ for (task in all_tasks) {
   runs_df <- data.frame(
     runner      = runner_name,
     task        = tid,
+    call_type   = task_call_type,
     iteration   = seq_len(length(bm$times)),
     wall_ms     = round(bm$times, 4),
     peak_rss_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$peak_rss),
@@ -588,6 +704,7 @@ for (task in all_tasks) {
     runner        = runner_name,
     task          = tid,
     status        = "PASS",
+    call_type     = task_call_type,
     mean_ms       = round(bm$mean_ms, 4),
     median_ms     = round(bm$median_ms, 4),
     min_ms        = round(bm$min_ms, 4),

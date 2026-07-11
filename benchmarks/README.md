@@ -2,18 +2,18 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. The current published baseline is `p0-7-20260710-full`, referenced by `results/CANONICAL_RUN.json`. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
+Six runner backends. The current published baseline is `p0-7-20260710-full`, referenced by `results/CANONICAL_RUN.json`. The canonical P0 comparison remains 44 tasks; P1.3 adds 26 focused generated-boundary rows without changing that aggregate. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
 
-- **r** (R baseline): 44 task implementations in `src/r/run_all.R`
-- **zigr** (Zig): 44 `task_*.zig` under `src/zig/`, built via `build.zig`
-- **c_call** (C): 44 `task_*.c` + `register.c` under `src/c_call/`
+- **r** (R baseline): 70 manifest task references in `src/r/run_all.R`
+- **zigr** (Zig): 44 direct task files plus registered P1.3 fixtures under `src/zig/`, built via `build.zig`
+- **c_call** (C): 44 task files plus P1.3 fixtures in `register.c` under `src/c_call/`
 - **rcpp** (C++): Single `main.cpp` under `src/cpp/`
 - **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`
 - **extendr** (Rust): `rust/src/lib.rs` + `entrypoint.c` under `src/extendr/`, with raw FFI entrypoints for 4 tasks
 
 ## Task matrix
 
-44 tasks (`01` through `43`, plus `07a`/`07b` splitting original task 07).
+70 manifest rows: 44 P0 tasks (`01` through `43`, plus `07a`/`07b` splitting original task 07) and 26 P1.3 boundary rows (`50` through `75`).
 
 - **Layer 1** (tasks 01-06): vector sum, element-wise ops, memory bandwidth, sort, recursion, broadcast
 - **Layer 2** (tasks 07a, 07b, 08-11): PROTECT shallow/scaling, type dispatch, longjmp, SEXP create/inspect
@@ -23,6 +23,11 @@ Six runner backends. The current published baseline is `p0-7-20260710-full`, ref
 - **Layer 6** (tasks 38-41, 43): struct convert, R eval, try eval, serialize roundtrip, RNG stress
 - **Layer 6 extra** (task 42): external pointer (non-deterministic, H.2 skipped)
 - **Layer 7** (tasks 44-47): system diagnostics (build time, binary size, cross-compile time, memory allocation counts) (zigr only)
+- **P1.3 boundary pairs** (tasks 50-75): generated/handwritten zero-arg, scalar, optional, materialized numeric, ALTREP conversion diagnostic, string, raw, complex, fixed-schema named-list validation, external-pointer method, and `.External` fixtures. These are `api_overhead` and `non_comparable`; generated and handwritten variants are separated in `analysis_summary.csv`.
+
+The P1.3 fixtures are implemented for `r`, `c_call`, and `zigr`. Rcpp, extendr, and Savvy declare the rows as optional until their equivalent public-boundary fixtures are owned by later P1 splits; a full run records those rows as explicit `N/A` rather than timing a mismatched substitute.
+
+The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows deliberately compare zigr's contiguous owned-copy conversion with a handwritten region-stream implementation, so they are a P1.5 conversion-policy diagnostic rather than wrapper-overhead evidence. The schema rows validate a fixed named-list through `SEXP`; generated typed struct conversion is P1.8. The generated method row invokes `generateMethods` on a valid `.Call` receiver; generated tag, foreign-pointer, finalizer, and lifetime guarantees remain P1.9 work.
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, layers, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 
@@ -34,7 +39,7 @@ Runner JSONs in `runners/` map task IDs to exported symbols. Input generators li
 
 Before timing, every native task is validated against the R baseline or its manifest result contract. The R reference gets the same arguments. The return value comparison checks type, attributes, recursive list structure, numeric tolerance, exact missing-value kind (NA versus NaN), and character encoding. Reference errors, native errors, missing references, contract mismatches, and value mismatches stop timing for that task.
 
-Each summary and raw timing file records `correctness_status`, `correctness_policy`, and `correctness_message`. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, and `NOT_VALIDATED` is never eligible for comparative aggregation. A correctness or timing `FAIL` causes the runner subprocess and parent run to fail; it cannot become a complete, exportable, or promotable run. `N/A` is rejected unless explicitly allowed by the run manifest. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
+Each summary and raw timing file records `correctness_status`, `correctness_policy`, `correctness_message`, and the effective `call_type`; `.Call` and `.External` rows are therefore not conflated. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, and `NOT_VALIDATED` is never eligible for comparative aggregation. A correctness or timing `FAIL` causes the runner subprocess and parent run to fail; it cannot become a complete, exportable, or promotable run. `N/A` is rejected unless explicitly allowed by the run manifest. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
 
 Eight tasks skip H.2. Layer 2 (07a through 11) uses C API idioms that R cannot express. PROTECT, longjmp, SEXP create/inspect use R stubs returning `0L`. Non-deterministic tasks (42 external pointer, 43 RNG stress) differ on every call.
 
@@ -50,6 +55,7 @@ Rscript run_benchmarks.R
 # Quick subset
 Rscript run_benchmarks.R --runners=zigr,c_call
 Rscript run_benchmarks.R --tasks=1,2,6
+Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53
 Rscript run_benchmarks.R --build    # rebuild then run
 
 # Promote a completed full-matrix run explicitly

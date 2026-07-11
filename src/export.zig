@@ -30,10 +30,10 @@
 //! f64, i32, bool, ?f64, ?i32, ?bool,
 //! void, R.SEXP.
 //! The P1 contract requires scalar f64/i32/bool to receive a non-NA
-//! length-1 vector. The current conversion rejects empty and NA values;
-//! P1.4 adds the length-greater-than-one rejection.
+//! length-1 vector. The conversion rejects empty, length-greater-than-one,
+//! and NA values.
 //! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as nullish;
-//! P1.4 applies the same exact-length rule to non-null values.
+//! non-null values use the same exact-length rule.
 //! Use R.SEXP or a vector parameter when NA values need custom handling.
 //! []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar strings,
 //! extract via R.STRING_ELT inside the function body.

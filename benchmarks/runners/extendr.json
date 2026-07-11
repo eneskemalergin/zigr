@@ -3,6 +3,21 @@
     "label": "extendr (Rust)",
     "call_type": ".Call",
     "so_path": "src/extendr/extendr_benchmarks.so",
+    "optional_tasks": [
+        "50_p13_zero_generated", "51_p13_zero_handwritten",
+        "52_p13_scalar_generated", "53_p13_scalar_handwritten",
+        "54_p13_optional_null_generated", "55_p13_optional_null_handwritten",
+        "56_p13_optional_typed_na_generated", "57_p13_optional_typed_na_handwritten",
+        "58_p13_numeric_small_generated", "59_p13_numeric_small_handwritten",
+        "60_p13_numeric_large_generated", "61_p13_numeric_large_handwritten",
+        "62_p13_altrep_integer_generated", "63_p13_altrep_integer_handwritten",
+        "64_p13_string_view_generated", "65_p13_string_view_handwritten",
+        "66_p13_raw_generated", "67_p13_raw_handwritten",
+        "68_p13_complex_generated", "69_p13_complex_handwritten",
+        "70_p13_schema_generated", "71_p13_schema_handwritten",
+        "72_p13_external_method_generated", "73_p13_external_method_handwritten",
+        "74_p13_external_generated", "75_p13_external_handwritten"
+    ],
     "exports": {
         "01_vectorsum": "wrap__extendr_bench_vectorsum",
         "02_elem_ops": "wrap__extendr_bench_elem_ops",

@@ -24,6 +24,18 @@ task_report_category <- function(category) {
   values
 }
 
+task_matrix_group <- function(task) {
+  value <- as.character(task)
+  ifelse(grepl("^[0-9]{2}_p13_.*_(generated|handwritten)$", value),
+         sub("^[0-9]{2}_p13_(.*)_(generated|handwritten)$", "\\1", value), "")
+}
+
+task_matrix_variant <- function(task) {
+  value <- as.character(task)
+  ifelse(grepl("^[0-9]{2}_p13_.*_(generated|handwritten)$", value),
+         sub("^[0-9]{2}_p13_.*_(generated|handwritten)$", "\\1", value), "")
+}
+
 validate_task_manifest <- function(manifest) {
   required <- c("task", "layer", "display_name", "category", "input_factory", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
@@ -32,12 +44,12 @@ validate_task_manifest <- function(manifest) {
   if (length(missing) > 0L) {
     stop(sprintf("task manifest missing columns: %s", paste(missing, collapse = ", ")))
   }
-  if (nrow(manifest) != 44L) stop(sprintf("task manifest must contain 44 rows, got %d", nrow(manifest)))
+  if (nrow(manifest) != 70L) stop(sprintf("task manifest must contain 70 rows, got %d", nrow(manifest)))
   if (anyDuplicated(manifest$task)) stop("task manifest contains duplicate task IDs")
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
   if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
   if (!all(manifest$input_factory == "task_spec.args")) stop("task manifest has an unsupported input factory")
-  if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 1) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
+  if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 0) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
   if (!all(manifest$layer %in% paste0("L", 1:6))) stop("task manifest has an invalid layer")
   if (!all(manifest$category %in% c("numeric_kernel", "api_overhead", "data_structure", "linear_algebra", "altrep", "integration"))) stop("task manifest has an invalid category")
   task_report_category(manifest$category)
@@ -86,11 +98,17 @@ validate_task_arguments <- function(manifest, task_specs) {
 
 validate_runner_config <- function(manifest, cfg, runner_name) {
   exports <- if (is.null(cfg$exports)) character(0) else names(cfg$exports)
+  optional_tasks <- if (is.null(cfg$optional_tasks)) character(0) else as.character(unlist(cfg$optional_tasks, use.names = FALSE))
+  unknown_optional <- setdiff(optional_tasks, manifest$task)
+  if (length(unknown_optional) > 0L) {
+    stop(sprintf("runner %s declares optional tasks absent from the manifest: %s", runner_name, paste(unknown_optional, collapse = ", ")))
+  }
   missing <- setdiff(manifest$task, exports)
   extra <- setdiff(exports, manifest$task)
-  if (length(missing) > 0L || length(extra) > 0L) {
+  unallowed_missing <- setdiff(missing, optional_tasks)
+  if (length(unallowed_missing) > 0L || length(extra) > 0L) {
     stop(sprintf("runner %s exports differ from manifest; missing: %s; extra: %s",
-                 runner_name, paste(missing, collapse = ", "), paste(extra, collapse = ", ")))
+                 runner_name, paste(unallowed_missing, collapse = ", "), paste(extra, collapse = ", ")))
   }
   invisible(cfg)
 }

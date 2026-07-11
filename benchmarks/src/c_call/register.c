@@ -1,6 +1,8 @@
 // Registration table for all C benchmark tasks.
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
+#include <stdint.h>
+#include <string.h>
 
 extern SEXP c_call_bench_vectorsum(SEXP);
 extern SEXP c_call_bench_elem_ops(SEXP);
@@ -48,10 +50,19 @@ extern SEXP c_call_bench_external_ptr(SEXP);
 extern SEXP c_call_bench_rng_stress(SEXP);
 
 static int fixture_state = 0;
+static SEXP fixture_tag_symbol = NULL;
+
+static SEXP fixture_tag(void) {
+    if (fixture_tag_symbol == NULL) fixture_tag_symbol = Rf_install("zigr_fixture_state");
+    return fixture_tag_symbol;
+}
 
 static SEXP c_fixture_scalar(SEXP value) {
     if (TYPEOF(value) != REALSXP || XLENGTH(value) != 1) {
         Rf_error("c fixture scalar expected one REAL value");
+    }
+    if (ISNA(REAL(value)[0])) {
+        Rf_error("c fixture scalar expected a non-missing REAL value");
     }
     return Rf_ScalarReal(REAL(value)[0]);
 }
@@ -67,12 +78,18 @@ static SEXP c_fixture_vector(SEXP value) {
 
 static SEXP c_fixture_new(void) {
     fixture_state = 0;
-    return R_MakeExternalPtr(&fixture_state, R_NilValue, R_NilValue);
+    return R_MakeExternalPtr(&fixture_state, fixture_tag(), R_NilValue);
 }
 
 static SEXP c_fixture_method(SEXP receiver, SEXP amount) {
     if (TYPEOF(receiver) != EXTPTRSXP || R_ExternalPtrAddr(receiver) == NULL) {
         Rf_error("c fixture method expected a live external pointer");
+    }
+    if (R_ExternalPtrTag(receiver) != fixture_tag()) {
+        Rf_error("c fixture method received an external pointer with the wrong tag");
+    }
+    if ((uintptr_t) R_ExternalPtrAddr(receiver) % _Alignof(int) != 0) {
+        Rf_error("c fixture method received a misaligned external pointer");
     }
     if (TYPEOF(amount) != INTSXP || XLENGTH(amount) != 1 || INTEGER(amount)[0] == NA_INTEGER) {
         Rf_error("c fixture method expected one non-missing integer");
@@ -93,6 +110,107 @@ static SEXP c_fixture_external(SEXP args) {
         Rf_error("c fixture external expected one REAL value");
     }
     return Rf_ScalarReal(REAL(CADR(args))[0] + 1.0);
+}
+
+static SEXP c_fixture_wrong_tag(void) {
+    return R_MakeExternalPtr(&fixture_state, Rf_install("zigr_fixture_wrong_tag"), R_NilValue);
+}
+
+static SEXP c_fixture_cleared(void) {
+    SEXP result = R_MakeExternalPtr(&fixture_state, fixture_tag(), R_NilValue);
+    R_ClearExternalPtr(result);
+    return result;
+}
+
+static SEXP c_fixture_misaligned(void) {
+    void *address = (void *) ((unsigned char *) &fixture_state + 1);
+    return R_MakeExternalPtr(address, fixture_tag(), R_NilValue);
+}
+
+static SEXP c_p13_zero(void) {
+    return Rf_ScalarReal(1.0);
+}
+
+static SEXP c_p13_scalar(SEXP value) {
+    return c_fixture_scalar(value);
+}
+
+static SEXP c_p13_optional(SEXP value) {
+    if (value == R_NilValue) return Rf_ScalarInteger(0);
+    if (TYPEOF(value) != REALSXP || XLENGTH(value) != 1) {
+        Rf_error("c P1.3 optional expected NULL or one REAL value");
+    }
+    if (ISNA(REAL(value)[0])) return Rf_ScalarInteger(0);
+    return Rf_ScalarInteger(1);
+}
+
+static SEXP c_p13_numeric(SEXP value) {
+    if (TYPEOF(value) != REALSXP) Rf_error("c P1.3 numeric expected REALSXP");
+    double total = 0.0;
+    const double *values = REAL(value);
+    for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += values[i];
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_p13_altrep_integer(SEXP value) {
+    if (TYPEOF(value) != INTSXP) Rf_error("c P1.3 ALTREP integer expected INTSXP");
+    double total = 0.0;
+    const R_xlen_t length = XLENGTH(value);
+    const int *values = (const int *) DATAPTR_OR_NULL(value);
+    if (values != NULL) {
+        for (R_xlen_t i = 0; i < length; ++i) total += values[i];
+    } else {
+        int buffer[4096];
+        R_xlen_t offset = 0;
+        while (offset < length) {
+            const R_xlen_t want = (length - offset) < 4096 ? (length - offset) : 4096;
+            const R_xlen_t got = INTEGER_GET_REGION(value, offset, want, buffer);
+            if (got == 0) Rf_error("c P1.3 ALTREP integer region read failed");
+            for (R_xlen_t i = 0; i < got; ++i) total += buffer[i];
+            offset += got;
+        }
+    }
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_p13_string_view(SEXP value) {
+    if (TYPEOF(value) != STRSXP) Rf_error("c P1.3 string view expected STRSXP");
+    int total = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(value); ++i) {
+        if (STRING_ELT(value, i) != R_NaString) ++total;
+    }
+    return Rf_ScalarInteger(total);
+}
+
+static SEXP c_p13_raw(SEXP value) {
+    if (TYPEOF(value) != RAWSXP) Rf_error("c P1.3 raw expected RAWSXP");
+    int total = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += RAW(value)[i];
+    return Rf_ScalarInteger(total);
+}
+
+static SEXP c_p13_complex(SEXP value) {
+    if (TYPEOF(value) != CPLXSXP) Rf_error("c P1.3 complex expected CPLXSXP");
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += COMPLEX(value)[i].r;
+    return Rf_ScalarReal(total);
+}
+
+static int c_p13_schema_is_valid(SEXP value) {
+    static const char *const fields[] = {"id", "count", "ratio", "enabled"};
+    if (TYPEOF(value) != VECSXP || XLENGTH(value) != 4) return 0;
+    SEXP names = Rf_getAttrib(value, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != 4) return 0;
+    for (R_xlen_t i = 0; i < 4; ++i) {
+        SEXP name = STRING_ELT(names, i);
+        if (name == R_NaString || strcmp(CHAR(name), fields[i]) != 0) return 0;
+    }
+    return 1;
+}
+
+static SEXP c_p13_schema(SEXP value) {
+    if (!c_p13_schema_is_valid(value)) Rf_error("c P1.3 schema expected the fixed named-list shape");
+    return value;
 }
 
 static const R_CallMethodDef CallEntries[] = {
@@ -145,6 +263,18 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_fixture_new",                  (DL_FUNC) &c_fixture_new,                  0},
   {"c_fixture_method",               (DL_FUNC) &c_fixture_method,               2},
   {"c_fixture_error",                (DL_FUNC) &c_fixture_error,                1},
+  {"c_fixture_wrong_tag",             (DL_FUNC) &c_fixture_wrong_tag,             0},
+  {"c_fixture_cleared",               (DL_FUNC) &c_fixture_cleared,               0},
+  {"c_fixture_misaligned",            (DL_FUNC) &c_fixture_misaligned,            0},
+  {"c_p13_zero",                     (DL_FUNC) &c_p13_zero,                     0},
+  {"c_p13_scalar",                   (DL_FUNC) &c_p13_scalar,                   1},
+  {"c_p13_optional",                 (DL_FUNC) &c_p13_optional,                 1},
+  {"c_p13_numeric",                  (DL_FUNC) &c_p13_numeric,                  1},
+  {"c_p13_altrep_integer",           (DL_FUNC) &c_p13_altrep_integer,           1},
+  {"c_p13_string_view",              (DL_FUNC) &c_p13_string_view,              1},
+  {"c_p13_raw",                      (DL_FUNC) &c_p13_raw,                      1},
+  {"c_p13_complex",                  (DL_FUNC) &c_p13_complex,                  1},
+  {"c_p13_schema",                   (DL_FUNC) &c_p13_schema,                   1},
   {NULL, NULL, 0}
 };
 

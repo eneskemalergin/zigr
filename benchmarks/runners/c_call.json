@@ -8,11 +8,15 @@
   "package_name": "bench",
   "registration_fixture": {
     "scalar": "c_fixture_scalar",
+    "optional": "c_p13_optional",
     "vector": "c_fixture_vector",
     "new": "c_fixture_new",
     "method": "c_fixture_method",
     "error": "c_fixture_error",
-    "external": "c_fixture_external"
+    "external": "c_fixture_external",
+    "wrong_tag": "c_fixture_wrong_tag",
+    "cleared": "c_fixture_cleared",
+    "misaligned": "c_fixture_misaligned"
   },
   "exports": {
     "01_vectorsum": "c_call_bench_vectorsum",
@@ -58,7 +62,33 @@
     "40_r_tryeval": "c_call_bench_r_tryeval",
     "41_serialize_roundtrip": "c_call_bench_serialize_roundtrip",
     "42_external_ptr": "c_call_bench_external_ptr",
-    "43_rng_stress": "c_call_bench_rng_stress"
+    "43_rng_stress": "c_call_bench_rng_stress",
+    "50_p13_zero_generated": "c_p13_zero",
+    "51_p13_zero_handwritten": "c_p13_zero",
+    "52_p13_scalar_generated": "c_p13_scalar",
+    "53_p13_scalar_handwritten": "c_p13_scalar",
+    "54_p13_optional_null_generated": "c_p13_optional",
+    "55_p13_optional_null_handwritten": "c_p13_optional",
+    "56_p13_optional_typed_na_generated": "c_p13_optional",
+    "57_p13_optional_typed_na_handwritten": "c_p13_optional",
+    "58_p13_numeric_small_generated": "c_p13_numeric",
+    "59_p13_numeric_small_handwritten": "c_p13_numeric",
+    "60_p13_numeric_large_generated": "c_p13_numeric",
+    "61_p13_numeric_large_handwritten": "c_p13_numeric",
+    "62_p13_altrep_integer_generated": "c_p13_altrep_integer",
+    "63_p13_altrep_integer_handwritten": "c_p13_altrep_integer",
+    "64_p13_string_view_generated": "c_p13_string_view",
+    "65_p13_string_view_handwritten": "c_p13_string_view",
+    "66_p13_raw_generated": "c_p13_raw",
+    "67_p13_raw_handwritten": "c_p13_raw",
+    "68_p13_complex_generated": "c_p13_complex",
+    "69_p13_complex_handwritten": "c_p13_complex",
+    "70_p13_schema_generated": "c_p13_schema",
+    "71_p13_schema_handwritten": "c_p13_schema",
+    "72_p13_external_method_generated": "c_fixture_method",
+    "73_p13_external_method_handwritten": "c_fixture_method",
+    "74_p13_external_generated": "c_fixture_external",
+    "75_p13_external_handwritten": "c_fixture_external"
   },
   "needs_r_home": true
 }

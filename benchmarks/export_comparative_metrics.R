@@ -168,6 +168,8 @@ merged <- merged[match(ordered_tasks, merged$task), ]
 manifest_rows <- match(merged$task, manifest$task)
 if (anyNA(manifest_rows)) stop("comparative data contains a task absent from the task manifest")
 merged$category <- manifest$category[manifest_rows]
+merged$matrix_group <- task_matrix_group(merged$task)
+merged$matrix_variant <- task_matrix_variant(merged$task)
 merged$report_category <- task_report_category(merged$category)
 merged$aggregate_comparable <- manifest$aggregate[manifest_rows]
 merged$comparison_note <- manifest$comparison_note[manifest_rows]
@@ -380,6 +382,8 @@ category_metrics <- do.call(rbind, category_rows)
 
 task_comparisons <- data.frame(
   task = merged$task,
+  matrix_group = merged$matrix_group,
+  matrix_variant = merged$matrix_variant,
   category = merged$category,
   report_category = merged$report_category,
   best_native_runner = merged$best_native_runner,

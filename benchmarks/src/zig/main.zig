@@ -1,5 +1,8 @@
+const std = @import("std");
 const R = @import("R");
 const zigr = @import("zigr");
+const convert = zigr.convert;
+const sexp = zigr.sexp;
 
 comptime {
     _ = @import("task_01_vectorsum.zig");
@@ -95,6 +98,32 @@ extern fn zigr_bench_rng_stress(R.SEXP) R.SEXP;
 
 const FixtureState = struct { value: i32 };
 var fixture_state = FixtureState{ .value = 0 };
+var fixture_tag_symbol: R.SEXP = null;
+
+fn fixtureTag() R.SEXP {
+    if (fixture_tag_symbol == null) fixture_tag_symbol = R.Rf_install("zigr_fixture_state");
+    return fixture_tag_symbol;
+}
+
+fn fixtureStatePtr(receiver: R.SEXP) *FixtureState {
+    if (R.TYPEOF(receiver) != R.EXTPTRSXP) {
+        R.Rf_error("zigr fixture method expected an external pointer");
+        unreachable;
+    }
+    if (R.R_ExternalPtrTag(receiver) != fixtureTag()) {
+        R.Rf_error("zigr fixture method received an external pointer with the wrong tag");
+        unreachable;
+    }
+    const raw = R.R_ExternalPtrAddr(receiver) orelse {
+        R.Rf_error("zigr fixture method received a cleared external pointer");
+        unreachable;
+    };
+    if (@intFromPtr(raw) % @alignOf(FixtureState) != 0) {
+        R.Rf_error("zigr fixture method received a misaligned external pointer");
+        unreachable;
+    }
+    return @ptrCast(@alignCast(raw));
+}
 
 fn fixtureScalar(value: f64) f64 {
     return value;
@@ -108,19 +137,16 @@ fn fixtureVector(values: []const f64) f64 {
 
 fn fixtureNew() R.SEXP {
     fixture_state.value = 0;
-    return R.R_MakeExternalPtr(&fixture_state, R.R_NilValue, R.R_NilValue);
+    return R.R_MakeExternalPtr(&fixture_state, fixtureTag(), R.R_NilValue);
 }
 
 fn fixtureMethod(receiver: R.SEXP, amount: i32) i32 {
-    if (R.TYPEOF(receiver) != R.EXTPTRSXP) {
-        R.Rf_error("zigr fixture method expected an external pointer");
-        unreachable;
-    }
-    const raw = R.R_ExternalPtrAddr(receiver) orelse {
-        R.Rf_error("zigr fixture method received a cleared external pointer");
-        unreachable;
-    };
-    const state: *FixtureState = @ptrCast(@alignCast(raw));
+    const state = fixtureStatePtr(receiver);
+    state.value += amount;
+    return state.value;
+}
+
+fn generatedFixtureMethod(state: *FixtureState, amount: i32) i32 {
     state.value += amount;
     return state.value;
 }
@@ -133,15 +159,246 @@ fn fixtureExternal(value: f64) f64 {
     return value + 1.0;
 }
 
+fn fixtureZero() f64 {
+    return 1.0;
+}
+
+fn fixtureOptional(value: ?f64) i32 {
+    return if (value == null) 0 else 1;
+}
+
+fn fixtureIntVector(values: []const i32) f64 {
+    var total: f64 = 0;
+    for (values) |value| total += @floatFromInt(value);
+    return total;
+}
+
+fn fixtureStringView(values: convert.StringSliceView) i32 {
+    var total: i32 = 0;
+    for (0..values.len) |i| {
+        if (!values.at(i).is_na) total += 1;
+    }
+    return total;
+}
+
+fn fixtureRaw(values: []const u8) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += @intCast(value);
+    return total;
+}
+
+fn fixtureComplex(values: []const convert.Rcomplex) f64 {
+    var total: f64 = 0;
+    for (values) |value| total += value.r;
+    return total;
+}
+
+fn validateFixtureSchema(value: R.SEXP) void {
+    if (R.TYPEOF(value) != R.VECSXP or R.XLENGTH(value) != 4) {
+        R.Rf_error("zigr P1.3 schema expected a four-field named list");
+        unreachable;
+    }
+    const names = R.Rf_getAttrib(value, R.R_NamesSymbol);
+    if (R.TYPEOF(names) != R.STRSXP or R.XLENGTH(names) != 4) {
+        R.Rf_error("zigr P1.3 schema expected four field names");
+        unreachable;
+    }
+    const fields = [_][]const u8{ "id", "count", "ratio", "enabled" };
+    for (fields, 0..) |field, i| {
+        const name = R.STRING_ELT(names, @intCast(i));
+        if (name == R.R_NaString or !std.mem.eql(u8, sexp.charsxpBytes(name), field)) {
+            R.Rf_error("zigr P1.3 schema received an unexpected field name");
+            unreachable;
+        }
+    }
+}
+
+fn fixtureSchema(value: R.SEXP) R.SEXP {
+    validateFixtureSchema(value);
+    return value;
+}
+
+fn fixtureWrongTag() R.SEXP {
+    return R.R_MakeExternalPtr(&fixture_state, R.Rf_install("zigr_fixture_wrong_tag"), R.R_NilValue);
+}
+
+fn fixtureCleared() R.SEXP {
+    const result = R.R_MakeExternalPtr(&fixture_state, fixtureTag(), R.R_NilValue);
+    R.R_ClearExternalPtr(result);
+    return result;
+}
+
+fn fixtureMisaligned() R.SEXP {
+    const address = @intFromPtr(&fixture_state) + 1;
+    const misaligned: *anyopaque = @ptrFromInt(address);
+    return R.R_MakeExternalPtr(misaligned, fixtureTag(), R.R_NilValue);
+}
+
+fn directZero() R.SEXP {
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn directScalar(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.REALSXP or R.XLENGTH(value) != 1 or R.ISNA(R.REAL(value)[0]) != 0) {
+        R.Rf_error("zigr P1.3 scalar expected one non-missing REAL value");
+        unreachable;
+    }
+    return R.Rf_ScalarReal(R.REAL(value)[0]);
+}
+
+fn directOptional(value: R.SEXP) R.SEXP {
+    if (value == R.R_NilValue) return R.Rf_ScalarInteger(0);
+    if (R.TYPEOF(value) != R.REALSXP or R.XLENGTH(value) != 1) {
+        R.Rf_error("zigr P1.3 optional expected NULL or one REAL value");
+        unreachable;
+    }
+    if (R.ISNA(R.REAL(value)[0]) != 0) return R.Rf_ScalarInteger(0);
+    return R.Rf_ScalarInteger(1);
+}
+
+fn directNumeric(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.REALSXP) {
+        R.Rf_error("zigr P1.3 numeric expected REALSXP");
+        unreachable;
+    }
+    var total: f64 = 0;
+    const values = R.REAL(value);
+    for (values[0..@as(usize, @intCast(R.XLENGTH(value)))]) |item| total += item;
+    return R.Rf_ScalarReal(total);
+}
+
+fn directIntVector(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.INTSXP) {
+        R.Rf_error("zigr P1.3 ALTREP integer expected INTSXP");
+        unreachable;
+    }
+    var total: f64 = 0;
+    const n = @as(usize, @intCast(R.XLENGTH(value)));
+    if (R.DATAPTR_OR_NULL(value)) |raw| {
+        const values: [*]const i32 = @ptrCast(@alignCast(raw));
+        for (values[0..n]) |item| total += @floatFromInt(item);
+    } else {
+        var buffer: [4096]i32 = undefined;
+        var offset: R.R_xlen_t = 0;
+        const length = R.XLENGTH(value);
+        while (offset < length) {
+            const want = @min(length - offset, @as(R.R_xlen_t, @intCast(buffer.len)));
+            const got = R.INTEGER_GET_REGION(value, offset, want, buffer[0..].ptr);
+            if (got == 0) {
+                R.Rf_error("zigr P1.3 ALTREP integer region read failed");
+                unreachable;
+            }
+            for (buffer[0..@as(usize, @intCast(got))]) |item| total += @floatFromInt(item);
+            offset += got;
+        }
+    }
+    return R.Rf_ScalarReal(total);
+}
+
+fn directString(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.STRSXP) {
+        R.Rf_error("zigr P1.3 string view expected STRSXP");
+        unreachable;
+    }
+    var total: i32 = 0;
+    for (0..@as(usize, @intCast(R.XLENGTH(value)))) |i| {
+        if (R.STRING_ELT(value, @intCast(i)) != R.R_NaString) total += 1;
+    }
+    return R.Rf_ScalarInteger(total);
+}
+
+fn directRaw(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.RAWSXP) {
+        R.Rf_error("zigr P1.3 raw expected RAWSXP");
+        unreachable;
+    }
+    var total: i32 = 0;
+    for (0..@as(usize, @intCast(R.XLENGTH(value)))) |i| total += @intCast(R.RAW(value)[i]);
+    return R.Rf_ScalarInteger(total);
+}
+
+fn directComplex(value: R.SEXP) R.SEXP {
+    if (R.TYPEOF(value) != R.CPLXSXP) {
+        R.Rf_error("zigr P1.3 complex expected CPLXSXP");
+        unreachable;
+    }
+    const values = R.COMPLEX(value) orelse {
+        R.Rf_error("zigr P1.3 complex has no data pointer");
+        unreachable;
+    };
+    const values_ptr: [*]const convert.Rcomplex = @ptrCast(@alignCast(values));
+    var total: f64 = 0;
+    for (0..@as(usize, @intCast(R.XLENGTH(value)))) |i| total += values_ptr[i].r;
+    return R.Rf_ScalarReal(total);
+}
+
+fn directSchema(value: R.SEXP) R.SEXP {
+    validateFixtureSchema(value);
+    return value;
+}
+
+fn directGeneratedMethodStatePtr(receiver: R.SEXP) *FixtureState {
+    if (R.TYPEOF(receiver) != R.EXTPTRSXP) {
+        R.Rf_error("zigr P1.3 generated method expected an external pointer");
+        unreachable;
+    }
+    const raw = R.R_ExternalPtrAddr(receiver) orelse {
+        R.Rf_error("zigr P1.3 generated method received a cleared external pointer");
+        unreachable;
+    };
+    if (@intFromPtr(raw) % @alignOf(FixtureState) != 0) {
+        R.Rf_error("zigr P1.3 generated method received a misaligned external pointer");
+        unreachable;
+    }
+    return @ptrCast(@alignCast(raw));
+}
+
+fn directMethod(receiver: R.SEXP, amount: R.SEXP) R.SEXP {
+    const state = directGeneratedMethodStatePtr(receiver);
+    if (R.TYPEOF(amount) != R.INTSXP or R.XLENGTH(amount) != 1 or R.INTEGER(amount)[0] == R.R_NaInt) {
+        R.Rf_error("zigr P1.3 method expected one non-missing integer");
+        unreachable;
+    }
+    state.value += R.INTEGER(amount)[0];
+    return R.Rf_ScalarInteger(state.value);
+}
+
+fn directExternal(args: R.SEXP) R.SEXP {
+    if (args == R.R_NilValue) {
+        R.Rf_error("zigr P1.3 .External expected one REAL value");
+        unreachable;
+    }
+    const value = R.CAR(R.CDR(args));
+    if (R.TYPEOF(value) != R.REALSXP or R.XLENGTH(value) != 1) {
+        R.Rf_error("zigr P1.3 .External expected one REAL value");
+        unreachable;
+    }
+    return R.Rf_ScalarReal(R.REAL(value)[0] + 1.0);
+}
+
 const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_fixture_scalar", .func = fixtureScalar },
     .{ .name = "zigr_fixture_vector", .func = fixtureVector },
     .{ .name = "zigr_fixture_new", .func = fixtureNew },
     .{ .name = "zigr_fixture_method", .func = fixtureMethod },
     .{ .name = "zigr_fixture_error", .func = fixtureError },
+    .{ .name = "zigr_fixture_zero", .func = fixtureZero },
+    .{ .name = "zigr_fixture_optional", .func = fixtureOptional },
+    .{ .name = "zigr_fixture_int_vector", .func = fixtureIntVector },
+    .{ .name = "zigr_fixture_string_view", .func = fixtureStringView },
+    .{ .name = "zigr_fixture_raw", .func = fixtureRaw },
+    .{ .name = "zigr_fixture_complex", .func = fixtureComplex },
+    .{ .name = "zigr_fixture_schema", .func = fixtureSchema },
+    .{ .name = "zigr_fixture_wrong_tag", .func = fixtureWrongTag },
+    .{ .name = "zigr_fixture_cleared", .func = fixtureCleared },
+    .{ .name = "zigr_fixture_misaligned", .func = fixtureMisaligned },
 }, &.{
     .{ .name = "zigr_fixture_external", .func = fixtureExternal },
 });
+
+const FixtureMethods = zigr.@"export".generateMethods(FixtureState, &.{
+    .{ .name = "increment", .func = generatedFixtureMethod },
+}, &.{});
 
 fn directMethodDef(comptime name: []const u8, comptime func: anytype) R.R_CallMethodDef {
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
@@ -152,7 +409,20 @@ fn directMethodDef(comptime name: []const u8, comptime func: anytype) R.R_CallMe
     };
 }
 
-var package_call_defs: [44 + FixtureExports.call_defs.len]R.R_CallMethodDef = undefined;
+fn directExternalMethodDef(comptime name: []const u8, comptime func: anytype) R.R_ExternalMethodDef {
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    return .{
+        .name = @ptrCast(name.ptr),
+        .fun = @ptrCast(&func),
+        .numArgs = @intCast(func_info.params.len),
+    };
+}
+
+const direct_p13_call_count = 10;
+const generated_fixture_call_count = FixtureExports.call_defs.len - 1;
+const generated_method_call_count = FixtureMethods.call_defs.len - 1;
+var package_call_defs: [44 + direct_p13_call_count + generated_fixture_call_count + generated_method_call_count + 1]R.R_CallMethodDef = undefined;
+var package_external_defs: [FixtureExports.ext_defs.len + 1]R.R_ExternalMethodDef = undefined;
 var package_initialized = false;
 
 fn initPackage(info: *R.DllInfo) callconv(.c) void {
@@ -160,6 +430,7 @@ fn initPackage(info: *R.DllInfo) callconv(.c) void {
     package_initialized = true;
 
     FixtureExports.init(info);
+    FixtureMethods.init(info);
     package_call_defs[0] = directMethodDef("zigr_bench_vectorsum", zigr_bench_vectorsum);
     package_call_defs[1] = directMethodDef("zigr_bench_elem_ops", zigr_bench_elem_ops);
     package_call_defs[2] = directMethodDef("zigr_bench_memcpy_bandwidth", zigr_bench_memcpy_bandwidth);
@@ -204,17 +475,35 @@ fn initPackage(info: *R.DllInfo) callconv(.c) void {
     package_call_defs[41] = directMethodDef("zigr_bench_serialize_roundtrip", zigr_bench_serialize_roundtrip);
     package_call_defs[42] = directMethodDef("zigr_bench_external_ptr", zigr_bench_external_ptr);
     package_call_defs[43] = directMethodDef("zigr_bench_rng_stress", zigr_bench_rng_stress);
-    inline for (0..FixtureExports.call_defs.len) |i| {
-        package_call_defs[44 + i] = FixtureExports.call_defs[i];
+    package_call_defs[44] = directMethodDef("zigr_p13_direct_zero", directZero);
+    package_call_defs[45] = directMethodDef("zigr_p13_direct_scalar", directScalar);
+    package_call_defs[46] = directMethodDef("zigr_p13_direct_optional", directOptional);
+    package_call_defs[47] = directMethodDef("zigr_p13_direct_numeric", directNumeric);
+    package_call_defs[48] = directMethodDef("zigr_p13_direct_int_vector", directIntVector);
+    package_call_defs[49] = directMethodDef("zigr_p13_direct_string", directString);
+    package_call_defs[50] = directMethodDef("zigr_p13_direct_raw", directRaw);
+    package_call_defs[51] = directMethodDef("zigr_p13_direct_complex", directComplex);
+    package_call_defs[52] = directMethodDef("zigr_p13_direct_schema", directSchema);
+    package_call_defs[53] = directMethodDef("zigr_p13_direct_method", directMethod);
+    inline for (0..generated_fixture_call_count) |i| {
+        package_call_defs[44 + direct_p13_call_count + i] = FixtureExports.call_defs[i];
+    }
+    inline for (0..generated_method_call_count) |i| {
+        package_call_defs[44 + direct_p13_call_count + generated_fixture_call_count + i] = FixtureMethods.call_defs[i];
     }
     package_call_defs[package_call_defs.len - 1] = .{ .name = null, .fun = null, .numArgs = 0 };
+    inline for (0..FixtureExports.ext_defs.len - 1) |i| {
+        package_external_defs[i] = FixtureExports.ext_defs[i];
+    }
+    package_external_defs[FixtureExports.ext_defs.len - 1] = directExternalMethodDef("zigr_p13_direct_external", directExternal);
+    package_external_defs[package_external_defs.len - 1] = .{ .name = null, .fun = null, .numArgs = 0 };
 
     _ = R.R_registerRoutines(
         info,
         null,
         @as([*c]const R.R_CallMethodDef, @ptrCast(&package_call_defs[0])),
         null,
-        @as([*c]const R.R_ExternalMethodDef, @ptrCast(&FixtureExports.ext_defs[0])),
+        @as([*c]const R.R_ExternalMethodDef, @ptrCast(&package_external_defs[0])),
     );
     _ = R.R_useDynamicSymbols(info, 0);
     _ = R.R_forceSymbols(info, 1);
@@ -222,6 +511,7 @@ fn initPackage(info: *R.DllInfo) callconv(.c) void {
 
 comptime {
     _ = FixtureExports;
+    _ = FixtureMethods;
 }
 
 export fn R_init_zigr_benchmarks(info: *R.DllInfo) callconv(.c) void {
@@ -230,4 +520,5 @@ export fn R_init_zigr_benchmarks(info: *R.DllInfo) callconv(.c) void {
 
 export fn R_unload_zigr_benchmarks(info: *R.DllInfo) callconv(.c) void {
     FixtureExports.unload(info);
+    FixtureMethods.unload(info);
 }

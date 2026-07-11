@@ -35,6 +35,8 @@ make_call_expr <- function(cfun, args, call_type) {
     as.call(c(list(as.name(cfun)), args))
   } else if (call_type == ".C") {
     as.call(c(list(quote(.C), cfun), args))
+  } else if (call_type == ".External") {
+    as.call(c(list(quote(.External), cfun), args))
   } else {
     as.call(c(list(quote(.Call), cfun), args))
   }
