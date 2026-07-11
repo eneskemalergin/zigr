@@ -165,7 +165,7 @@ The table below is retained diagnostic evidence; the canonical run covers the 44
 
 Cross-target .so sizes are N/A because R and BLAS shared libraries on this host are x86_64 binaries, incompatible with foreign targets. zigr's compilation step succeeds for aarch64-linux (the translate-c output is target-independent); linking fails because native `.so` files cannot be linked into cross-target output. A full cross-compilation pipeline would require R headers and libraries for each target.
 
-Task 47 demonstrates zigr's custom allocator instrumentation: wrapping any operation with a `CountingAllocator` that intercepts every alloc/free call. Results are for a standalone Zig binary, no R runtime needed. Only `c_allocator` calls are counted (the Zig-level interface to libc `malloc`/`free`); R API allocations (`R_chk_calloc`, `allocVector3`) are not instrumented because they require an active R session.
+Task 47 is a standalone allocator smoke test. It counts allocations made by two synthetic Zig kernels through `c_allocator`; it does not measure the generated R boundary, R heap allocation, arena spill, or external-pointer creation. Boundary allocation diagnostics use `memory.CountingAllocator` in the ReleaseSafe runtime suite and remain outside canonical ReleaseFast timings.
 
 ### Cross-compilation status for CI
 

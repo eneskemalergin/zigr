@@ -245,6 +245,8 @@ tests <- list(
   "zigr_test_export_generatemethods_external",
   "zigr_test_generated_method_receiver_errors",
   "zigr_test_generated_ownership_gc",
+  "zigr_test_allocation_diagnostics",
+  "zigr_test_cleanup_diagnostics",
   list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
   "zigr_test_generated_result_longjmp",
   "zigr_test_externalptr_finalizer",

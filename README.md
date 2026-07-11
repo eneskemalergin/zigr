@@ -79,7 +79,7 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 - R code evaluation (`rCodeEval`, `rRawEval`)
 - Condition handling (`tryCatch`, `tryCatchError`)
 - Serialization, RNG management, error/warning signaling
-- R-managed memory allocator
+- R-managed memory allocator and opt-in allocator counters for diagnostics
 - Fixed struct schemas (`asSEXP`/`tryFromSEXP`/`fromSEXP`) with declaration-order names and no runtime name map
 - generateExports (`.Call` and `.External`) and typed external-pointer methods
 - Zero dependencies (build.zig.zon is empty)
@@ -101,6 +101,7 @@ The core service layer stays close to the R C API:
 - `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. Constructed calls are returned unprotected, so protect them before another R allocation.
 - `eval` wraps lookup, call evaluation, `R_tryEval`, and `R_tryEvalSilent`. Results are borrowed, unprotected `SEXP` values. Evaluation can longjmp; use a generated entry point or another unwind boundary when native cleanup is live.
 - `interrupt` is a thin wrapper over `R_CheckUserInterrupt`, `R_CheckStack`, and `R_CheckStack2`. These checks can longjmp and do not create their own unwind boundary.
+- `memory.CountingAllocator` wraps an allocator when you need allocation diagnostics. Its counts include only successful operations made through that wrapper; they do not include R heap objects or unrelated libc allocation. Keep it out of the allocator passed to timed code unless allocator overhead is the workload.
 
 Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conversion layer does not cover an R object. They add no ownership or type guarantee.
 
@@ -149,7 +150,7 @@ src/
 ├── convert.zig        Type conversion + fixed struct schemas
 ├── error.zig          Rf_error / Rf_warning signaling
 ├── interrupt.zig      R_CheckUserInterrupt, stack checking
-├── memory.zig         RAllocator (R_chk_calloc / R_chk_free)
+├── memory.zig         RAllocator, unwind arena, and opt-in allocation counters
 ├── rng.zig            GetRNGstate / PutRNGstate wrappers
 ├── dataframe.zig      DataFrame wrapper, build
 ├── attrib.zig         getAttrib, setAttrib, setNames, setClass, setDim

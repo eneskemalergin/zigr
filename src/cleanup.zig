@@ -4,6 +4,7 @@
 //! stack and unwinds in LIFO order.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const R = @import("R");
 const err = @import("error");
 
@@ -23,6 +24,19 @@ const Frame = struct {
 threadlocal var stack: [MAX_NESTING]Frame = undefined;
 threadlocal var count: usize = 0;
 threadlocal var protect_depth: i32 = 0;
+const diagnostics_enabled = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
+
+/// High-water marks are disabled in ReleaseFast builds.
+pub const DiagnosticSnapshot = struct {
+    enabled: bool,
+    max_cleanup_frames: usize,
+    max_unwind_boundaries: usize,
+    max_protect_depth: i32,
+};
+
+threadlocal var max_cleanup_frames: usize = 0;
+threadlocal var max_unwind_boundaries: usize = 0;
+threadlocal var max_protect_depth: i32 = 0;
 
 const Boundary = struct {
     frame_count: usize,
@@ -39,6 +53,7 @@ fn beginBoundary() void {
         .protect_depth = protect_depth,
     };
     boundary_count += 1;
+    if (diagnostics_enabled) max_unwind_boundaries = @max(max_unwind_boundaries, boundary_count);
 }
 
 fn finishBoundary(jump: bool) void {
@@ -89,6 +104,7 @@ pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) vo
     if (count >= MAX_NESTING) err.signal("cleanup stack overflow");
     stack[count] = .{ .func = func, .data = data };
     count += 1;
+    if (diagnostics_enabled) max_cleanup_frames = @max(max_cleanup_frames, count);
 }
 
 pub fn popFrame() void {
@@ -101,6 +117,31 @@ pub fn getProtectDepth() i32 {
 
 pub fn adjustProtectDepth(delta: i32) void {
     protect_depth += delta;
+    if (diagnostics_enabled) max_protect_depth = @max(max_protect_depth, protect_depth);
+}
+
+/// Starts a new high-water interval at the current cleanup state.
+pub fn resetDiagnostics() void {
+    if (!diagnostics_enabled) return;
+    max_cleanup_frames = count;
+    max_unwind_boundaries = boundary_count;
+    max_protect_depth = protect_depth;
+}
+
+/// Returns zero-valued, disabled diagnostics in ReleaseFast builds.
+pub fn diagnosticSnapshot() DiagnosticSnapshot {
+    if (!diagnostics_enabled) return .{
+        .enabled = false,
+        .max_cleanup_frames = 0,
+        .max_unwind_boundaries = 0,
+        .max_protect_depth = 0,
+    };
+    return .{
+        .enabled = true,
+        .max_cleanup_frames = max_cleanup_frames,
+        .max_unwind_boundaries = max_unwind_boundaries,
+        .max_protect_depth = max_protect_depth,
+    };
 }
 
 /// Inline state survives longjmp and must fit the frame's fixed storage.
@@ -141,6 +182,7 @@ pub fn pushFrameInline(
     frame.func = W.wrapper;
     frame.data = @ptrCast(slot);
     count += 1;
+    if (diagnostics_enabled) max_cleanup_frames = @max(max_cleanup_frames, count);
     return slot;
 }
 
@@ -324,6 +366,29 @@ test "pushFrameInline copies state into frame buffer" {
 
     zigr_on_unwind();
     try std.testing.expectEqual(g.counter, 999);
+}
+
+test "cleanup diagnostics record high-water marks in safe builds" {
+    if (!diagnostics_enabled) return;
+    const saved = count;
+    defer count = saved;
+    count = 0;
+    resetDiagnostics();
+    const Guard = struct {
+        fn fire(_: ?*anyopaque) void {}
+    };
+
+    pushFrame(Guard.fire, null);
+    pushFrame(Guard.fire, null);
+    adjustProtectDepth(3);
+    const snapshot = diagnosticSnapshot();
+    adjustProtectDepth(-3);
+    popFrame();
+    popFrame();
+
+    try std.testing.expect(snapshot.enabled);
+    try std.testing.expectEqual(2, snapshot.max_cleanup_frames);
+    try std.testing.expectEqual(3, snapshot.max_protect_depth);
 }
 
 test "pushFrameInline survives pop without firing" {
