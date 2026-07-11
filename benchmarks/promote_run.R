@@ -1,6 +1,4 @@
 #!/usr/bin/env Rscript
-# Promote one completed full-matrix run to the explicit canonical directory.
-# Usage: Rscript promote_run.R --run-dir=results/runs/<run_id>
 
 library(jsonlite)
 source("lib/run_manifest.R")
@@ -34,7 +32,7 @@ if (dir.exists(target_dir)) {
 legacy_entries <- list.files("results", all.files = TRUE, full.names = TRUE, no.. = TRUE)
 legacy_entries <- legacy_entries[!basename(legacy_entries) %in% c("runs", "canonical", "archive", "README.md", "CANONICAL_RUN.json")]
 if (length(legacy_entries) > 0L) {
-  legacy_dir <- file.path("results", "archive", "legacy-pre-p0.4")
+  legacy_dir <- file.path("results", "archive", "legacy-results")
   dir.create(legacy_dir, recursive = TRUE, showWarnings = FALSE)
   for (entry in legacy_entries) {
     destination <- file.path(legacy_dir, basename(entry))

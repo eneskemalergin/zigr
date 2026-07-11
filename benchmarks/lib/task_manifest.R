@@ -1,7 +1,3 @@
-# Canonical task identity and comparison policy for the benchmark harness.
-# Executable argument closures remain in runner_subprocess.R. The manifest
-# identifies the task spec that owns each closure and owns all comparison policy.
-
 load_task_manifest <- function(root_dir = normalizePath(".")) {
   path <- file.path(root_dir, "task_manifest.csv")
   if (!file.exists(path)) stop(sprintf("task manifest not found: %s", path))
@@ -26,18 +22,18 @@ task_report_category <- function(category) {
 
 task_matrix_group <- function(task) {
   value <- as.character(task)
-  ifelse(grepl("^[0-9]{2}_p13_.*_(generated|handwritten)$", value),
-         sub("^[0-9]{2}_p13_(.*)_(generated|handwritten)$", "\\1", value), "")
+  ifelse(grepl("^[0-9]{2}_boundary_.*_(generated|handwritten)$", value),
+         sub("^[0-9]{2}_boundary_(.*)_(generated|handwritten)$", "\\1", value), "")
 }
 
 task_matrix_variant <- function(task) {
   value <- as.character(task)
-  ifelse(grepl("^[0-9]{2}_p13_.*_(generated|handwritten)$", value),
-         sub("^[0-9]{2}_p13_.*_(generated|handwritten)$", "\\1", value), "")
+  ifelse(grepl("^[0-9]{2}_boundary_.*_(generated|handwritten)$", value),
+         sub("^[0-9]{2}_boundary_.*_(generated|handwritten)$", "\\1", value), "")
 }
 
 validate_task_manifest <- function(manifest) {
-  required <- c("task", "layer", "display_name", "category", "input_factory", "input_arity",
+  required <- c("task", "workload_group", "display_name", "category", "input_factory", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
                 "aggregate", "comparison_note")
   missing <- setdiff(required, names(manifest))
@@ -50,7 +46,8 @@ validate_task_manifest <- function(manifest) {
   if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
   if (!all(manifest$input_factory == "task_spec.args")) stop("task manifest has an unsupported input factory")
   if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 0) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
-  if (!all(manifest$layer %in% paste0("L", 1:6))) stop("task manifest has an invalid layer")
+  groups <- c("core_compute", "api_boundary", "objects_and_strings", "numerical", "altrep", "runtime_services")
+  if (!all(manifest$workload_group %in% groups)) stop("task manifest has an invalid workload group")
   if (!all(manifest$category %in% c("numeric_kernel", "api_overhead", "data_structure", "linear_algebra", "altrep", "integration"))) stop("task manifest has an invalid category")
   task_report_category(manifest$category)
   if (!all(manifest$correctness_policy %in% c("r_reference", "native_invariant", "nondeterministic"))) stop("task manifest has an invalid correctness policy")

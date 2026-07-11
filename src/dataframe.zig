@@ -1,7 +1,4 @@
-//! Data frame creation and access.
-//!
-//! R data.frames are VECSXP with class "data.frame", row.names, and
-//! column names stored as the names attribute on the list.
+//! Data frame helpers.
 
 const std = @import("std");
 const R = @import("R");
@@ -9,24 +6,18 @@ const protect = @import("protect.zig");
 const xlength = @import("sexp.zig").xlength;
 const sexp_mod = @import("sexp.zig");
 
-/// Wraps an R data.frame with named column access.
 pub const DataFrame = struct {
     sexp: R.SEXP,
 
-    /// Wrap an existing SEXP as a DataFrame. Returns null if the
-    /// SEXP is not a data frame.
     pub fn wrap(sexp: R.SEXP) ?DataFrame {
         if (!sexp_isDataFrame(sexp)) return null;
         return DataFrame{ .sexp = sexp };
     }
 
-    /// Number of columns in the data frame.
     pub fn columnCount(self: DataFrame) i64 {
         return R.XLENGTH(self.sexp);
     }
 
-    /// Number of rows. Returns 0 if the data frame has no columns
-    /// or the first column is null.
     pub fn rowCount(self: DataFrame) i64 {
         const ncols = self.columnCount();
         if (ncols == 0) return 0;
@@ -48,7 +39,6 @@ pub const DataFrame = struct {
         return result;
     }
 
-    /// Use for repeated column access: call once, then columnByIndex in a loop.
     pub fn columnIndex(self: DataFrame, name: []const u8) ?i64 {
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
@@ -62,18 +52,15 @@ pub const DataFrame = struct {
         return null;
     }
 
-    /// Faster than column() when the index is already known.
     pub fn columnByIndex(self: DataFrame, index: i64) R.SEXP {
         return R.VECTOR_ELT(self.sexp, @intCast(index));
     }
 
-    /// NA column names are skipped. For repeated lookups, use columnIndex + columnByIndex.
     pub fn column(self: DataFrame, name: []const u8) ?R.SEXP {
         const idx = self.columnIndex(name) orelse return null;
         return self.columnByIndex(idx);
     }
 
-    /// Caller owns the map and must deinit it.
     pub fn columnMap(self: DataFrame, allocator: std.mem.Allocator) !std.StringHashMap(i64) {
         var map = std.StringHashMap(i64).init(allocator);
         const ncols = self.columnCount();
@@ -103,9 +90,7 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
     return false;
 }
 
-/// Build a data frame from column names and SEXP columns.
-///
-/// **Safety**: Returns an unprotected SEXP. The caller MUST protect it immediately. R's GC collects unprotected SEXPs between this return and the caller's protect.
+/// The result is unprotected, so protect it before another R allocation.
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     if (names.len == 0 or columns.len == 0) return R.R_NilValue;
     if (names.len != columns.len) return R.R_NilValue;

@@ -72,7 +72,6 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
   gc(full = TRUE)
   rss_before <- current_rss_kb()
 
-  # Warmup
   for (i in seq_len(warmup)) {
     t0 <- get_nanotime()
     r <- tryCatch(eval(expr), error = function(e) NULL)
@@ -81,7 +80,6 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
   }
   r <- NULL
 
-  # Adaptive blocks
   all_times <- numeric()
   n_blocks <- 0L
   convergence_cv_pct <- NA_real_
@@ -167,7 +165,6 @@ log_cold_start <- function(runner, task, wall_ms, run_id = NA_character_, dir = 
 log_error <- function(runner, task, msg, dir = "results") {
   path <- file.path(dir, runner, "errors.csv")
   header <- !file.exists(path)
-  # Replace commas with spaces to avoid CSV corruption
   msg <- gsub(",", " ", msg)
   df <- data.frame(runner = runner, task = task, error = msg,
                    stringsAsFactors = FALSE)

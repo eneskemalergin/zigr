@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry.
 - CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
-- **Benchmark H.2 validation**: compare attributes, recursive structure, character encoding, and NA versus NaN; correctness or timing failures and undeclared `N/A` rows can no longer complete, export, or promote a run.
+- **Benchmark validation**: compare attributes, recursive structure, character encoding, and NA versus NaN; correctness or timing failures and undeclared `N/A` rows can no longer complete, export, or promote a run.
 - **Safety model**: safety score updated to 10/10 in PLAN.md, all longjmp gaps closed across `.Call`, `.External`, and method wrappers.
 
 ### Removed
@@ -25,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error (P2 bug).
+- `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error for missing variables.
 - `convert.zig`: 11 stat functions (`sum`, `norm2`, `min`, `max`, `argmin`, `argmax`, `sum_narm`, `mean_narm`, `scaleAdd`, `cumsum`, `argminmax`) now validate SEXP type before access (was missing type guards).
 - **`.Call` wrapper longjmp gap**: `makeWrapper` and `makeMethodWrapper` now use `protectCallData` (R_UnwindProtect), matching the `.External` wrappers. Arena and cleanup frames fire on longjmp instead of leaking.
 - **String encoding**: all 12 string-extraction paths across 7 files now call `Rf_translateCharUTF8` instead of reading raw `CHAR` bytes. Latin-1/native-encoded strings are no longer misinterpreted as UTF-8.
@@ -34,9 +34,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Benchmark harness: H.2 validation, R baselines (07a/07b/10/11/16), extendr FFI workaround (all 6 runners at 44/44)
+- Benchmark harness: validation, R baselines (07a/07b/10/11/16), extendr FFI workaround (all 6 runners at 44/44)
 - Comparative metrics pipeline
-- System diagnostics (L7, tasks 44-47)
+- System diagnostics (tasks 44-47)
 - CI workflow: fmt, cross-compile (5 targets), 3-platform tests
 
 ### Fixed
@@ -53,7 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `src/s4.zig`: `newS4Object` for constructing S4 objects (74 LOC)
 - `src/factor.zig`: Factor creation module with `asFactor` (109 LOC)
 - `src/symbols.zig`: Open-addressing symbol cache with Wyhash
-- `src/cleanup.zig`: `pushFrameInline` (64-byte inline buffer), eliminates P0 stack-escape UB
+- `src/cleanup.zig`: `pushFrameInline` (64-byte inline buffer), eliminates cleanup stack-escape UB
 - `src/export.zig`: `.External` interface support, optional type mapping (`?f64`, `?i32`, `?bool`), 8-param arity
 - Per-runner summary export for all 6 runners
 

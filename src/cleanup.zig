@@ -1,17 +1,7 @@
-//! Thread-local cleanup stack and R_UnwindProtect bridge.
+//! Cleanup across R non-local exits.
 //!
-//! R errors use C longjmp, which bypasses Zig's defer/errdefer.
-//! This module wraps R_UnwindProtect and manages a thread-local stack
-//! of cleanup frames that fire when R unwinds.
-//!
-//! Contract: on longjmp zigr_on_unwind fires ALL frames in LIFO order.
-//! protectCall is safe to nest: each call saves and restores the caller's
-//! frame count. On the normal path the caller's frames are preserved. On
-//! longjmp all frames fire regardless of nesting depth because R's longjmp
-//! tears down the entire Zig call stack anyway. A frame must be active within
-//! a `protectCall*` dynamic extent before the R API call that may longjmp;
-//! it may be pushed by the protected function itself. Pop every frame on the
-//! normal path.
+//! R longjmps bypass Zig defers, so cleanup state lives in this thread-local
+//! stack and unwinds in LIFO order.
 
 const std = @import("std");
 const R = @import("R");
@@ -19,23 +9,14 @@ const err = @import("error");
 
 pub const MAX_NESTING = 16;
 
-/// Maximum bytes of inline cleanup data per frame. Types stored inline
-/// via `pushFrameInline` must fit in this budget. 64 covers the typical
-/// RAII guards (slice + allocator + return address) without spilling.
 pub const INLINE_DATA_SIZE = 64;
 pub const INLINE_DATA_ALIGN = @alignOf(usize);
 
 const Frame = struct {
     func: *const fn (data: ?*anyopaque) void,
     data: ?*anyopaque,
-    /// Inline storage for cleanup state. Frames pushed with `pushFrameInline`
-    /// copy their state into this buffer. The buffer lives in the
-    /// thread-local `stack`, so the state survives longjmp and is not
-    /// dependent on any stack-resident pointer from the caller's frame.
+    /// Inline state cannot point at a frame that a longjmp destroys.
     inline_buf: [INLINE_DATA_SIZE]u8 align(INLINE_DATA_ALIGN) = [_]u8{0} ** INLINE_DATA_SIZE,
-    /// True if this frame's data pointer targets `inline_buf` and the
-    /// buffer contains valid state. False for frames pushed with the
-    /// legacy `pushFrame` (data is an external pointer).
     owns_inline: bool = false,
 };
 
@@ -76,28 +57,11 @@ pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) vo
     count += 1;
 }
 
-/// Remove the most recently pushed frame without firing its callback.
-/// Must be called after every pushFrame on the normal return path.
 pub fn popFrame() void {
     if (count > 0) count -= 1;
 }
 
-/// Push a frame that owns its cleanup state inline. The value `T` is
-/// copied into the frame's `inline_buf` (in thread-local storage, not
-/// on the caller's stack), and `fireFn` receives a `*T` to that storage
-/// when the frame fires on longjmp. The caller does NOT need a
-/// corresponding `defer destroy(state)` because the state lives in the
-/// frame buffer, which is reclaimed by the next `pushFrame` or
-/// `zigr_on_return`.
-///
-/// This eliminates the "stack-resident pointer pattern" that
-/// `pushFrame` with a heap-allocated state has: the cleanup state is
-/// never derived from a stack-local variable, so longjmp does not
-/// invalidate it.
-///
-/// `T` must satisfy:
-/// - `@sizeOf(T) <= INLINE_DATA_SIZE`
-/// - `@alignOf(T) <= INLINE_DATA_ALIGN`
+/// Inline state survives longjmp and must fit the frame's fixed storage.
 pub fn pushFrameInline(
     comptime T: type,
     value: T,
@@ -138,12 +102,7 @@ pub fn pushFrameInline(
     return slot;
 }
 
-/// Call a Zig function inside an R_UnwindProtect guard.
-/// The continuation token is PROTECTed for the whole `R_UnwindProtect`
-/// call, as required by R's C API. It needs no preservation beyond that
-/// dynamic extent.
-/// On longjmp every cleanup frame fires (not just this one). See the
-/// module-level contract above.
+/// Establishes R's unwind boundary before invoking Zig code.
 pub fn protectCall(comptime func: *const fn () R.SEXP) R.SEXP {
     const saved_count = count;
     const cont = R.Rf_protect(zigr_make_unwind_cont());
@@ -159,9 +118,6 @@ pub fn protectCall(comptime func: *const fn () R.SEXP) R.SEXP {
     return result;
 }
 
-/// Like protectCall but passes a data pointer to the wrapped function.
-/// Use when the wrapped function needs runtime context (e.g. SEXP args
-/// from an .External wrapper) that cannot be captured inline.
 pub fn protectCallData(comptime func: *const fn (?*anyopaque) R.SEXP, data: ?*anyopaque) R.SEXP {
     const saved_count = count;
     const cont = R.Rf_protect(zigr_make_unwind_cont());
@@ -216,8 +172,6 @@ test "popFrame on empty stack is safe" {
 }
 
 test "pushFrame signals error on overflow" {
-    // Verify the overflow path: pushFrame at capacity calls err.signal which longjmps.
-    // Without R runtime the longjmp would crash, so we verify the TYPE only.
     try std.testing.expectEqual(@TypeOf(pushFrame), fn (*const fn (?*anyopaque) void, ?*anyopaque) void);
 }
 
@@ -258,16 +212,10 @@ test "zigr_on_return clears all frames" {
 }
 
 test "protectCall type" {
-    // protectCall requires R runtime (R_MakeUnwindCont, R_UnwindProtect).
-    // Verify the type signature compiles correctly.
     try std.testing.expectEqual(@TypeOf(protectCall), fn (comptime *const fn () R.SEXP) R.SEXP);
 }
 
 test "frames fire in LIFO order on unwind" {
-    // Verify cleanup frames fire last-pushed-first on zigr_on_unwind.
-    // Each frame appends its marker value to a threadlocal array.
-    // This avoids closures which Zig doesn't support for function pointers.
-
     const saved = count;
     defer count = saved;
     count = 0;
@@ -304,9 +252,6 @@ test "frames fire in LIFO order on unwind" {
     pushFrame(Frame3.f, @ptrCast(&ctx));
 
     zigr_on_unwind();
-    // Frame3 pushed last (top), fires first -> arr[0] = 3
-    // Frame2 fires second -> arr[1] = 2
-    // Frame1 fired third -> arr[2] = 1
     try std.testing.expectEqual(order[0], 3);
     try std.testing.expectEqual(order[1], 2);
     try std.testing.expectEqual(order[2], 1);
@@ -332,21 +277,14 @@ test "pushFrameInline copies state into frame buffer" {
     try std.testing.expectEqual(count, 1);
     try std.testing.expect(@intFromPtr(stored) != @intFromPtr(&g));
 
-    // The local `g` is independent of the frame's copy: mutating it
-    // must not affect what `fire` will see.
     g.counter = 999;
     g.marker = 0;
 
     zigr_on_unwind();
-    // The frame fired the original copy (counter 7 + 100 = 107), not
-    // the mutated local (999 + 100 = 1099). The local `g` is not
-    // affected because the frame owned its own copy in `inline_buf`.
     try std.testing.expectEqual(g.counter, 999);
 }
 
 test "pushFrameInline survives pop without firing" {
-    // Normal return path: popFrame just decrements count. The inline
-    // buffer is reclaimed by the next pushFrame, not by fire.
     const saved = count;
     defer count = saved;
     count = 0;
@@ -367,8 +305,6 @@ test "pushFrameInline survives pop without firing" {
 }
 
 test "pushFrameInline fires on zigr_on_unwind with LIFO order" {
-    // Verify inline frames interleave correctly with regular pushFrame
-    // frames, and the inline data is intact when fire runs.
     const saved = count;
     defer count = saved;
     count = 0;
@@ -395,8 +331,6 @@ test "pushFrameInline fires on zigr_on_unwind with LIFO order" {
     _ = pushFrameInline(B, B{ .value = &b_result }, B.fire);
 
     zigr_on_unwind();
-    // B pushed last -> fires first -> b_result = 20
-    // A fires second -> a_result = 10
     try std.testing.expectEqual(b_result, 20);
     try std.testing.expectEqual(a_result, 10);
 }

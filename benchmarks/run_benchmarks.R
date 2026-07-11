@@ -1,10 +1,4 @@
 #!/usr/bin/env Rscript
-# Spawns a subprocess per runner from runners/*.json.
-# Usage:
-#   Rscript run_benchmarks.R                          # all runners
-#   Rscript run_benchmarks.R --runners=zigr,c_call    # subset
-#   Rscript run_benchmarks.R --tasks=1,2,6            # subset of tasks
-#   Rscript run_benchmarks.R --build                  # rebuild all runners first
 
 library(jsonlite)
 source("lib/task_manifest.R")
@@ -101,9 +95,9 @@ cat(sprintf("Run: %s\n\n", run_id))
 runner_failures <- character(0)
 
 if (do_build) {
-  cat("Build phase\n")
+  cat("Building runners\n")
   code <- system("bash build_all.sh", ignore.stdout = FALSE, ignore.stderr = FALSE)
-  if (code != 0) stop(sprintf("build phase failed with exit code %d", code))
+  if (code != 0) stop(sprintf("runner build failed with exit code %d", code))
   cat("\n")
 }
 

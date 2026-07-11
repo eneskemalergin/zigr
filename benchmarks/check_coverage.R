@@ -1,5 +1,4 @@
 #!/usr/bin/env Rscript
-# Validate benchmark coverage and task input factories without building or timing runners.
 
 library(jsonlite)
 source("lib/task_manifest.R")

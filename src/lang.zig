@@ -1,8 +1,6 @@
-//! R language node and call construction.
+//! R language nodes and call construction.
 //!
-//! Thin wrappers around R's pairlist and call-node APIs.  The function
-//! names mirror R's C conventions (car/cdr/tag) and are self-explanatory.
-//! Doc comments are omitted on one-liners for brevity.
+//! Intermediate nodes stay protected while a call is being linked.
 
 const R = @import("R");
 const protect = @import("protect.zig");
@@ -60,8 +58,6 @@ pub fn list6(s1: R.SEXP, s2: R.SEXP, s3: R.SEXP, s4: R.SEXP, s5: R.SEXP, s6: R.S
     return R.Rf_list6(s1, s2, s3, s4, s5, s6);
 }
 
-/// Install a symbol. Delegates to the shared symbol cache in symbols.zig.
-/// O(1) average lookup. R symbols live forever so no deletion logic is needed.
 pub fn symbol(name: []const u8) R.SEXP {
     return symbols.install(name);
 }
@@ -90,14 +86,10 @@ pub fn call5(fun: R.SEXP, arg1: R.SEXP, arg2: R.SEXP, arg3: R.SEXP, arg4: R.SEXP
     return R.Rf_lang6(fun, arg1, arg2, arg3, arg4, arg5);
 }
 
-/// lcons creates a LANGSXP node. Use for building call nodes;
-/// use dataCons for data pairlists (LISTSXP).
 pub fn lcons(car_val: R.SEXP, cdr_val: R.SEXP) R.SEXP {
     return R.Rf_lcons(car_val, cdr_val);
 }
 
-/// Build a pairlist from a slice. Intermediate nodes are protected while the
-/// list is under construction, then released before returning the head.
 pub fn consList(items: []const R.SEXP) R.SEXP {
     var list = R.R_NilValue;
     var protect_count: usize = 0;
@@ -111,10 +103,7 @@ pub fn consList(items: []const R.SEXP) R.SEXP {
     return list;
 }
 
-/// Build a call node from a function SEXP and positional arguments.
-/// Intermediate pairlist nodes are protected only while the call is assembled.
-/// The returned call is unprotected; protect it before another allocating R
-/// operation. `eval.call` does this internally.
+/// The returned call is unprotected after construction.
 pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
     var arg_list = protect.scoped(consList(args));
     defer arg_list.deinit();
@@ -123,8 +112,6 @@ pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
     return call_expr.get();
 }
 
-/// Narrow comptime expression builder for common call construction.
-/// Accepts a tuple of positional SEXP arguments.
 pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
     const Args = @TypeOf(args);
     const info = @typeInfo(Args);
@@ -133,8 +120,7 @@ pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
     }
 
     const fields = info.@"struct".fields;
-    // Tuple arity is comptime-known. Keeping these transient SEXP handles on
-    // the C stack avoids a native allocation that an R longjmp would bypass.
+    // R can longjmp before a heap allocation would be released.
     var values: [fields.len]R.SEXP = undefined;
     inline for (fields, 0..) |field, index| {
         values[index] = @field(args, field.name);

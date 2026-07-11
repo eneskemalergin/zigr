@@ -30,7 +30,6 @@ fn rBuild(
         return .{ .r_mod = r_mod, .r_lib = r_lib, .has_r = true };
     }
 
-    // R headers not available. Only `zig build fmt` works.
     return .{ .r_mod = undefined, .r_lib = r_lib, .has_r = false };
 }
 
@@ -38,12 +37,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Format check: works without R.
     const fmt_step = b.step("fmt", "Check zig fmt compliance");
     const fmt_check = b.addFmt(.{ .paths = &.{"."}, .check = true });
     fmt_step.dependOn(&fmt_check.step);
 
-    // R-dependent steps: resolve lazily.
     const r = rBuild(b, target, optimize);
     if (!r.has_r) {
         const check_step = b.step("check", "Cross-compilation check (needs R headers)");
@@ -80,7 +77,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Cross-compilation check: compile zigr modules for any target.
     const cross_check = b.addObject(.{
         .name = "zigr_check",
         .root_module = b.createModule(.{
@@ -99,7 +95,6 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Cross-compilation check: compile zigr for any target");
     check_step.dependOn(&cross_check.step);
 
-    // Standalone tests
     const zigr_tests = b.addTest(.{ .root_module = zigr });
     zigr_tests.root_module.addLibraryPath(.{ .cwd_relative = r.r_lib });
     zigr_tests.root_module.linkSystemLibrary("R", .{});
@@ -108,7 +103,6 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run zigr tests");
     test_step.dependOn(&run_zigr_tests.step);
 
-    // R runtime test .so. Built via `zig build rtest`.
     if (b.findProgram(&.{"Rscript"}, &.{})) |_| {
         const so = b.addLibrary(.{
             .linkage = .dynamic,

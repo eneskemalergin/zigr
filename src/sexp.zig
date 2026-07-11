@@ -1,40 +1,18 @@
-//! R's SEXP type system and classification helpers.
+//! R SEXP classification and guarded fast access.
 //!
-//! Mirrors R's internal type tags so Zig code can dispatch on SEXPTYPE.
-//! Classification helpers wrap R's C API functions from the translated
-//! R headers.
-//!
-//! Inline field-access helpers (fastLength, fastDataPtr, typeTag) bypass
-//! the translate-c PLT by reading SEXPREC struct fields directly. The
-//! offsets are derived from the R 4.x ABI on 64-bit CRAN targets and
-//! verified empirically.
-//! SAFETY: These fast paths assume non-ALTREP vectors or zigr-owned
-//! ALTREP with direct data pointers. For exotic ALTREP (compact_intseq,
-//! memory-mapped), use the *_GET_REGION family or DATAPTR_OR_NULL.
+//! The fast paths depend on the R 4.x 64-bit ABI. Use R accessors when
+//! ALTREP does not expose direct storage.
 
 const std = @import("std");
 const R = @import("R");
 
-/// Re-exported from the translated R headers.
 pub const SEXP = R.SEXP;
 
 pub const max_symbol_name = 256;
 
-/// Verified structural offsets for R 4.x on 64-bit CRAN targets.
-/// SEXPREC layout (all vector types use vecsxp_struct):
-///   offset  size  field
-///   0x00      8   sxpinfo (type tag at byte 0, bits 0-4)
-///   0x08      8   attrib pointer
-///   0x10      8   gengc_next_node
-///   0x18      8   gengc_prev_node
-///   0x20      8   vecsxp.length       (R_xlen_t)
-///   0x28      8   vecsxp.vecsxp_type  (ALTREP class, or NULL)
-///   0x30      8   vecsxp.dataptr      (void*)
 const length_offset = 0x20;
 const dataptr_offset = 0x30;
 
-/// Fast inline TYPEOF: reads the type tag directly from the first byte
-/// of the SEXP struct, low 5 bits. No PLT call, no function call.
 pub fn typeTag(sexp: SEXP) u5 {
     const byte = @as(*const u8, @ptrCast(sexp)).*;
     return @truncate(byte & 0x1F);
@@ -44,9 +22,6 @@ pub fn typeOf(sexp: SEXP) SEXPTYPE {
     return @enumFromInt(@as(c_int, typeTag(sexp)));
 }
 
-/// Reads vecsxp.length directly from the SEXPREC struct at verified
-/// offset 0x20. Returns R_xlen_t (signed 64-bit), as R does.
-/// Returns 0 on null input (caller should check with typeTag first).
 pub fn fastLength(sexp: SEXP) R.R_xlen_t {
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return 0;
     const base: [*]const u8 = @ptrCast(@alignCast(raw));
@@ -54,9 +29,7 @@ pub fn fastLength(sexp: SEXP) R.R_xlen_t {
     return slot.*;
 }
 
-/// Returns the inline data pointer for a non-ALTREP vector SEXP.
-/// The data is stored inline at offset 0x30 from the SEXP pointer.
-/// Returns null for ALTREP vectors (use R.DATAPTR_OR_NULL instead).
+/// ALTREP can withhold a direct pointer.
 pub fn fastDataPtr(sexp: SEXP) ?*anyopaque {
     if (R.ALTREP(sexp) != 0) return null;
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
@@ -64,8 +37,6 @@ pub fn fastDataPtr(sexp: SEXP) ?*anyopaque {
     return @as(*anyopaque, @ptrCast(@alignCast(base + dataptr_offset)));
 }
 
-/// Inline STRING_ELT / VECTOR_ELT: reads the i-th element from a
-/// non-ALTREP STRSXP or VECSXP's inline data array at offset 0x30.
 pub fn fastVectorElt(sexp: SEXP, index: usize) SEXP {
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
     const base: [*]u8 = @ptrCast(@alignCast(raw));
@@ -73,23 +44,12 @@ pub fn fastVectorElt(sexp: SEXP, index: usize) SEXP {
     return elts[index];
 }
 
-/// Inline R_CHAR: reads the character data pointer from a CHARSXP.
-/// The data field is at verified offset 0x30 from the CHARSXP SEXP.
-/// Returns null on null input.
 pub fn fastCharData(charsxp: SEXP) ?[*]const u8 {
     const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return null;
     const base: [*]const u8 = @ptrCast(@alignCast(raw));
     return base + dataptr_offset;
 }
 
-/// Reads the string encoding from a CHARSXP's sxpinfo byte[1] directly.
-/// Matches R 4.x ABI where encoding is stored as bitmask bits:
-///   0x08 → CE_UTF8   (1)
-///   0x04 → CE_LATIN1 (2)
-///   0x02 → CE_BYTES  (3)
-///   otherwise → CE_NATIVE (0)
-/// No PLT call,  verified against Rf_getCharCE disassembly on R 4.6.0.
-/// Returns -1 on null or non-CHARSXP input (safe sentinel).
 pub fn fastGetCharCE(charsxp: SEXP) i32 {
     const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return -1;
     if (typeTag(charsxp) != 9) return -1; // CHARSXP = 9
@@ -101,10 +61,6 @@ pub fn fastGetCharCE(charsxp: SEXP) i32 {
     return 0;
 }
 
-/// Length of any SEXP as usize. Returns 0 on null, negative length (corrupted
-/// SEXP), or zero-length vector instead of panicking. Uses fastLength (inline
-/// struct field read) for non-ALTREP vectors, falls back to R.XLENGTH for
-/// ALTREP method dispatch.
 pub fn xlength(sexp: SEXP) usize {
     if (sexp == null) return 0;
     const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
@@ -112,7 +68,6 @@ pub fn xlength(sexp: SEXP) usize {
     return @as(usize, @intCast(len));
 }
 
-/// xlength that returns a clear error instead of silently zeroing.
 pub fn tryXlength(sexp: SEXP) !usize {
     if (sexp == null) return error.NullPointer;
     const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
@@ -120,14 +75,7 @@ pub fn tryXlength(sexp: SEXP) !usize {
     return @as(usize, @intCast(len));
 }
 
-/// Returns the exposed bytes of a CHARSXP string value.
-///
-/// Rf_translateCharUTF8 converts Latin-1/native-encoded strings to UTF-8.
-/// Its translation storage is R-managed and persists for the enclosing R
-/// call. R can reject translation of CE_BYTES strings, so those retain their
-/// byte-marked, NUL-terminated R_CHAR representation. STRSXP cannot contain
-/// embedded NUL bytes; use RAWSXP for arbitrary binary data. Returns "" for
-/// NA_STRING.
+/// R rejects translating `CE_BYTES`, so those bytes stay untouched.
 pub fn charsxpBytes(charsxp: SEXP) []const u8 {
     if (charsxp == R.R_NaString) return "";
     if (R.Rf_getCharCE(charsxp) == @as(R.cetype_t, @intCast(R.CE_BYTES))) {
@@ -141,8 +89,6 @@ pub const XlengthError = error{
     NegativeLength,
 };
 
-/// Maps R's internal type tags from Rinternals.h. Numeric values must
-/// match what R returns from TYPEOF() and what Rf_allocVector expects.
 pub const SEXPTYPE = enum(c_int) {
     nil = 0,
     sym = 1,
@@ -174,8 +120,6 @@ pub const SEXPTYPE = enum(c_int) {
     _,
 };
 
-/// Length type used by R for vector sizes. Signed because R uses -1 to
-/// signal certain error states. Cast to usize after validating >= 0.
 pub const R_len_t = c_int;
 
 pub fn isVector(sexp: SEXP) bool {

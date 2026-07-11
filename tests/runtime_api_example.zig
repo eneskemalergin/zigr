@@ -1,13 +1,5 @@
-//! Phase 4 comprehensive example.
-//! Build: zig test tests/phase4_example.zig -I/usr/share/R/include -lc
-//!   --dep R -Mr_imports=.zig-cache/o/*/r_imports.zig
-//!   -Mlang=src/lang.zig -Meval=src/eval.zig
-//!   -Mtrycatch=src/trycatch.zig -Mserialize=src/serialize.zig
-//!   -Mweakref=src/weakref.zig -Mexport=src/export.zig
-//!   -Msexp=src/sexp.zig -Mprotect=src/protect.zig
-//!   -Mconvert=src/convert.zig -Mcleanup=src/cleanup.zig
-//! (Adjust the -Mr_imports path to match your .zig-cache)
-
+//! Standalone compile smoke checks for APIs that cross into R.
+//!
 const std = @import("std");
 const R = @import("R");
 const lang = @import("lang");

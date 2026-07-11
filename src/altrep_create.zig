@@ -1,8 +1,4 @@
-//! Comptime ALTREP class generation.
-//!
-//! Creates R ALTREP vectors backed by Zig-managed memory. The generated
-//! classes register Length, Elt, Dataptr, and Duplicate methods so R
-//! reads elements from the Zig slice without copying.
+//! Comptime ALTREP classes backed by Zig-owned data.
 
 const std = @import("std");
 const R = @import("R");
@@ -57,8 +53,7 @@ fn Wrap(comptime kind: AltKind) type {
 
 fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
     const W = Wrap(kind);
-    // c_allocator (not R_chk_*) because the Wrap must outlive the
-    // .Call invocation, R's finalizer frees it during a later GC.
+    // R finalizes this after the original call, outside R's checked heap.
     const w = std.heap.c_allocator.create(W) catch err.signal("out of memory during ALTREP creation");
     w.* = .{ .ptr = slice.ptr, .len = slice.len };
     return w;
@@ -86,9 +81,7 @@ fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
 
 fn dataptrImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) ?*anyopaque {
     const w = wrapFromAltrep(kind, x);
-    // Returns a non-const pointer to the Zig backing slice.  R 4.6's
-    // DATAPTR_RW() would add COW checks, but this ALTREP class has
-    // exclusive ownership of its backing memory, so no COW needed.
+    // The class exclusively owns its backing storage, so no copy-on-write is needed.
     return @as(?*anyopaque, @ptrCast(@constCast(w.ptr)));
 }
 
@@ -426,10 +419,7 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             registered = true;
         }
 
-        /// The caller must run this under `cleanup.protectCall*` whenever R
-        /// allocation can signal an error. The generated export boundary does
-        /// so; the inline transfer guard then owns native state until R owns
-        /// its finalizer.
+        /// The pending guard keeps native data alive until R owns its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
             if (!registered) {
                 class = buildClass(kind, pkg, name, null);
@@ -442,9 +432,7 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                 data1: ?R.SEXP = null,
 
                 fn fire(self: *@This()) void {
-                    // If the external pointer has received a finalizer but
-                    // ALTREP construction then errors, clear it before
-                    // freeing the wrapper so a later GC cannot double-free.
+                    // Clear first so a later GC cannot free the wrapper twice.
                     if (self.data1) |d1| R.R_ClearExternalPtr(d1);
                     std.heap.c_allocator.destroy(self.wrap);
                 }
@@ -512,8 +500,7 @@ fn makeStringWrap(slice: []const []const u8) *StringWrap {
 
     const wrap = std.heap.c_allocator.create(StringWrap) catch err.signal("out of memory during ALTREP string creation");
     wrap.* = .{ .ptr = values.ptr, .len = values.len };
-    // `wrap` now owns values; do not free the transfer buffer on normal
-    // return. The surrounding ALTREP construction arms its own guard.
+    // The wrapper owns `values` after this point.
     cleanup.popFrame();
     return wrap;
 }
@@ -580,9 +567,7 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             }.f);
             R.R_set_altrep_Duplicate_method(cls, duplicateString);
             R.R_set_altstring_Elt_method(cls, stringElt);
-            // R 4.6 has no R_set_altstring_Dataptr_method or
-            // R_set_altstring_Dataptr_or_null_method (strings are
-            // an array of SEXP, not a flat data buffer).
+            // R strings are SEXP arrays, not a flat buffer with DATAPTR hooks.
             R.R_set_altstring_Is_sorted_method(cls, stringIsSorted);
             R.R_set_altstring_No_NA_method(cls, stringNoNA);
             return cls;
@@ -593,8 +578,7 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             registered = true;
         }
 
-        /// See `OwnedAltVector.init`: this construction must execute inside a
-        /// `cleanup.protectCall*` dynamic extent when R errors are possible.
+        /// The pending guard keeps native data alive until R owns its finalizer.
         pub fn init(slice: []const []const u8) R.SEXP {
             if (!registered) {
                 class = buildStringClass(null);

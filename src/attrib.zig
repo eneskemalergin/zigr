@@ -1,15 +1,10 @@
-//! Attribute and name handling.
-//!
-//! Thin wrappers around R's getAttrib/setAttrib/classgets/namesgets.
-//! Names are self-explanatory (setNames, getClass, setClass, setDim).
-//! Use these instead of raw R C API for type-safe name strings.
+//! R attributes and names.
 
 const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 const sexp_mod = @import("sexp.zig");
 
-/// Names are UTF-8 Zig strings, converted to CHARSXP internally.
 pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     var ns = protect.scoped(R.Rf_allocVector(R.STRSXP, @as(R.R_xlen_t, @intCast(names.len))));
     defer ns.deinit();
@@ -20,7 +15,6 @@ pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     _ = R.Rf_namesgets(sexp, ns.get());
 }
 
-/// Returns empty slice if no class attribute is set.
 pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) ![][]const u8 {
     const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
     if (cls == R.R_NilValue) return &.{};

@@ -14,7 +14,7 @@ export fn zigr_bench_string_concat(vec: SEXP) SEXP {
     }
     if (n > 1) total += (n - 1) * sep.len;
 
-    // Use c_allocator (malloc) instead of R_alloc to avoid R's GC interaction
+    // This buffer outlives R allocations made while assembling the result.
     const buf = std.heap.c_allocator.alloc(u8, total) catch unreachable;
     defer std.heap.c_allocator.free(buf);
 

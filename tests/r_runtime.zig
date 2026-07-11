@@ -1,7 +1,3 @@
-//! Tests that require R to be running.
-//! Compiled into a shared library and loaded by R via tests/run_r_tests.R.
-//! Not run by `zig build test` (those tests cannot link libR).
-
 const std = @import("std");
 const R = @import("R");
 const zigr = @import("zigr");
@@ -21,21 +17,14 @@ const embed = zigr.embed;
 const trycatch_mod = zigr.trycatch;
 const protect = zigr.protect;
 
-// Use the R module's SEXP type for function parameters and returns.
 const SEXP = R.SEXP;
 
-// DllInfo for the test library, populated by R_init_zigr_r_test.
 var test_dll: ?*R.DllInfo = null;
 
-// R calls this when dyn.load("libzigr_r_test.so") is called.
-// Stores the DllInfo for use by export system tests.
 export fn R_init_zigr_r_test(info: *R.DllInfo) callconv(.c) void {
     test_dll = info;
 }
 
-// Basic creation tests
-
-/// Allocate a REALSXP of size 100, fill with 0..99.
 export fn zigr_alloc_real() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @as(R.R_xlen_t, 100)));
     const ptr: [*]f64 = @ptrCast(R.REAL(vec));
@@ -45,16 +34,12 @@ export fn zigr_alloc_real() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Allocate a large vector (10M) to stress R's allocator.
 export fn zigr_alloc_large() SEXP {
     _ = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @as(R.R_xlen_t, 10000000)));
     R.Rf_unprotect(1);
     return R.Rf_ScalarReal(1.0);
 }
 
-// PROTECT stress tests
-
-/// PROTECT the same SEXP 100 times, then UNPROTECT 100.
 export fn zigr_protect_many() SEXP {
     const vec = R.Rf_allocVector(R.INTSXP, 1);
     var i: usize = 0;
@@ -63,7 +48,6 @@ export fn zigr_protect_many() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// PROTECT with index, reprotect with a new vector, then clean up.
 export fn zigr_protect_index() SEXP {
     var idx: R.PROTECT_INDEX = 0;
     const vec1 = R.Rf_allocVector(R.REALSXP, 10);
@@ -76,9 +60,6 @@ export fn zigr_protect_index() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// NA handling tests
-
-/// Create a vector with NA_REAL at position 2, verify positions.
 export fn zigr_check_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     const ptr = R.REAL(vec);
@@ -91,29 +72,20 @@ export fn zigr_check_na() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Error signaling tests (expect_error=TRUE for raise_error)
-
-/// Call Rf_error: must raise R error, not segfault.
 export fn zigr_raise_error() SEXP {
     R.Rf_error("zigr test error: this is expected");
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Call Rf_warning: must print warning and continue.
 export fn zigr_raise_warning() SEXP {
     R.Rf_warning("zigr test warning: this is expected");
     return R.Rf_ScalarReal(1.0);
 }
 
-// Type tests
-
-/// Verify TYPEOF(R_NilValue) returns NILSXP (0).
 export fn zigr_typeof_nil() SEXP {
     if (R.TYPEOF(R.R_NilValue) != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
-
-// Basic protect and return-value tests
 
 export fn zigr_test_protect() SEXP {
     _ = R.Rf_protect(R.R_NilValue);
@@ -121,25 +93,18 @@ export fn zigr_test_protect() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Verify that a scalar REAL 42.0 is created and has the right value.
 export fn zigr_test_return42() SEXP {
     const val = R.REAL(R.Rf_ScalarReal(42.0))[0];
     if (val != 42.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-// Longjmp / R_UnwindProtect tests
-
-// Flag set by the cleanup handler on longjmp.
 var longjmp_cleanup_fired: bool = false;
 
 fn markCleanupFired(_: ?*anyopaque) void {
     longjmp_cleanup_fired = true;
 }
 
-/// Calls Rf_error inside a protectCall guard.
-/// The cleanup handler fires, then R_UnwindProtect re-throws
-/// the error to R.  Registered in run_r_tests.R as expect_error=TRUE.
 export fn zigr_test_longjmp() SEXP {
     longjmp_cleanup_fired = false;
     cleanup.pushFrame(markCleanupFired, null);
@@ -155,8 +120,6 @@ export fn zigr_test_longjmp() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Normal return inside protectCall: cleanup should NOT fire.
-/// Verifies the return value 99.0 passes through correctly.
 export fn zigr_test_longjmp_normal() SEXP {
     longjmp_cleanup_fired = false;
     cleanup.pushFrame(markCleanupFired, null);
@@ -175,49 +138,35 @@ export fn zigr_test_longjmp_normal() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Query the longjmp cleanup flag from R.
 export fn zigr_longjmp_flag() SEXP {
     return R.Rf_ScalarInteger(if (longjmp_cleanup_fired) 1 else 0);
 }
 
-// Error module tests (Phase 2.4)
-
-/// Test error.signal: calls Rf_error and is caught by tryCatch.
-/// Registered as expect_error=TRUE in run_r_tests.R.
 export fn zigr_test_error_signal() SEXP {
     err.signal("zigr error signal test");
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test error.warn: calls Rf_warning, then returns normally.
 export fn zigr_test_error_warn() SEXP {
     err.warn("zigr warning signal test");
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test error.signalIf: condition is true, so error fires.
 export fn zigr_test_error_signalif() SEXP {
     err.signalIf(true, "zigr error signalIf test");
     return R.R_NilValue;
 }
 
-// Interrupt module tests (Phase 2.5)
-
-/// Call ict.checkInterrupt: should return normally when no interrupt pending.
 export fn zigr_test_interrupt() SEXP {
     ict.checkInterrupt();
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Call ict.checkStack: should return normally.
 export fn zigr_test_check_stack() SEXP {
     ict.checkStack();
     return R.Rf_ScalarReal(1.0);
 }
 
-// Reverse FFI tests
-
-/// Evaluate 1 + 1 via lang.call2 + eval.rEval.  Expects 2.0.
 export fn zigr_test_rev_eval() SEXP {
     const plus = test_lang.symbol("+");
     const one = R.Rf_ScalarReal(1.0);
@@ -228,7 +177,6 @@ export fn zigr_test_rev_eval() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Define a variable via eval.defineVar, then look it up and verify 42.
 export fn zigr_test_rev_define_find() SEXP {
     test_eval.defineVar("zigr_test_var", R.Rf_ScalarReal(42.0));
     const result = test_eval.findVarName("zigr_test_var");
@@ -237,7 +185,6 @@ export fn zigr_test_rev_define_find() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Build and evaluate a call2: `sum(10, 20)`.  Expects 30.0.
 export fn zigr_test_rev_lang3() SEXP {
     const fsum = test_lang.symbol("sum");
     const a = R.Rf_ScalarReal(10.0);
@@ -249,18 +196,12 @@ export fn zigr_test_rev_lang3() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// RNG tests
-
-/// Acquire and release RNG: should not crash.
 export fn zigr_test_rng() SEXP {
     rng.acquire();
     rng.release();
     return R.Rf_ScalarReal(1.0);
 }
 
-// Memory allocator tests
-
-/// Allocate and free through RAllocator.
 export fn zigr_test_ralloc() SEXP {
     const alloc = mem.RAllocator;
     const buf = alloc.alloc(u8, 100) catch return R.Rf_ScalarReal(0.0);
@@ -284,17 +225,12 @@ export fn zigr_test_ralloc() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Preserve test
-
 var preserve_released: bool = false;
 
 fn releasePreserved(_: ?*anyopaque) void {
     preserve_released = true;
 }
 
-/// Preserve an SEXP, then error inside protectCall.
-/// Cleanup fires R_ReleaseObject on unwind.  The error propagates
-/// to R (expect_error=TRUE in run_r_tests.R).
 export fn zigr_test_preserve_longjmp() SEXP {
     preserve_released = false;
     const obj = R.Rf_ScalarReal(99.0);
@@ -310,12 +246,9 @@ export fn zigr_test_preserve_longjmp() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Query the preserve flag from R.
 export fn zigr_preserve_flag() SEXP {
     return R.Rf_ScalarInteger(if (preserve_released) 1 else 0);
 }
-
-// Nested callbacks test (Phase 2.3)
 
 var nested_outer_fired: bool = false;
 var nested_inner_fired: bool = false;
@@ -327,8 +260,6 @@ fn markInner(_: ?*anyopaque) void {
     nested_inner_fired = true;
 }
 
-/// Inner function: pushes cleanup, then errors.
-/// Called by R via .Call (triggered from outer through rffi.eval).
 export fn zigr_test_nested_inner() SEXP {
     cleanup.pushFrame(markInner, null);
     R.Rf_error("nested inner: expected");
@@ -336,8 +267,6 @@ export fn zigr_test_nested_inner() SEXP {
     return R.R_NilValue;
 }
 
-/// Outer function: pushes cleanup, calls protectCall which
-/// evaluates an R expression that .Call's back into zigr_test_nested_inner.
 export fn zigr_test_nested_outer() SEXP {
     nested_outer_fired = false;
     nested_inner_fired = false;
@@ -359,7 +288,6 @@ export fn zigr_test_nested_outer() SEXP {
     return R.R_NilValue;
 }
 
-/// Query nested callback flags from R.
 export fn zigr_nested_flags() SEXP {
     var v: i32 = 0;
     if (nested_outer_fired) v += 1;
@@ -367,9 +295,6 @@ export fn zigr_nested_flags() SEXP {
     return R.Rf_ScalarInteger(v);
 }
 
-// REALSXP conversion tests
-
-/// Write [1,2,3,4,5] to REALSXP, read back via REAL() to verify.
 export fn zigr_test_to_real_slice() SEXP {
     const n: R.R_xlen_t = 5;
     const rvec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -383,7 +308,6 @@ export fn zigr_test_to_real_slice() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Create REALSXP from a Zig slice via fromRealSlice, verify values.
 export fn zigr_test_from_real_slice() SEXP {
     const values = [_]f64{ 10.0, 20.0, 30.0 };
     const sexp: R.SEXP = @ptrCast(zigr_convert.fromRealSlice(values[0..]));
@@ -394,7 +318,6 @@ export fn zigr_test_from_real_slice() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Round-trip: create REALSXP from Zig slice, read back.
 export fn zigr_test_real_roundtrip() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -407,9 +330,6 @@ export fn zigr_test_real_roundtrip() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// INTSXP conversion tests
-
-/// Write [10,20,30,40] to INTSXP, read back to verify.
 export fn zigr_test_int_create() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
@@ -423,7 +343,6 @@ export fn zigr_test_int_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Create INTSXP from a Zig i32 slice, verify values.
 export fn zigr_test_int_from_slice() SEXP {
     const values = [_]i32{ 100, 200, 300 };
     const sexp: R.SEXP = @ptrCast(zigr_convert.fromIntSlice(values[0..]));
@@ -434,9 +353,6 @@ export fn zigr_test_int_from_slice() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// STRSXP conversion tests
-
-/// Write ["hello","world","zigr"] to STRSXP, read back to verify.
 export fn zigr_test_str_create() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
@@ -454,7 +370,6 @@ export fn zigr_test_str_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Create STRSXP from a Zig string slice via fromStringSlice, verify.
 export fn zigr_test_str_from_slice() SEXP {
     const values = [_][]const u8{ "alpha", "beta", "gamma" };
     const sexp: R.SEXP = @ptrCast(zigr_convert.fromStringSlice(values[0..]));
@@ -466,9 +381,6 @@ export fn zigr_test_str_from_slice() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// LGLSXP conversion tests
-
-/// Write [TRUE, FALSE, NA, TRUE] to LGLSXP, read back to verify.
 export fn zigr_test_lgl_create() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
@@ -482,7 +394,6 @@ export fn zigr_test_lgl_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Allocate LGLSXP from Zig slice, return it.
 export fn zigr_test_lgl_from_slice() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -493,9 +404,6 @@ export fn zigr_test_lgl_from_slice() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// VECSXP conversion tests (Phase 3.5)
-
-/// Create a VECSXP (list) with mixed types and return it.
 export fn zigr_test_list_create() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, n));
@@ -507,8 +415,6 @@ export fn zigr_test_list_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Call toLogicalSlice on the lgl vector, verify values via R.
-/// Test toLogicalSlice via round-trip: create LGLSXP, read back, verify.
 export fn zigr_test_to_logical_slice() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -531,9 +437,6 @@ export fn zigr_test_to_logical_slice() SEXP {
     return if (ok) R.Rf_ScalarReal(1.0) else R.Rf_ScalarReal(0.0);
 }
 
-// Data frame tests (Phase 3.6)
-
-/// Build a data frame from Zig arrays, verify structure.
 export fn zigr_test_df_build() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -552,7 +455,6 @@ export fn zigr_test_df_build() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Build a data frame and verify column access.
 export fn zigr_test_df_column() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -571,9 +473,6 @@ export fn zigr_test_df_column() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-// RAWSXP / CPLXSXP tests
-
-/// Write [0xde, 0xad, 0xbe, 0xef] to RAWSXP, read back to verify.
 export fn zigr_test_raw_create() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, n));
@@ -587,7 +486,6 @@ export fn zigr_test_raw_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Write [(1+2i), (3+4i), (5+6i)] to CPLXSXP, read back to verify.
 export fn zigr_test_cplx_create() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, n));
@@ -606,9 +504,6 @@ export fn zigr_test_cplx_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Attrib tests (Phase 3.7)
-
-/// Set and verify class attribute.
 export fn zigr_test_attrib_class() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     defer R.Rf_unprotect(1);
@@ -618,7 +513,6 @@ export fn zigr_test_attrib_class() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Set and verify names attribute.
 export fn zigr_test_attrib_names() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     defer R.Rf_unprotect(1);
@@ -630,8 +524,6 @@ export fn zigr_test_attrib_names() SEXP {
     return if (ok) R.Rf_ScalarReal(1.0) else R.Rf_ScalarReal(0.0);
 }
 
-// ALTREP creation test (Phase 3.10)
-
 const MyAlt = altrep_create.AltReal("zigr", "test_real");
 const MyAltInt = altrep_create.AltInteger("zigr", "test_integer");
 const MyAltLogical = altrep_create.AltLogical("zigr", "test_logical");
@@ -639,9 +531,6 @@ const MyAltRaw = altrep_create.AltRaw("zigr", "test_raw");
 const MyAltComplex = altrep_create.AltComplex("zigr", "test_complex");
 const MyAltString = altrep_create.AltString("zigr", "test_string");
 
-// Test-only ALTREP with no data pointer and deliberately short region reads.
-// It verifies the public fallback contract without adding a production ALTREP
-// abstraction: one owned buffer, repeated region reads, and no Elt walk.
 const short_region_len: usize = 4097;
 const short_region_cap: usize = 257;
 var short_region_class: R.R_altrep_class_t = undefined;
@@ -676,7 +565,7 @@ fn shortRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffe
 
 fn shortRegionAltInteger() SEXP {
     if (!short_region_registered) {
-        short_region_class = R.R_make_altinteger_class("p15_short_region_integer", "zigr", null);
+        short_region_class = R.R_make_altinteger_class("short_region_integer", "zigr", null);
         R.R_set_altrep_Length_method(short_region_class, shortRegionLength);
         R.R_set_altvec_Dataptr_or_null_method(short_region_class, shortRegionDataptrOrNull);
         R.R_set_altinteger_Elt_method(short_region_class, shortRegionElt);
@@ -710,7 +599,7 @@ fn shortRawRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, bu
 
 fn shortRegionAltRaw() SEXP {
     if (!short_raw_region_registered) {
-        short_raw_region_class = R.R_make_altraw_class("p17_short_region_raw", "zigr", null);
+        short_raw_region_class = R.R_make_altraw_class("short_region_raw", "zigr", null);
         R.R_set_altrep_Length_method(short_raw_region_class, shortRegionLength);
         R.R_set_altvec_Dataptr_or_null_method(short_raw_region_class, shortRegionDataptrOrNull);
         R.R_set_altraw_Elt_method(short_raw_region_class, shortRawRegionElt);
@@ -740,7 +629,7 @@ fn shortComplexRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t
 
 fn shortRegionAltComplex() SEXP {
     if (!short_complex_region_registered) {
-        short_complex_region_class = R.R_make_altcomplex_class("p17_short_region_complex", "zigr", null);
+        short_complex_region_class = R.R_make_altcomplex_class("short_region_complex", "zigr", null);
         R.R_set_altrep_Length_method(short_complex_region_class, shortRegionLength);
         R.R_set_altvec_Dataptr_or_null_method(short_complex_region_class, shortRegionDataptrOrNull);
         R.R_set_altcomplex_Get_region_method(short_complex_region_class, shortComplexRegionGetRegion);
@@ -785,7 +674,6 @@ const zigr_altreal_slice_tag_name = "zigr_altreal_slice_wrap";
 const zigr_altinteger_slice_tag_name = "zigr_altinteger_slice_wrap";
 const zigr_altlogical_slice_tag_name = "zigr_altlogical_slice_wrap";
 
-/// Create an ALTREP REALSXP from a Zig slice, verify length.
 export fn zigr_test_altrep_create() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
@@ -793,7 +681,6 @@ export fn zigr_test_altrep_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP sum matches expected total (15.0).
 export fn zigr_test_altrep_sum_simd() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
@@ -802,7 +689,6 @@ export fn zigr_test_altrep_sum_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP exposes a direct data pointer so zigr can skip region copying.
 export fn zigr_test_altrep_direct_ptr() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
@@ -815,7 +701,6 @@ export fn zigr_test_altrep_direct_ptr() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Integer ALTREP exposes owned backing and toIntSlice reads it correctly.
 export fn zigr_test_altint_direct_slice() SEXP {
     const data = [_]i32{ 4, 2, 9, -1, 3 };
     const vec = MyAltInt.init(data[0..]);
@@ -833,7 +718,6 @@ export fn zigr_test_altint_direct_slice() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Integer ALTREP sum [4,2,9,-1,3] should be 17.
 export fn zigr_test_altint_sum_direct() SEXP {
     const data = [_]i32{ 4, 2, 9, -1, 3 };
     const vec = MyAltInt.init(data[0..]);
@@ -869,7 +753,6 @@ export fn zigr_test_altint_argmax_direct() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Logical ALTREP exposes owned backing and toLogicalSlice preserves values.
 export fn zigr_test_altlogical_direct_slice() SEXP {
     const data = [_]i32{ 1, 0, R.R_NaInt, 1 };
     const vec = MyAltLogical.init(data[0..]);
@@ -884,7 +767,6 @@ export fn zigr_test_altlogical_direct_slice() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Logical ALTREP TRUE count: [1,0,NA,1] has 2 TRUEs.
 export fn zigr_test_altlogical_count_true_direct() SEXP {
     const data = [_]i32{ 1, 0, R.R_NaInt, 1 };
     const vec = MyAltLogical.init(data[0..]);
@@ -920,7 +802,6 @@ export fn zigr_test_altlogical_argmax_direct() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP mean [1,2,3,4,5] should be 3.0.
 export fn zigr_test_altrep_mean_simd() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
@@ -928,7 +809,6 @@ export fn zigr_test_altrep_mean_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP norm2 [1,2,3,4,5] should be sqrt(55) ~ 7.416.
 export fn zigr_test_altrep_norm2_simd() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
@@ -936,7 +816,6 @@ export fn zigr_test_altrep_norm2_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP min [4,2,9,-1,3] should be -1.0.
 export fn zigr_test_altrep_min_simd() SEXP {
     const data = [_]f64{ 4.0, 2.0, 9.0, -1.0, 3.0 };
     const vec = MyAlt.init(data[0..]);
@@ -944,7 +823,6 @@ export fn zigr_test_altrep_min_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP max [4,2,9,-1,3] should be 9.0.
 export fn zigr_test_altrep_max_simd() SEXP {
     const data = [_]f64{ 4.0, 2.0, 9.0, -1.0, 3.0 };
     const vec = MyAlt.init(data[0..]);
@@ -952,7 +830,6 @@ export fn zigr_test_altrep_max_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP argmin [4,-1,9,-1,3] should return index 1 (first min).
 export fn zigr_test_altrep_argmin_simd() SEXP {
     const data = [_]f64{ 4.0, -1.0, 9.0, -1.0, 3.0 };
     const vec = MyAlt.init(data[0..]);
@@ -960,7 +837,6 @@ export fn zigr_test_altrep_argmin_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP argmax [4,9,9,-1,3] should return index 1 (first max).
 export fn zigr_test_altrep_argmax_simd() SEXP {
     const data = [_]f64{ 4.0, 9.0, 9.0, -1.0, 3.0 };
     const vec = MyAlt.init(data[0..]);
@@ -968,7 +844,6 @@ export fn zigr_test_altrep_argmax_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP sum_narm [1,NA,4,5] should be 10.0.
 export fn zigr_test_altrep_sum_narm_simd() SEXP {
     var data = [_]f64{ 1.0, 0.0, 4.0, 5.0 };
     data[1] = R.NA_REAL();
@@ -977,7 +852,6 @@ export fn zigr_test_altrep_sum_narm_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ALTREP mean_narm [1,NA,5] should be 3.0.
 export fn zigr_test_altrep_mean_narm_simd() SEXP {
     var data = [_]f64{ 1.0, 0.0, 5.0 };
     data[1] = R.NA_REAL();
@@ -986,7 +860,6 @@ export fn zigr_test_altrep_mean_narm_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Verify ALTRAW created with correct length and values.
 export fn zigr_test_altraw_create() SEXP {
     const data = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
     const vec = MyAltRaw.init(data[0..]);
@@ -994,7 +867,6 @@ export fn zigr_test_altraw_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Verify ALTCOMPLEX created with correct length.
 export fn zigr_test_altcomplex_create() SEXP {
     const data = [_]altrep_create.ComplexElem{
         .{ .r = 1.0, .i = 2.0 },
@@ -1005,9 +877,7 @@ export fn zigr_test_altcomplex_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.5 ordinary numeric views borrow R storage without allocating native
-/// payload bytes. The empty case also must not form a zero-length R pointer.
-export fn zigr_test_p15_borrowed_views() SEXP {
+export fn zigr_test_borrowed_views() SEXP {
     var no_alloc_storage: [0]u8 align(16) = .{};
     var no_alloc = std.heap.FixedBufferAllocator.init(&no_alloc_storage);
 
@@ -1096,9 +966,7 @@ export fn zigr_test_p15_borrowed_views() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.5 uses R's compact integer and real sequences as real-world ALTREP
-/// fallbacks. Neither advertises a data pointer, so the view owns one copy.
-export fn zigr_test_p15_compact_altrep_views() SEXP {
+export fn zigr_test_compact_altrep_views() SEXP {
     const integer = compactIntSequence(@intCast(short_region_len)) orelse return R.Rf_ScalarReal(0.0);
     defer R.Rf_unprotect(1);
     if (R.ALTREP(integer) == 0 or R.INTEGER_OR_NULL(integer) != null) return R.Rf_ScalarReal(0.0);
@@ -1150,9 +1018,7 @@ export fn zigr_test_p15_compact_altrep_views() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.5 must continue after a valid short `*_GET_REGION` result and must not
-/// fall back to one R Elt call per element.
-export fn zigr_test_p15_short_region() SEXP {
+export fn zigr_test_short_region() SEXP {
     const integer = R.Rf_protect(shortRegionAltInteger());
     defer R.Rf_unprotect(1);
     if (R.ALTREP(integer) == 0 or R.INTEGER_OR_NULL(integer) != null) return R.Rf_ScalarReal(0.0);
@@ -1180,21 +1046,17 @@ export fn zigr_test_p15_short_region() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Double-recursive fib to prove Zig call overhead is minimal.
 fn zigr_fib(n: i64) i64 {
     if (n <= 1) return n;
     return zigr_fib(n - 1) + zigr_fib(n - 2);
 }
 
-/// Test recursive fib with n=20 (fast, ~13K calls). Verifies correctness
-/// and that deep recursion does not overflow the C stack.
 export fn zigr_test_fib_recursive() SEXP {
     const result = zigr_fib(20);
     if (result != 6765) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Verify ALTSTRING created with correct length.
 export fn zigr_test_altstring_create() SEXP {
     const data = [_][]const u8{ "alpha", "beta", "gamma" };
     const vec = MyAltString.init(data[0..]);
@@ -1202,10 +1064,7 @@ export fn zigr_test_altstring_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.7: string representations preserve NA metadata and source encodings.
-/// StringView normalizes non-CE_BYTES input to UTF-8, while CE_BYTES retains
-/// its byte-marked R string representation rather than becoming raw data.
-export fn zigr_test_p17_string_representations() SEXP {
+export fn zigr_test_string_representations() SEXP {
     const utf8 = "na\xc3\xafve";
     const byte_marked = [_]u8{ 'x', 0xff, 'y' };
     const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
@@ -1262,8 +1121,7 @@ export fn zigr_test_p17_string_representations() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.7: ALTSTRING input uses STRING_ELT through both string view forms.
-export fn zigr_test_p17_altstring_inputs() SEXP {
+export fn zigr_test_altstring_inputs() SEXP {
     const data = [_][]const u8{ "alpha", "", "gamma" };
     const vec = MyAltString.init(data[0..]);
     if (R.ALTREP(vec) == 0) return R.Rf_ScalarReal(0.0);
@@ -1279,52 +1137,48 @@ export fn zigr_test_p17_altstring_inputs() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// P1.7 allocation/unwind probe. Each string representation allocates its
-// native headers or metadata before an R error is raised. The allocator's
-// raw-free count proves that the conversion's own inline cleanup frame fired;
-// a surrounding `tryCatch` lets this test inspect the state after the error.
-const P17StringCleanupState = struct {
+const StringCleanupState = struct {
     allocations: usize = 0,
     frees: usize = 0,
 };
 
-threadlocal var p17_string_cleanup_state: P17StringCleanupState = .{};
-threadlocal var p17_string_cleanup_input: SEXP = null;
-threadlocal var p17_string_cleanup_mode: u2 = 0;
-threadlocal var p17_string_cleanup_elt_calls: usize = 0;
+threadlocal var string_cleanup_state: StringCleanupState = .{};
+threadlocal var string_cleanup_input: SEXP = null;
+threadlocal var string_cleanup_mode: u2 = 0;
+threadlocal var string_cleanup_elt_calls: usize = 0;
 
-var p17_string_error_class: R.R_altrep_class_t = undefined;
-var p17_string_error_registered = false;
+var string_error_class: R.R_altrep_class_t = undefined;
+var string_error_registered = false;
 
-fn p17StringErrorLength(_: SEXP) callconv(.c) R.R_xlen_t {
+fn stringErrorLength(_: SEXP) callconv(.c) R.R_xlen_t {
     return 1;
 }
 
-fn p17StringErrorElt(_: SEXP, _: R.R_xlen_t) callconv(.c) SEXP {
-    p17_string_cleanup_elt_calls += 1;
-    R.Rf_error("zigr P1.7 string allocation cleanup: expected ALTSTRING error");
+fn stringErrorElt(_: SEXP, _: R.R_xlen_t) callconv(.c) SEXP {
+    string_cleanup_elt_calls += 1;
+    R.Rf_error("zigr string cleanup: expected ALTSTRING error");
 }
 
-fn p17StringErrorAltString() SEXP {
-    if (!p17_string_error_registered) {
-        p17_string_error_class = R.R_make_altstring_class("p17_string_error", "zigr", null);
-        R.R_set_altrep_Length_method(p17_string_error_class, p17StringErrorLength);
-        R.R_set_altstring_Elt_method(p17_string_error_class, p17StringErrorElt);
-        p17_string_error_registered = true;
+fn stringErrorAltString() SEXP {
+    if (!string_error_registered) {
+        string_error_class = R.R_make_altstring_class("string_cleanup_error", "zigr", null);
+        R.R_set_altrep_Length_method(string_error_class, stringErrorLength);
+        R.R_set_altstring_Elt_method(string_error_class, stringErrorElt);
+        string_error_registered = true;
     }
-    return R.R_new_altrep(p17_string_error_class, R.R_NilValue, R.R_NilValue);
+    return R.R_new_altrep(string_error_class, R.R_NilValue, R.R_NilValue);
 }
 
-const P17StringCleanupAllocator = struct {
+const StringCleanupAllocator = struct {
     fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
-        const state: *P17StringCleanupState = @ptrCast(@alignCast(ctx));
+        const state: *StringCleanupState = @ptrCast(@alignCast(ctx));
         const memory = std.heap.c_allocator.rawAlloc(len, alignment, return_address) orelse return null;
         state.allocations += 1;
         return memory;
     }
 
     fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
-        const state: *P17StringCleanupState = @ptrCast(@alignCast(ctx));
+        const state: *StringCleanupState = @ptrCast(@alignCast(ctx));
         std.heap.c_allocator.rawFree(memory, alignment, return_address);
         state.frees += 1;
     }
@@ -1339,7 +1193,7 @@ const P17StringCleanupAllocator = struct {
 
     fn allocator() std.mem.Allocator {
         return .{
-            .ptr = @ptrCast(&p17_string_cleanup_state),
+            .ptr = @ptrCast(&string_cleanup_state),
             .vtable = &.{
                 .alloc = alloc,
                 .free = free,
@@ -1350,50 +1204,47 @@ const P17StringCleanupAllocator = struct {
     }
 };
 
-fn p17StringAllocationThenError() SEXP {
-    switch (p17_string_cleanup_mode) {
+fn stringAllocationThenError() SEXP {
+    switch (string_cleanup_mode) {
         0 => {
-            const headers = zigr_convert.toStringSlice(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            const headers = zigr_convert.toStringSlice(StringCleanupAllocator.allocator(), string_cleanup_input) catch return R.R_NilValue;
             _ = headers;
         },
         1 => {
-            const headers = zigr_convert.toStringSliceNullable(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            const headers = zigr_convert.toStringSliceNullable(StringCleanupAllocator.allocator(), string_cleanup_input) catch return R.R_NilValue;
             _ = headers;
         },
         2 => {
-            const cache = zigr_convert.toCachedStringSliceView(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            const cache = zigr_convert.toCachedStringSliceView(StringCleanupAllocator.allocator(), string_cleanup_input) catch return R.R_NilValue;
             _ = cache;
         },
         else => unreachable,
     }
-    R.Rf_error("zigr P1.7 string allocation cleanup: ALTSTRING Elt unexpectedly returned");
+    R.Rf_error("zigr string cleanup: ALTSTRING Elt unexpectedly returned");
 }
 
-/// P1.7: all allocating string representations release their own native
-/// allocation when `STRING_ELT` longjmps through the protected boundary.
-export fn zigr_test_p17_string_allocation_longjmp() SEXP {
-    const input = R.Rf_protect(p17StringErrorAltString());
+export fn zigr_test_string_allocation_longjmp() SEXP {
+    const input = R.Rf_protect(stringErrorAltString());
     defer R.Rf_unprotect(1);
-    p17_string_cleanup_input = input;
-    defer p17_string_cleanup_input = null;
+    string_cleanup_input = input;
+    defer string_cleanup_input = null;
 
     for (0..3) |mode| {
-        p17_string_cleanup_state = .{};
-        p17_string_cleanup_mode = @intCast(mode);
-        p17_string_cleanup_elt_calls = 0;
+        string_cleanup_state = .{};
+        string_cleanup_mode = @intCast(mode);
+        string_cleanup_elt_calls = 0;
         if (trycatch_mod.tryCatch(struct {
             fn call() SEXP {
-                return cleanup.protectCall(p17StringAllocationThenError);
+                return cleanup.protectCall(stringAllocationThenError);
             }
         }.call)) |_| {
             return R.Rf_ScalarReal(0.0);
         } else |_| {}
-        if (p17_string_cleanup_elt_calls != 1 or p17_string_cleanup_state.allocations != 1 or p17_string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
+        if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     }
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Call R sum(1,2,3) via lang builder, verify result is 6.
 export fn zigr_test_lang_builder() SEXP {
     const args = [_]SEXP{
         R.Rf_ScalarInteger(1),
@@ -1406,9 +1257,6 @@ export fn zigr_test_lang_builder() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Edge-case / adversarial tests
-
-/// Test: fromRealSlice with empty slice.
 export fn zigr_test_from_empty() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1419,7 +1267,6 @@ export fn zigr_test_from_empty() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: toRealSlice with huge vector boundary.
 export fn zigr_test_real_huge() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1430,7 +1277,6 @@ export fn zigr_test_real_huge() SEXP {
     ptr[0] = std.math.nan(f64);
     ptr[n - 1] = std.math.inf(f64);
     ptr[n / 2] = -std.math.inf(f64);
-    // Verify via toRealSlice
     const slice = zigr_convert.toRealSlice(arena.allocator(), @as(SEXP, @ptrCast(vec))) catch return R.Rf_ScalarReal(0.0);
     if (slice.len != n) return R.Rf_ScalarReal(0.0);
     if (!std.math.isNan(slice[0])) return R.Rf_ScalarReal(0.0);
@@ -1439,7 +1285,6 @@ export fn zigr_test_real_huge() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: STRSXP toSlice with NA_STRING element.
 export fn zigr_test_str_na() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
@@ -1458,7 +1303,6 @@ export fn zigr_test_str_na() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: LGLSXP with non-standard values (2, 3 should be TRUE).
 export fn zigr_test_lgl_edge() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, n));
@@ -1473,7 +1317,6 @@ export fn zigr_test_lgl_edge() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: VECSXP with NULL element.
 export fn zigr_test_list_null() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, n));
@@ -1484,7 +1327,6 @@ export fn zigr_test_list_null() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: DataFrame column lookup with missing name.
 export fn zigr_test_df_col_missing() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1501,8 +1343,6 @@ export fn zigr_test_df_col_missing() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test: toRealSlice with non-REALSXP (INTSXP), R throws an error.
-/// This confirms zigr rejects the wrong type before touching REAL().
 export fn zigr_test_real_wrong_type() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1512,7 +1352,6 @@ export fn zigr_test_real_wrong_type() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test raw.logical reads LGLSXP through LOGICAL(), not INTEGER().
 export fn zigr_test_raw_logical() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 4));
     defer R.Rf_unprotect(1);
@@ -1527,7 +1366,6 @@ export fn zigr_test_raw_logical() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.real reads REALSXP correctly.
 export fn zigr_test_raw_real() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1541,7 +1379,6 @@ export fn zigr_test_raw_real() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.int reads INTSXP correctly.
 export fn zigr_test_raw_int() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1555,7 +1392,6 @@ export fn zigr_test_raw_int() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.realMut writes to REALSXP correctly.
 export fn zigr_test_raw_real_mut() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
     defer R.Rf_unprotect(1);
@@ -1569,7 +1405,6 @@ export fn zigr_test_raw_real_mut() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.intMut writes to INTSXP correctly.
 export fn zigr_test_raw_int_mut() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
     defer R.Rf_unprotect(1);
@@ -1583,7 +1418,6 @@ export fn zigr_test_raw_int_mut() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.raw reads RAWSXP correctly.
 export fn zigr_test_raw_raw() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1597,7 +1431,6 @@ export fn zigr_test_raw_raw() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.complex reads CPLXSXP correctly.
 export fn zigr_test_raw_complex() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
     defer R.Rf_unprotect(1);
@@ -1610,7 +1443,6 @@ export fn zigr_test_raw_complex() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test raw.dims returns correct dimensions.
 export fn zigr_test_raw_dims() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 12));
     defer R.Rf_unprotect(1);
@@ -1627,7 +1459,6 @@ export fn zigr_test_raw_dims() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Trigger fromSEXP on a missing required field. R should see an error.
 export fn zigr_test_from_sexp_missing_required() SEXP {
     const Test = struct { x: f64, y: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1646,7 +1477,6 @@ export fn zigr_test_from_sexp_missing_required() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Trigger fromSEXP on a malformed named list. R should see an error.
 export fn zigr_test_from_sexp_invalid_names() SEXP {
     const Test = struct { x: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1665,7 +1495,6 @@ export fn zigr_test_from_sexp_invalid_names() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Trigger fromSEXP on a list without names. R should see an error.
 export fn zigr_test_from_sexp_missing_names() SEXP {
     const Test = struct { x: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1681,7 +1510,6 @@ export fn zigr_test_from_sexp_missing_names() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Trigger fromSEXP on a list with mismatched names length. R should see an error.
 export fn zigr_test_from_sexp_name_length_mismatch() SEXP {
     const Test = struct { x: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1701,7 +1529,6 @@ export fn zigr_test_from_sexp_name_length_mismatch() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test toListSlice rejects non-list input.
 export fn zigr_test_list_wrong_type() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     defer R.Rf_unprotect(1);
@@ -1711,7 +1538,6 @@ export fn zigr_test_list_wrong_type() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test scalar REAL conversion rejects NA.
 export fn zigr_test_real_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     defer R.Rf_unprotect(1);
@@ -1722,7 +1548,6 @@ export fn zigr_test_real_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test scalar INT conversion rejects NA.
 export fn zigr_test_int_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
     defer R.Rf_unprotect(1);
@@ -1733,7 +1558,6 @@ export fn zigr_test_int_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test scalar LOGICAL conversion rejects NA.
 export fn zigr_test_bool_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 1));
     defer R.Rf_unprotect(1);
@@ -1744,7 +1568,6 @@ export fn zigr_test_bool_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Required scalars preserve valid values and reject each scalar failure class.
 export fn zigr_test_scalar_contract() SEXP {
     const real = R.Rf_protect(R.Rf_ScalarReal(3.5));
     const integer = R.Rf_protect(R.Rf_ScalarInteger(-7));
@@ -1771,7 +1594,6 @@ export fn zigr_test_scalar_contract() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Optional scalars map only `NULL` and one typed `NA` to null.
 export fn zigr_test_optional_scalar_contract() SEXP {
     const real_na = R.Rf_protect(R.Rf_ScalarReal(R.NA_REAL()));
     const real_nan = R.Rf_protect(R.Rf_ScalarReal(R.R_NaN));
@@ -1813,7 +1635,6 @@ export fn zigr_test_optional_scalar_contract() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test optional REAL field maps NA to null.
 export fn zigr_test_optional_real_na_to_null() SEXP {
     const Test = struct { x: ?f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1832,7 +1653,6 @@ export fn zigr_test_optional_real_na_to_null() SEXP {
     return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
 }
 
-/// Test optional INT field maps NA to null.
 export fn zigr_test_optional_int_na_to_null() SEXP {
     const Test = struct { x: ?i32 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1851,7 +1671,6 @@ export fn zigr_test_optional_int_na_to_null() SEXP {
     return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
 }
 
-/// Test optional LOGICAL field maps NA to null.
 export fn zigr_test_optional_bool_na_to_null() SEXP {
     const Test = struct { x: ?bool };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1870,7 +1689,6 @@ export fn zigr_test_optional_bool_na_to_null() SEXP {
     return R.Rf_ScalarReal(if (result.x == null) 1.0 else 0.0);
 }
 
-/// Test pmin recycling semantics on mismatched lengths.
 export fn zigr_test_pmin_recycling() SEXP {
     const a = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 4));
     const b = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
@@ -1893,7 +1711,6 @@ export fn zigr_test_pmin_recycling() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-/// Test pmax recycling semantics on mismatched lengths.
 export fn zigr_test_pmax_recycling() SEXP {
     const a = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     const b = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
@@ -1913,18 +1730,14 @@ export fn zigr_test_pmax_recycling() SEXP {
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
 
-// Phase 4 embed tests
-
-/// Test rCodeEval with 1 + 1. Should return 2.
-export fn zigr_phase4_embed_sum() SEXP {
+export fn zigr_test_embed_sum() SEXP {
     const result = embed.rCodeEval("1 + 1", null);
     const val = R.REAL(result)[0];
     if (val == 2.0) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test rCodeEval with paste("hello", "world").
-export fn zigr_phase4_embed_paste() SEXP {
+export fn zigr_test_embed_paste() SEXP {
     const result = embed.rCodeEval("paste('hello', 'world')", null);
     const elt = R.STRING_ELT(result, 0);
     if (elt == R.R_NaString) return R.Rf_ScalarReal(0.0);
@@ -1933,33 +1746,26 @@ export fn zigr_phase4_embed_paste() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test rRawEval with 1 + 1.
-export fn zigr_phase4_raw_eval() SEXP {
+export fn zigr_test_raw_eval() SEXP {
     const result = embed.rRawEval("1 + 1", null);
     const val = R.REAL(result)[0];
     if (val == 2.0) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-// Phase 4 struct conversion tests
-
-/// Test asSEXP with a simple struct.
-export fn zigr_phase4_as_sexp() SEXP {
+export fn zigr_test_struct_to_sexp() SEXP {
     const TestStruct = struct { x: f64, y: f64 };
     const s = TestStruct{ .x = 1.5, .y = 2.5 };
     const result = zigr_convert.asSEXP(s);
-    // Verify it's a VECSXP of length 2
     if (R.TYPEOF(result) != R.VECSXP) return R.Rf_ScalarReal(0.0);
     if (R.XLENGTH(result) != 2) return R.Rf_ScalarReal(0.0);
-    // Verify names
     const ns = R.Rf_getAttrib(result, R.R_NamesSymbol);
     if (ns == R.R_NilValue) return R.Rf_ScalarReal(0.0);
     if (R.XLENGTH(ns) != 2) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Test fromSEXP round-trip.
-export fn zigr_phase4_from_sexp() SEXP {
+export fn zigr_test_struct_from_sexp() SEXP {
     const TestStruct = struct { a: f64, b: []const f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1986,10 +1792,7 @@ export fn zigr_phase4_from_sexp() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Phase 4 edge-case tests
-
-/// Embed: empty string should error, caught by tryCatch.
-export fn zigr_phase4_embed_empty() SEXP {
+export fn zigr_test_embed_empty() SEXP {
     if (trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
             return embed.rCodeEval("", null);
@@ -2001,43 +1804,37 @@ export fn zigr_phase4_embed_empty() SEXP {
     }
 }
 
-/// Embed: vectorized expression returns a vector.
-export fn zigr_phase4_embed_vector() SEXP {
+export fn zigr_test_embed_vector() SEXP {
     const result = embed.rCodeEval("1:5", null);
     const len = R.XLENGTH(result);
     if (len == 5) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Embed: expression using braces.
-export fn zigr_phase4_embed_braces() SEXP {
+export fn zigr_test_embed_braces() SEXP {
     const result = embed.rCodeEval("{ x <- 1; x + 1 }", null);
     if (R.REAL(result)[0] == 2.0) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Embed: NULL expression.
-export fn zigr_phase4_embed_null() SEXP {
+export fn zigr_test_embed_null() SEXP {
     const result = embed.rCodeEval("NULL", null);
     if (result == R.R_NilValue) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// asSEXP: empty struct.
-export fn zigr_phase4_as_sexp_empty() SEXP {
+export fn zigr_test_struct_to_sexp_empty() SEXP {
     const Empty = struct {};
     const result = zigr_convert.asSEXP(Empty{});
     if (R.XLENGTH(result) == 0) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// asSEXP: nested struct.
-export fn zigr_phase4_as_sexp_nested() SEXP {
+export fn zigr_test_struct_to_sexp_nested() SEXP {
     const Inner = struct { val: f64 };
     const Outer = struct { inner: Inner, name: []const u8 };
     const s = Outer{ .inner = Inner{ .val = 3.14 }, .name = "hello" };
     const result = zigr_convert.asSEXP(s);
-    // VECSXP of length 2 (inner + name)
     if (R.TYPEOF(result) != R.VECSXP) return R.Rf_ScalarReal(0.0);
     if (R.XLENGTH(result) != 2) return R.Rf_ScalarReal(0.0);
     const names = R.Rf_getAttrib(result, R.R_NamesSymbol);
@@ -2045,13 +1842,11 @@ export fn zigr_phase4_as_sexp_nested() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// fromSEXP: missing optional field should produce null.
-export fn zigr_phase4_from_sexp_optional() SEXP {
+export fn zigr_test_struct_from_sexp_optional_missing() SEXP {
     const Test = struct { x: f64, y: ?f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    // Build list with only "x"
     const vec = R.Rf_protect(R.Rf_allocVector(R.VECSXP, 1));
     const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
     const xv = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
@@ -2067,9 +1862,7 @@ export fn zigr_phase4_from_sexp_optional() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// fromSEXP: missing required field should panic (not tested via R directly).
-/// Use asSEXP round-trip with optional field present instead.
-export fn zigr_phase4_from_sexp_optional_present() SEXP {
+export fn zigr_test_struct_from_sexp_optional_present() SEXP {
     const Test = struct { x: f64, y: ?f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2092,8 +1885,7 @@ export fn zigr_phase4_from_sexp_optional_present() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Memory stress: create and convert many structs in a loop.
-export fn zigr_phase4_stress_protect() SEXP {
+export fn zigr_test_stress_protect() SEXP {
     const Test = struct { a: f64, b: f64 };
     var i: u32 = 0;
     while (i < 1000) : (i += 1) {
@@ -2104,8 +1896,7 @@ export fn zigr_phase4_stress_protect() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Embed stress: evaluate many expressions in a loop.
-export fn zigr_phase4_stress_embed() SEXP {
+export fn zigr_test_stress_embed() SEXP {
     var i: u32 = 0;
     while (i < 500) : (i += 1) {
         const result = embed.rCodeEval("42", null);
@@ -2114,18 +1905,7 @@ export fn zigr_phase4_stress_embed() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// ======================================================
-// Phase 4 comprehensive tests following test-gen.md
-// Each test documents: Name, Category, Purpose, AAA
-// ======================================================
-
-// Embed: Error-Handling Tests
-
-/// Name: rCodeEval_InvalidSyntax_ReturnsError
-/// Category: error-handling
-/// Purpose: Verify that invalid R syntax is caught by tryCatch and
-///          returned as error.RCondition, NOT a segfault.
-export fn zigr_p4_embed_syntax_error() SEXP {
+export fn zigr_test_embed_syntax_error() SEXP {
     if (trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
             return embed.rCodeEval("~~~", null);
@@ -2137,7 +1917,7 @@ export fn zigr_p4_embed_syntax_error() SEXP {
     }
 }
 
-export fn zigr_p4_embed_stop_error() SEXP {
+export fn zigr_test_embed_stop_error() SEXP {
     if (trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
             return embed.rCodeEval("stop('test')", null);
@@ -2149,17 +1929,12 @@ export fn zigr_p4_embed_stop_error() SEXP {
     }
 }
 
-/// Name: rCodeEval_Warning_NotCaughtByTryCatchError
-/// Category: error-handling
-/// Purpose: Verify warning does NOT trigger tryCatchError (only errors).
-///          warning() returns NULL invisibly; use { } block for second expr.
-export fn zigr_p4_embed_warning_noerror() SEXP {
+export fn zigr_test_embed_warning() SEXP {
     if (trycatch_mod.tryCatchError(struct {
         fn call() R.SEXP {
             return embed.rCodeEval("{ warning('warn'); 42 }", null);
         }
     }.call)) |val| {
-        // Should succeed: warning doesn't trigger error handler
         if (val) |sxp| {
             if (R.TYPEOF(sxp) == R.REALSXP and R.REAL(sxp)[0] == 42.0) {
                 return R.Rf_ScalarReal(1.0);
@@ -2171,21 +1946,13 @@ export fn zigr_p4_embed_warning_noerror() SEXP {
     }
 }
 
-/// Name: rCodeEval_StringLength_Works
-/// Category: edge-case
-/// Purpose: Verify string length calculation in R code works.
-export fn zigr_p4_embed_unicode() SEXP {
+export fn zigr_test_embed_unicode() SEXP {
     const result = embed.rCodeEval("nchar('abc')", null);
     if (R.INTEGER(result)[0] == 3) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Name: rCodeEval_VeryLongCode_BufferTruncation
-/// Category: resource
-/// Purpose: Verify very long code strings are handled (truncated at 4096).
-///          The buffer is 4096 bytes; codes longer than that truncate.
-export fn zigr_p4_embed_long_code() SEXP {
-    // Build a 5000-char expression: paste(rep("x", 5000))
+export fn zigr_test_embed_long_code() SEXP {
     const result = embed.rCodeEval("paste(rep('x', 500), collapse='')", null);
     const elt = R.STRING_ELT(result, 0);
     if (elt == R.R_NaString) return R.Rf_ScalarReal(0.0);
@@ -2194,35 +1961,23 @@ export fn zigr_p4_embed_long_code() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-// Struct Conversion: Invariant / Property Tests
-
-/// Name: asSEXP_fromSEXP_RoundTrip_ValuesPreserved
-/// Category: invariant
-/// Purpose: Verify asSEXP then fromSEXP returns the original struct.
-///          This is the fundamental round-trip property.
-export fn zigr_p4_struct_roundtrip() SEXP {
+export fn zigr_test_struct_roundtrip() SEXP {
     const Point = struct { x: f64, y: f64, label: []const u8 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    // Arrange: create struct
     const original = Point{ .x = 1.5, .y = -3.2, .label = "pt1" };
 
-    // Act: convert to SEXP and back
     const sexp = zigr_convert.asSEXP(original);
     const restored = zigr_convert.fromSEXP(Point, sexp, arena.allocator());
 
-    // Assert: values match
     if (restored.x != 1.5) return R.Rf_ScalarReal(0.0);
     if (restored.y != -3.2) return R.Rf_ScalarReal(0.0);
     if (!std.mem.eql(u8, restored.label, "pt1")) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Name: asSEXP_RoundTrip_NaNInf
-/// Category: edge-case
-/// Purpose: Verify NaN and Inf values survive struct round-trip.
-export fn zigr_p4_struct_nan_inf() SEXP {
+export fn zigr_test_struct_nan_inf() SEXP {
     const Data = struct { a: f64, b: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2236,10 +1991,7 @@ export fn zigr_p4_struct_nan_inf() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Name: asSEXP_RoundTrip_NegativeZero
-/// Category: edge-case
-/// Purpose: Verify -0.0 survives struct round-trip (IEEE 754 sign bit).
-export fn zigr_p4_struct_neg_zero() SEXP {
+export fn zigr_test_struct_neg_zero() SEXP {
     const S = struct { v: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2247,18 +1999,12 @@ export fn zigr_p4_struct_neg_zero() SEXP {
     const sexp = zigr_convert.asSEXP(S{ .v = -0.0 });
     const restored = zigr_convert.fromSEXP(S, sexp, arena.allocator());
 
-    // -0.0 compares equal to 0.0 in Zig, but the sign bit differs.
-    // Check via @bitCast.
     const neg_zero: f64 = -0.0;
     if (@as(u64, @bitCast(restored.v)) != @as(u64, @bitCast(neg_zero))) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Name: asSEXP_ManyFields_AllPresent
-/// Category: resource
-/// Purpose: Verify structs with many fields convert correctly (stress the
-///          VECSXP allocation and name matching).
-export fn zigr_p4_struct_many_fields() SEXP {
+export fn zigr_test_struct_many_fields() SEXP {
     const Wide = struct {
         a: f64,
         b: f64,
@@ -2293,33 +2039,7 @@ export fn zigr_p4_struct_many_fields() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Struct Conversion: Error-Handling Tests
-
-/// Name: fromSEXP_WrongType_ListProvided
-/// Category: error-handling
-/// Purpose: Verify passing a non-VECSXP to fromSEXP fails gracefully.
-/// NOTE: This test panics (calls Rf_error) if the SEXP is wrong type.
-///       It cannot be caught by tryCatch because the panic is in Zig.
-///       For now we skip and document this limitation.
-// export fn zigr_p4_fromsexp_wrong_type() SEXP {
-//     const S = struct { x: f64 };
-//     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-//     defer arena.deinit();
-//     // Passing a REALSXP (not VECSXP); will panic in sexpToZig
-//     const sexp = R.Rf_ScalarReal(1.0);
-//     const result = zigr_convert.fromSEXP(S, sexp, arena.allocator());
-//     _ = result;
-//     return R.Rf_ScalarReal(1.0);
-// }
-
-// TryCatch: Error-Handling Tests
-
-/// Name: tryCatch_Nested_InnerCaught
-/// Category: error-handling
-/// Purpose: Verify nested tryCatch works (inner catches error, outer
-///          should see success).
-export fn zigr_p4_trycatch_nested() SEXP {
-    // Arrange: inner catches error, outer sees success
+export fn zigr_test_trycatch_nested() SEXP {
     const outer = trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
             const inner = trycatch_mod.tryCatch(struct {
@@ -2329,27 +2049,19 @@ export fn zigr_p4_trycatch_nested() SEXP {
                 }
             }.call);
             if (inner) |_| {
-                return R.R_NilValue; // shouldn't reach
+                return R.R_NilValue;
             } else |_| {
                 return R.Rf_ScalarReal(42.0);
             }
         }
     }.call);
-    // Assert: outer should succeed with 42.0
     if (outer) |val| {
         if (R.REAL(val)[0] == 42.0) return R.Rf_ScalarReal(1.0);
     } else |_| {}
     return R.Rf_ScalarReal(0.0);
 }
 
-// Resource / Leak Tests
-
-/// Name: stress_ProtectStack_NoLeak
-/// Category: resource
-/// Purpose: Verify protection stack doesn't grow unboundedly under
-///          repeated asSEXP calls (10000 iterations).
-///          Uses asSEXPAlloc with a shared arena for efficiency.
-export fn zigr_p4_stress_protect_10k() SEXP {
+export fn zigr_test_stress_protect_10k() SEXP {
     const S = struct { v: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2361,9 +2073,6 @@ export fn zigr_p4_stress_protect_10k() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// lang.buildCall / buildNamedCall tests
-
-/// buildCall_ThreeInts_HappyPath: buildCall(fun, &[a,b,c]) evaluates sum(a,b,c).
 export fn zigr_test_build_call() SEXP {
     const args = [_]SEXP{
         R.Rf_ScalarReal(10.0),
@@ -2377,7 +2086,6 @@ export fn zigr_test_build_call() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// buildNamedCall_TupleSyntax_HappyPath: buildNamedCall("sum", .{a,b}) evaluates sum(a,b).
 export fn zigr_test_build_named_call() SEXP {
     const call = test_lang.buildNamedCall("sum", .{ R.Rf_ScalarReal(1.0), R.Rf_ScalarReal(2.0) });
     const result = test_eval.rEval(call, null);
@@ -2386,22 +2094,15 @@ export fn zigr_test_build_named_call() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// protect.ScopedProtect lifecycle tests
-
-/// ScopedProtect_Release_NoDoubleUnprotect: releasing ownership before deinit prevents double-unprotect.
 export fn zigr_test_scoped_release() SEXP {
     const vec = R.Rf_allocVector(R.REALSXP, 1);
     var s = protect.scoped(vec);
     const released = s.release();
-    // s.deinit() is called implicitly. Because release() was called, deinit
-    // must NOT call Rf_unprotect. We verify by protecting again and checking
-    // the protection stack remains balanced.
     _ = R.Rf_protect(released);
     R.Rf_unprotect(1);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// ScopedProtect_Get_AfterInit_ReturnsValue: get() returns the same SEXP passed to init.
 export fn zigr_test_scoped_get() SEXP {
     const vec = R.Rf_allocVector(R.REALSXP, 5);
     var s = protect.scoped(vec);
@@ -2410,9 +2111,6 @@ export fn zigr_test_scoped_get() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// RVector runtime tests
-
-/// RVector_f64_Init_HappyPath: RVector(f64) wraps REALSXP, len() matches, view() returns values.
 export fn zigr_test_rvector_f64() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2434,7 +2132,6 @@ export fn zigr_test_rvector_f64() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_i32_Init_HappyPath: RVector(i32) wraps INTSXP, values match.
 export fn zigr_test_rvector_i32() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
@@ -2453,7 +2150,6 @@ export fn zigr_test_rvector_i32() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_WrongType_Error: RVector(f64).init(INTSXP) must signal an error.
 export fn zigr_test_rvector_wrong_type() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
     R.Rf_unprotect(1);
@@ -2461,7 +2157,6 @@ export fn zigr_test_rvector_wrong_type() SEXP {
     if (rv) |_| return R.Rf_ScalarReal(0.0) else |_| return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_addScalar_HappyPath: addScalar adds a constant to every element.
 export fn zigr_test_rvector_add_scalar() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2477,7 +2172,6 @@ export fn zigr_test_rvector_add_scalar() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_subScalar_HappyPath: subScalar subtracts a constant from every element.
 export fn zigr_test_rvector_sub_scalar() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2491,7 +2185,6 @@ export fn zigr_test_rvector_sub_scalar() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_mulScalar_HappyPath: mulScalar multiplies every element by a constant.
 export fn zigr_test_rvector_mul_scalar() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2506,7 +2199,6 @@ export fn zigr_test_rvector_mul_scalar() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_divScalar_HappyPath: divScalar divides every element by a constant.
 export fn zigr_test_rvector_div_scalar() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2520,7 +2212,6 @@ export fn zigr_test_rvector_div_scalar() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_add_HappyPath: add between two vectors is element-wise.
 export fn zigr_test_rvector_add_vec() SEXP {
     const n: R.R_xlen_t = 3;
     const va = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2542,7 +2233,6 @@ export fn zigr_test_rvector_add_vec() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_sum_HappyPath: sum() returns the sum of all elements.
 export fn zigr_test_rvector_f64_sum() SEXP {
     const n: R.R_xlen_t = 4;
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, n));
@@ -2557,7 +2247,6 @@ export fn zigr_test_rvector_f64_sum() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_i32_sum_HappyPath: sumInt returns correct i64 sum of int vector.
 export fn zigr_test_rvector_i32_sum() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, n));
@@ -2571,7 +2260,6 @@ export fn zigr_test_rvector_i32_sum() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_add_Recycling_Edge: add with length-1 and length-3 produces length-3 with recycling.
 export fn zigr_test_rvector_recycle() SEXP {
     const va = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     const vb = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
@@ -2587,12 +2275,10 @@ export fn zigr_test_rvector_recycle() SEXP {
     const result = ra.add(rb, arena.allocator());
     const rp = R.REAL(result);
     if (R.XLENGTH(result) != 3) return R.Rf_ScalarReal(0.0);
-    // 10 is recycled to match length 3: 10+1, 10+2, 10+3
     if (rp[0] != 11.0 or rp[1] != 12.0 or rp[2] != 13.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// RVector_f64_addScalar_Empty_Edge: addScalar on empty vector returns empty vector.
 export fn zigr_test_rvector_empty() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
     R.Rf_unprotect(1);
@@ -2602,20 +2288,6 @@ export fn zigr_test_rvector_empty() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Export system conversion tests
-//
-// The export system wrappers (generateExports, generateMethods) convert R SEXPs to Zig types and back. These tests exercise that conversion chain directly.
-//
-// Why separate tests: the convert module unit tests cover each function in isolation, but the end-to-end path has its own failure modes: arena lifetime, PROTECT balance across chained calls, and error signal paths.
-//
-// Sub-sections: Numeric/string slice conversion (core), Optional/NA handling (boundary), External pointer method dispatch (generateMethods pattern)
-
-// Multi-parameter unwrapping
-
-/// Guard against: reading a second SEXP parameter returning
-/// stale or wrong data.  generateExports wrappers call
-/// fromSexp for each parameter in order; off-by-one indexing
-/// would swap values.
 export fn zigr_test_export_two_scalars() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2633,11 +2305,6 @@ export fn zigr_test_export_two_scalars() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Numeric and string slice conversion
-
-/// Guard against: toRealSliceView returning wrong total, or the
-/// SliceView.constSlice() data being corrupted across arena
-/// boundaries.  A 5-element vector [1,2,3,4,5] sums to 15.
 export fn zigr_test_export_sum() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2657,10 +2324,6 @@ export fn zigr_test_export_sum() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: zero-copy string iteration returning wrong
-/// byte counts or StringSliceView.iterator panicking on valid
-/// UTF-8 input.  Three strings "hello", "world", "zigr" total
-/// 14 bytes.
 export fn zigr_test_export_string_lengths() SEXP {
     const strs = [_][]const u8{ "hello", "world", "zigr" };
     const n: R.R_xlen_t = @intCast(strs.len);
@@ -2680,10 +2343,6 @@ export fn zigr_test_export_string_lengths() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: StringView.is_na returning false for NA
-/// string elements.  generateExports maps NA strings to null
-/// for optional string parameters; a false negative would pass
-/// garbage.
 export fn zigr_test_export_string_na() SEXP {
     const n: R.R_xlen_t = 2;
     const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
@@ -2700,8 +2359,6 @@ export fn zigr_test_export_string_na() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: CachedStringSliceView caching stale data or
-/// wrong element count.  Same strings as the simple view test.
 export fn zigr_test_export_cached_string_lengths() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2723,8 +2380,6 @@ export fn zigr_test_export_cached_string_lengths() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: zero-length slice producing non-empty iterator
-/// or panicking.  An empty REALSXP has no elements to sum.
 export fn zigr_test_export_sum_empty() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2738,8 +2393,6 @@ export fn zigr_test_export_sum_empty() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: RAWSXP conversion returning wrong bytes or
-/// corrupting read-only data.
 export fn zigr_test_export_raw_roundtrip() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2755,9 +2408,6 @@ export fn zigr_test_export_raw_roundtrip() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: CPLXSXP conversion reading wrong real or
-/// imaginary parts.  Two complex numbers (1+2i, 3+4i) should
-/// produce a slice with matching components.
 export fn zigr_test_export_complex_sum() SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -2778,20 +2428,12 @@ export fn zigr_test_export_complex_sum() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Optional and NA handling
-
-/// Guard against: optionalInputIsNullish returning false for
-/// R_NilValue, which would cause generateExports wrappers to
-/// pass garbage instead of null.
 export fn zigr_test_export_optional_null() SEXP {
     const nullish = zigr_convert.optionalInputIsNullish(f64, R.R_NilValue);
     if (!nullish) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: toRealScalar silently returning NA_REAL when
-/// the input is a scalar NA, instead of erroring.  generateExports
-/// rejects NA scalars for required parameters.
 export fn zigr_test_export_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 1));
     R.REAL(vec)[0] = R.NA_REAL();
@@ -2802,8 +2444,6 @@ export fn zigr_test_export_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Guard against: toIntScalar accepting an INTSXP containing
-/// NA_INTEGER instead of erroring.
 export fn zigr_test_export_int_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
     R.INTEGER(vec)[0] = R.R_NaInt;
@@ -2814,8 +2454,6 @@ export fn zigr_test_export_int_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Guard against: toBoolScalar accepting a LGLSXP containing
-/// NA_LOGICAL instead of erroring.
 export fn zigr_test_export_bool_scalar_na() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 1));
     R.LOGICAL(vec)[0] = R.R_NaInt;
@@ -2826,9 +2464,6 @@ export fn zigr_test_export_bool_scalar_na() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Guard against: toRealScalar accepting a non-REALSXP without
-/// erroring.  generateExports needs this type check to produce
-/// correct R-level errors instead of cryptic crashes.
 export fn zigr_test_export_wrong_type_real() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
     R.INTEGER(vec)[0] = 42;
@@ -2839,8 +2474,6 @@ export fn zigr_test_export_wrong_type_real() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-// External pointer and method dispatch
-
 const ExportCounter = struct {
     val: i32,
 
@@ -2850,9 +2483,6 @@ const ExportCounter = struct {
     }
 };
 
-/// Guard against: externalptr.addr returning null or wrong
-/// pointer after externalptr.make.  generateMethods depends on
-/// this round-trip to dispatch method calls.
 export fn zigr_test_export_method_call() SEXP {
     var counter = ExportCounter{ .val = 0 };
     const prot = R.Rf_protect(R.R_NilValue);
@@ -2867,8 +2497,6 @@ export fn zigr_test_export_method_call() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Guard against: externalptr.tag returning wrong tag SEXP or
-/// panicking on a valid EXTPTRSXP.
 export fn zigr_test_export_method_tag() SEXP {
     var counter = ExportCounter{ .val = 0 };
     const tag_sexp = R.Rf_protect(R.Rf_ScalarReal(42.0));
@@ -2881,12 +2509,6 @@ export fn zigr_test_export_method_tag() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// Error signal through fromSEXP (expect_error=TRUE)
-
-/// signalError calls Rf_error (noreturn) when fromSEXP receives
-/// a type it cannot convert.  The R side wraps this in tryCatch
-/// and expects the error.  Without this path, a mismatched
-/// struct field would panic instead of producing a clean R error.
 export fn zigr_test_export_from_sexp_wrong_type() SEXP {
     const Test = struct { x: f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -2900,14 +2522,6 @@ export fn zigr_test_export_from_sexp_wrong_type() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-// .External interface
-//
-// generateExports supports an external_exports array for .External
-// callable functions.  The wrapper receives a pairlist and extracts
-// arguments via CAR/CDR.  This test exercises the full path:
-// generateExports comptime codegen, init() registration with R
-// via DllInfo, and calling the external wrapper directly.
-
 fn externalSum(a: f64, b: f64) f64 {
     return a + b;
 }
@@ -2916,63 +2530,56 @@ const ExternalExports = zigr.@"export".generateExports(&.{}, &.{
     .{ .name = "zigr_test_external_sum", .func = externalSum },
 });
 
-// P1.6 generated-wrapper probes. They cover the three arena states without
-// adding another harness: scalar/no arena, a 64-byte fixed-tier raw copy, and
-// a compact integer ALTREP copy that spills before user code allocates R data.
-const p16_vector_output = [_]f64{ 2.0, 4.0, 8.0 };
+const arena_vector_output = [_]f64{ 2.0, 4.0, 8.0 };
 
-fn p16Scalar(value: f64) f64 {
+fn arenaScalar(value: f64) f64 {
     return value;
 }
 
-fn p16RawFixed(values: []const u8) i32 {
+fn fixedScratchRaw(values: []const u8) i32 {
     var total: i32 = 0;
     for (values) |value| total += @intCast(value);
     return total;
 }
 
-fn p16SpillThenAllocate(values: []const i32) R.SEXP {
-    // The compact-input fallback must remain valid across this R allocation.
+fn spillThenAllocate(values: []const i32) R.SEXP {
     const result = R.Rf_allocVector(R.REALSXP, 2);
     R.REAL(result)[0] = @floatFromInt(values[0]);
     R.REAL(result)[1] = @floatFromInt(values[values.len - 1]);
     return result;
 }
 
-fn p16VectorOutput(_: f64) []const f64 {
-    return p16_vector_output[0..];
+fn arenaVectorOutput(_: f64) []const f64 {
+    return arena_vector_output[0..];
 }
 
-fn p16SpillThenError(values: []const i32) void {
+fn spillThenError(values: []const i32) void {
     _ = values;
-    R.Rf_error("zigr P1.6 generated spill: expected error");
+    R.Rf_error("zigr generated spill: expected error");
 }
 
-const P16Exports = zigr.@"export".generateExports(&.{
-    .{ .name = "zigr_p16_scalar", .func = p16Scalar },
-    .{ .name = "zigr_p16_raw_fixed", .func = p16RawFixed },
-    .{ .name = "zigr_p16_spill_allocate", .func = p16SpillThenAllocate },
-    .{ .name = "zigr_p16_vector_output", .func = p16VectorOutput },
-    .{ .name = "zigr_p16_spill_error", .func = p16SpillThenError },
+const ArenaExports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_arena_scalar", .func = arenaScalar },
+    .{ .name = "zigr_fixed_scratch_raw", .func = fixedScratchRaw },
+    .{ .name = "zigr_spill_allocate", .func = spillThenAllocate },
+    .{ .name = "zigr_arena_vector_output", .func = arenaVectorOutput },
+    .{ .name = "zigr_spill_error", .func = spillThenError },
 }, &.{});
 
-const P16Call = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+const ArenaCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 
-fn p16Call(index: usize, arg: SEXP) SEXP {
-    const fun: P16Call = @ptrCast(@alignCast(P16Exports.call_defs[index].fun));
+fn arenaCall(index: usize, arg: SEXP) SEXP {
+    const fun: ArenaCall = @ptrCast(@alignCast(ArenaExports.call_defs[index].fun));
     return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
 }
 
-fn initP16Exports() bool {
+fn initArenaExports() bool {
     const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return false);
-    P16Exports.init(dll);
+    ArenaExports.init(dll);
     return true;
 }
 
-// P1.7 generated-wrapper probes use each declared representation at the
-// public boundary. The cached form is intentionally the only repeated-pass
-// string form; it owns its metadata and must release it before returning.
-fn p17StringViewLengths(values: zigr_convert.StringSliceView) i32 {
+fn stringViewLengths(values: zigr_convert.StringSliceView) i32 {
     var total: i32 = 0;
     var iterator = values.iterator();
     while (iterator.next()) |value| {
@@ -2981,7 +2588,7 @@ fn p17StringViewLengths(values: zigr_convert.StringSliceView) i32 {
     return total;
 }
 
-fn p17CachedStringLengths(values: zigr_convert.CachedStringSliceView) i32 {
+fn cachedStringLengths(values: zigr_convert.CachedStringSliceView) i32 {
     var cached = values;
     defer cached.deinit();
     var total: i32 = 0;
@@ -2994,13 +2601,13 @@ fn p17CachedStringLengths(values: zigr_convert.CachedStringSliceView) i32 {
     return total;
 }
 
-fn p17StringHeaderLengths(values: []const []const u8) i32 {
+fn stringHeaderLengths(values: []const []const u8) i32 {
     var total: i32 = 0;
     for (values) |value| total += @intCast(value.len);
     return total;
 }
 
-fn p17RawViewSum(values: zigr_convert.RawSliceView) i32 {
+fn rawViewSum(values: zigr_convert.RawSliceView) i32 {
     var view = values;
     defer view.deinit();
     var total: i32 = 0;
@@ -3008,38 +2615,32 @@ fn p17RawViewSum(values: zigr_convert.RawSliceView) i32 {
     return total;
 }
 
-fn p17ComplexEcho(values: []const zigr_convert.Rcomplex) []const zigr_convert.Rcomplex {
+fn complexEcho(values: []const zigr_convert.Rcomplex) []const zigr_convert.Rcomplex {
     return values;
 }
 
-const P17Exports = zigr.@"export".generateExports(&.{
-    .{ .name = "zigr_p17_string_view_lengths", .func = p17StringViewLengths },
-    .{ .name = "zigr_p17_cached_string_lengths", .func = p17CachedStringLengths },
-    .{ .name = "zigr_p17_string_header_lengths", .func = p17StringHeaderLengths },
-    .{ .name = "zigr_p17_raw_view_sum", .func = p17RawViewSum },
-    .{ .name = "zigr_p17_complex_echo", .func = p17ComplexEcho },
+const BoundaryExports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_string_view_lengths", .func = stringViewLengths },
+    .{ .name = "zigr_cached_string_lengths", .func = cachedStringLengths },
+    .{ .name = "zigr_string_header_lengths", .func = stringHeaderLengths },
+    .{ .name = "zigr_raw_view_sum", .func = rawViewSum },
+    .{ .name = "zigr_complex_echo", .func = complexEcho },
 }, &.{});
 
-const P17Call = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+const BoundaryCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 
-fn p17Call(index: usize, arg: SEXP) SEXP {
-    const fun: P17Call = @ptrCast(@alignCast(P17Exports.call_defs[index].fun));
+fn boundaryCall(index: usize, arg: SEXP) SEXP {
+    const fun: BoundaryCall = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
     return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
 }
 
-fn initP17Exports() bool {
+fn initBoundaryExports() bool {
     const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return false);
-    P17Exports.init(dll);
+    BoundaryExports.init(dll);
     return true;
 }
 
-/// Guard against: generateExports failing to compile for
-/// external exports, or init() corrupting the DllInfo.  Also
-/// tests that the external wrapper correctly extracts scalars
-/// from a pairlist and returns a scalar.
 export fn zigr_test_export_external() SEXP {
-    // R_init_zigr_r_test populates test_dll on dyn.load.
-    // R_getEmbeddingDllInfo is a defense-in-depth fallback.
     const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
     ExternalExports.init(dll);
 
@@ -3058,40 +2659,34 @@ export fn zigr_test_export_external() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.6: generated outputs and arena-backed input copies survive R heap
-/// pressure. Every result is protected by this caller before deliberately
-/// allocating additional R objects; this models the documented ownership
-/// hand-off at the native boundary.
-export fn zigr_test_p16_generated_ownership_gc() SEXP {
-    if (!initP16Exports()) return R.Rf_ScalarReal(0.0);
+export fn zigr_test_generated_ownership_gc() SEXP {
+    if (!initArenaExports()) return R.Rf_ScalarReal(0.0);
 
     const scalar_arg = R.Rf_protect(R.Rf_ScalarReal(3.25));
     defer R.Rf_unprotect(1);
-    const scalar_result = R.Rf_protect(p16Call(0, scalar_arg));
+    const scalar_result = R.Rf_protect(arenaCall(0, scalar_arg));
     defer R.Rf_unprotect(1);
 
     const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 64));
     defer R.Rf_unprotect(1);
     for (0..64) |i| R.RAW(raw)[i] = @intCast(i + 1);
-    const raw_result = R.Rf_protect(p16Call(1, raw));
+    const raw_result = R.Rf_protect(arenaCall(1, raw));
     defer R.Rf_unprotect(1);
 
     const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
     defer R.Rf_unprotect(1);
     if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
-    const spill_result = R.Rf_protect(p16Call(2, compact));
+    const spill_result = R.Rf_protect(arenaCall(2, compact));
     defer R.Rf_unprotect(1);
 
-    const vector_result = R.Rf_protect(p16Call(3, scalar_arg));
+    const vector_result = R.Rf_protect(arenaCall(3, scalar_arg));
     defer R.Rf_unprotect(1);
 
-    // `eval.call` builds a temporary pairlist/call and then evaluates it.
-    // Its intermediate call must remain protected across Rf_eval.
     const call_args = [_]SEXP{ scalar_arg, scalar_arg };
     const call_result = R.Rf_protect(test_eval.call("sum", call_args[0..]));
     defer R.Rf_unprotect(1);
 
-    const strings = [_][]const u8{ "p16", "ownership" };
+    const strings = [_][]const u8{ "arena", "ownership" };
     const string_result = R.Rf_protect(zigr_convert.fromStringSlice(strings[0..]));
     defer R.Rf_unprotect(1);
 
@@ -3100,9 +2695,6 @@ export fn zigr_test_p16_generated_ownership_gc() SEXP {
     const named_result = R.Rf_protect(zigr_convert.asSEXP(Named{ .id = 9, .values = named_values[0..] }));
     defer R.Rf_unprotect(1);
 
-    // Force allocation pressure after ownership has transferred to protected
-    // caller roots. This exercises scalar/vector/string/named-list outputs
-    // and the compact-ALTREP arena copy without timed-path instrumentation.
     for (0..16) |_| {
         const noise = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 262_144));
         R.REAL(noise)[0] = 1.0;
@@ -3120,39 +2712,31 @@ export fn zigr_test_p16_generated_ownership_gc() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.6: force an actual generated heap spill, then signal an R error. The
-/// enclosing generated wrapper must release its stable inline cleanup state
-/// before the error resumes in R. Registered as an expected error.
-export fn zigr_test_p16_generated_spill_longjmp() SEXP {
-    if (!initP16Exports()) return R.Rf_ScalarReal(0.0);
+export fn zigr_test_generated_spill_longjmp() SEXP {
+    if (!initArenaExports()) return R.Rf_ScalarReal(0.0);
     const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
-    // A direct integer pointer would use the fixed tier; require the compact
-    // no-pointer representation so this error path really crosses a spill.
     if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
-    return p16Call(4, compact);
+    return arenaCall(4, compact);
 }
 
-var p16_externalptr_finalized: bool = false;
+var externalptr_finalized: bool = false;
 
-const P16ExternalValue = struct {
+const ExternalValue = struct {
     value: i32,
 };
 
-fn p16ExternalDeinit(value: *P16ExternalValue) void {
-    p16_externalptr_finalized = value.value == 17;
+fn externalValueDeinit(value: *ExternalValue) void {
+    externalptr_finalized = value.value == 17;
 }
 
-/// P1.6: prove the external-pointer transfer reaches its finalizer once the
-/// R object loses its last root. This uses the existing runtime runner rather
-/// than another native test harness.
-export fn zigr_test_p16_externalptr_finalizer() SEXP {
-    p16_externalptr_finalized = false;
-    var ext = R.Rf_protect(zigr.externalptr.create(P16ExternalValue, .{ .value = 17 }, p16ExternalDeinit));
+export fn zigr_test_externalptr_finalizer() SEXP {
+    externalptr_finalized = false;
+    var ext = R.Rf_protect(zigr.externalptr.create(ExternalValue, .{ .value = 17 }, externalValueDeinit));
     const raw = zigr.externalptr.addr(ext) orelse {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
     };
-    const value: *P16ExternalValue = @ptrCast(@alignCast(raw));
+    const value: *ExternalValue = @ptrCast(@alignCast(raw));
     if (value.value != 17) {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
@@ -3162,13 +2746,10 @@ export fn zigr_test_p16_externalptr_finalizer() SEXP {
     ext = R.R_NilValue;
     R.R_gc();
     R.R_gc();
-    return R.Rf_ScalarReal(if (p16_externalptr_finalized) 1.0 else 0.0);
+    return R.Rf_ScalarReal(if (externalptr_finalized) 1.0 else 0.0);
 }
 
-/// P1.7: ordinary raw vectors expose borrowed bytes, including zero and
-/// non-text values. The copied conversion remains independent after the R
-/// source changes, and RVector(u8) now uses the same view contract.
-export fn zigr_test_p17_raw_views() SEXP {
+export fn zigr_test_raw_views() SEXP {
     const expected = [_]u8{ 0x00, 0xff, 0x7f };
     const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, @intCast(expected.len)));
     defer R.Rf_unprotect(1);
@@ -3221,17 +2802,14 @@ export fn zigr_test_p17_raw_views() SEXP {
     }
     if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
 
-    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
-    const generated = R.Rf_protect(p17Call(3, raw));
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+    const generated = R.Rf_protect(boundaryCall(3, raw));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(generated) != R.INTSXP or R.INTEGER(generated)[0] != 448) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.7: complex views keep Rcomplex alignment, length, and component-wise
-/// NA versus NaN semantics. Complex results are copied into an R-owned
-/// CPLXSXP before the generated wrapper returns.
-export fn zigr_test_p17_complex_boundary() SEXP {
+export fn zigr_test_complex_boundary() SEXP {
     const complex = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 3));
     defer R.Rf_unprotect(1);
     const raw_ptr = R.COMPLEX(complex) orelse return R.Rf_ScalarReal(0.0);
@@ -3286,8 +2864,8 @@ export fn zigr_test_p17_complex_boundary() SEXP {
     const returned_values: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(returned_ptr));
     if (R.TYPEOF(returned) != R.CPLXSXP or R.XLENGTH(returned) != 3 or R.ISNA(returned_values[1].r) == 0 or !R.ISNAN(returned_values[2].r)) return R.Rf_ScalarReal(0.0);
 
-    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
-    const generated = R.Rf_protect(p17Call(4, complex));
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+    const generated = R.Rf_protect(boundaryCall(4, complex));
     defer R.Rf_unprotect(1);
     const generated_ptr = R.COMPLEX(generated) orelse return R.Rf_ScalarReal(0.0);
     const generated_values: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(generated_ptr));
@@ -3295,10 +2873,8 @@ export fn zigr_test_p17_complex_boundary() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// P1.7: generated wrappers make the one-pass, cached repeated-pass, and
-/// header-array string contracts distinct while preserving NA_STRING.
-export fn zigr_test_p17_generated_string_shapes() SEXP {
-    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
+export fn zigr_test_generated_string_shapes() SEXP {
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
 
     const strings = [_][]const u8{ "alpha", "", "beta" };
     const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 4));
@@ -3308,25 +2884,17 @@ export fn zigr_test_p17_generated_string_shapes() SEXP {
     R.SET_STRING_ELT(vec, 2, R.R_NaString);
     R.SET_STRING_ELT(vec, 3, R.Rf_mkCharLenCE(@ptrCast(strings[2].ptr), @intCast(strings[2].len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
 
-    const view_result = R.Rf_protect(p17Call(0, vec));
+    const view_result = R.Rf_protect(boundaryCall(0, vec));
     defer R.Rf_unprotect(1);
-    const cached_result = R.Rf_protect(p17Call(1, vec));
+    const cached_result = R.Rf_protect(boundaryCall(1, vec));
     defer R.Rf_unprotect(1);
-    const headers_result = R.Rf_protect(p17Call(2, vec));
+    const headers_result = R.Rf_protect(boundaryCall(2, vec));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(view_result) != R.INTSXP or R.INTEGER(view_result)[0] != 9) return R.Rf_ScalarReal(0.0);
     if (R.TYPEOF(cached_result) != R.INTSXP or R.INTEGER(cached_result)[0] != 36) return R.Rf_ScalarReal(0.0);
     if (R.TYPEOF(headers_result) != R.INTSXP or R.INTEGER(headers_result)[0] != 9) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
-
-// generateMethods comptime method dispatch
-//
-// generateMethods creates method wrappers where the first
-// argument is an EXTPTRSXP for *T.  The wrapper extracts the
-// pointer, calls the method, and returns the result.  This
-// test exercises the comptime codegen, init() registration,
-// and end-to-end method dispatch.
 
 const MethodCounter = struct {
     val: i32,
@@ -3341,19 +2909,12 @@ const CounterMethods = zigr.@"export".generateMethods(MethodCounter, &.{
     .{ .name = "add", .func = counterAdd },
 }, &.{});
 
-/// Guard against: generateMethods failing to compile, or the
-/// EXTPTRSXP unwrap in the wrapper returning wrong data.
-// ── Longjmp safety tests ─────────────────────────────
-
 var cleanup_longjmp_fired: bool = false;
 
 fn markCleanupFiredTest(_: ?*anyopaque) void {
     cleanup_longjmp_fired = true;
 }
 
-/// Prove cleanup frames fire when longjmp is caught internally.
-/// Does NOT require expect_error=TRUE because we catch the error
-/// via tryCatch and verify the cleanup flag.
 export fn zigr_test_cleanup_fires_on_longjmp() SEXP {
     cleanup_longjmp_fired = false;
     cleanup.pushFrame(markCleanupFiredTest, null);
@@ -3374,7 +2935,6 @@ export fn zigr_test_cleanup_fires_on_longjmp() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
-/// Test toStringSliceNullable preserves NA as null.
 export fn zigr_test_str_na_nullable() SEXP {
     const n: R.R_xlen_t = 3;
     const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, n));
@@ -3395,9 +2955,6 @@ export fn zigr_test_str_na_nullable() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Prove withRng releases RNG after a longjmp.
-/// If RNG is stuck, acquire() will deadlock or crash.
-/// We catch the error internally and then try to acquire RNG again.
 export fn zigr_test_with_rng_longjmp() SEXP {
     if (trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
@@ -3410,17 +2967,12 @@ export fn zigr_test_with_rng_longjmp() SEXP {
         }
     }.call)) |_| {} else |_| {}
 
-    // If RNG was released on longjmp, acquire/release works.
-    // If stuck, we hang or crash here.
     rng.acquire();
     rng.release();
     return R.Rf_ScalarReal(1.0);
 }
 
-/// Creates an EXTPTRSXP, registers methods, extracts the
-/// method wrapper, calls it, and checks the result.
 export fn zigr_test_export_generatemethods() SEXP {
-    // test_dll populated by R_init_zigr_r_test; fallback for defense in depth.
     const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
     CounterMethods.init(dll);
 
@@ -3439,9 +2991,6 @@ export fn zigr_test_export_generatemethods() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-// ── Fuzz probes ─────────────────────────────────────
-// Each function tests that type guards fire correctly on wrong-type inputs.
-
 fn fuzzExpectTypeRejects(comptime guardFn: *const fn (SEXP) void, sexp: SEXP) SEXP {
     guardFn(sexp);
     return R.Rf_ScalarReal(0.0);
@@ -3452,7 +3001,6 @@ fn fuzzExpectTypeAccepts(comptime guardFn: *const fn (SEXP) void, sexp: SEXP) SE
     return R.Rf_ScalarReal(1.0);
 }
 
-/// sum(REALSXP) passes; sum(INTSXP) fails.
 export fn zigr_fuzz_sum_type() SEXP {
     const v = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
     R.Rf_unprotect(1);
@@ -3746,7 +3294,6 @@ export fn zigr_fuzz_toCachedStringSliceView_type() SEXP {
 }
 
 export fn zigr_fuzz_scalar_na() SEXP {
-    // toRealScalar should reject NA values
     const v = R.Rf_protect(R.Rf_ScalarReal(R.R_NaReal));
     R.Rf_unprotect(1);
     _ = zigr_convert.toRealScalar(v) catch return R.Rf_ScalarReal(1.0);
@@ -3754,7 +3301,6 @@ export fn zigr_fuzz_scalar_na() SEXP {
 }
 
 export fn zigr_fuzz_scalar_empty() SEXP {
-    // toRealScalar should reject zero-length vectors
     const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
     R.Rf_unprotect(1);
     _ = zigr_convert.toRealScalar(v) catch return R.Rf_ScalarReal(1.0);
@@ -3762,7 +3308,6 @@ export fn zigr_fuzz_scalar_empty() SEXP {
 }
 
 export fn zigr_fuzz_findVar_unbound() SEXP {
-    // findVar should error on unbound variable
     const sym = R.Rf_install("__zigr_fuzz_nonexistent__");
     _ = test_eval.findVar(sym, R.R_EmptyEnv);
     return R.Rf_ScalarReal(0.0);

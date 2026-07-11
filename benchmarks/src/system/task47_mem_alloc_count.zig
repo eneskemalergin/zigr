@@ -86,7 +86,6 @@ fn run_matrix_mult(allocator: std.mem.Allocator, n: usize) !f64 {
 }
 
 pub fn main() !void {
-    // ── vectorsum: 1e7 elements ──
     {
         var ca = CountingAllocator{ .parent = std.heap.c_allocator };
         const alloc = ca.allocator();
@@ -103,7 +102,6 @@ pub fn main() !void {
         print("  c_bytes_resident: {}\n", .{ca.bytes_allocated - ca.bytes_freed});
     }
 
-    // ── matrix multiply: 256x256 ──
     {
         var ca = CountingAllocator{ .parent = std.heap.c_allocator };
         const alloc = ca.allocator();

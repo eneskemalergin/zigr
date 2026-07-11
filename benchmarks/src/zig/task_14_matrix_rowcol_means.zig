@@ -17,8 +17,7 @@ export fn zigr_bench_matrix_rowcol_means(mat_sexp: SEXP) SEXP {
 
     @memset(rm, 0.0);
 
-    // Single pass: SIMD-accelerated inner loop using align(1) vector pointers
-    // to force unaligned vmovupd + vaddpd instead of scalar vmovsd + vaddsd
+    // R does not promise SIMD alignment, so this loop must accept any address.
     for (0..nc) |j| {
         const col = data[j * nr ..][0..nr];
         var i: usize = 0;

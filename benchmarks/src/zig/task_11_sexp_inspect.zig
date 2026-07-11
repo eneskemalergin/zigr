@@ -14,7 +14,6 @@ export fn zigr_bench_sexp_inspect(arg: SEXP) SEXP {
     var elts: [5]SEXP = undefined;
     for (0..n) |i| elts[i] = R.VECTOR_ELT(arg, @intCast(i));
 
-    // Pre-compute type info: once per element, hoisted out of the 10k loop
     var per_elt: [5]i32 = undefined;
     for (0..n) |i| {
         const tag = sexp.typeTag(elts[i]);

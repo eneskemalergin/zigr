@@ -1,6 +1,4 @@
 #!/usr/bin/env Rscript
-# Loads a runner.json, runs tasks, outputs CSV. Called per-runner by run_benchmarks.R.
-# Usage: Rscript runner_subprocess.R --runner=zigr --results-dir=results/runs/<run_id> [--tasks=1,2]
 
 source("lib/harness.R")
 library(methods)
@@ -45,16 +43,15 @@ if (!check_only) {
   unlink(file.path(staging_results_dir, runner_name, "errors.csv"))
 }
 
-# Tasks are shared across all runners. IDs match exports in runner JSONs.
-p17_string_input <- function() {
+string_input <- function() {
   rep(c("zigr", "boundary", NA_character_, ""), length.out = 32768L)
 }
 
-p17_raw_input <- function() {
+raw_input <- function() {
   as.raw((seq_len(262144L) - 1L) %% 251L)
 }
 
-p17_complex_input <- function() {
+complex_input <- function() {
   complex(real = as.double(seq_len(32768L)), imaginary = as.double(seq_len(32768L)) * 0.5)
 }
 
@@ -153,84 +150,84 @@ all_tasks <- list(
        args = function() list(1L)),
   list(id = "43_rng_stress", name = "RNG Stress (1M norm_rand)",
        args = function() list(1000000L)),
-  list(id = "50_p13_zero_generated", name = "P1.3 generated zero-argument boundary",
+  list(id = "50_boundary_zero_generated", name = "Generated zero-argument boundary",
        args = function() list()),
-  list(id = "51_p13_zero_handwritten", name = "P1.3 handwritten zero-argument boundary",
+  list(id = "51_boundary_zero_handwritten", name = "Handwritten zero-argument boundary",
        args = function() list()),
-  list(id = "52_p13_scalar_generated", name = "P1.3 generated scalar boundary",
+  list(id = "52_boundary_scalar_generated", name = "Generated scalar boundary",
        args = function() list(3.5)),
-  list(id = "53_p13_scalar_handwritten", name = "P1.3 handwritten scalar boundary",
+  list(id = "53_boundary_scalar_handwritten", name = "Handwritten scalar boundary",
        args = function() list(3.5)),
-  list(id = "54_p13_optional_null_generated", name = "P1.3 generated optional NULL boundary",
+  list(id = "54_boundary_optional_null_generated", name = "Generated optional NULL boundary",
        args = function() list(NULL)),
-  list(id = "55_p13_optional_null_handwritten", name = "P1.3 handwritten optional NULL boundary",
+  list(id = "55_boundary_optional_null_handwritten", name = "Handwritten optional NULL boundary",
        args = function() list(NULL)),
-  list(id = "56_p13_optional_typed_na_generated", name = "P1.3 generated optional typed-NA boundary",
+  list(id = "56_boundary_optional_typed_na_generated", name = "Generated optional typed-NA boundary",
        args = function() list(NA_real_)),
-  list(id = "57_p13_optional_typed_na_handwritten", name = "P1.3 handwritten optional typed-NA boundary",
+  list(id = "57_boundary_optional_typed_na_handwritten", name = "Handwritten optional typed-NA boundary",
        args = function() list(NA_real_)),
   # as.double(seq_len()) is compact ALTREP in current R; arithmetic makes the
   # ordinary REALSXP required by the materialized numeric pair.
-  list(id = "58_p13_numeric_small_generated", name = "P1.3 generated small numeric boundary",
+  list(id = "58_boundary_numeric_small_generated", name = "Generated small numeric boundary",
        args = function() list(as.double(seq_len(16L)) + 0.0)),
-  list(id = "59_p13_numeric_small_handwritten", name = "P1.3 handwritten small numeric boundary",
+  list(id = "59_boundary_numeric_small_handwritten", name = "Handwritten small numeric boundary",
        args = function() list(as.double(seq_len(16L)) + 0.0)),
-  list(id = "60_p13_numeric_large_generated", name = "P1.3 generated large numeric boundary",
+  list(id = "60_boundary_numeric_large_generated", name = "Generated large numeric boundary",
        args = function() list(as.double(seq_len(100000L)) + 0.0)),
-  list(id = "61_p13_numeric_large_handwritten", name = "P1.3 handwritten large numeric boundary",
+  list(id = "61_boundary_numeric_large_handwritten", name = "Handwritten large numeric boundary",
        args = function() list(as.double(seq_len(100000L)) + 0.0)),
-  list(id = "62_p13_altrep_integer_generated", name = "P1.3 generated integer ALTREP owned-copy diagnostic",
+  list(id = "62_boundary_altrep_integer_generated", name = "Generated integer ALTREP copy",
        args = function() list(seq_len(100000L))),
-  list(id = "63_p13_altrep_integer_handwritten", name = "P1.3 handwritten integer ALTREP region-stream diagnostic",
+  list(id = "63_boundary_altrep_integer_handwritten", name = "Handwritten integer ALTREP region stream",
        args = function() list(seq_len(100000L))),
-  list(id = "64_p13_string_view_generated", name = "P1.3 generated string-view boundary",
+  list(id = "64_boundary_string_view_generated", name = "Generated string-view boundary",
        args = function() list(rep(c("zigr", "boundary", NA_character_), length.out = 32L))),
-  list(id = "65_p13_string_view_handwritten", name = "P1.3 handwritten string-view boundary",
+  list(id = "65_boundary_string_view_handwritten", name = "Handwritten string-view boundary",
        args = function() list(rep(c("zigr", "boundary", NA_character_), length.out = 32L))),
-  list(id = "66_p13_raw_generated", name = "P1.3 generated raw boundary",
+  list(id = "66_boundary_raw_generated", name = "Generated raw boundary",
        args = function() list(as.raw(seq_len(64L) %% 251L))),
-  list(id = "67_p13_raw_handwritten", name = "P1.3 handwritten raw boundary",
+  list(id = "67_boundary_raw_handwritten", name = "Handwritten raw boundary",
        args = function() list(as.raw(seq_len(64L) %% 251L))),
-  list(id = "68_p13_complex_generated", name = "P1.3 generated complex boundary",
+  list(id = "68_boundary_complex_generated", name = "Generated complex boundary",
        args = function() list(complex(real = as.double(seq_len(32L)), imaginary = as.double(seq_len(32L)) * 0.5))),
-  list(id = "69_p13_complex_handwritten", name = "P1.3 handwritten complex boundary",
+  list(id = "69_boundary_complex_handwritten", name = "Handwritten complex boundary",
        args = function() list(complex(real = as.double(seq_len(32L)), imaginary = as.double(seq_len(32L)) * 0.5))),
-  list(id = "70_p13_schema_generated", name = "P1.3 generated fixed-schema boundary",
+  list(id = "70_boundary_schema_generated", name = "Generated fixed-schema boundary",
        args = function() list(list(id = 42L, count = 7L, ratio = 1.25, enabled = TRUE))),
-  list(id = "71_p13_schema_handwritten", name = "P1.3 handwritten fixed-schema boundary",
+  list(id = "71_boundary_schema_handwritten", name = "Handwritten fixed-schema boundary",
        args = function() list(list(id = 42L, count = 7L, ratio = 1.25, enabled = TRUE))),
-  list(id = "72_p13_external_method_generated", name = "P1.3 generated external-pointer method",
-       args = function() list(p13_method_receiver(), 7L)),
-  list(id = "73_p13_external_method_handwritten", name = "P1.3 handwritten external-pointer method",
-       args = function() list(p13_method_receiver(), 7L)),
-  list(id = "74_p13_external_generated", name = "P1.3 generated .External boundary",
+  list(id = "72_boundary_external_method_generated", name = "Generated external-pointer method",
+       args = function() list(method_receiver(), 7L)),
+  list(id = "73_boundary_external_method_handwritten", name = "Handwritten external-pointer method",
+       args = function() list(method_receiver(), 7L)),
+  list(id = "74_boundary_external_generated", name = "Generated .External boundary",
        call_type = ".External",
        args = function() list(4.0)),
-  list(id = "75_p13_external_handwritten", name = "P1.3 handwritten .External boundary",
+  list(id = "75_boundary_external_handwritten", name = "Handwritten .External boundary",
        call_type = ".External",
        args = function() list(4.0)),
-  list(id = "76_p17_string_view_one", name = "P1.7 one-pass StringSliceView (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "77_p17_string_cache_build", name = "P1.7 cached string metadata build (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "78_p17_string_cache_one", name = "P1.7 one-pass cached string metadata (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "79_p17_string_headers_one", name = "P1.7 one-pass string headers (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "80_p17_string_view_repeated", name = "P1.7 four-pass StringSliceView (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "81_p17_string_cache_repeated", name = "P1.7 four-pass cached string metadata (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "82_p17_string_headers_repeated", name = "P1.7 four-pass string headers (32k)",
-       args = function() list(p17_string_input())),
-  list(id = "83_p17_raw_view", name = "P1.7 borrowed raw view (256k)",
-       args = function() list(p17_raw_input())),
-  list(id = "84_p17_raw_copy", name = "P1.7 copied raw input (256k)",
-       args = function() list(p17_raw_input())),
-  list(id = "85_p17_complex_view", name = "P1.7 complex input view (32k)",
-       args = function() list(p17_complex_input())),
-  list(id = "86_p17_complex_return", name = "P1.7 complex return copy (32k)",
-       args = function() list(p17_complex_input()))
+  list(id = "76_string_view_one", name = "One-pass string view (32k)",
+       args = function() list(string_input())),
+  list(id = "77_string_cache_build", name = "String metadata cache build (32k)",
+       args = function() list(string_input())),
+  list(id = "78_string_cache_one", name = "One-pass cached strings (32k)",
+       args = function() list(string_input())),
+  list(id = "79_string_headers_one", name = "One-pass string headers (32k)",
+       args = function() list(string_input())),
+  list(id = "80_string_view_repeated", name = "Four-pass string view (32k)",
+       args = function() list(string_input())),
+  list(id = "81_string_cache_repeated", name = "Four-pass cached strings (32k)",
+       args = function() list(string_input())),
+  list(id = "82_string_headers_repeated", name = "Four-pass string headers (32k)",
+       args = function() list(string_input())),
+  list(id = "83_raw_view", name = "Borrowed raw view (256k)",
+       args = function() list(raw_input())),
+  list(id = "84_raw_copy", name = "Copied raw input (256k)",
+       args = function() list(raw_input())),
+  list(id = "85_complex_view", name = "Complex input view (32k)",
+       args = function() list(complex_input())),
+  list(id = "86_complex_return", name = "Complex return copy (32k)",
+       args = function() list(complex_input()))
 )
 
 source(file.path(root_dir, "lib", "task_manifest.R"))
@@ -303,7 +300,6 @@ if (call_type != "r") {
   }
 }
 
-# ── H.2: Load R baseline as correctness reference ──
 source(file.path(root_dir, "src/r/run_all.R"))
 r_cfg_path <- file.path(root_dir, "runners", "r.json")
 r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
@@ -554,13 +550,13 @@ if (isTRUE(cfg$registered_symbols)) {
   validate_registration_fixture(cfg)
 }
 
-p13_method_receiver <- function() {
+method_receiver <- function() {
   if (call_type == "r") return(NULL)
   fixture <- cfg$registration_fixture
   package_name <- cfg$package_name %||% ""
   if (is.null(fixture) || is.null(fixture$new) || !nzchar(package_name)) return(NULL)
   dll <- loaded_dlls[[package_name]]
-  if (is.null(dll)) stop(sprintf("runner %s has no loaded package DLL for the P1.3 method receiver", runner_name))
+  if (is.null(dll)) stop(sprintf("runner %s has no loaded package DLL for the method receiver", runner_name))
   new_address <- getNativeSymbolInfo(fixture$new, PACKAGE = dll, withRegistrationInfo = TRUE)$address
   do.call(.Call, list(new_address))
 }
@@ -571,7 +567,6 @@ if (check_only) {
   quit(save = "no", status = 0, runLast = FALSE)
 }
 
-# H.2 comparison stays beside the runner because it has one production caller.
 same_attributes <- function(expected, actual) {
   expected_names <- names(expected)
   actual_names <- names(actual)
@@ -674,7 +669,6 @@ for (task in all_tasks) {
 
   args <- task$args()
 
-  # ── H.2 Correctness validation is a hard timing prerequisite ──
   if (task_call_type != "r") {
     invoke_native <- function() {
       if (task_call_type == ".Call") return(do.call(.Call, c(list(cfun), args)))
@@ -711,7 +705,7 @@ for (task in all_tasks) {
               if (!isTRUE(comparison$ok)) {
                 correctness_status <- "FAIL"
                 correctness_message <- sprintf(
-                  "H.2 mismatch: %s; expected '%s' got '%s'",
+                  "structural validation mismatch: %s; expected '%s' got '%s'",
                   comparison$message,
                   result_preview(ref_eval$value),
                   result_preview(native_eval$value)

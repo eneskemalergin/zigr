@@ -59,7 +59,6 @@ fn radix_sort_f64(arr: &mut [f64]) {
     for v in buf.iter_mut() {
         *v = if *v & SIGN_BIT != 0 { !*v } else { *v ^ SIGN_BIT };
     }
-    // LSD radix sort, 8 bits per pass, 8 passes for 64-bit
     let mut shift = 0usize;
     while shift < 64 {
         let mut counts = [0usize; 256];
@@ -80,7 +79,6 @@ fn radix_sort_f64(arr: &mut [f64]) {
     }
 }
 
-// Layer 1: Primitives
 #[extendr]
 fn extendr_bench_vectorsum(x: Robj) -> Robj {
     let mut total: f64 = 0.0;
@@ -164,7 +162,6 @@ fn extendr_bench_broadcast(x: Robj, y: Robj) -> Robj {
     r!(total)
 }
 
-// Layer 2: R API overhead
 #[extendr]
 fn extendr_bench_protect_shallow(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
@@ -620,7 +617,6 @@ fn extendr_bench_l1_arithmetic(x: Robj) -> Robj {
     r!(total)
 }
 
-// Layer 4: Numerical
 extern "C" {
     fn dgemm_(transa: *mut u8, transb: *mut u8, m: *mut i32, n: *mut i32, k: *mut i32,
               alpha: *mut f64, a: *mut f64, lda: *mut i32, b: *mut f64, ldb: *mut i32,
@@ -761,7 +757,6 @@ fn extendr_bench_lm_fit(x: Robj, y: Robj) -> Robj {
     unsafe { Robj::from_sexp(xty) }
 }
 
-// Layer 5: ALTREP
 #[extendr]
 fn extendr_bench_altrep_create(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };

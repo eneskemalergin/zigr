@@ -1,9 +1,4 @@
 #!/usr/bin/env Rscript
-# Runs Layer 7 system diagnostic tasks (44-47).
-# These are zigr-only, not comparative.
-# Usage:
-#   Rscript run_system_tasks.R          # all tasks
-#   Rscript run_system_tasks.R --tasks=44,45  # subset
 
 args <- commandArgs(trailingOnly = TRUE)
 task_filter <- NULL
@@ -33,7 +28,6 @@ build_flags <- sprintf('-Dr-include="%s" -Dr-lib="%s" -Doptimize=ReleaseFast', r
 
 results <- list()
 
-# ── Task 44: build_time ──
 t44 <- function() {
   cat("Task 44: build_time\n")
 
@@ -51,25 +45,21 @@ t44 <- function() {
   cat(" ", file = con)
   close(con)
   incr <- run_cmd(sprintf('"%s" build %s', zig_bin, build_flags), "incremental build")
-  # Restore file (remove the trailing space we added)
   restore_cmd <- sprintf('sed -i "s/ *$//" "%s"', incr_file)
   system(restore_cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
 
   list(cold_s = cold, warm_s = warm, incremental_s = incr)
 }
 
-# ── Task 45: binary_size ──
 t45 <- function() {
   cat("Task 45: binary_size\n")
 
-  # Native (x86_64-linux)
   cat("  Building x86_64-linux...\n")
   unlink("zig-out", recursive = TRUE)
   run_cmd(sprintf('"%s" build %s', zig_bin, build_flags), "native build")
   native_so <- "zig-out/lib/zigr_benchmarks.so"
   native_size <- if (file.exists(native_so)) file.info(native_so)$size else NA
 
-  # Cross: aarch64-linux (compile only, link may fail without R lib for target)
   cat("  Building aarch64-linux...\n")
   unlink("zig-out", recursive = TRUE)
   aarch64_time <- run_cmd(
@@ -79,7 +69,6 @@ t45 <- function() {
   aarch64_so <- "zig-out/lib/zigr_benchmarks.so"
   aarch64_size <- if (file.exists(aarch64_so)) file.info(aarch64_so)$size else NA
 
-  # Cross: x86_64-windows (compile only, link likely fails)
   cat("  Building x86_64-windows...\n")
   unlink("zig-out", recursive = TRUE)
   win_time <- run_cmd(
@@ -96,7 +85,6 @@ t45 <- function() {
   )
 }
 
-# ── Task 46: cross_compile_time ──
 t46 <- function() {
   cat("Task 46: cross_compile_time\n")
 
@@ -114,7 +102,6 @@ t46 <- function() {
   times
 }
 
-# ── Task 47: mem_alloc_count ──
 t47 <- function() {
   cat("Task 47: mem_alloc_count\n")
 
@@ -126,7 +113,6 @@ t47 <- function() {
     return(NULL)
   }
 
-  # Build standalone Zig executable
   cat("  Building counting allocator binary...\n")
   build_cmd <- sprintf('"%s" build-exe "%s" --name %s --cache-dir .zig-cache -lc', zig_bin, src, bin)
   t0 <- proc.time()
@@ -137,13 +123,11 @@ t47 <- function() {
     return(NULL)
   }
 
-  # Run the binary
   cat("  Running vectorsum + matrix_mult with counting allocator...\n")
   bin_path <- if (.Platform$OS.type == "windows") paste0(bin, ".exe") else bin
   output <- system2(file.path(".", bin_path), stdout = TRUE, stderr = TRUE)
   cat(paste("  ", output, collapse = "\n"), "\n")
 
-  # Parse output
   parse_val <- function(lines, key) {
     for (l in lines) {
       if (grepl(paste0("^  ", key, ":"), l)) {
@@ -168,7 +152,6 @@ t47 <- function() {
   mx_bytes <- NA
   mx_resident <- NA
 
-  # Find matrix mult section
   mx_start <- grep("task47_matrix_mult:", output)
   if (length(mx_start) > 0) {
     mx_lines <- output[mx_start[1]:length(output)]
@@ -197,7 +180,6 @@ if (is.null(task_filter) || 45 %in% task_filter) results[["45_binary_size"]] <- 
 if (is.null(task_filter) || 46 %in% task_filter) results[["46_cross_compile_time"]] <- t46()
 if (is.null(task_filter) || 47 %in% task_filter) results[["47_mem_alloc_count"]] <- t47()
 
-# Print summary
 cat("\n=== System Diagnostics Summary ===\n\n")
 
 for (tid in names(results)) {

@@ -1,7 +1,4 @@
-//! Narrow vector wrapper over R atomic vectors.
-//!
-//! Zig does not support user-defined operator overloading, so arithmetic is
-//! exposed through named methods rather than `+` or `*` syntax.
+//! Narrow R atomic-vector wrapper.
 
 const std = @import("std");
 const R = @import("R");
@@ -38,10 +35,7 @@ pub fn RVector(comptime T: type) type {
             return self.sexp;
         }
 
-        /// Returns an explicitly borrowed-or-owned view of this vector.
-        ///
-        /// Call `deinit()` after the last use. A borrowed branch remains tied
-        /// to this R call and is never safe to retain in native state.
+        /// A borrowed view must not outlive its R call.
         pub fn view(self: Self, allocator: std.mem.Allocator) !convert.SliceView(T) {
             return switch (T) {
                 f64 => try convert.toRealSliceView(allocator, self.sexp),

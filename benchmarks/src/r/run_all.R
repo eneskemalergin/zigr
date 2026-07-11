@@ -1,23 +1,14 @@
-# Pure R baseline implementations for all benchmark tasks.
-# Each function matches the interface expected by the .Call wrapper:
-# first arg is the R object, returns an R object.
-
-# Task 1: Fibonacci (recursive, to match compiled backends)
 r_bench_fib_recursive <- function(n) {
   if (n <= 1) return(as.numeric(n))
   as.numeric(Recall(n - 1)) + as.numeric(Recall(n - 2))
 }
 
-# Task 2: Vector Sum
 r_bench_vectorsum <- function(x) sum(x)
 
-# Task 3: Naive Matrix Multiply
 r_bench_transpose <- function(m) t(m)
 
-# Task 4: String Concatenation
 r_bench_strings <- function(x) paste0(x, collapse = ", ")
 
-# Task 5: Data Frame Filtering
 r_bench_dataframe <- function(df) {
   sub <- df[df$x > 0 & !is.na(df$x), , drop = FALSE]
   sub$z <- sub$x / sub$y
@@ -28,77 +19,58 @@ r_bench_dataframe <- function(df) {
   agg
 }
 
-# Task 6: NA-safe Mean
 r_bench_na_prop <- function(x) mean(x, na.rm = TRUE)
 
-# Task 7: Parallel Sum (just sum() in R because R is single-threaded)
 r_bench_parallel <- function(x) sum(x)
 
-# Task 9: PROTECT Stress
 r_bench_protect_stress <- function(n) 0L
 r_bench_protect_shallow <- function(x) 0L
 r_bench_protect_scaling <- function(x) 0L
 
-# Task 10: BLAS Matmul
 r_bench_blas_matmul <- function(A, B) A %*% B
 
-# Task 11: Cross-product
 r_bench_crossprod <- function(X) crossprod(X)
 
-# Task 12: Cholesky
 r_bench_cholesky <- function(A) chol(A)
 
-# Task 13: Linear Model
 r_bench_lm <- function(X, y) {
   as.numeric(lm.fit(X, y)$coefficients)
 }
 
-# Task 14: Row Sums
 r_bench_rowsums <- function(X) rowSums(X)
 
-# Task 15: Element-wise ops (abs, log, exp, sqrt)
 r_bench_elem_ops <- function(x) {
   cbind(abs(x), log(ifelse(x > 0, x, 1)), exp(x), sqrt(ifelse(x >= 0, x, 0)))
 }
 
-# Task 16: Row means and column sums
 r_bench_rowcol_means <- function(X) {
   list(rowMeans(X), colSums(X))
 }
 
-# Task 17: Vector + scalar broadcast
 r_bench_broadcast <- function(x, s) sum(x + s)
 
-# Task 18: Sort
 r_bench_sort <- function(x) sort(x)
 
-# Task 19: Cumulative sum
 r_bench_cumsum <- function(x) cumsum(x)
 
-# Task 20: Random normal
 r_bench_rnorm <- function(n) rnorm(n)
 
-# Task 21: String nchar
 r_bench_string_nchar <- function(x) sum(nchar(x), na.rm = TRUE)
 
-# Task 22: String encoding (count UTF-8 encoded strings)
 r_bench_string_encoding <- function(x) {
   sum(Encoding(x) == "UTF-8")
 }
 
-# Task 20: Factor ops
 r_bench_factor_ops <- function(x) {
   sum(as.integer(factor(x)), na.rm = TRUE)
 }
 
-# Task 21: Attribute ops
 r_bench_attrib_ops <- function(x) {
   class(x) <- "bench_class"
   attr(x, "creator") <- "zigr_bench"
   sum(nchar(class(x))) + sum(nchar(attr(x, "creator")))
 }
 
-# Task 22: S4 slot access
 ensure_bench_s4_class <- function() {
   if (!methods::isClass("BenchS4")) {
     methods::setClass("BenchS4", representation(slot_x = "numeric"))
@@ -112,7 +84,6 @@ r_bench_s4_slot_access <- function(x) {
 }
 r_bench_which_na <- function(x) which(is.na(x))
 
-# Task 24: Long vector index (ALTREP-aware element access)
 r_bench_long_vector_idx <- function(x) {
   total <- 0
   n <- length(x)
@@ -122,7 +93,6 @@ r_bench_long_vector_idx <- function(x) {
   total
 }
 
-# Task 25: L1 arithmetic (4000 x 2500 passes)
 r_bench_l1_arithmetic <- function(x) {
   total <- 0.0
   for (rep in 1:2500) {
@@ -133,26 +103,21 @@ r_bench_l1_arithmetic <- function(x) {
   total
 }
 
-# Task 34: ALTREP sum via R (create seq_len, sum via R)
 r_bench_altrep_sum <- function(n) {
   x <- seq_len(n)
   sum(x)
 }
 
-# Task 24: ALTREP read: R accesses directly, no materialization
 r_bench_altrep_read <- function(x) c(x[1], x[length(x)])
 
-# Task 25: ALTREP create: pure R can create built-in compact intseq ALTREP
 r_bench_altrep_create <- function(n) seq_len(n)
 
-# Task 31: ALTREP materialize
 r_bench_altrep_materialize <- function(n) {
   x <- seq_len(n)
   x[]  # force materialization
   x[1] + x[n]
 }
 
-# Task 32: ALTREP element walk
 r_bench_altrep_elt_walk <- function(n) {
   x <- seq_len(n)
   total <- 0
@@ -160,7 +125,6 @@ r_bench_altrep_elt_walk <- function(n) {
   total
 }
 
-# Task 33: ALTREP region read
 r_bench_altrep_region_read <- function(n) {
   x <- seq_len(n)
   total <- 0
@@ -168,44 +132,33 @@ r_bench_altrep_region_read <- function(n) {
   total
 }
 
-# Task 34: ALTREP sum via R (uses ALTREP method dispatch)
-# Already defined as r_bench_altrep_sum <- function(x) sum(x)
-# Mapped in runner JSON as "sum"
-
-# Task 35: ALTREP sum native (same as elt_walk)
 r_bench_altrep_sum_native <- r_bench_altrep_elt_walk
 
-# Task 36: ALTREP min/max
 r_bench_altrep_min_max <- function(n) {
   x <- seq_len(n)
   max(x) - min(x)
 }
 
-# Task 37: ALTREP no-NA query
 r_bench_altrep_no_na_query <- function(n) {
   x <- seq_len(n)
   as.integer(any(is.na(x)))
 }
 
-# Task 38: Real create + sum over a numeric vector payload
 r_bench_owned_altrep_real_sum <- function(n) {
   x <- as.double(((seq_len(n) - 1L) %% 1024L) + 1L)
   sum(x)
 }
 
-# Task 39: Integer create + sum over a recycled integer payload
 r_bench_owned_altrep_int_sum <- function(n) {
   x <- ((seq_len(n) - 1L) %% 1024L) + 1L
   sum(x)
 }
 
-# Task 40: Logical create + sum over alternating flags
 r_bench_owned_altrep_logical_sum <- function(n) {
   x <- rep(c(TRUE, FALSE), length.out = n)
   sum(x)
 }
 
-# Task 26: Type dispatch over mixed atomic vectors
 r_bench_comptime_dispatch <- function(xs) {
   total <- 0L
   for (i in 1:2048) {
@@ -234,7 +187,6 @@ r_bench_sexp_inspect <- function(xs) {
   total
 }
 
-# Task 27: Struct convert
 r_bench_struct_convert <- function(x) {
   list(
     id = as.integer(x$id),
@@ -250,12 +202,10 @@ r_bench_struct_convert <- function(x) {
   )
 }
 
-# Task 39: R eval (sum + mean via eval)
 r_bench_r_eval <- function(x) {
   sum(x) + mean(x)
 }
 
-# Task 40: R tryEval (stop error catch)
 r_bench_r_tryeval <- function(x) {
   count <- 0L
   for (i in 1:512) {
@@ -264,61 +214,51 @@ r_bench_r_tryeval <- function(x) {
   count
 }
 
-# Task 41: Serialize roundtrip
 r_bench_serialize_roundtrip <- function(x) {
   sum(unserialize(serialize(x, NULL)))
 }
 
-# Task 42: External pointer
 r_bench_external_ptr <- function(x) {
   x
 }
 
-# Task 43: RNG stress
 r_bench_rng_stress <- function(n) {
   rnorm(n)
 }
 
-# P1.3 generated-boundary references.  These intentionally do the smallest
-# useful kernel so the measured native rows expose boundary cost rather than
-# an application algorithm. Materialized numeric inputs and ALTREP strategy
-# diagnostics are supplied by the runner; generated and handwritten rows share
-# each reference by design.
-r_p13_zero <- function() 1.0
-r_p13_scalar <- function(x) {
-  if (typeof(x) != "double" || length(x) != 1L) stop("P1.3 scalar expected one REAL value")
-  if (is.na(x) && !is.nan(x)) stop("P1.3 scalar expected a non-missing REAL value")
+# These do the smallest useful work so fixture cost stays visible.
+r_boundary_zero <- function() 1.0
+r_boundary_scalar <- function(x) {
+  if (typeof(x) != "double" || length(x) != 1L) stop("scalar expected one REAL value")
+  if (is.na(x) && !is.nan(x)) stop("scalar expected a non-missing REAL value")
   x
 }
-r_p13_optional <- function(x) {
+r_boundary_optional <- function(x) {
   if (is.null(x)) return(0L)
-  if (typeof(x) != "double" || length(x) != 1L) stop("P1.3 optional expected NULL or one REAL value")
+  if (typeof(x) != "double" || length(x) != 1L) stop("optional expected NULL or one REAL value")
   if (is.na(x) && !is.nan(x)) 0L else 1L
 }
-r_p13_numeric <- function(x) sum(x)
-r_p13_altrep_integer <- function(x) as.double(sum(x))
-r_p13_string_view <- function(x) as.integer(sum(!is.na(x)))
-r_p13_raw <- function(x) as.integer(sum(as.integer(x)))
-r_p13_complex <- function(x) sum(Re(x))
-r_p13_schema <- function(x) x
-r_p13_external_method <- function(receiver, amount) as.integer(amount)
-r_p13_external <- function(x) as.double(x + 1.0)
+r_boundary_numeric <- function(x) sum(x)
+r_boundary_altrep_integer <- function(x) as.double(sum(x))
+r_boundary_string_view <- function(x) as.integer(sum(!is.na(x)))
+r_boundary_raw <- function(x) as.integer(sum(as.integer(x)))
+r_boundary_complex <- function(x) sum(Re(x))
+r_boundary_schema <- function(x) x
+r_boundary_external_method <- function(receiver, amount) as.integer(amount)
+r_boundary_external <- function(x) as.double(x + 1.0)
 
-# P1.7 representation diagnostics. The repeated forms intentionally perform
-# four traversals; that declared workload exposes whether cached metadata
-# repays its construction cost without changing the harness repetition policy.
-r_p17_string_total <- function(x) as.integer(sum(nchar(x, type = "bytes"), na.rm = TRUE))
-r_p17_string_cache_build <- function(x) as.integer(length(x))
-r_p17_string_repeated_total <- function(x) {
+# Four passes keep cache setup visible instead of hiding it in repetition.
+r_string_total <- function(x) as.integer(sum(nchar(x, type = "bytes"), na.rm = TRUE))
+r_string_cache_build <- function(x) as.integer(length(x))
+r_string_repeated_total <- function(x) {
   total <- 0L
-  for (pass in seq_len(4L)) total <- total + r_p17_string_total(x)
+  for (pass in seq_len(4L)) total <- total + r_string_total(x)
   total
 }
-r_p17_raw <- function(x) as.integer(sum(as.integer(x)))
-r_p17_complex_view <- function(x) sum(Re(x) + Im(x))
-r_p17_complex_return <- function(x) x + (0 + 0i)
+r_raw <- function(x) as.integer(sum(as.integer(x)))
+r_complex_view <- function(x) sum(Re(x) + Im(x))
+r_complex_return <- function(x) x + (0 + 0i)
 
-# Task 10: SEXP create (100k small vectors)
 r_bench_sexp_create <- function(n) {
   for (i in seq_len(n)) {
     x <- numeric(1)
@@ -326,7 +266,6 @@ r_bench_sexp_create <- function(n) {
   0L
 }
 
-# Task 16: List access (sum first element of each list item)
 r_bench_list_access <- function(lst) {
   total <- 0.0
   for (i in seq_along(lst)) {
@@ -335,17 +274,14 @@ r_bench_list_access <- function(lst) {
   total
 }
 
-# Task 28: NA proportion sweep
 r_bench_na_prop_vary <- function(xs) {
   setNames(vapply(xs, function(x) mean(x, na.rm = TRUE), numeric(1)), names(xs))
 }
 
-# Task 29: Scale law mixed-size vector sums
 r_bench_scale_law <- function(xs) {
   setNames(vapply(xs, sum, numeric(1)), names(xs))
 }
 
-# Task 30: Allocation strategy benchmark
 r_bench_arena_vs_rmalloc <- function(x) {
   total <- 0
   for (i in seq_len(100L)) {
@@ -355,7 +291,6 @@ r_bench_arena_vs_rmalloc <- function(x) {
   total
 }
 
-# Task 31: Protection strategy comparison
 r_bench_prot_overhead <- function(x) {
   repeats <- 4096
   total <- 0
@@ -366,7 +301,6 @@ r_bench_prot_overhead <- function(x) {
   setNames(rep(total, 5L), c("unsafe", "manual", "batch", "preserve", "reprotect"))
 }
 
-# Task 32: Longjmp safety comparison
 r_bench_longjmp_safety <- function(x) {
   repeats <- 512L
   direct_total <- 0
@@ -386,7 +320,6 @@ r_bench_longjmp_safety <- function(x) {
            c("direct", "try_ok", "try_err", "unwind_ok"))
 }
 
-# Task 34: Math call cost comparison
 r_bench_translate_c_cost <- function(x) {
   repeats <- 512L
   abs_total <- 0
@@ -406,7 +339,6 @@ r_bench_translate_c_cost <- function(x) {
            c("abs", "log", "exp", "sqrt"))
 }
 
-# Task 35: String operation suite
 r_bench_string_variants <- function(x) {
   valid <- !is.na(x)
   setNames(

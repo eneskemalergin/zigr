@@ -1,9 +1,4 @@
 #!/usr/bin/env Rscript
-# Run zigr's R-dependent tests.
-# Builds a test .so via `zig build rtest`, loads it in R, and runs every
-# exported test function. Test functions return R.Rf_ScalarReal(1.0) on pass
-# or R.Rf_ScalarReal(0.0) on fail. Functions that deliberately signal R errors
-# are wrapped in tryCatch and expected to fail.
 
 build_so <- function() {
   zig <- Sys.getenv("ZIG", "")
@@ -37,7 +32,6 @@ build_so <- function() {
   cpu_features <- Sys.getenv("ZIGR_CPU_FEATURES", "")
   if (nzchar(cpu_features) && cpu_features != "default") build_args <- c(build_args, paste0("-Dcpu=", cpu_features))
 
-  # Build using the project's own build.zig which wires the full module graph
   cat("Building test .so...\n")
   cat("  ", paste(c(zig, build_args), collapse = " "), "\n")
   exit_code <- system2(zig, args = build_args)
@@ -45,7 +39,6 @@ build_so <- function() {
     stop("zig build rtest failed with exit code ", exit_code)
   }
 
-  # Locate the built .so in zig-out/lib/
   so_path <- file.path("zig-out", "lib", "libzigr_r_test.so")
   if (!file.exists(so_path)) {
     so_path <- Sys.glob(file.path("zig-out", "*", "*.so"))[1]
@@ -61,43 +54,30 @@ so_path <- build_so()
 cat("Loading .so:", so_path, "\n")
 dyn.load(so_path)
 
-# ── Test registry ────────────────────────────────────
-# Each entry: name (exported C symbol) or list(name, expect_error=FALSE)
-# expect_error=TRUE means the test deliberately signals an R error.
-# When expect_error=TRUE, the test passes if the error is caught.
-
 tests <- list(
-  # Basic creation and protect tests
   "zigr_test_protect",
   "zigr_test_return42",
   list(name="zigr_test_longjmp", expect_error=TRUE),
   "zigr_test_longjmp_normal",
 
-  # Error signaling
   list(name="zigr_test_error_signal", expect_error=TRUE),
   "zigr_test_error_warn",
   list(name="zigr_test_error_signalif", expect_error=TRUE),
   list(name="zigr_raise_error", expect_error=TRUE),
 
-  # Interrupt and stack
   "zigr_test_interrupt",
   "zigr_test_check_stack",
 
-  # Reverse FFI
   "zigr_test_rev_eval",
   "zigr_test_rev_define_find",
   "zigr_test_rev_lang3",
 
-  # RNG
   "zigr_test_rng",
 
-  # Memory allocator
   "zigr_test_ralloc",
 
-  # Preserve and longjmp
   list(name="zigr_test_preserve_longjmp", expect_error=TRUE),
 
-  # Type conversion
   "zigr_test_to_real_slice",
   "zigr_test_from_real_slice",
   "zigr_test_real_roundtrip",
@@ -112,15 +92,12 @@ tests <- list(
   "zigr_test_raw_create",
   "zigr_test_cplx_create",
 
-  # Data frames
   "zigr_test_df_build",
   "zigr_test_df_column",
 
-  # Attributes
   "zigr_test_attrib_class",
   "zigr_test_attrib_names",
 
-  # ALTREP creation and SIMD helpers
   "zigr_test_altrep_create",
   "zigr_test_altrep_sum_simd",
   "zigr_test_altrep_direct_ptr",
@@ -147,13 +124,12 @@ tests <- list(
   "zigr_test_altraw_create",
   "zigr_test_altcomplex_create",
   "zigr_test_altstring_create",
-  "zigr_test_p17_string_representations",
-  "zigr_test_p17_altstring_inputs",
-  "zigr_test_p15_borrowed_views",
-  "zigr_test_p15_compact_altrep_views",
-  "zigr_test_p15_short_region",
+  "zigr_test_string_representations",
+  "zigr_test_altstring_inputs",
+  "zigr_test_borrowed_views",
+  "zigr_test_compact_altrep_views",
+  "zigr_test_short_region",
 
-  # Edge-case / adversarial
   "zigr_test_from_empty",
   "zigr_test_real_huge",
   "zigr_test_str_na",
@@ -186,43 +162,39 @@ tests <- list(
   "zigr_test_pmin_recycling",
   "zigr_test_pmax_recycling",
 
-  # Phase 4: embed, struct conversion, tryCatch
-  "zigr_phase4_embed_sum",
-  "zigr_phase4_embed_paste",
-  "zigr_phase4_raw_eval",
-  "zigr_phase4_as_sexp",
-  "zigr_phase4_from_sexp",
-  list(name="zigr_phase4_embed_empty", expect_error=FALSE),  # caught by tryCatch internally
-  "zigr_phase4_embed_vector",
-  "zigr_phase4_embed_braces",
-  "zigr_phase4_embed_null",
-  "zigr_phase4_as_sexp_empty",
-  "zigr_phase4_as_sexp_nested",
-  "zigr_phase4_from_sexp_optional",
-  "zigr_phase4_from_sexp_optional_present",
-  "zigr_phase4_stress_protect",
-  "zigr_phase4_stress_embed",
-  list(name="zigr_p4_embed_syntax_error", expect_error=FALSE),
-  list(name="zigr_p4_embed_stop_error", expect_error=FALSE),
-  "zigr_p4_embed_warning_noerror",
-  "zigr_p4_embed_unicode",
-  "zigr_p4_embed_long_code",
-  "zigr_p4_struct_roundtrip",
-  "zigr_p4_struct_nan_inf",
-  "zigr_p4_struct_neg_zero",
-  "zigr_p4_struct_many_fields",
-  list(name="zigr_p4_trycatch_nested", expect_error=FALSE),
-  "zigr_p4_stress_protect_10k",
+  "zigr_test_embed_sum",
+  "zigr_test_embed_paste",
+  "zigr_test_raw_eval",
+  "zigr_test_struct_to_sexp",
+  "zigr_test_struct_from_sexp",
+  list(name="zigr_test_embed_empty", expect_error=FALSE),
+  "zigr_test_embed_vector",
+  "zigr_test_embed_braces",
+  "zigr_test_embed_null",
+  "zigr_test_struct_to_sexp_empty",
+  "zigr_test_struct_to_sexp_nested",
+  "zigr_test_struct_from_sexp_optional_missing",
+  "zigr_test_struct_from_sexp_optional_present",
+  "zigr_test_stress_protect",
+  "zigr_test_stress_embed",
+  list(name="zigr_test_embed_syntax_error", expect_error=FALSE),
+  list(name="zigr_test_embed_stop_error", expect_error=FALSE),
+  "zigr_test_embed_warning",
+  "zigr_test_embed_unicode",
+  "zigr_test_embed_long_code",
+  "zigr_test_struct_roundtrip",
+  "zigr_test_struct_nan_inf",
+  "zigr_test_struct_neg_zero",
+  "zigr_test_struct_many_fields",
+  list(name="zigr_test_trycatch_nested", expect_error=FALSE),
+  "zigr_test_stress_protect_10k",
 
-  # lang builder tests
   "zigr_test_build_call",
   "zigr_test_build_named_call",
 
-  # ScopedProtect lifecycle
   "zigr_test_scoped_release",
   "zigr_test_scoped_get",
 
-  # RVector runtime tests
   "zigr_test_rvector_f64",
   "zigr_test_rvector_i32",
   "zigr_test_rvector_wrong_type",
@@ -236,14 +208,10 @@ tests <- list(
   "zigr_test_rvector_recycle",
   "zigr_test_rvector_empty",
 
-  # Export system conversion tests
-  # Export system: multi-parameter unwrapping
   "zigr_test_export_two_scalars",
 
-  # Export system: complex slice conversion
   "zigr_test_export_complex_sum",
 
-  # Export system: numeric and string slice conversion
   "zigr_test_export_sum",
   "zigr_test_export_string_lengths",
   "zigr_test_export_string_na",
@@ -251,34 +219,28 @@ tests <- list(
   "zigr_test_export_sum_empty",
   "zigr_test_export_raw_roundtrip",
 
-  # Export system: optional and NA handling
   "zigr_test_export_optional_null",
   "zigr_test_export_scalar_na",
   "zigr_test_export_int_scalar_na",
   "zigr_test_export_bool_scalar_na",
   "zigr_test_export_wrong_type_real",
 
-  # Export system: external pointer method dispatch
   "zigr_test_export_method_call",
   "zigr_test_export_method_tag",
 
-  # Export system: external interface
   "zigr_test_export_external",
 
-  # Export system: generateMethods comptime codegen
   "zigr_test_export_generatemethods",
-  "zigr_test_p16_generated_ownership_gc",
-  list(name="zigr_test_p16_generated_spill_longjmp", expect_error=TRUE),
-  "zigr_test_p16_externalptr_finalizer",
-  "zigr_test_p17_raw_views",
-  "zigr_test_p17_complex_boundary",
-  "zigr_test_p17_generated_string_shapes",
-  "zigr_test_p17_string_allocation_longjmp",
+  "zigr_test_generated_ownership_gc",
+  list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
+  "zigr_test_externalptr_finalizer",
+  "zigr_test_raw_views",
+  "zigr_test_complex_boundary",
+  "zigr_test_generated_string_shapes",
+  "zigr_test_string_allocation_longjmp",
 
-  # Export system: error signaling
   list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),
 
-  # Infrastructure and creation tests
   "zigr_alloc_real",
   "zigr_alloc_large",
   "zigr_protect_many",
@@ -287,22 +249,13 @@ tests <- list(
   "zigr_raise_warning",
   "zigr_typeof_nil",
 
-  # Query functions for longjmp/preserve callback tests
-  # zigr_longjmp_flag, zigr_preserve_flag, zigr_nested_flags
-  # are called internally by the test suite. Not run directly.
-
-  # Longjmp safety (catch internally, no expect_error)
   "zigr_test_cleanup_fires_on_longjmp",
   "zigr_test_with_rng_longjmp",
 
-  # Recursive fib (call overhead showcase)
   "zigr_test_fib_recursive",
 
-  # Additional conversion and call builder tests
   "zigr_test_lang_builder",
 
-  # ── Fuzz probes (type guard validation) ──
-  # These signal R errors on wrong type → expected to fail
   list(name="zigr_fuzz_sum_type", expect_error=TRUE),
   list(name="zigr_fuzz_norm2_type", expect_error=TRUE),
   list(name="zigr_fuzz_min_type", expect_error=TRUE),
@@ -326,7 +279,6 @@ tests <- list(
   list(name="zigr_fuzz_pmin_type", expect_error=TRUE),
   list(name="zigr_fuzz_pmax_type", expect_error=TRUE),
   list(name="zigr_fuzz_findVar_unbound", expect_error=TRUE),
-  # These catch errors in Zig and return 1.0 on pass
   "zigr_fuzz_toRealScalar_type",
   "zigr_fuzz_toIntScalar_type",
   "zigr_fuzz_toBoolScalar_type",
@@ -348,8 +300,6 @@ tests <- list(
   "zigr_fuzz_scalar_empty"
 )
 
-# ── Test runner ──────────────────────────────────────
-
 cat("\n=== zigr R runtime tests ===\n")
 passed <- 0
 failed <- 0
@@ -362,10 +312,8 @@ for (t in tests) {
   result <- tryCatch({
     val <- .Call(name)
     if (expect_error) {
-      # Expected an error but got a return value, so test failed
       "FAIL"
     } else {
-      # Check that the return value indicates pass
       if (is.numeric(val) && length(val) == 1 && !is.na(val) && val == 1.0) {
         "PASS"
       } else {

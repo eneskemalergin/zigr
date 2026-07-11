@@ -1,7 +1,4 @@
 #!/usr/bin/env Rscript
-#
-# Aggregate one completed run into a summary table.
-# Usage: Rscript analysis/summarize.R --run-dir=results/runs/<run_id>
 
 args <- commandArgs(trailingOnly = TRUE)
 run_dir <- NULL
@@ -76,12 +73,8 @@ if (length(rows) == 0) {
 
 agg <- do.call(rbind, rows)
 
-# ── Write summary ─────────────────────────────────────────────
-
 write.csv(agg, out_csv, row.names = FALSE)
 cat(sprintf("Summary written to %s\n", out_csv))
-
-# ── Print table ──────────────────────────────────────────────
 
 cat("\nSummary\n")
 cat(sprintf("%-8s %-14s %-14s %10s %8s %8s\n",

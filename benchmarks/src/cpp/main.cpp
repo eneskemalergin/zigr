@@ -40,7 +40,6 @@ static void radix_sort_f64(double *arr, size_t n) {
 }
 
 extern "C" {
-// Layer 1: Primitives
 SEXP rcpp_bench_vectorsum(SEXP x) {
     double *xp = REAL(x);
     R_xlen_t n = XLENGTH(x);
@@ -133,7 +132,6 @@ SEXP rcpp_bench_broadcast(SEXP x, SEXP s_sexp) {
     return Rf_ScalarReal(total);
 }
 
-// Layer 2: R API overhead
 SEXP rcpp_bench_protect_shallow(SEXP x) {
     for (int r = 0; r < 100; r++) {
         for (int i = 0; i < 10; i++) PROTECT(x);
@@ -281,7 +279,6 @@ SEXP rcpp_bench_sexp_inspect(SEXP arg) {
     return Rf_ScalarInteger(total);
 }
 
-// Layer 3: Data structures
 #define BLOCK 32
 
 SEXP rcpp_bench_matrix_transpose(SEXP arg) {
@@ -551,7 +548,6 @@ SEXP rcpp_bench_l1_arithmetic(SEXP arg) {
     return Rf_ScalarReal(total);
 }
 
-// Layer 4: Numerical
 extern "C" void dgemm_(char *transa, char *transb, int *m, int *n, int *k,
                        double *alpha, double *a, int *lda, double *b, int *ldb,
                        double *beta, double *c, int *ldc);
@@ -640,7 +636,6 @@ SEXP rcpp_bench_lm_fit(SEXP X, SEXP y) {
     return xty;
 }
 
-// Layer 5: ALTREP
 SEXP rcpp_bench_altrep_create(SEXP arg) {
     SEXP call = PROTECT(Rf_lang2(Rf_install("seq_len"), arg));
     int err = 0;
@@ -742,7 +737,6 @@ SEXP rcpp_bench_altrep_no_na_query(SEXP arg) {
     return Rf_ScalarInteger(has_na);
 }
 
-// Layer 6: Integration
 SEXP rcpp_bench_struct_convert(SEXP arg) {
     const char *field_names[] = {"id", "count", "level", "flag", "enabled",
                                  "ratio", "offset", "scale", "weights", "indices"};

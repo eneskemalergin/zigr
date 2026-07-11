@@ -75,6 +75,7 @@ source_tree_files <- function(root_dir) {
     relative
   )
   relative <- sort(relative[relevant & !generated])
+  relative <- relative[file.exists(file.path(root_dir, relative))]
   if (length(relative) == 0L) stop("source tree has no identity files after exclusions")
   list(
     relative = relative,

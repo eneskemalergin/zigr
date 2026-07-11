@@ -140,7 +140,6 @@ pub unsafe extern "C" fn savvy_bench_elem_ops__ffi(x: SEXP) -> SEXP {
         *rp.add(i + 2 * n) = v.exp();
         *rp.add(i + 3 * n) = if v >= 0.0 { v.sqrt() } else { 0.0 };
     }
-    // Set dim attribute to make it a matrix
     let dim = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 2);
     let dimp = savvy_ffi::INTEGER(dim);
     *dimp = n as i32;
@@ -489,7 +488,6 @@ pub unsafe extern "C" fn savvy_bench_memory_bandwidth__ffi(x: SEXP) -> SEXP {
 ffi_stub!(savvy_bench_string_variants_manual__ffi, x: SEXP);
 ffi_stub!(savvy_bench_string_variants__ffi, x: SEXP);
 
-// Layer 1: Primitives
 fn savvy_bench_vectorsum(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 fn savvy_bench_elem_ops(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
@@ -517,7 +515,6 @@ pub unsafe extern "C" fn savvy_bench_fib_recursive__ffi(c_arg__n: SEXP) -> SEXP 
 
 fn savvy_bench_broadcast(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
-// Layer 2: R API overhead
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_protect_shallow__ffi(x: SEXP) -> SEXP {
     let _ = x;
@@ -593,11 +590,6 @@ fn savvy_bench_sexp_inspect(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_matrix_rowsums__ffi(x: SEXP) -> SEXP {
     let len = savvy_ffi::Rf_xlength(x) as usize;
-    // Square root approximation for matrix dimensions
-    // Input is 1000x500, so len = 500000. nr = 1000, nc = 500.
-    // We estimate nr by taking the integer square root of len * aspect_ratio
-    // where aspect_ratio = 1000/500 = 2. But we don't know the aspect ratio.
-    // Let's use the dim attribute.
     let dim_sym = std::ffi::CString::new("dim").unwrap();
     let dim = savvy_ffi::Rf_getAttrib(x, savvy_ffi::Rf_install(dim_sym.as_ptr()));
     let ndim = savvy_ffi::INTEGER(dim);
@@ -614,7 +606,6 @@ pub unsafe extern "C" fn savvy_bench_matrix_rowsums__ffi(x: SEXP) -> SEXP {
     out
 }
 
-// Layer 3: Data structures
 fn savvy_bench_matrix_rowsums(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 #[unsafe(no_mangle)]
@@ -883,13 +874,11 @@ pub unsafe extern "C" fn savvy_bench_l1_arithmetic__impl(x: SEXP) -> SEXP {
     Rf_ScalarReal(total)
 }
 
-// Layer 4: Numerical
 fn savvy_bench_matmul(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 fn savvy_bench_crossprod(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 fn savvy_bench_cholesky(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 fn savvy_bench_lm_fit(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
-// Layer 5: ALTREP
 fn savvy_bench_altrep_create(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_altrep_materialize__impl(x: SEXP) -> SEXP {
@@ -1009,7 +998,6 @@ pub unsafe extern "C" fn savvy_bench_altrep_no_na_query__impl(x: SEXP) -> SEXP {
     out
 }
 
-// Layer 6: Integration
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_r_eval__impl(x: SEXP) -> SEXP {
     let sum_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("sum\0".as_ptr() as _), x));

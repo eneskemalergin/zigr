@@ -95,7 +95,6 @@ SAVVY_WRAP1(bench_memory_bandwidth, c_arg__vec)
 SAVVY_WRAP1(bench_sexp_inspect, c_arg__vec)
 
 extern SEXP savvy_bench_string_encoding__impl(SEXP);
-// savvy_bench_string_encoding__impl is defined directly in Rust
 extern SEXP savvy_bench_factor_ops__impl(SEXP);
 extern SEXP savvy_bench_attrib_ops__impl(SEXP);
 extern SEXP savvy_bench_s4_slot_access__impl(SEXP);
@@ -114,7 +113,6 @@ extern SEXP savvy_bench_r_tryeval__impl(SEXP);
 extern SEXP savvy_bench_serialize_roundtrip__impl(SEXP);
 extern SEXP savvy_bench_external_ptr__impl(SEXP);
 extern SEXP savvy_bench_rng_stress__impl(SEXP);
-// savvy_bench_factor_ops__impl is defined directly in Rust
 
 SEXP savvy_bench_string_variants__impl(SEXP c_arg__vec) {
   SEXP res = savvy_bench_string_variants_manual__ffi(c_arg__vec);

@@ -70,7 +70,7 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
 
 - SEXP types and 24 classification helpers
-- PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated arena-backed cleanup is being hardened in P1
+- PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated wrappers release call-scoped scratch on normal return and R errors
 - Type conversion (real, int, string, logical, raw, complex)
 - Explicit borrowed-or-owned export views for numeric and complex inputs, plus a header-free read-only string view via `convert.StringSliceView`
 - SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
@@ -100,7 +100,7 @@ macOS and Windows builds use `continue-on-error`. Native cross-compilation from 
 
 Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks/README.md`.
 
-- The published P0 baseline (`p0-7-20260710-full`) covers 36 comparable tasks: zigr is `0.212x` versus R by geomedian (`0.263x` by median), and `1.082x` versus the best native runner by geomedian (`1.003x` by median), with 17 aggregate wins or ties. These are handwritten/direct-entry benchmark results; generated public API performance is a P1 workstream. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
+- The published canonical baseline covers 36 comparable tasks: zigr is `0.212x` versus R by geomedian (`0.263x` by median), and `1.082x` versus the best native runner by geomedian (`1.003x` by median), with 17 aggregate wins or ties. These are handwritten/direct-entry results; generated API cost is measured separately. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
 - ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
 - String ops are slower because each `CHAR()` call produces a new Zig slice header. The header-free `StringSliceView` avoids those Zig headers but requires adapter code in export functions; R encoding translation may still use call-scoped storage.
 

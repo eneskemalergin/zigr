@@ -1,13 +1,14 @@
+//! Factor construction.
+//!
+//! ALTREP input uses R element access because its backing pointer may be absent.
+
 const std = @import("std");
 const R = @import("R");
 const sexp = @import("sexp.zig");
 
 const max_levels = 1024;
 
-/// Creates a factor from a character vector, analogous to R's `factor(x)`.
-/// Levels are sorted alphabetically (matching R's default behavior).
-/// Returns a properly attributed INTSXP with class "factor" and levels attribute.
-/// Returns R_NilValue on null/non-character input or if level count exceeds max_levels.
+/// Uses R's default alphabetical level order.
 pub fn asFactor(vec: R.SEXP) R.SEXP {
     if (vec == null) return R.R_NilValue;
     if (sexp.typeTag(vec) != 16) return R.R_NilValue; // STRSXP = 16
@@ -17,14 +18,12 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
     if (n_raw < 0) return R.R_NilValue;
     const n = @as(usize, @intCast(n_raw));
 
-    // --- Branch for element access: R API for ALTREP, fast struct read otherwise ---
     const getElt = struct {
         fn at(v: R.SEXP, i: usize, alt: bool) R.SEXP {
             return if (alt) R.STRING_ELT(v, @intCast(i)) else sexp.fastVectorElt(v, @intCast(i));
         }
     }.at;
 
-    // --- Pass 1: collect unique CHARSXP pointers ---
     var level_ptrs: [max_levels]R.SEXP = undefined;
     var level_count: u32 = 0;
 
@@ -32,7 +31,7 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
         const elt = getElt(vec, i, is_alt);
         if (elt == null or elt == R.R_NaString) continue;
 
-        // Linear search CHARSXP pointers (R interns them, pointer equality is valid)
+        // R interns CHARSXPs, so pointer equality is valid.
         var found = false;
         for (0..level_count) |j| {
             if (level_ptrs[j] == elt) {
@@ -47,7 +46,6 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
         }
     }
 
-    // --- Sort levels alphabetically by string content ---
     if (level_count > 1) {
         var i: usize = 0;
         while (i < level_count - 1) {
@@ -71,7 +69,6 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
         }
     }
 
-    // --- Pass 2: assign codes ---
     const codes = R.Rf_protect(R.Rf_allocVector(R.INTSXP, @intCast(n)));
     defer R.Rf_unprotect(1);
     const codes_ptr: [*]c_int = @ptrCast(R.INTEGER(codes));
@@ -92,13 +89,11 @@ pub fn asFactor(vec: R.SEXP) R.SEXP {
         codes_ptr[i] = code;
     }
 
-    // --- Set class attribute ---
     const class = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
     R.SET_STRING_ELT(class, 0, R.Rf_mkChar("factor"));
     _ = R.Rf_setAttrib(codes, R.R_ClassSymbol, class);
     R.Rf_unprotect(1);
 
-    // --- Set levels attribute ---
     const lvls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, @intCast(level_count)));
     for (0..level_count) |j| {
         R.SET_STRING_ELT(lvls, @intCast(j), level_ptrs[j]);

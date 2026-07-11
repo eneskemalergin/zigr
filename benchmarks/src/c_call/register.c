@@ -1,4 +1,3 @@
-// Registration table for all C benchmark tasks.
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include <stdint.h>
@@ -160,51 +159,51 @@ static SEXP c_fixture_misaligned(void) {
     return R_MakeExternalPtr(address, fixture_tag(), R_NilValue);
 }
 
-static SEXP c_p13_zero(void) {
+static SEXP c_boundary_zero(void) {
     return Rf_ScalarReal(1.0);
 }
 
-static SEXP c_p13_scalar(SEXP value) {
+static SEXP c_boundary_scalar(SEXP value) {
     return c_fixture_scalar(value);
 }
 
-static SEXP c_p13_optional(SEXP value) {
+static SEXP c_boundary_optional(SEXP value) {
     if (value == R_NilValue) return Rf_ScalarInteger(0);
     if (TYPEOF(value) != REALSXP || XLENGTH(value) != 1) {
-        Rf_error("c P1.3 optional expected NULL or one REAL value");
+        Rf_error("c fixture expected NULL or one REAL value");
     }
     if (ISNA(REAL(value)[0])) return Rf_ScalarInteger(0);
     return Rf_ScalarInteger(1);
 }
 
-static SEXP c_p13_optional_int(SEXP value) {
+static SEXP c_boundary_optional_int(SEXP value) {
     if (value == R_NilValue) return Rf_ScalarInteger(0);
     if (TYPEOF(value) != INTSXP || XLENGTH(value) != 1) {
-        Rf_error("c P1.4 optional expected NULL or one INTEGER value");
+        Rf_error("c fixture expected NULL or one INTEGER value");
     }
     if (INTEGER(value)[0] == NA_INTEGER) return Rf_ScalarInteger(0);
     return Rf_ScalarInteger(1);
 }
 
-static SEXP c_p13_optional_bool(SEXP value) {
+static SEXP c_boundary_optional_bool(SEXP value) {
     if (value == R_NilValue) return Rf_ScalarInteger(0);
     if (TYPEOF(value) != LGLSXP || XLENGTH(value) != 1) {
-        Rf_error("c P1.4 optional expected NULL or one LOGICAL value");
+        Rf_error("c fixture expected NULL or one LOGICAL value");
     }
     if (LOGICAL(value)[0] == NA_LOGICAL) return Rf_ScalarInteger(0);
     return Rf_ScalarInteger(1);
 }
 
-static SEXP c_p13_numeric(SEXP value) {
-    if (TYPEOF(value) != REALSXP) Rf_error("c P1.3 numeric expected REALSXP");
+static SEXP c_boundary_numeric(SEXP value) {
+    if (TYPEOF(value) != REALSXP) Rf_error("c fixture expected REALSXP");
     double total = 0.0;
     const double *values = REAL(value);
     for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += values[i];
     return Rf_ScalarReal(total);
 }
 
-static SEXP c_p13_altrep_integer(SEXP value) {
-    if (TYPEOF(value) != INTSXP) Rf_error("c P1.3 ALTREP integer expected INTSXP");
+static SEXP c_boundary_altrep_integer(SEXP value) {
+    if (TYPEOF(value) != INTSXP) Rf_error("c fixture expected an integer ALTREP");
     double total = 0.0;
     const R_xlen_t length = XLENGTH(value);
     const int *values = (const int *) DATAPTR_OR_NULL(value);
@@ -216,7 +215,7 @@ static SEXP c_p13_altrep_integer(SEXP value) {
         while (offset < length) {
             const R_xlen_t want = (length - offset) < 4096 ? (length - offset) : 4096;
             const R_xlen_t got = INTEGER_GET_REGION(value, offset, want, buffer);
-            if (got == 0) Rf_error("c P1.3 ALTREP integer region read failed");
+            if (got == 0) Rf_error("c fixture could not read an integer ALTREP region");
             for (R_xlen_t i = 0; i < got; ++i) total += buffer[i];
             offset += got;
         }
@@ -224,8 +223,8 @@ static SEXP c_p13_altrep_integer(SEXP value) {
     return Rf_ScalarReal(total);
 }
 
-static SEXP c_p13_string_view(SEXP value) {
-    if (TYPEOF(value) != STRSXP) Rf_error("c P1.3 string view expected STRSXP");
+static SEXP c_boundary_string_view(SEXP value) {
+    if (TYPEOF(value) != STRSXP) Rf_error("c fixture expected STRSXP");
     int total = 0;
     for (R_xlen_t i = 0; i < XLENGTH(value); ++i) {
         if (STRING_ELT(value, i) != R_NaString) ++total;
@@ -233,21 +232,21 @@ static SEXP c_p13_string_view(SEXP value) {
     return Rf_ScalarInteger(total);
 }
 
-static SEXP c_p13_raw(SEXP value) {
-    if (TYPEOF(value) != RAWSXP) Rf_error("c P1.3 raw expected RAWSXP");
+static SEXP c_boundary_raw(SEXP value) {
+    if (TYPEOF(value) != RAWSXP) Rf_error("c fixture expected RAWSXP");
     int total = 0;
     for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += RAW(value)[i];
     return Rf_ScalarInteger(total);
 }
 
-static SEXP c_p13_complex(SEXP value) {
-    if (TYPEOF(value) != CPLXSXP) Rf_error("c P1.3 complex expected CPLXSXP");
+static SEXP c_boundary_complex(SEXP value) {
+    if (TYPEOF(value) != CPLXSXP) Rf_error("c fixture expected CPLXSXP");
     double total = 0.0;
     for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += COMPLEX(value)[i].r;
     return Rf_ScalarReal(total);
 }
 
-static int c_p13_schema_is_valid(SEXP value) {
+static int c_boundary_schema_is_valid(SEXP value) {
     static const char *const fields[] = {"id", "count", "ratio", "enabled"};
     if (TYPEOF(value) != VECSXP || XLENGTH(value) != 4) return 0;
     SEXP names = Rf_getAttrib(value, R_NamesSymbol);
@@ -259,8 +258,8 @@ static int c_p13_schema_is_valid(SEXP value) {
     return 1;
 }
 
-static SEXP c_p13_schema(SEXP value) {
-    if (!c_p13_schema_is_valid(value)) Rf_error("c P1.3 schema expected the fixed named-list shape");
+static SEXP c_boundary_schema(SEXP value) {
+    if (!c_boundary_schema_is_valid(value)) Rf_error("c fixture expected the fixed named-list shape");
     return value;
 }
 
@@ -320,17 +319,17 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_fixture_wrong_tag",             (DL_FUNC) &c_fixture_wrong_tag,             0},
   {"c_fixture_cleared",               (DL_FUNC) &c_fixture_cleared,               0},
   {"c_fixture_misaligned",            (DL_FUNC) &c_fixture_misaligned,            0},
-  {"c_p13_zero",                     (DL_FUNC) &c_p13_zero,                     0},
-  {"c_p13_scalar",                   (DL_FUNC) &c_p13_scalar,                   1},
-  {"c_p13_optional",                 (DL_FUNC) &c_p13_optional,                 1},
-  {"c_p13_optional_int",             (DL_FUNC) &c_p13_optional_int,             1},
-  {"c_p13_optional_bool",            (DL_FUNC) &c_p13_optional_bool,            1},
-  {"c_p13_numeric",                  (DL_FUNC) &c_p13_numeric,                  1},
-  {"c_p13_altrep_integer",           (DL_FUNC) &c_p13_altrep_integer,           1},
-  {"c_p13_string_view",              (DL_FUNC) &c_p13_string_view,              1},
-  {"c_p13_raw",                      (DL_FUNC) &c_p13_raw,                      1},
-  {"c_p13_complex",                  (DL_FUNC) &c_p13_complex,                  1},
-  {"c_p13_schema",                   (DL_FUNC) &c_p13_schema,                   1},
+  {"c_boundary_zero",                 (DL_FUNC) &c_boundary_zero,                 0},
+  {"c_boundary_scalar",               (DL_FUNC) &c_boundary_scalar,               1},
+  {"c_boundary_optional",             (DL_FUNC) &c_boundary_optional,             1},
+  {"c_boundary_optional_int",         (DL_FUNC) &c_boundary_optional_int,         1},
+  {"c_boundary_optional_bool",        (DL_FUNC) &c_boundary_optional_bool,        1},
+  {"c_boundary_numeric",              (DL_FUNC) &c_boundary_numeric,              1},
+  {"c_boundary_altrep_integer",       (DL_FUNC) &c_boundary_altrep_integer,       1},
+  {"c_boundary_string_view",          (DL_FUNC) &c_boundary_string_view,          1},
+  {"c_boundary_raw",                  (DL_FUNC) &c_boundary_raw,                  1},
+  {"c_boundary_complex",              (DL_FUNC) &c_boundary_complex,              1},
+  {"c_boundary_schema",               (DL_FUNC) &c_boundary_schema,               1},
   {NULL, NULL, 0}
 };
 

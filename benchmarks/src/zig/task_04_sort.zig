@@ -11,14 +11,11 @@ fn radixSortF64(items: []f64) void {
     const buf = @as([*]u64, @ptrCast(@alignCast(items.ptr)))[0..n];
     const sign_bit: u64 = 1 << 63;
 
-    // Transform: flip sign bit for positives, flip all bits for negatives
     for (buf) |*b| {
         const v = b.*;
         b.* = if (v & sign_bit != 0) ~v else v ^ sign_bit;
     }
 
-    // Allocate temp once, reuse across all 8 passes of ping-pong sort.
-    // Use c_allocator (malloc), no need for zeroed memory.
     var stack_temp: [256]u64 = undefined;
     const temp = if (n <= 256) blk: {
         break :blk stack_temp[0..n];
@@ -28,8 +25,6 @@ fn radixSortF64(items: []f64) void {
     };
     const needs_free = n > 256;
 
-    // LSD radix sort with ping-pong buffers: read from `src`, write to `dst`,
-    // swap each pass. After 8 passes (even) the data is back in `buf`.
     var src: []u64 = buf;
     var dst: []u64 = temp;
     var counts: [256]usize = undefined;
@@ -59,7 +54,6 @@ fn radixSortF64(items: []f64) void {
 
     if (needs_free) std.heap.c_allocator.free(temp);
 
-    // Restore: flip sign bit back for positives, flip all bits for negatives
     for (buf) |*b| {
         const v = b.*;
         b.* = if (v & sign_bit != 0) v ^ sign_bit else ~v;

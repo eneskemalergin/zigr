@@ -1,8 +1,6 @@
-//! Shared symbol cache for R symbols.
-//! Uses an open-addressing Wyhash table with linear probing.
-//! R symbols live forever so no deletion logic is needed.
-//! Not threadlocal (R is single-threaded). If embedding zigr in
-//! a multi-threaded context, wrap calls in a mutex.
+//! Cache interned R symbols.
+//!
+//! R symbols live for the session, so cached entries never need deletion.
 
 const std = @import("std");
 const R = @import("R");
@@ -16,11 +14,6 @@ threadlocal var lengths: [cap]usize = undefined;
 threadlocal var sexps: [cap]R.SEXP = undefined;
 threadlocal var count: usize = 0;
 
-/// Install a symbol. Result is cached in an open-addressing hash table
-/// with linear probing. O(1) average lookup. R symbols live forever
-/// so no deletion logic is needed.  Thread-local storage allows safe
-/// concurrent use from R's parallel package (Windows workers) or
-/// embedded multi-threaded contexts.
 pub fn install(name: []const u8) R.SEXP {
     const hash = std.hash.Wyhash.hash(0, name);
     var idx = @as(usize, @truncate(hash)) & mask;

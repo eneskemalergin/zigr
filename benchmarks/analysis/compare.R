@@ -1,13 +1,9 @@
 #!/usr/bin/env Rscript
-# Cross-runner comparison table.
-# Reads summary CSVs from results/ and prints a clean table + CSV.
-# Usage: Rscript analysis/compare.R
 
 results_dir <- "results"
 out_dir <- "analysis"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# Collect all runner summaries
 summary_files <- Sys.glob(file.path(results_dir, "*_summary.csv"))
 if (length(summary_files) == 0) stop("no summary CSVs found in ", results_dir)
 
@@ -17,7 +13,6 @@ for (f in summary_files) {
   runners[[runner]] <- read.csv(f, stringsAsFactors = FALSE)
 }
 
-# Build task × runner matrix
 all_tasks <- unique(unlist(lapply(runners, `[[`, "task")))
 all_tasks <- sort(all_tasks)
 
@@ -50,7 +45,6 @@ task_names <- c(
   "48_owned_altrep_logical_argmax"="owned_altrep_logical_argmax"
 )
 
-# Build comparison table
 rows <- list()
 for (t in all_tasks) {
   row <- list(task = if (t %in% names(task_names)) task_names[[t]] else t)
@@ -72,11 +66,9 @@ for (t in all_tasks) {
 
 tab <- do.call(rbind, lapply(rows, as.data.frame, stringsAsFactors=FALSE))
 
-# Write CSV
 write.csv(tab, file.path(out_dir, "comparison.csv"), row.names = FALSE)
 cat(sprintf("Comparison written to %s\n\n", file.path(out_dir, "comparison.csv")))
 
-# Print terminal table
 rnames <- names(runners)
 header <- sprintf("%-16s", "Task")
 for (rn in rnames) {
@@ -103,7 +95,6 @@ for (i in seq_len(nrow(tab))) {
   cat(line, "\n")
 }
 
-# Find winners
 cat("\n── Winners (fastest per task) ──\n")
 for (i in seq_len(nrow(tab))) {
   vals <- sapply(rnames, function(rn) tab[i, rn][[1]])

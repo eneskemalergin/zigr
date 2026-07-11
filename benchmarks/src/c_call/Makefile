@@ -1,6 +1,3 @@
-# Build C_Call benchmark shared library from per-task source files.
-# Uses R's default CFLAGS (via R CMD config) for a fair comparison.
-# This matches what R CMD SHLIB would use.
 
 R_INCLUDE ?= $(shell Rscript -e 'cat(R.home("include"))')
 R_LIB ?= $(shell Rscript -e 'cat(R.home("lib"))')

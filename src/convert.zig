@@ -1,19 +1,7 @@
-//! Convert between Zig native types and R SEXPs.
+//! Convert between Zig values and R SEXPs.
 //!
-//! Each vector type has toSlice (allocate on caller's allocator, copy) and
-//! fromSlice (allocate on R's heap, copy). Numeric, raw, and complex inputs
-//! also expose an explicit borrowed-or-owned SliceView. from* functions
-//! unprotect their result before returning (standard R pattern).
-//!
-//! asSEXP/fromSEXP convert Zig structs to/from R named lists using
-//! @typeInfo reflection. Field names become list names.
-//!
-//! Numeric conversion uses a direct pointer when R exposes one without
-//! materialization; otherwise it retries `*_GET_REGION` into one declared
-//! contiguous allocation. This keeps the ordinary non-ALTREP path simple
-//! while handling legal short ALTREP region reads.
-//! from* functions with R API calls in the copy path (fromStringSlice)
-//! use a cleanup frame for longjmp safety. Pure @memcpy paths skip it.
+//! Borrowed views stay within the source R call. ALTREP fallback copies one
+//! contiguous native buffer because R may expose only regions.
 
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
@@ -50,11 +38,7 @@ const AllocSliceCleanup = struct {
         };
     }
 
-    /// Frees the buffer this guard owns. Used as the `fireFn` for
-    /// `pushFrameInline`. The state itself lives in the cleanup frame's
-    /// inline buffer (thread-local), so there is no `c_allocator.destroy`
-    /// here. Compare to the previous heap-allocated pattern, which had
-    /// a stack-resident pointer to a heap-allocated state.
+    /// Its inline state survives an R longjmp without retaining a stack pointer.
     fn fire(self: *AllocSliceCleanup) void {
         self.allocator.rawFree(self.memory, self.alignment, self.return_address);
     }
@@ -120,8 +104,6 @@ fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
     return ns;
 }
 
-/// Reports whether `sexp` is `NULL` or the one typed `NA` accepted by a
-/// supported optional scalar. It does not validate any other input.
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
     if (sexp == R.R_NilValue) return true;
     if (comptime T == f64) {
@@ -151,8 +133,7 @@ pub fn signalError(err: anyerror) noreturn {
     R.Rf_error(&buf);
 }
 
-/// Converts a one-element, non-`NA` `REALSXP` to `f64`. IEEE `NaN` remains a
-/// value because R's `ISNA` recognizes only R `NA`.
+/// R NA is distinct from IEEE NaN.
 pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     try expectScalarLength(sexp);
@@ -161,7 +142,6 @@ pub fn toRealScalar(sexp: SEXP) ConvertError!f64 {
     return value;
 }
 
-/// Converts a one-element, non-`NA` `INTSXP` to `i32`.
 pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     try expectScalarLength(sexp);
@@ -170,7 +150,6 @@ pub fn toIntScalar(sexp: SEXP) ConvertError!i32 {
     return value;
 }
 
-/// Converts a one-element, non-`NA` `LGLSXP` to `bool`.
 pub fn toBoolScalar(sexp: SEXP) ConvertError!bool {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     try expectScalarLength(sexp);
@@ -179,8 +158,6 @@ pub fn toBoolScalar(sexp: SEXP) ConvertError!bool {
     return value != 0;
 }
 
-/// Converts `NULL` or one typed `NA` to `null`; otherwise applies the exact
-/// required-real contract. IEEE `NaN` remains a non-null value.
 pub fn toOptionalRealScalar(sexp: SEXP) ConvertError!?f64 {
     if (sexp == R.R_NilValue) return null;
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
@@ -190,8 +167,6 @@ pub fn toOptionalRealScalar(sexp: SEXP) ConvertError!?f64 {
     return value;
 }
 
-/// Converts `NULL` or one `NA_INTEGER` to `null`; otherwise applies the exact
-/// required-integer contract.
 pub fn toOptionalIntScalar(sexp: SEXP) ConvertError!?i32 {
     if (sexp == R.R_NilValue) return null;
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
@@ -201,8 +176,6 @@ pub fn toOptionalIntScalar(sexp: SEXP) ConvertError!?i32 {
     return value;
 }
 
-/// Converts `NULL` or one `NA_LOGICAL` to `null`; otherwise applies the exact
-/// required-logical contract.
 pub fn toOptionalBoolScalar(sexp: SEXP) ConvertError!?bool {
     if (sexp == R.R_NilValue) return null;
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
@@ -212,9 +185,6 @@ pub fn toOptionalBoolScalar(sexp: SEXP) ConvertError!?bool {
     return value != 0;
 }
 
-/// Captures the one representation decision made at a numeric input boundary.
-/// Direct views and copied fallbacks share it so a successful ordinary path
-/// does not repeat an ALTREP probe before entering its kernel.
 const VectorRepresentation = struct {
     len: usize,
     altrep: bool,
@@ -229,14 +199,11 @@ fn vectorRepresentation(sexp: SEXP) ConvertError!VectorRepresentation {
 
 fn directRealSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const f64 {
     const n = representation.len;
-    // R permits a zero-length vector to have no valid data pointer. Do not
-    // form one merely to construct an empty Zig slice.
+    // Zero-length vectors need not expose a data pointer.
     if (n == 0) return &.{};
     if (!representation.altrep) return R.REAL(sexp)[0..n];
 
-    // The typed accessor does not materialize an ALTREP. It also lets a
-    // zigr-owned ALTREP advertise its direct buffer without relying on a
-    // private external-pointer layout.
+    // This asks ALTREP for an existing buffer without materializing it.
     const ptr = R.REAL_OR_NULL(sexp);
     if (ptr == null) return null;
     return ptr[0..n];
@@ -286,14 +253,7 @@ fn directComplexSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[
     return complex_ptr[0..n];
 }
 
-/// A numeric input view with explicit R-versus-native ownership.
-///
-/// `.borrowed` is a read-only direct R buffer. It is not a GC root and must
-/// remain within the call that owns the source SEXP; never retain it in native
-/// state or return it past that boundary. `.owned` is one contiguous native
-/// fallback buffer filled through `*_GET_REGION`; it remembers the allocator
-/// that created it, so callers cannot accidentally free it through another
-/// allocator. `.constSlice()` deliberately exposes neither branch as mutable.
+/// Borrowed data is not a GC root; owned data must use its recorded allocator.
 pub fn SliceView(comptime T: type) type {
     return union(enum) {
         borrowed: []const T,
@@ -309,9 +269,6 @@ pub fn SliceView(comptime T: type) type {
             };
         }
 
-        /// Releases an owned fallback buffer and is a no-op for a borrowed
-        /// R view. An arena allocator may defer physical reclamation until
-        /// its own deinit, which is still the declared owner of that buffer.
         pub fn deinit(self: *@This()) void {
             switch (self.*) {
                 .owned => |s| s.allocator.free(s.data),
@@ -322,16 +279,8 @@ pub fn SliceView(comptime T: type) type {
     };
 }
 
-/// Read-only raw bytes borrowed from R when a direct pointer is available,
-/// otherwise one explicit native fallback allocation. Raw bytes are not R
-/// strings: they preserve zero and non-text bytes and carry no encoding or
-/// `NA_STRING` semantics. The view is valid only for the R boundary that
-/// owns its source SEXP.
 pub const RawSliceView = SliceView(u8);
 
-/// Returns a borrowed `REALSXP` buffer when R exposes one without
-/// materialization. Otherwise allocates exactly one native buffer and fills
-/// it through `REAL_GET_REGION`. See `SliceView` for lifetime and cleanup.
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const representation = try vectorRepresentation(sexp);
@@ -339,8 +288,6 @@ pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64)
     return .{ .owned = .{ .data = try toRealSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
-/// Integer equivalent of `toRealSliceView`, using `INTEGER_OR_NULL` before
-/// the explicit one-buffer `INTEGER_GET_REGION` fallback.
 pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     const representation = try vectorRepresentation(sexp);
@@ -348,7 +295,6 @@ pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) 
     return .{ .owned = .{ .data = try toIntSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
-/// Loops on REAL_GET_REGION for partial reads (ALTREP). @memcpy from REAL() for non-ALTREP (zero C FFI).
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
@@ -384,7 +330,6 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
     return vec.get();
 }
 
-/// Loops on INTEGER_GET_REGION for partial reads (ALTREP). @memcpy from INTEGER() for non-ALTREP.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
@@ -420,40 +365,7 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
     return vec.get();
 }
 
-/// Default string boundary helper (W4.2).
-///
-/// Allocates a `[][]const u8` of slice headers. Each slice points at exposed
-/// C-string bytes: Latin-1 and native input is normalized by
-/// `Rf_translateCharUTF8`, while CE_BYTES retains R's byte-marked C-string
-/// bytes because R can reject its UTF-8 translation. A translation can
-/// allocate R transient storage that persists only for the enclosing R call.
-/// The returned headers own neither those bytes nor the source SEXP, so every
-/// returned slice has that same enclosing-call lifetime. When this allocating
-/// helper is called directly from an R-facing entry point, call it inside
-/// `cleanup.protectCall*`: `STRING_ELT` and string translation may longjmp.
-/// Generated wrappers already provide that boundary.
-/// NA strings map to empty slices; the NA/empty distinction is lost.
-/// Use `toStringSliceNullable` to preserve it, or `toStringSliceView`
-/// or `toCachedStringSliceView` if you need `is_na` on each element.
-///
-/// Cost (x86_64-linux, 1M STRSXP, see plan/PLAN.md W4.2 Findings):
-///   - create + iterate: ~14ms median, 1 alloc/call, 16MB (1M slice
-///     headers, 16 bytes each on 64-bit)
-///   - iterate only (reuse the slice): ~0.6ms per pass, memory-bandwidth
-///     bound
-///
-/// When to use:
-///   - Single-pass or multi-pass over a STRSXP. Pays the per-element
-///     R API cost upfront, then iterate is a plain Zig loop.
-///   - Familiar Zig slice-of-slices API; you can pass `[]const u8` to
-///     downstream code without per-element dereference.
-///
-/// When to prefer the view variants:
-///   - Memory-constrained single-pass: `toStringSliceView`. It avoids Zig
-///     slice-header allocation, but each pass costs ~15ms (R API call per
-///     access) and translation may use R call-scoped storage.
-///   - NA preservation with multi-pass: `toCachedStringSliceView`.
-///     40MB peak, 2ms per pass, but NA preserved as `StringView.is_na`.
+/// The headers borrow R-owned bytes and must stay inside the source R call.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
@@ -467,10 +379,6 @@ pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     return result;
 }
 
-/// STRSXP: borrow CHARSXP data into a Zig slice of nullable strings.
-/// NA_STRING elements become `null`, preserving the NA/empty distinction.
-/// The headers and bytes are call-scoped borrows; see `toStringSlice` for the
-/// required `cleanup.protectCall*` boundary for direct R-facing callers.
 pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
@@ -485,19 +393,10 @@ pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]con
 }
 
 pub const StringView = struct {
-    /// The source CHARSXP. It is borrowed from the source STRSXP and cannot
-    /// outlive the documented R call boundary.
     charsxp: SEXP,
-    /// UTF-8 bytes from Rf_translateCharUTF8, except CE_BYTES inputs retain
-    /// R's byte-marked C-string bytes because R can reject their translation.
-    /// R owns any translated transient storage through the enclosing call.
-    /// Use RawSliceView for arbitrary binary data, including embedded zero
-    /// bytes.
     bytes: []const u8,
     len: usize,
     is_na: bool,
-    /// The encoding mark R reports for the source CHARSXP before translation.
-    /// NA_STRING uses CE_NATIVE as a stable sentinel, not as provenance.
     encoding_mark: R.cetype_t,
 };
 
@@ -513,10 +412,7 @@ fn makeStringView(elt: SEXP) StringView {
     };
 }
 
-/// Input-only STRSXP view. The view and every StringView obtained from it
-/// borrow R-managed data and are valid only for the enclosing R call. It
-/// avoids Zig slice-header allocation, but encoding translation can allocate
-/// transient R storage for that same call.
+/// Translation storage remains R-owned for the current R call.
 pub const StringSliceView = struct {
     sexp: SEXP,
     len: usize,
@@ -548,9 +444,6 @@ pub const StringSliceView = struct {
 };
 
 pub const CachedStringSliceView = struct {
-    /// Metadata allocation owned by allocator. The byte slices and CHARSXPs
-    /// still borrow from the source SEXP and any R translation storage, so
-    /// neither the cache nor its items survive the R boundary.
     items: []const StringView,
     len: usize,
     allocator: std.mem.Allocator,
@@ -576,17 +469,12 @@ pub const CachedStringSliceView = struct {
         return .{ .view = self };
     }
 
-    /// Releases cached slice metadata. This never releases or preserves the
-    /// source SEXP, so callers must keep that SEXP alive for every use.
     pub fn deinit(self: *CachedStringSliceView) void {
         self.allocator.free(self.items);
         self.* = undefined;
     }
 };
 
-/// STRSXP: borrow CHARSXP data without Zig slice-header allocation. Encoding
-/// translation can still allocate R transient storage. The result is
-/// input-only and cannot outlive the enclosing R call.
 pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     return .{
@@ -595,10 +483,6 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     };
 }
 
-/// STRSXP: cache per-element string metadata once for repeated multi-pass use.
-/// Its metadata is native allocation, while its bytes remain call-scoped
-/// borrows. Direct R-facing callers must use `cleanup.protectCall*` so an R
-/// longjmp during `STRING_ELT` or translation releases that metadata.
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
@@ -615,9 +499,7 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
     };
 }
 
-/// Construct a STRSXP from UTF-8 byte slices. When called directly from an
-/// R-facing entry point, keep it inside `cleanup.protectCall*`: mkChar can
-/// longjmp and its protection guard is intentionally a cleanup frame.
+/// R character creation can longjmp, so direct callers need an unwind boundary.
 pub fn fromStringSlice(slice: []const []const u8) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.STRSXP, len));
@@ -632,8 +514,6 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
     return vec.get();
 }
 
-/// LGLSXP: allocate and copy. Uses LOGICAL_GET_REGION for ALTREP,
-/// @memcpy from LOGICAL() for non-ALTREP.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
@@ -676,7 +556,6 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
     return vec.get();
 }
 
-/// VECSXP: borrow list elements into a SEXP slice.
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
     const n = try tryXlength(sexp);
@@ -695,11 +574,6 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
     return vec.get();
 }
 
-/// RAWSXP: allocate and copy. Use toRawSliceView when a borrow is sufficient.
-/// The returned bytes preserve zero and non-text values, unlike a STRSXP view.
-/// An ALTREP fallback calls `RAW_GET_REGION` after allocation, so direct
-/// R-facing callers must use `cleanup.protectCall*`; generated wrappers
-/// already provide that boundary.
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
     return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
@@ -727,11 +601,6 @@ fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
     return result;
 }
 
-/// Returns a borrowed RAWSXP buffer when R exposes one without
-/// materialization. Otherwise allocates exactly one native buffer and fills
-/// it through RAW_GET_REGION. An ALTREP fallback therefore requires the same
-/// `cleanup.protectCall*` boundary for direct R-facing callers. See
-/// RawSliceView for lifetime and cleanup.
 pub fn toRawSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RawSliceView {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
     const representation = try vectorRepresentation(sexp);
@@ -747,11 +616,6 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
     return vec.get();
 }
 
-/// CPLXSXP: allocate and copy read-only complex values. The public result is
-/// const because incoming R objects are never writable through the strict
-/// core. Use toComplexSliceView when a borrowed input is sufficient. An
-/// ALTREP fallback calls `COMPLEX_GET_REGION` after allocation, so direct
-/// R-facing callers must use `cleanup.protectCall*`.
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
@@ -779,9 +643,6 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
     return result;
 }
 
-/// Complex equivalent of `toRealSliceView`, using `COMPLEX_OR_NULL` before
-/// the explicit one-buffer `COMPLEX_GET_REGION` fallback. Direct R-facing
-/// callers need `cleanup.protectCall*` for that allocating fallback.
 pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(Rcomplex) {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const representation = try vectorRepresentation(sexp);
@@ -914,11 +775,6 @@ fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     return result;
 }
 
-// The 16384-element candidate has the best isolated integer median, but it
-// reserves 64 KiB (i32) or 128 KiB (f64) in every iterator frame, including
-// ordinary direct inputs. 4096 keeps the direct path allocation-free with a
-// bounded 16/32 KiB fallback scratch buffer while retaining most of the
-// region-read gain over 64/512. P1.13 owns the broader stack budget.
 const region_chunk_len = 4096;
 
 const RealChunk = struct {
@@ -997,8 +853,6 @@ const IntChunkIter = struct {
     }
 };
 
-// LogicalChunkIter reuses IntChunk because both store i32 data under the hood.
-// R's LOGICAL() and INTEGER() both return int* the difference is semantic only.
 const LogicalChunkIter = struct {
     sexp: SEXP,
     n: usize,
@@ -1032,8 +886,6 @@ const LogicalChunkIter = struct {
     }
 };
 
-/// Sum of a REALSXP using SIMD @Vector reduction.
-/// Up to 2.5x faster than a scalar loop for large vectors.
 pub fn sum(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1058,7 +910,6 @@ pub fn sum(sexp: SEXP) f64 {
     return total;
 }
 
-/// Sum of an INTSXP using SIMD @Vector reduction on i32 widened to i64.
 pub fn sumInt(sexp: SEXP) i64 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
@@ -1085,7 +936,6 @@ pub fn sumInt(sexp: SEXP) i64 {
     return total;
 }
 
-/// Count TRUE values in a LGLSXP using direct owned-backing or LOGICAL_GET_REGION.
 pub fn countTrue(sexp: SEXP) i64 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
@@ -1189,7 +1039,6 @@ fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
     return if (initialized) @intCast(best_idx) else -1;
 }
 
-/// Minimum of an INTSXP using direct owned-backing or INTEGER_GET_REGION.
 pub fn minInt(sexp: SEXP) i32 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
@@ -1197,7 +1046,6 @@ pub fn minInt(sexp: SEXP) i32 {
     return minmaxIntChunks(true, &iter, std.math.maxInt(i32));
 }
 
-/// Maximum of an INTSXP using direct owned-backing or INTEGER_GET_REGION.
 pub fn maxInt(sexp: SEXP) i32 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
@@ -1205,7 +1053,6 @@ pub fn maxInt(sexp: SEXP) i32 {
     return minmaxIntChunks(false, &iter, std.math.minInt(i32));
 }
 
-/// Index of the minimum integer value (0-based), preserving the first hit.
 pub fn argminInt(sexp: SEXP) i64 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
@@ -1213,7 +1060,6 @@ pub fn argminInt(sexp: SEXP) i64 {
     return argminmaxIntChunks(true, &iter);
 }
 
-/// Index of the maximum integer value (0-based), preserving the first hit.
 pub fn argmaxInt(sexp: SEXP) i64 {
     expectType(sexp, R.INTSXP, error.ExpectedInteger) catch |err| signalError(err);
 
@@ -1221,7 +1067,6 @@ pub fn argmaxInt(sexp: SEXP) i64 {
     return argminmaxIntChunks(false, &iter);
 }
 
-/// Minimum of a LGLSXP over raw logical codes using direct owned-backing or LOGICAL_GET_REGION.
 pub fn minLogical(sexp: SEXP) i32 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
@@ -1229,7 +1074,6 @@ pub fn minLogical(sexp: SEXP) i32 {
     return minmaxIntChunks(true, &iter, std.math.maxInt(i32));
 }
 
-/// Maximum of a LGLSXP over raw logical codes using direct owned-backing or LOGICAL_GET_REGION.
 pub fn maxLogical(sexp: SEXP) i32 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
@@ -1237,7 +1081,6 @@ pub fn maxLogical(sexp: SEXP) i32 {
     return minmaxIntChunks(false, &iter, std.math.minInt(i32));
 }
 
-/// Index of the minimum raw logical code (0-based), preserving the first hit.
 pub fn argminLogical(sexp: SEXP) i64 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
@@ -1245,7 +1088,6 @@ pub fn argminLogical(sexp: SEXP) i64 {
     return argminmaxIntChunks(true, &iter);
 }
 
-/// Index of the maximum raw logical code (0-based), preserving the first hit.
 pub fn argmaxLogical(sexp: SEXP) i64 {
     expectType(sexp, R.LGLSXP, error.ExpectedLogical) catch |err| signalError(err);
 
@@ -1253,12 +1095,10 @@ pub fn argmaxLogical(sexp: SEXP) i64 {
     return argminmaxIntChunks(false, &iter);
 }
 
-/// Mean of a REALSXP using SIMD.
 pub fn mean(sexp: SEXP) f64 {
     return sum(sexp) / @as(f64, @floatFromInt(R.XLENGTH(sexp)));
 }
 
-/// Sum of squares (L2 norm squared) of a REALSXP using SIMD.
 pub fn norm2(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1287,8 +1127,6 @@ pub fn norm2(sexp: SEXP) f64 {
     return total;
 }
 
-/// Scan a chunk for any NA_REAL values. Used before the SIMD loop to pick
-/// the fast path (no masking) for NA-free data.
 fn chunkHasNA(data: []const f64) bool {
     const lanes = simd.f64_lanes;
     const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
@@ -1303,8 +1141,6 @@ fn chunkHasNA(data: []const f64) bool {
     return false;
 }
 
-/// Minimum of a REALSXP using SIMD @Vector reduction.
-/// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn min(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1346,8 +1182,6 @@ pub fn min(sexp: SEXP) f64 {
     return value;
 }
 
-/// Maximum of a REALSXP using SIMD @Vector reduction.
-/// NA-free chunks avoid the 4-op NA masking penalty entirely.
 pub fn max(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1461,17 +1295,14 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
     return @intCast(best_idx);
 }
 
-/// Index of the minimum value in a REALSXP (0-based).
 pub fn argmin(sexp: SEXP) i64 {
     return argminmax(true, sexp);
 }
 
-/// Index of the maximum value in a REALSXP (0-based).
 pub fn argmax(sexp: SEXP) i64 {
     return argminmax(false, sexp);
 }
 
-/// Sum of a REALSXP excluding NA values. Uses @select for branchless NA masking.
 pub fn sum_narm(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1503,7 +1334,6 @@ pub fn sum_narm(sexp: SEXP) f64 {
     return total;
 }
 
-/// Mean of a REALSXP excluding NA values.
 pub fn mean_narm(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1544,10 +1374,6 @@ pub fn mean_narm(sexp: SEXP) f64 {
     return if (count == 0) R.R_NaReal else total / @as(f64, @floatFromInt(count));
 }
 
-/// Computes `sum(x * alpha + beta)` using SIMD.
-/// Each element is scaled by `alpha` then shifted by `beta`.
-/// Returns the sum of all `x[i] * alpha + beta`.
-/// ALTREP-aware via RealChunkIter.
 pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1577,9 +1403,6 @@ pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
     return total;
 }
 
-/// Element-wise minimum of two REALSXPs using a caller-provided
-/// arena for internal allocations.  Reuse one arena across many
-/// calls for hot loops.
 pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
     defer da_view.deinit();
@@ -1600,16 +1423,12 @@ pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     return result.get();
 }
 
-/// Element-wise minimum of two REALSXPs.  Creates an internal arena
-/// for each call.  For repeated calls use pminAlloc with a shared arena.
 pub fn pmin(a: SEXP, b: SEXP) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     return pminAlloc(a, b, arena.allocator());
 }
 
-/// Element-wise maximum of two REALSXPs using a caller-provided
-/// arena for internal allocations.
 pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
     defer da_view.deinit();
@@ -1630,16 +1449,12 @@ pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     return result.get();
 }
 
-/// Element-wise maximum of two REALSXPs.  Creates an internal arena
-/// for each call.  For repeated calls use pmaxAlloc with a shared arena.
 pub fn pmax(a: SEXP, b: SEXP) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     return pmaxAlloc(a, b, arena.allocator());
 }
 
-/// Cumulative sum of a REALSXP using chunked iteration for ALTREP
-/// compatibility. Returns a new REALSXP.
 pub fn cumsum(sexp: SEXP) SEXP {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
@@ -1667,67 +1482,18 @@ pub fn cumsum(sexp: SEXP) SEXP {
     return result.get();
 }
 
-/// Convert a Zig struct to an R named list using a caller-owned arena.
-/// Reuse the arena across hot-loop calls. Field names become list names.
-/// Supports nested structs, slices, scalars, optionals, and SEXP.
-///
-/// Recommended boundary helper for Zig struct -> R list (W4.3).
-///
-/// Cost (x86_64-linux, see plan/PLAN.md W4.3 Findings):
-///   - 5 fields:  0.25us median, 0 Zig allocs, ~8 R-heap calls
-///   - 10 fields: 0.48us median, 0 Zig allocs, ~14 R-heap calls
-///   - 20 fields: 0.93us median, 0 Zig allocs, ~25 R-heap calls
-///   - ~50ns per field, dominated by R's allocator (`Rf_allocVector`,
-///     `Rf_mkChar`). The Zig overhead is real but small.
-///
-/// Use `asSEXP` if you do not have a hot loop (it creates an internal
-/// arena). Use `asSEXPAlloc` with a shared arena in any loop that
-/// produces a struct per iteration; the per-call alloc count is 0
-/// because the arena amortizes its chunk growth.
-///
-/// Allocations on the R heap (not counted in Zig-heap metrics):
-///   1 VECSXP for the list + 1 STRSXP for field names + N
-///   `Rf_allocVector` calls for slice fields + N `Rf_mkChar` calls
-///   for field names. The result SEXP is not protected; the caller
-///   must `Rf_protect` it if it should survive past the next R
-///   allocation.
+/// The returned SEXP is unprotected; protect it before another R allocation.
 pub fn asSEXPAlloc(st: anytype, arena: std.mem.Allocator) SEXP {
     return structToSexp(st, @TypeOf(st), arena);
 }
 
-/// Convert a Zig struct to an R named list, creating an internal arena.
-/// For repeated conversions in a loop, use `asSEXPAlloc` with a shared arena.
 pub fn asSEXP(st: anytype) SEXP {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     return asSEXPAlloc(st, arena.allocator());
 }
 
-/// Convert an R named list to a Zig struct. Matches field names against
-/// list names. Missing optional fields default to null. Missing
-/// non-optional fields signal an R error. R_NilValue in a VECSXP
-/// element is treated as missing, so `?T` fields cannot distinguish
-/// "missing" from "present with null."
-///
-/// Recommended boundary helper for R list -> Zig struct (W4.3).
-///
-/// Cost (x86_64-linux, see plan/PLAN.md W4.3 Findings):
-///   - 5 fields:  0.27us median, 1 Zig alloc/call (408 bytes, arena
-///     chunk 1)
-///   - 10 fields: 0.67us median, 2 Zig allocs/call (1692 bytes, arena
-///     chunks 1+2)
-///   - 20 fields: 1.30us median, 3 Zig allocs/call (3750 bytes, arena
-///     chunks 1+2+3)
-///   - ~65ns per field. Alloc count is logarithmic in field count
-///     because the arena grows geometrically; 100+ field structs are
-///     fine.
-///
-/// Use a fresh arena per call. The arena is freed on `deinit`. The
-/// returned struct borrows any slice fields from the SEXP - the SEXP
-/// must outlive the struct. Slice elements are validated against the
-/// expected type; mismatches signal an R error.
-///
-/// There is no R-heap allocation on this path. All work is in Zig.
+/// Slice fields borrow the source SEXP, which must outlive the result.
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
     return structFromSexp(T, sexp, arena) catch |err| signalError(err);
 }
@@ -1743,7 +1509,7 @@ pub fn typeToSEXPTYPE(comptime T: type) R.SEXPTYPE {
     };
 }
 
-/// Returns null if COMPLEX returns null (some exotic ALTREP). Caller must ensure the SEXP is the expected type.
+/// Some ALTREP values have no direct complex pointer.
 pub fn dataPtr(comptime T: type, sexp: SEXP) ?[*]T {
     return switch (T) {
         f64 => @ptrCast(R.REAL(sexp)),
