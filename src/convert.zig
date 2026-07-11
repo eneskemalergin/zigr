@@ -1,16 +1,17 @@
 //! Convert between Zig native types and R SEXPs.
 //!
 //! Each vector type has toSlice (allocate on caller's allocator, copy) and
-//! fromSlice (allocate on R's heap, copy). to* functions return owned
-//! slices, caller must free. from* functions unprotect their result before
-//! returning (standard R pattern).
+//! fromSlice (allocate on R's heap, copy). Numeric types also expose an
+//! explicit borrowed-or-owned SliceView. from* functions unprotect their
+//! result before returning (standard R pattern).
 //!
 //! asSEXP/fromSEXP convert Zig structs to/from R named lists using
 //! @typeInfo reflection. Field names become list names.
 //!
-//! to* functions use a fast path: @memcpy from the data pointer for
-//! non-ALTREP, and *_GET_REGION (single C call) for ALTREP. This matches
-//! C baseline performance for the common non-ALTREP case.
+//! Numeric conversion uses a direct pointer when R exposes one without
+//! materialization; otherwise it retries `*_GET_REGION` into one declared
+//! contiguous allocation. This keeps the ordinary non-ALTREP path simple
+//! while handling legal short ALTREP region reads.
 //! from* functions with R API calls in the copy path (fromStringSlice)
 //! use a cleanup frame for longjmp safety. Pure @memcpy paths skip it.
 
@@ -25,24 +26,6 @@ const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 
 pub const Rcomplex = extern struct { r: f64, i: f64 };
-const zigr_altreal_slice_tag_name = "zigr_altreal_slice_wrap";
-const zigr_altinteger_slice_tag_name = "zigr_altinteger_slice_wrap";
-const zigr_altlogical_slice_tag_name = "zigr_altlogical_slice_wrap";
-
-const ZigrAltRealSliceWrap = struct {
-    ptr: [*]const f64,
-    len: usize,
-};
-
-const ZigrAltIntegerSliceWrap = struct {
-    ptr: [*]const i32,
-    len: usize,
-};
-
-const ZigrAltLogicalSliceWrap = struct {
-    ptr: [*]const i32,
-    len: usize,
-};
 
 const Unprot = struct {
     fn fire(_: ?*anyopaque) void {
@@ -227,104 +210,99 @@ pub fn toOptionalBoolScalar(sexp: SEXP) ConvertError!?bool {
     return value != 0;
 }
 
-fn zigrAltRealSliceOrNull(sexp: SEXP) ?[]const f64 {
-    if (R.ALTREP(sexp) == 0) return null;
+/// Captures the one representation decision made at a numeric input boundary.
+/// Direct views and copied fallbacks share it so a successful ordinary path
+/// does not repeat an ALTREP probe before entering its kernel.
+const VectorRepresentation = struct {
+    len: usize,
+    altrep: bool,
+};
 
-    const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
-    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altreal_slice_tag_name)) return null;
-
-    const addr = R.R_ExternalPtrAddr(data1) orelse return null;
-    const wrap: *const ZigrAltRealSliceWrap = @ptrCast(@alignCast(addr));
-    return wrap.ptr[0..wrap.len];
+fn vectorRepresentation(sexp: SEXP) ConvertError!VectorRepresentation {
+    const altrep = R.ALTREP(sexp) != 0;
+    const raw_len = if (altrep) R.XLENGTH(sexp) else sexp_mod.fastLength(sexp);
+    if (raw_len < 0) return error.NegativeLength;
+    return .{ .len = @intCast(raw_len), .altrep = altrep };
 }
 
-fn zigrAltIntegerSliceOrNull(sexp: SEXP) ?[]const i32 {
-    if (R.ALTREP(sexp) == 0) return null;
+fn directRealSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const f64 {
+    const n = representation.len;
+    // R permits a zero-length vector to have no valid data pointer. Do not
+    // form one merely to construct an empty Zig slice.
+    if (n == 0) return &.{};
+    if (!representation.altrep) return R.REAL(sexp)[0..n];
 
-    const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
-    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altinteger_slice_tag_name)) return null;
-
-    const addr = R.R_ExternalPtrAddr(data1) orelse return null;
-    const wrap: *const ZigrAltIntegerSliceWrap = @ptrCast(@alignCast(addr));
-    return wrap.ptr[0..wrap.len];
+    // The typed accessor does not materialize an ALTREP. It also lets a
+    // zigr-owned ALTREP advertise its direct buffer without relying on a
+    // private external-pointer layout.
+    const ptr = R.REAL_OR_NULL(sexp);
+    if (ptr == null) return null;
+    return ptr[0..n];
 }
 
-fn zigrAltLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
-    if (R.ALTREP(sexp) == 0) return null;
+fn directIntSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const i32 {
+    const n = representation.len;
+    if (n == 0) return &.{};
+    if (!representation.altrep) return R.INTEGER(sexp)[0..n];
 
-    const data1 = R.R_altrep_data1(sexp);
-    if (data1 == R.R_NilValue or sexp_mod.typeTag(data1) != 22) return null;
-    if (R.R_ExternalPtrTag(data1) != R.Rf_install(zigr_altlogical_slice_tag_name)) return null;
-
-    const addr = R.R_ExternalPtrAddr(data1) orelse return null;
-    const wrap: *const ZigrAltLogicalSliceWrap = @ptrCast(@alignCast(addr));
-    return wrap.ptr[0..wrap.len];
+    const ptr = R.INTEGER_OR_NULL(sexp);
+    if (ptr == null) return null;
+    return ptr[0..n];
 }
 
-fn directRealSliceOrNull(sexp: SEXP) ?[]const f64 {
-    const n = xlength(sexp);
-    if (R.ALTREP(sexp) == 0) return R.REAL(sexp)[0..n];
+fn directLogicalSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const i32 {
+    const n = representation.len;
+    if (n == 0) return &.{};
+    if (!representation.altrep) return R.LOGICAL(sexp)[0..n];
 
-    if (zigrAltRealSliceOrNull(sexp)) |data| return data;
-
-    const ptr = R.DATAPTR_OR_NULL(sexp) orelse return null;
-    const real_ptr: [*]const f64 = @ptrCast(@alignCast(ptr));
-    return real_ptr[0..n];
+    const ptr = R.LOGICAL_OR_NULL(sexp);
+    if (ptr == null) return null;
+    return ptr[0..n];
 }
 
-fn directIntSliceOrNull(sexp: SEXP) ?[]const i32 {
-    const n = xlength(sexp);
-    if (R.ALTREP(sexp) == 0) return R.INTEGER(sexp)[0..n];
-
-    if (zigrAltIntegerSliceOrNull(sexp)) |data| return data;
-
-    const ptr = R.DATAPTR_OR_NULL(sexp) orelse return null;
-    const int_ptr: [*]const i32 = @ptrCast(@alignCast(ptr));
-    return int_ptr[0..n];
-}
-
-fn directLogicalSliceOrNull(sexp: SEXP) ?[]const i32 {
-    const n = xlength(sexp);
-    if (R.ALTREP(sexp) == 0) return R.LOGICAL(sexp)[0..n];
-
-    if (zigrAltLogicalSliceOrNull(sexp)) |data| return data;
-
-    const ptr = R.DATAPTR_OR_NULL(sexp) orelse return null;
-    const logical_ptr: [*]const i32 = @ptrCast(@alignCast(ptr));
-    return logical_ptr[0..n];
-}
-
-fn directComplexSliceOrNull(sexp: SEXP) ?[]const Rcomplex {
-    const n = xlength(sexp);
-    if (R.ALTREP(sexp) == 0) {
+fn directComplexSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const Rcomplex {
+    const n = representation.len;
+    if (n == 0) return &.{};
+    if (!representation.altrep) {
         const ptr = R.COMPLEX(sexp) orelse return null;
         const complex_ptr: [*]const Rcomplex = @ptrCast(@alignCast(ptr));
         return complex_ptr[0..n];
     }
 
-    const ptr = R.DATAPTR_OR_NULL(sexp) orelse return null;
+    const ptr = R.COMPLEX_OR_NULL(sexp) orelse return null;
     const complex_ptr: [*]const Rcomplex = @ptrCast(@alignCast(ptr));
     return complex_ptr[0..n];
 }
 
-/// Tagged union: borrowed (R-owned) or owned (arena copy). `.constSlice()` returns `[]const T` in either case. `.deinit(allocator)` frees an owned copy, no-op for borrowed.
+/// A numeric input view with explicit R-versus-native ownership.
+///
+/// `.borrowed` is a read-only direct R buffer. It is not a GC root and must
+/// remain within the call that owns the source SEXP; never retain it in native
+/// state or return it past that boundary. `.owned` is one contiguous native
+/// fallback buffer filled through `*_GET_REGION`; it remembers the allocator
+/// that created it, so callers cannot accidentally free it through another
+/// allocator. `.constSlice()` deliberately exposes neither branch as mutable.
 pub fn SliceView(comptime T: type) type {
     return union(enum) {
         borrowed: []const T,
-        owned: []T,
+        owned: struct {
+            data: []const T,
+            allocator: std.mem.Allocator,
+        },
 
         pub fn constSlice(self: @This()) []const T {
             return switch (self) {
                 .borrowed => |s| s,
-                .owned => |s| s,
+                .owned => |s| s.data,
             };
         }
 
-        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        /// Releases an owned fallback buffer and is a no-op for a borrowed
+        /// R view. An arena allocator may defer physical reclamation until
+        /// its own deinit, which is still the declared owner of that buffer.
+        pub fn deinit(self: *@This()) void {
             switch (self.*) {
-                .owned => |s| allocator.free(s),
+                .owned => |s| s.allocator.free(s.data),
                 .borrowed => {},
             }
             self.* = undefined;
@@ -332,63 +310,38 @@ pub fn SliceView(comptime T: type) type {
     };
 }
 
-/// Recommended boundary helper for REALSXP -> Zig (W4.1).
-///
-/// Returns a `SliceView(f64)` that is either borrowed from R memory (for
-/// non-ALTREP SEXPs that have a direct data pointer) or owned by the
-/// caller (for ALTREP SEXPs that need a one-time materialization). Use
-/// `.constSlice()` to get a uniform `[]const f64` regardless of which
-/// branch was taken, and `.deinit(allocator)` to free the owned copy.
-///
-/// Cost (x86_64-linux, 1M elements, see plan/PLAN.md W4.1 Findings):
-///   - non-ALTREP REALSXP: ~600us median, same as toRealSlice (delegates)
-///   - ALTREP-backed REALSXP: zero-copy borrowed path; the 600us copy
-///     is avoided because the ALTREP is materialized in place by R's
-///     own data pointer
-///
-/// When to use:
-///   - The input may be ALTREP-backed (e.g. `seq_len`, `rep`, or any
-///     `convert.altrep_create`-built vector). This is the win.
-///   - The caller can tolerate a borrowed slice (no caller ownership of
-///     the underlying bytes; the SEXP must outlive the slice).
-///
-/// When to prefer `toRealSlice` instead:
-///   - The input is known to be non-ALTREP. The view is overhead.
-///   - The caller needs a stable owned slice (e.g. to pass across an
-///     arena boundary).
+/// Returns a borrowed `REALSXP` buffer when R exposes one without
+/// materialization. Otherwise allocates exactly one native buffer and fills
+/// it through `REAL_GET_REGION`. See `SliceView` for lifetime and cleanup.
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    if (directRealSliceOrNull(sexp)) |data| return .{ .borrowed = data };
-    return .{ .owned = try toRealSlice(allocator, sexp) };
+    const representation = try vectorRepresentation(sexp);
+    if (directRealSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    return .{ .owned = .{ .data = try toRealSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
-/// Recommended boundary helper for INTSXP -> Zig (W4.1, parallels toRealSliceView).
-///
-/// Returns a `SliceView(i32)` that is borrowed from R memory (for non-ALTREP
-/// INTSXP with a direct data pointer) or owned by the caller (for ALTREP).
-/// Use `.constSlice()` for a uniform `[]const i32`, `.deinit(allocator)`
-/// to free the owned copy.
-///
-/// Cost (x86_64-linux, 1M elements, see plan/PLAN.md W4.1 Findings):
-///   - non-ALTREP INTSXP: ~275us median, same as toIntSlice (delegates)
-///   - ALTREP-backed INTSXP: zero-copy borrowed path
-///
-/// See `toRealSliceView` for the full rationale. The same use/don't-use
-/// rules apply, swapped for i32 and 4 bytes per element instead of 8.
+/// Integer equivalent of `toRealSliceView`, using `INTEGER_OR_NULL` before
+/// the explicit one-buffer `INTEGER_GET_REGION` fallback.
 pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    if (directIntSliceOrNull(sexp)) |data| return .{ .borrowed = data };
-    return .{ .owned = try toIntSlice(allocator, sexp) };
+    const representation = try vectorRepresentation(sexp);
+    if (directIntSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    return .{ .owned = .{ .data = try toIntSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
 /// Loops on REAL_GET_REGION for partial reads (ALTREP). @memcpy from REAL() for non-ALTREP (zero C FFI).
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    const n = try tryXlength(sexp);
+    return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+}
+
+fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]f64 {
+    const n = representation.len;
     const result = try allocator.alloc(f64, n);
-    if (directRealSliceOrNull(sexp)) |data| {
+    errdefer allocator.free(result);
+    if (directRealSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
-    } else if (R.ALTREP(sexp) != 0) {
+    } else if (representation.altrep) {
         cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(f64, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
@@ -399,7 +352,7 @@ pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
             offset += got;
         }
     } else {
-        @memcpy(result, R.REAL(sexp)[0..n]);
+        unreachable;
     }
     return result;
 }
@@ -415,11 +368,16 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
 /// Loops on INTEGER_GET_REGION for partial reads (ALTREP). @memcpy from INTEGER() for non-ALTREP.
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    const n = try tryXlength(sexp);
+    return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+}
+
+fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
+    const n = representation.len;
     const result = try allocator.alloc(i32, n);
-    if (directIntSliceOrNull(sexp)) |data| {
+    errdefer allocator.free(result);
+    if (directIntSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
-    } else if (R.ALTREP(sexp) != 0) {
+    } else if (representation.altrep) {
         cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
@@ -430,7 +388,7 @@ pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
             offset += got;
         }
     } else {
-        @memcpy(result, R.INTEGER(sexp)[0..n]);
+        unreachable;
     }
     return result;
 }
@@ -609,11 +567,16 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 /// @memcpy from LOGICAL() for non-ALTREP.
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    const n = try tryXlength(sexp);
+    return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+}
+
+fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
+    const n = representation.len;
     const result = try allocator.alloc(i32, n);
-    if (directLogicalSliceOrNull(sexp)) |data| {
+    errdefer allocator.free(result);
+    if (directLogicalSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
-    } else if (R.ALTREP(sexp) != 0) {
+    } else if (representation.altrep) {
         cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
@@ -624,15 +587,16 @@ pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
             offset += got;
         }
     } else {
-        @memcpy(result, R.LOGICAL(sexp)[0..n]);
+        unreachable;
     }
     return result;
 }
 
 pub fn toLogicalSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    if (directLogicalSliceOrNull(sexp)) |data| return .{ .borrowed = data };
-    return .{ .owned = try toLogicalSlice(allocator, sexp) };
+    const representation = try vectorRepresentation(sexp);
+    if (directLogicalSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    return .{ .owned = .{ .data = try toLogicalSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
 pub fn fromLogicalSlice(slice: []const i32) SEXP {
@@ -694,9 +658,16 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
 /// Loops on COMPLEX_GET_REGION for partial reads (ALTREP). @memcpy from COMPLEX() for non-ALTREP.
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    const n = try tryXlength(sexp);
+    return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+}
+
+fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]Rcomplex {
+    const n = representation.len;
     const result = try allocator.alloc(Rcomplex, n);
-    if (R.ALTREP(sexp) != 0) {
+    errdefer allocator.free(result);
+    if (directComplexSliceOrNull(sexp, representation)) |data| {
+        @memcpy(result, data);
+    } else if (representation.altrep) {
         cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
@@ -707,17 +678,18 @@ pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]Rcomplex {
             offset += got;
         }
     } else {
-        const src = R.COMPLEX(sexp) orelse return error.AltRepRegionRead;
-        const typed: [*]const Rcomplex = @ptrCast(@alignCast(src));
-        @memcpy(result, typed[0..n]);
+        return error.AltRepRegionRead;
     }
     return result;
 }
 
+/// Complex equivalent of `toRealSliceView`, using `COMPLEX_OR_NULL` before
+/// the explicit one-buffer `COMPLEX_GET_REGION` fallback.
 pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(Rcomplex) {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    if (directComplexSliceOrNull(sexp)) |data| return .{ .borrowed = data };
-    return .{ .owned = try toComplexSlice(allocator, sexp) };
+    const representation = try vectorRepresentation(sexp);
+    if (directComplexSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    return .{ .owned = .{ .data = try toComplexSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
 pub fn fromComplexSlice(slice: []const Rcomplex) SEXP {
@@ -850,8 +822,12 @@ fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     return result;
 }
 
-const real_chunk_len = simd.f64_lanes * 8;
-const int_chunk_len = simd.i32_lanes * 8;
+// The 16384-element candidate has the best isolated integer median, but it
+// reserves 64 KiB (i32) or 128 KiB (f64) in every iterator frame, including
+// ordinary direct inputs. 4096 keeps the direct path allocation-free with a
+// bounded 16/32 KiB fallback scratch buffer while retaining most of the
+// region-read gain over 64/512. P1.13 owns the broader stack budget.
+const region_chunk_len = 4096;
 
 const RealChunk = struct {
     offset: usize,
@@ -868,14 +844,14 @@ const RealChunkIter = struct {
     n: usize,
     offset: usize = 0,
     direct: ?[]const f64,
-    buf: [real_chunk_len]f64 = undefined,
+    buf: [region_chunk_len]f64 = undefined,
 
     fn init(sexp: SEXP) RealChunkIter {
-        const n = xlength(sexp);
+        const representation = vectorRepresentation(sexp) catch |err| signalError(err);
         return .{
             .sexp = sexp,
-            .n = n,
-            .direct = directRealSliceOrNull(sexp),
+            .n = representation.len,
+            .direct = directRealSliceOrNull(sexp, representation),
         };
     }
 
@@ -901,14 +877,14 @@ const IntChunkIter = struct {
     n: usize,
     offset: usize = 0,
     direct: ?[]const i32,
-    buf: [int_chunk_len]i32 = undefined,
+    buf: [region_chunk_len]i32 = undefined,
 
     fn init(sexp: SEXP) IntChunkIter {
-        const n = xlength(sexp);
+        const representation = vectorRepresentation(sexp) catch |err| signalError(err);
         return .{
             .sexp = sexp,
-            .n = n,
-            .direct = directIntSliceOrNull(sexp),
+            .n = representation.len,
+            .direct = directIntSliceOrNull(sexp, representation),
         };
     }
 
@@ -936,14 +912,14 @@ const LogicalChunkIter = struct {
     n: usize,
     offset: usize = 0,
     direct: ?[]const i32,
-    buf: [int_chunk_len]i32 = undefined,
+    buf: [region_chunk_len]i32 = undefined,
 
     fn init(sexp: SEXP) LogicalChunkIter {
-        const n = xlength(sexp);
+        const representation = vectorRepresentation(sexp) catch |err| signalError(err);
         return .{
             .sexp = sexp,
-            .n = n,
-            .direct = directLogicalSliceOrNull(sexp),
+            .n = representation.len,
+            .direct = directLogicalSliceOrNull(sexp, representation),
         };
     }
 
@@ -1513,8 +1489,12 @@ pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
 /// arena for internal allocations.  Reuse one arena across many
 /// calls for hot loops.
 pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
-    const da = (toRealSliceView(arena, a) catch |err| signalError(err)).constSlice();
-    const db = (toRealSliceView(arena, b) catch |err| signalError(err)).constSlice();
+    var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
+    defer da_view.deinit();
+    var db_view = toRealSliceView(arena, b) catch |err| signalError(err);
+    defer db_view.deinit();
+    const da = da_view.constSlice();
+    const db = db_view.constSlice();
     const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
@@ -1539,8 +1519,12 @@ pub fn pmin(a: SEXP, b: SEXP) SEXP {
 /// Element-wise maximum of two REALSXPs using a caller-provided
 /// arena for internal allocations.
 pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
-    const da = (toRealSliceView(arena, a) catch |err| signalError(err)).constSlice();
-    const db = (toRealSliceView(arena, b) catch |err| signalError(err)).constSlice();
+    var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
+    defer da_view.deinit();
+    var db_view = toRealSliceView(arena, b) catch |err| signalError(err);
+    defer db_view.deinit();
+    const da = da_view.constSlice();
+    const db = db_view.constSlice();
     const n = if (da.len == 0 or db.len == 0) @as(usize, 0) else @max(da.len, db.len);
 
     var result = protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(n)));
@@ -1695,11 +1679,11 @@ test "SliceView borrowed constSlice returns borrowed data" {
 test "SliceView owned constSlice and deinit" {
     const allocator = std.testing.allocator;
     var data = try allocator.alloc(f64, 3);
-    defer allocator.free(data);
     data[0] = 1.0;
     data[1] = 2.0;
     data[2] = 3.0;
-    var view: SliceView(f64) = .{ .owned = data };
+    var view: SliceView(f64) = .{ .owned = .{ .data = data, .allocator = allocator } };
+    defer view.deinit();
     const slice = view.constSlice();
     try std.testing.expectEqual(slice.len, 3);
     try std.testing.expectEqual(slice[0], 1.0);
@@ -1710,14 +1694,14 @@ test "SliceView deinit owned frees memory" {
     var data = try allocator.alloc(i32, 2);
     data[0] = 42;
     data[1] = 43;
-    var view: SliceView(i32) = .{ .owned = data };
-    view.deinit(allocator);
+    var view: SliceView(i32) = .{ .owned = .{ .data = data, .allocator = allocator } };
+    view.deinit();
 }
 
 test "SliceView deinit borrowed is no-op" {
     const data: [2]i32 = .{ 1, 2 };
     var view: SliceView(i32) = .{ .borrowed = &data };
-    view.deinit(std.testing.allocator);
+    view.deinit();
 }
 
 test "errorMessage covers all ConvertError variants" {

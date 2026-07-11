@@ -147,6 +147,9 @@ tests <- list(
   "zigr_test_altraw_create",
   "zigr_test_altcomplex_create",
   "zigr_test_altstring_create",
+  "zigr_test_p15_borrowed_views",
+  "zigr_test_p15_compact_altrep_views",
+  "zigr_test_p15_short_region",
 
   # Edge-case / adversarial
   "zigr_test_from_empty",

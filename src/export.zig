@@ -124,6 +124,10 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         if (convert.optionalInputIsNullish(child, sexp)) return null;
         return @as(T, fromSexp(child, sexp, arena));
     }
+    // Generated wrappers pass their call-scoped TwoTierArena here. A numeric
+    // fallback copy therefore remains valid for the user function and is
+    // reclaimed with that arena; a borrowed branch remains tied to this R
+    // boundary and is never retained by the wrapper.
     if (comptime T == []const f64) {
         const view = convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
         return view.constSlice();

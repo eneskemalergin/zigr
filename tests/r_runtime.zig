@@ -624,6 +624,78 @@ const MyAltLogical = altrep_create.AltLogical("zigr", "test_logical");
 const MyAltRaw = altrep_create.AltRaw("zigr", "test_raw");
 const MyAltComplex = altrep_create.AltComplex("zigr", "test_complex");
 const MyAltString = altrep_create.AltString("zigr", "test_string");
+
+// Test-only ALTREP with no data pointer and deliberately short region reads.
+// It verifies the public fallback contract without adding a production ALTREP
+// abstraction: one owned buffer, repeated region reads, and no Elt walk.
+const short_region_len: usize = 4097;
+const short_region_cap: usize = 257;
+var short_region_class: R.R_altrep_class_t = undefined;
+var short_region_registered = false;
+var short_region_get_calls: usize = 0;
+var short_region_elt_calls: usize = 0;
+
+fn shortRegionLength(_: SEXP) callconv(.c) R.R_xlen_t {
+    return @intCast(short_region_len);
+}
+
+fn shortRegionDataptrOrNull(_: SEXP) callconv(.c) ?*const anyopaque {
+    return null;
+}
+
+fn shortRegionElt(_: SEXP, index: R.R_xlen_t) callconv(.c) c_int {
+    short_region_elt_calls += 1;
+    return @intCast(index + 1);
+}
+
+fn shortRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffer: [*c]c_int) callconv(.c) R.R_xlen_t {
+    if (buffer == null) return 0;
+    const offset: usize = @intCast(start);
+    if (offset >= short_region_len) return 0;
+
+    short_region_get_calls += 1;
+    const count = @min(@min(@as(usize, @intCast(requested)), short_region_cap), short_region_len - offset);
+    const out: [*]i32 = @ptrCast(buffer);
+    for (0..count) |i| out[i] = @intCast(offset + i + 1);
+    return @intCast(count);
+}
+
+fn shortRegionAltInteger() SEXP {
+    if (!short_region_registered) {
+        short_region_class = R.R_make_altinteger_class("p15_short_region_integer", "zigr", null);
+        R.R_set_altrep_Length_method(short_region_class, shortRegionLength);
+        R.R_set_altvec_Dataptr_or_null_method(short_region_class, shortRegionDataptrOrNull);
+        R.R_set_altinteger_Elt_method(short_region_class, shortRegionElt);
+        R.R_set_altinteger_Get_region_method(short_region_class, shortRegionGetRegion);
+        short_region_registered = true;
+    }
+    return R.R_new_altrep(short_region_class, R.R_NilValue, R.R_NilValue);
+}
+
+fn compactIntSequence(n: i32) ?SEXP {
+    const length = R.Rf_protect(R.Rf_ScalarInteger(n));
+    defer R.Rf_unprotect(1);
+    const call = R.Rf_protect(R.Rf_lang2(R.Rf_install("seq_len"), length));
+    defer R.Rf_unprotect(1);
+    var failed: c_int = 0;
+    const result = R.R_tryEvalSilent(call, R.R_GlobalEnv, &failed);
+    if (failed != 0) return null;
+    return R.Rf_protect(result);
+}
+
+fn compactRealSequence(n: f64) ?SEXP {
+    const length = R.Rf_protect(R.Rf_ScalarReal(n));
+    defer R.Rf_unprotect(1);
+    const integer_call = R.Rf_protect(R.Rf_lang2(R.Rf_install("seq_len"), length));
+    defer R.Rf_unprotect(1);
+    const real_call = R.Rf_protect(R.Rf_lang2(R.Rf_install("as.double"), integer_call));
+    defer R.Rf_unprotect(1);
+    var failed: c_int = 0;
+    const result = R.R_tryEvalSilent(real_call, R.R_GlobalEnv, &failed);
+    if (failed != 0) return null;
+    return R.Rf_protect(result);
+}
+
 const AltRealSliceWrap = struct {
     ptr: [*]const f64,
     len: usize,
@@ -853,6 +925,181 @@ export fn zigr_test_altcomplex_create() SEXP {
     };
     const vec = MyAltComplex.init(data[0..]);
     if (R.XLENGTH(vec) != 2) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.5 ordinary numeric views borrow R storage without allocating native
+/// payload bytes. The empty case also must not form a zero-length R pointer.
+export fn zigr_test_p15_borrowed_views() SEXP {
+    var no_alloc_storage: [0]u8 align(16) = .{};
+    var no_alloc = std.heap.FixedBufferAllocator.init(&no_alloc_storage);
+
+    const empty = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    defer R.Rf_unprotect(1);
+    var empty_view = zigr_convert.toRealSliceView(no_alloc.allocator(), empty) catch return R.Rf_ScalarReal(0.0);
+    defer empty_view.deinit();
+    switch (empty_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    if (empty_view.constSlice().len != 0 or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 4));
+    defer R.Rf_unprotect(1);
+    const real_ptr = R.REAL(real);
+    real_ptr[0] = 1.0;
+    real_ptr[1] = R.NA_REAL();
+    real_ptr[2] = std.math.nan(f64);
+    real_ptr[3] = -4.0;
+    var real_view = zigr_convert.toRealSliceView(no_alloc.allocator(), real) catch return R.Rf_ScalarReal(0.0);
+    defer real_view.deinit();
+    switch (real_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const real_slice: []const f64 = real_view.constSlice();
+    if (@intFromPtr(real_slice.ptr) % @alignOf(f64) != 0) return R.Rf_ScalarReal(0.0);
+    if (real_slice.len != 4 or real_slice[0] != 1.0 or real_slice[3] != -4.0) return R.Rf_ScalarReal(0.0);
+    if (R.ISNA(real_slice[1]) == 0 or R.ISNA(real_slice[2]) != 0 or !R.ISNAN(real_slice[2])) return R.Rf_ScalarReal(0.0);
+
+    const integer = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
+    defer R.Rf_unprotect(1);
+    const int_ptr = R.INTEGER(integer);
+    int_ptr[0] = 7;
+    int_ptr[1] = R.R_NaInt;
+    int_ptr[2] = -9;
+    var int_view = zigr_convert.toIntSliceView(no_alloc.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    defer int_view.deinit();
+    switch (int_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const int_slice: []const i32 = int_view.constSlice();
+    if (@intFromPtr(int_slice.ptr) % @alignOf(i32) != 0) return R.Rf_ScalarReal(0.0);
+    if (int_slice.len != 3 or int_slice[0] != 7 or int_slice[1] != R.R_NaInt or int_slice[2] != -9) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    const logical_ptr = R.LOGICAL(logical);
+    logical_ptr[0] = 1;
+    logical_ptr[1] = 0;
+    logical_ptr[2] = R.R_NaInt;
+    var logical_view = zigr_convert.toLogicalSliceView(no_alloc.allocator(), logical) catch return R.Rf_ScalarReal(0.0);
+    defer logical_view.deinit();
+    switch (logical_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const logical_slice: []const i32 = logical_view.constSlice();
+    if (@intFromPtr(logical_slice.ptr) % @alignOf(i32) != 0) return R.Rf_ScalarReal(0.0);
+    if (logical_slice.len != 3 or logical_slice[0] != 1 or logical_slice[1] != 0 or logical_slice[2] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
+
+    const complex = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
+    defer R.Rf_unprotect(1);
+    const complex_raw = R.COMPLEX(complex) orelse return R.Rf_ScalarReal(0.0);
+    const complex_ptr: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(complex_raw));
+    complex_ptr[0] = .{ .r = 1.0, .i = -2.0 };
+    complex_ptr[1] = .{ .r = R.NA_REAL(), .i = 3.0 };
+    var complex_view = zigr_convert.toComplexSliceView(no_alloc.allocator(), complex) catch return R.Rf_ScalarReal(0.0);
+    defer complex_view.deinit();
+    switch (complex_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const complex_slice: []const zigr_convert.Rcomplex = complex_view.constSlice();
+    if (@intFromPtr(complex_slice.ptr) % @alignOf(zigr_convert.Rcomplex) != 0) return R.Rf_ScalarReal(0.0);
+    if (complex_slice.len != 2 or complex_slice[0].r != 1.0 or complex_slice[0].i != -2.0 or R.ISNA(complex_slice[1].r) == 0) return R.Rf_ScalarReal(0.0);
+
+    if (zigr_convert.toLogicalSliceView(no_alloc.allocator(), integer)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |conversion_err| {
+        if (conversion_err != error.ExpectedLogical) return R.Rf_ScalarReal(0.0);
+    }
+    if (no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.5 uses R's compact integer and real sequences as real-world ALTREP
+/// fallbacks. Neither advertises a data pointer, so the view owns one copy.
+export fn zigr_test_p15_compact_altrep_views() SEXP {
+    const integer = compactIntSequence(@intCast(short_region_len)) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(integer) == 0 or R.INTEGER_OR_NULL(integer) != null) return R.Rf_ScalarReal(0.0);
+
+    var int_storage: [short_region_len * @sizeOf(i32)]u8 align(16) = undefined;
+    var int_fba = std.heap.FixedBufferAllocator.init(&int_storage);
+    var int_view = zigr_convert.toIntSliceView(int_fba.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    switch (int_view) {
+        .borrowed => return R.Rf_ScalarReal(0.0),
+        .owned => {},
+    }
+    const int_slice = int_view.constSlice();
+    if (int_slice.len != short_region_len or int_slice[0] != 1 or int_slice[64] != 65 or int_slice[512] != 513 or int_slice[4096] != 4097) return R.Rf_ScalarReal(0.0);
+    if (int_fba.end_index != int_storage.len) return R.Rf_ScalarReal(0.0);
+    int_view.deinit();
+    if (int_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const int_rvector = zigr.rvector.RVector(i32).init(integer) catch return R.Rf_ScalarReal(0.0);
+    var rvector_view = int_rvector.view(int_fba.allocator()) catch return R.Rf_ScalarReal(0.0);
+    switch (rvector_view) {
+        .borrowed => return R.Rf_ScalarReal(0.0),
+        .owned => {},
+    }
+    if (rvector_view.constSlice()[4096] != 4097 or int_fba.end_index != int_storage.len) return R.Rf_ScalarReal(0.0);
+    rvector_view.deinit();
+    if (int_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const real = compactRealSequence(@floatFromInt(short_region_len)) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(real) == 0 or R.REAL_OR_NULL(real) != null) return R.Rf_ScalarReal(0.0);
+
+    var real_storage: [short_region_len * @sizeOf(f64)]u8 align(16) = undefined;
+    var real_fba = std.heap.FixedBufferAllocator.init(&real_storage);
+    var real_view = zigr_convert.toRealSliceView(real_fba.allocator(), real) catch return R.Rf_ScalarReal(0.0);
+    switch (real_view) {
+        .borrowed => return R.Rf_ScalarReal(0.0),
+        .owned => {},
+    }
+    const real_slice = real_view.constSlice();
+    if (real_slice.len != short_region_len or real_slice[0] != 1.0 or real_slice[64] != 65.0 or real_slice[512] != 513.0 or real_slice[4096] != 4097.0) return R.Rf_ScalarReal(0.0);
+    if (real_fba.end_index != real_storage.len) return R.Rf_ScalarReal(0.0);
+    real_view.deinit();
+    if (real_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const long_real = compactRealSequence(2_147_483_648.0) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    const long_view = zigr.rvector.RVector(f64).init(long_real) catch return R.Rf_ScalarReal(0.0);
+    if (R.ALTREP(long_real) == 0 or @as(u64, @intCast(long_view.len())) != 2_147_483_648) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.5 must continue after a valid short `*_GET_REGION` result and must not
+/// fall back to one R Elt call per element.
+export fn zigr_test_p15_short_region() SEXP {
+    const integer = R.Rf_protect(shortRegionAltInteger());
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(integer) == 0 or R.INTEGER_OR_NULL(integer) != null) return R.Rf_ScalarReal(0.0);
+
+    short_region_get_calls = 0;
+    short_region_elt_calls = 0;
+    const expected_sum = @as(i64, @intCast(short_region_len)) * @as(i64, @intCast(short_region_len + 1)) / 2;
+    if (zigr_convert.sumInt(integer) != expected_sum or short_region_get_calls <= 1 or short_region_elt_calls != 0) return R.Rf_ScalarReal(0.0);
+
+    short_region_get_calls = 0;
+    short_region_elt_calls = 0;
+    var storage: [short_region_len * @sizeOf(i32)]u8 align(16) = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&storage);
+    var view = zigr_convert.toIntSliceView(fba.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    switch (view) {
+        .borrowed => return R.Rf_ScalarReal(0.0),
+        .owned => {},
+    }
+    const slice = view.constSlice();
+    const expected_regions = (short_region_len + short_region_cap - 1) / short_region_cap;
+    if (slice.len != short_region_len or slice[0] != 1 or slice[512] != 513 or slice[4096] != 4097) return R.Rf_ScalarReal(0.0);
+    if (short_region_get_calls != expected_regions or short_region_elt_calls != 0 or fba.end_index != storage.len) return R.Rf_ScalarReal(0.0);
+    view.deinit();
+    if (fba.end_index != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -1912,7 +2159,9 @@ export fn zigr_test_rvector_f64() SEXP {
     if (rv.asSEXP() != vec) return R.Rf_ScalarReal(0.0);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const v = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    var view = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    defer view.deinit();
+    const v = view.constSlice();
     if (v.len != 4 or v[0] != 1.0 or v[3] != 4.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
@@ -1929,7 +2178,9 @@ export fn zigr_test_rvector_i32() SEXP {
     const rv = zigr.rvector.RVector(i32).init(vec) catch return R.Rf_ScalarReal(0.0);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const v = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    var view = rv.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    defer view.deinit();
+    const v = view.constSlice();
     if (v.len != 3 or v[0] != 10 or v[1] != -5 or v[2] != 99) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }

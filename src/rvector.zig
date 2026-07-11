@@ -38,12 +38,19 @@ pub fn RVector(comptime T: type) type {
             return self.sexp;
         }
 
-        pub fn view(self: Self, allocator: std.mem.Allocator) ![]const T {
+        /// Returns an explicitly borrowed-or-owned view of this vector.
+        ///
+        /// Call `deinit()` after the last use. A borrowed branch remains tied
+        /// to this R call and is never safe to retain in native state.
+        pub fn view(self: Self, allocator: std.mem.Allocator) !convert.SliceView(T) {
             return switch (T) {
-                f64 => (try convert.toRealSliceView(allocator, self.sexp)).constSlice(),
-                i32 => (try convert.toIntSliceView(allocator, self.sexp)).constSlice(),
-                u8 => try convert.toRawSlice(allocator, self.sexp),
-                convert.Rcomplex => (try convert.toComplexSliceView(allocator, self.sexp)).constSlice(),
+                f64 => try convert.toRealSliceView(allocator, self.sexp),
+                i32 => try convert.toIntSliceView(allocator, self.sexp),
+                // Raw remains a copied conversion until P1.7 establishes its
+                // own direct-view contract, but it still keeps its allocator
+                // ownership instead of leaking through this wrapper.
+                u8 => .{ .owned = .{ .data = try convert.toRawSlice(allocator, self.sexp), .allocator = allocator } },
+                convert.Rcomplex => try convert.toComplexSliceView(allocator, self.sexp),
                 else => unreachable,
             };
         }
@@ -120,7 +127,9 @@ pub fn RVector(comptime T: type) type {
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            const data = self.view(arena.allocator()) catch convert.signalError(error.UnexpectedType);
+            var input_view = self.view(arena.allocator()) catch convert.signalError(error.UnexpectedType);
+            defer input_view.deinit();
+            const data = input_view.constSlice();
 
             var result = allocResult(data.len);
             defer result.deinit();
@@ -130,8 +139,12 @@ pub fn RVector(comptime T: type) type {
         }
 
         fn mapBinary(self: Self, other: Self, allocator: std.mem.Allocator, comptime op: fn (T, T) T) R.SEXP {
-            const lhs = self.view(allocator) catch convert.signalError(error.UnexpectedType);
-            const rhs = other.view(allocator) catch convert.signalError(error.UnexpectedType);
+            var lhs_view = self.view(allocator) catch convert.signalError(error.UnexpectedType);
+            defer lhs_view.deinit();
+            var rhs_view = other.view(allocator) catch convert.signalError(error.UnexpectedType);
+            defer rhs_view.deinit();
+            const lhs = lhs_view.constSlice();
+            const rhs = rhs_view.constSlice();
             const n = if (lhs.len == 0 or rhs.len == 0) @as(usize, 0) else @max(lhs.len, rhs.len);
 
             var result = allocResult(n);
