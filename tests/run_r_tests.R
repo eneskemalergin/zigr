@@ -233,9 +233,13 @@ tests <- list(
   "zigr_test_export_external",
 
   "zigr_test_export_generatemethods",
+  "zigr_test_export_generatemethods_external",
+  "zigr_test_generated_method_receiver_errors",
   "zigr_test_generated_ownership_gc",
   list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
   "zigr_test_externalptr_finalizer",
+  "zigr_test_externalptr_finalizer_idempotent",
+  "zigr_test_externalptr_typed_protected",
   "zigr_test_raw_views",
   "zigr_test_complex_boundary",
   "zigr_test_generated_string_shapes",

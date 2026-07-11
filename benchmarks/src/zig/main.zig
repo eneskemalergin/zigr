@@ -98,31 +98,9 @@ extern fn zigr_bench_rng_stress(R.SEXP) R.SEXP;
 
 const FixtureState = struct { value: i32 };
 var fixture_state = FixtureState{ .value = 0 };
-var fixture_tag_symbol: R.SEXP = null;
 
 fn fixtureTag() R.SEXP {
-    if (fixture_tag_symbol == null) fixture_tag_symbol = R.Rf_install("zigr_fixture_state");
-    return fixture_tag_symbol;
-}
-
-fn fixtureStatePtr(receiver: R.SEXP) *FixtureState {
-    if (R.TYPEOF(receiver) != R.EXTPTRSXP) {
-        R.Rf_error("zigr fixture method expected an external pointer");
-        unreachable;
-    }
-    if (R.R_ExternalPtrTag(receiver) != fixtureTag()) {
-        R.Rf_error("zigr fixture method received an external pointer with the wrong tag");
-        unreachable;
-    }
-    const raw = R.R_ExternalPtrAddr(receiver) orelse {
-        R.Rf_error("zigr fixture method received a cleared external pointer");
-        unreachable;
-    };
-    if (@intFromPtr(raw) % @alignOf(FixtureState) != 0) {
-        R.Rf_error("zigr fixture method received a misaligned external pointer");
-        unreachable;
-    }
-    return @ptrCast(@alignCast(raw));
+    return zigr.externalptr.typeTag(FixtureState);
 }
 
 fn fixtureScalar(value: f64) f64 {
@@ -150,13 +128,7 @@ fn fixtureVector(values: []const f64) f64 {
 
 fn fixtureNew() R.SEXP {
     fixture_state.value = 0;
-    return R.R_MakeExternalPtr(&fixture_state, fixtureTag(), R.R_NilValue);
-}
-
-fn fixtureMethod(receiver: R.SEXP, amount: i32) i32 {
-    const state = fixtureStatePtr(receiver);
-    state.value += amount;
-    return state.value;
+    return zigr.externalptr.makeTyped(FixtureState, &fixture_state, R.R_NilValue);
 }
 
 fn generatedFixtureMethod(state: *FixtureState, amount: i32) i32 {
@@ -366,8 +338,12 @@ fn fixtureWrongTag() R.SEXP {
     return R.R_MakeExternalPtr(&fixture_state, R.Rf_install("zigr_fixture_wrong_tag"), R.R_NilValue);
 }
 
+fn fixtureTaggedRaw() R.SEXP {
+    return R.R_MakeExternalPtr(&fixture_state, fixtureTag(), R.R_NilValue);
+}
+
 fn fixtureCleared() R.SEXP {
-    const result = R.R_MakeExternalPtr(&fixture_state, fixtureTag(), R.R_NilValue);
+    const result = zigr.externalptr.makeTyped(FixtureState, &fixture_state, R.R_NilValue);
     R.R_ClearExternalPtr(result);
     return result;
 }
@@ -375,7 +351,7 @@ fn fixtureCleared() R.SEXP {
 fn fixtureMisaligned() R.SEXP {
     const address = @intFromPtr(&fixture_state) + 1;
     const misaligned: *anyopaque = @ptrFromInt(address);
-    return R.R_MakeExternalPtr(misaligned, fixtureTag(), R.R_NilValue);
+    return zigr.externalptr.makeTypedRaw(FixtureState, misaligned, R.R_NilValue);
 }
 
 fn directZero() R.SEXP {
@@ -481,24 +457,12 @@ fn directSchema(value: R.SEXP) R.SEXP {
     return value;
 }
 
-fn directGeneratedMethodStatePtr(receiver: R.SEXP) *FixtureState {
-    if (R.TYPEOF(receiver) != R.EXTPTRSXP) {
-        R.Rf_error("zigr fixture expected an external pointer");
-        unreachable;
-    }
-    const raw = R.R_ExternalPtrAddr(receiver) orelse {
-        R.Rf_error("zigr fixture received a cleared external pointer");
-        unreachable;
-    };
-    if (@intFromPtr(raw) % @alignOf(FixtureState) != 0) {
-        R.Rf_error("zigr fixture received a misaligned external pointer");
-        unreachable;
-    }
-    return @ptrCast(@alignCast(raw));
+fn directMethodStatePtr(receiver: R.SEXP) *FixtureState {
+    return zigr.externalptr.checkedPointer(FixtureState, receiver) catch |pointer_err| zigr.externalptr.signalPointerError(pointer_err);
 }
 
 fn directMethod(receiver: R.SEXP, amount: R.SEXP) R.SEXP {
-    const state = directGeneratedMethodStatePtr(receiver);
+    const state = directMethodStatePtr(receiver);
     if (R.TYPEOF(amount) != R.INTSXP or R.XLENGTH(amount) != 1 or R.INTEGER(amount)[0] == R.R_NaInt) {
         R.Rf_error("zigr fixture expected one non-missing integer");
         unreachable;
@@ -527,7 +491,6 @@ const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_fixture_scalar_after_allocation", .func = fixtureScalarAfterAllocation },
     .{ .name = "zigr_fixture_vector", .func = fixtureVector },
     .{ .name = "zigr_fixture_new", .func = fixtureNew },
-    .{ .name = "zigr_fixture_method", .func = fixtureMethod },
     .{ .name = "zigr_fixture_error", .func = fixtureError },
     .{ .name = "zigr_fixture_zero", .func = fixtureZero },
     .{ .name = "zigr_fixture_optional", .func = fixtureOptional },
@@ -550,6 +513,7 @@ const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_complex_return", .func = fixtureComplexReturn },
     .{ .name = "zigr_fixture_schema", .func = fixtureSchema },
     .{ .name = "zigr_fixture_wrong_tag", .func = fixtureWrongTag },
+    .{ .name = "zigr_fixture_tagged_raw", .func = fixtureTaggedRaw },
     .{ .name = "zigr_fixture_cleared", .func = fixtureCleared },
     .{ .name = "zigr_fixture_misaligned", .func = fixtureMisaligned },
 }, &.{

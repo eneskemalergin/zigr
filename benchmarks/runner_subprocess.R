@@ -378,6 +378,7 @@ validate_registration_fixture <- function(cfg) {
   error_symbol <- symbol("error")
   external_symbol <- symbol("external")
   wrong_tag_symbol <- symbol("wrong_tag")
+  missing_metadata_symbol <- if (!is.null(fixture$missing_metadata) && nzchar(fixture$missing_metadata)) symbol("missing_metadata") else NULL
   cleared_symbol <- symbol("cleared")
   misaligned_symbol <- symbol("misaligned")
 
@@ -525,6 +526,18 @@ validate_registration_fixture <- function(cfg) {
   ))
   wrong_tag_method <- capture_result(function() do.call(.Call, list(method_symbol, wrong_tag$value, 7L)))
   if (wrong_tag_method$ok) stop(sprintf("registration fixture accepted an external pointer with the wrong tag for %s", runner_name))
+  if (!is.null(missing_metadata_symbol)) {
+    missing_metadata <- capture_result(function() do.call(.Call, list(missing_metadata_symbol)))
+    if (!missing_metadata$ok || !identical(typeof(missing_metadata$value), "externalptr")) stop(sprintf(
+      "registration fixture typed-metadata constructor check failed for %s", runner_name
+    ))
+    missing_metadata_method <- capture_result(function() do.call(.Call, list(method_symbol, missing_metadata$value, 7L)))
+    expect_fixture_error(
+      missing_metadata_method,
+      "an external pointer without typed metadata",
+      if (identical(runner_name, "zigr")) "external pointer is missing typed metadata" else NULL
+    )
+  }
   cleared <- capture_result(function() do.call(.Call, list(cleared_symbol)))
   if (!cleared$ok || !identical(typeof(cleared$value), "externalptr")) stop(sprintf(
     "registration fixture cleared-pointer constructor check failed for %s", runner_name

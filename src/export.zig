@@ -8,8 +8,8 @@ const std = @import("std");
 const R = @import("R");
 const convert = @import("convert.zig");
 const cleanup = @import("cleanup");
+const externalptr = @import("externalptr.zig");
 const memory = @import("memory.zig");
-const sexp_mod = @import("sexp.zig");
 
 /// Allocation here means the wrapper's compile-time routing is wrong.
 fn panicAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
@@ -61,10 +61,6 @@ fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
     if (dn > 0) @memcpy(buf[pn + 2 .. pn + 2 + dn], detail[0..dn]);
     buf[pn + 2 + dn] = 0;
     R.Rf_error(&buf);
-}
-
-fn signalError(msg: []const u8) noreturn {
-    signalErrorMsg(msg, "");
 }
 
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
@@ -432,16 +428,34 @@ fn makeExternalMethodDef(name: []const u8, wrapper: *const fn (R.SEXP) callconv(
     };
 }
 
+fn validateMethodSignature(comptime T: type, comptime func: anytype) void {
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    if (func_info.params.len == 0) {
+        @compileError("generated method must declare *" ++ @typeName(T) ++ " as its first parameter");
+    }
+    const receiver_type = func_info.params[0].type orelse @compileError("generated method receiver must have a concrete type");
+    if (receiver_type != *T) {
+        @compileError("generated method receiver must be *" ++ @typeName(T) ++ ", found " ++ @typeName(receiver_type));
+    }
+    if (func_info.params.len > 5) {
+        @compileError("generated method supports *" ++ @typeName(T) ++ " plus at most four parameters");
+    }
+}
+
+fn methodNeedsInputArena(comptime func: anytype) bool {
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    var needed = false;
+    for (func_info.params[1..]) |p| needed = needed or needsInputArena(p.type.?);
+    return needed;
+}
+
 fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
+    comptime validateMethodSignature(T, func);
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const n = func_info.params.len;
     const ret_type = func_info.return_type orelse void;
 
-    const arena_needed = comptime blk: {
-        var needed = false;
-        for (func_info.params) |p| needed = needed or needsInputArena(p.type.?);
-        break :blk needed;
-    };
+    const arena_needed = comptime methodNeedsInputArena(func);
 
     const W = struct {
         const MethodCallArgs = struct {
@@ -463,9 +477,7 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             defer if (comptime arena_needed) arena.deinit();
             const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
 
-            if (sexp_mod.typeTag(args.a0) != 22) signalError("expected external pointer");
-            const raw_ptr = R.R_ExternalPtrAddr(args.a0) orelse signalError("null external pointer");
-            const ptr: *T = @ptrCast(@alignCast(raw_ptr));
+            const ptr = externalptr.checkedPointer(T, args.a0) catch |pointer_err| externalptr.signalPointerError(pointer_err);
 
             if (comptime n == 1) return toSexp(func(ptr), ret_type);
             if (comptime n == 2) {
@@ -496,6 +508,56 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
         fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
             var call_args = MethodCallArgs{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
             return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(&call_args)));
+        }
+    };
+    return W.wrap;
+}
+
+fn makeExternalMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP) callconv(.c) R.SEXP {
+    comptime validateMethodSignature(T, func);
+    const func_info = @typeInfo(@TypeOf(func)).@"fn";
+    const n = func_info.params.len;
+    const ret_type = func_info.return_type orelse void;
+    const arena_needed = comptime methodNeedsInputArena(func);
+
+    const W = struct {
+        fn doCall(args_ptr: ?*anyopaque) R.SEXP {
+            const args: R.SEXP = @ptrCast(@alignCast(args_ptr.?));
+            const Arena = if (arena_needed) TwoTierArena else struct {};
+            var arena: Arena = undefined;
+            if (comptime arena_needed) arena.init();
+            defer if (comptime arena_needed) arena.deinit();
+            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
+            const ptr = externalptr.checkedPointer(T, externalArg(args, 0)) catch |pointer_err| externalptr.signalPointerError(pointer_err);
+
+            if (comptime n == 1) return toSexp(func(ptr), ret_type);
+            if (comptime n == 2) {
+                const arg0 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                return toSexp(func(ptr, arg0), ret_type);
+            }
+            if (comptime n == 3) {
+                const arg0 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const arg1 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                return toSexp(func(ptr, arg0, arg1), ret_type);
+            }
+            if (comptime n == 4) {
+                const arg0 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const arg1 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const arg2 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                return toSexp(func(ptr, arg0, arg1, arg2), ret_type);
+            }
+            if (comptime n == 5) {
+                const arg0 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const arg1 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const arg2 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                const arg3 = fromSexp(func_info.params[4].type.?, externalArg(args, 4), alloc);
+                return toSexp(func(ptr, arg0, arg1, arg2, arg3), ret_type);
+            }
+            unreachable;
+        }
+
+        fn wrap(args: R.SEXP) callconv(.c) R.SEXP {
+            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(args)));
         }
     };
     return W.wrap;
@@ -553,8 +615,12 @@ fn safeName(comptime T: type) []const u8 {
     };
 }
 
-/// Prefixes method exports to avoid collisions between external-pointer types.
+/// Generated methods accept only typed pointers created for their receiver type.
 pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptime external_exports: anytype) type {
+    comptime {
+        for (call_exports) |exp| validateMethodSignature(T, exp.func);
+        for (external_exports) |exp| validateMethodSignature(T, exp.func);
+    }
     const call_count = call_exports.len;
     const ext_count = external_exports.len;
 
@@ -565,6 +631,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
 
         pub fn init(info: *R.DllInfo) callconv(.c) void {
             if (initialized) return;
+            _ = externalptr.typeTag(T);
             initialized = true;
 
             inline for (0..call_count) |i| {
@@ -578,8 +645,8 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
             inline for (0..ext_count) |i| {
                 const exp = external_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                const full_name = safeName(T) ++ "__" ++ exp.name;
-                ext_defs[i] = makeExternalMethodDef(full_name, makeExternalWrapper(exp.func), @intCast(fi.params.len));
+                const full_name = comptime safeName(T) ++ "__" ++ exp.name;
+                ext_defs[i] = makeExternalMethodDef(full_name, makeExternalMethodWrapper(T, exp.func), @intCast(fi.params.len));
             }
             ext_defs[ext_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 

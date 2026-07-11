@@ -2871,25 +2871,29 @@ export fn zigr_test_generated_spill_longjmp() SEXP {
     return arenaCall(4, compact);
 }
 
-var externalptr_finalized: bool = false;
+var externalptr_finalizer_count: u8 = 0;
 
 const ExternalValue = struct {
     value: i32,
 };
 
 fn externalValueDeinit(value: *ExternalValue) void {
-    externalptr_finalized = value.value == 17;
+    if (value.value == 17) externalptr_finalizer_count += 1;
 }
 
 export fn zigr_test_externalptr_finalizer() SEXP {
-    externalptr_finalized = false;
-    var ext = R.Rf_protect(zigr.externalptr.create(ExternalValue, .{ .value = 17 }, externalValueDeinit));
+    externalptr_finalizer_count = 0;
+    var ext = R.Rf_protect(zigr.externalptr.createTyped(ExternalValue, .{ .value = 17 }, externalValueDeinit));
     const raw = zigr.externalptr.addr(ext) orelse {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
     };
     const value: *ExternalValue = @ptrCast(@alignCast(raw));
-    if (value.value != 17) {
+    const backing = zigr.externalptr.typedBacking(ExternalValue, ext) catch {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    };
+    if (value.value != 17 or zigr.externalptr.tag(ext) != zigr.externalptr.typeTag(ExternalValue) or backing != R.R_NilValue) {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
     }
@@ -2898,7 +2902,47 @@ export fn zigr_test_externalptr_finalizer() SEXP {
     ext = R.R_NilValue;
     R.R_gc();
     R.R_gc();
-    return R.Rf_ScalarReal(if (externalptr_finalized) 1.0 else 0.0);
+    return R.Rf_ScalarReal(if (externalptr_finalizer_count == 1) 1.0 else 0.0);
+}
+
+export fn zigr_test_externalptr_finalizer_idempotent() SEXP {
+    externalptr_finalizer_count = 0;
+    var ext = R.Rf_protect(zigr.externalptr.createTyped(ExternalValue, .{ .value = 17 }, externalValueDeinit));
+
+    zigr.externalptr.finalizeOwned(ExternalValue, externalValueDeinit, ext);
+    zigr.externalptr.finalizeOwned(ExternalValue, externalValueDeinit, ext);
+    if (zigr.externalptr.addr(ext) != null or externalptr_finalizer_count != 1) {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    }
+    R.Rf_unprotect(1);
+    ext = R.R_NilValue;
+    R.R_gc();
+    R.R_gc();
+    return R.Rf_ScalarReal(if (externalptr_finalizer_count == 1) 1.0 else 0.0);
+}
+
+export fn zigr_test_externalptr_typed_protected() SEXP {
+    const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
+    CounterMethods.init(dll);
+
+    var counter = MethodCounter{ .val = 0 };
+    const backing = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    R.INTEGER(backing)[0] = 42;
+    const ext = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, backing));
+    R.Rf_unprotect(1);
+    defer R.Rf_unprotect(1);
+    R.R_gc();
+    R.R_gc();
+
+    if (zigr.externalptr.tag(ext) != zigr.externalptr.typeTag(MethodCounter)) return R.Rf_ScalarReal(0.0);
+    const retained_backing = zigr.externalptr.typedBacking(MethodCounter, ext) catch return R.Rf_ScalarReal(0.0);
+    if (retained_backing != backing or R.INTEGER(backing)[0] != 42) return R.Rf_ScalarReal(0.0);
+    const amount = R.Rf_protect(R.Rf_ScalarInteger(1));
+    defer R.Rf_unprotect(1);
+    const method_fun: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
+    if (R.INTEGER(method_fun(ext, amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue))[0] != 1 or counter.val != 1) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_raw_views() SEXP {
@@ -3059,7 +3103,40 @@ fn counterAdd(self: *MethodCounter, amount: i32) i32 {
 
 const CounterMethods = zigr.@"export".generateMethods(MethodCounter, &.{
     .{ .name = "add", .func = counterAdd },
-}, &.{});
+}, &.{
+    .{ .name = "add_external", .func = counterAdd },
+});
+
+const MethodCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+const ExternalMethodCall = *const fn (R.SEXP) callconv(.c) R.SEXP;
+
+// R_tryCatch needs no-argument trampolines for these generated entry points.
+var method_error_fun: ?MethodCall = null;
+var method_error_receiver: R.SEXP = null;
+var method_error_amount: R.SEXP = null;
+var external_method_error_fun: ?ExternalMethodCall = null;
+var external_method_error_args: R.SEXP = null;
+
+fn callMethodForError() R.SEXP {
+    return method_error_fun.?(method_error_receiver, method_error_amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+}
+
+fn expectMethodError(receiver: R.SEXP, amount: R.SEXP, expected: []const u8) bool {
+    method_error_receiver = receiver;
+    method_error_amount = amount;
+    const condition = trycatch_mod.tryCatchError(callMethodForError) catch return false;
+    return if (condition) |value| std.mem.eql(u8, trycatch_mod.extractMessage(value), expected) else false;
+}
+
+fn callExternalMethodForError() R.SEXP {
+    return external_method_error_fun.?(external_method_error_args);
+}
+
+fn expectExternalMethodError(args: R.SEXP, expected: []const u8) bool {
+    external_method_error_args = args;
+    const condition = trycatch_mod.tryCatchError(callExternalMethodForError) catch return false;
+    return if (condition) |value| std.mem.eql(u8, trycatch_mod.extractMessage(value), expected) else false;
+}
 
 var cleanup_longjmp_fired: bool = false;
 
@@ -3128,18 +3205,108 @@ export fn zigr_test_export_generatemethods() SEXP {
     const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
     CounterMethods.init(dll);
 
-    const method_fun: *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
+    const method_fun: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
 
     var counter = MethodCounter{ .val = 10 };
-    const prot = R.Rf_protect(R.R_NilValue);
-    const extptr = zigr.externalptr.make(&counter, R.R_NilValue, prot);
+    const extptr = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, R.R_NilValue));
+    defer R.Rf_unprotect(1);
     const amount = R.Rf_protect(R.Rf_ScalarInteger(5));
-    R.Rf_unprotect(2);
+    defer R.Rf_unprotect(1);
 
     const result = method_fun(extptr, amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
     const val = R.INTEGER(result)[0];
     if (val != 15) return R.Rf_ScalarReal(0.0);
     if (counter.val != 15) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_export_generatemethods_external() SEXP {
+    const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
+    CounterMethods.init(dll);
+
+    const method_fun: ExternalMethodCall = @ptrCast(@alignCast(CounterMethods.ext_defs[0].fun));
+    if (CounterMethods.call_defs[0].numArgs != 2 or CounterMethods.ext_defs[0].numArgs != 2) return R.Rf_ScalarReal(0.0);
+    var counter = MethodCounter{ .val = 10 };
+    const receiver = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    const amount = R.Rf_protect(R.Rf_ScalarInteger(5));
+    defer R.Rf_unprotect(1);
+    const args = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_counter_add_external"),
+        R.Rf_cons(receiver, R.Rf_cons(amount, R.R_NilValue)),
+    ));
+    defer R.Rf_unprotect(1);
+
+    const result = method_fun(args);
+    if (R.INTEGER(result)[0] != 15 or counter.val != 15) return R.Rf_ScalarReal(0.0);
+
+    external_method_error_fun = method_fun;
+    const invalid_receiver = R.Rf_protect(R.Rf_ScalarInteger(0));
+    defer R.Rf_unprotect(1);
+    const invalid_args = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_counter_add_external"),
+        R.Rf_cons(invalid_receiver, R.Rf_cons(amount, R.R_NilValue)),
+    ));
+    defer R.Rf_unprotect(1);
+    if (!expectExternalMethodError(invalid_args, "expected EXTPTRSXP receiver")) return R.Rf_ScalarReal(0.0);
+
+    const raw_tagged = R.Rf_protect(zigr.externalptr.make(@ptrCast(&counter), zigr.externalptr.typeTag(MethodCounter), R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    const raw_args = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_counter_add_external"),
+        R.Rf_cons(raw_tagged, R.Rf_cons(amount, R.R_NilValue)),
+    ));
+    defer R.Rf_unprotect(1);
+    if (!expectExternalMethodError(raw_args, "external pointer is missing typed metadata")) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_generated_method_receiver_errors() SEXP {
+    const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return R.Rf_ScalarReal(0.0));
+    CounterMethods.init(dll);
+    method_error_fun = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
+
+    var counter = MethodCounter{ .val = 0 };
+    var foreign = struct { value: i32 }{ .value = 0 };
+    const amount = R.Rf_protect(R.Rf_ScalarInteger(1));
+    defer R.Rf_unprotect(1);
+    const not_pointer = R.Rf_protect(R.Rf_ScalarInteger(0));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(not_pointer, amount, "expected EXTPTRSXP receiver")) return R.Rf_ScalarReal(0.0);
+
+    const wrong_tag = R.Rf_protect(zigr.externalptr.make(@ptrCast(&counter), R.Rf_install("zigr_test_wrong_method_tag"), R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(wrong_tag, amount, "external pointer tag does not match method type")) return R.Rf_ScalarReal(0.0);
+
+    const raw_tagged = R.Rf_protect(zigr.externalptr.make(@ptrCast(&counter), zigr.externalptr.typeTag(MethodCounter), R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(raw_tagged, amount, "external pointer is missing typed metadata")) return R.Rf_ScalarReal(0.0);
+
+    const tampered = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(zigr.externalptr.protected(tampered), 0, R.R_NilValue);
+    if (!expectMethodError(tampered, amount, "external pointer is missing typed metadata")) return R.Rf_ScalarReal(0.0);
+
+    const ForeignCounter = @TypeOf(foreign);
+    const foreign_pointer = R.Rf_protect(zigr.externalptr.makeTyped(ForeignCounter, &foreign, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(foreign_pointer, amount, "external pointer tag does not match method type")) return R.Rf_ScalarReal(0.0);
+
+    const null_pointer = R.Rf_protect(zigr.externalptr.makeTypedRaw(MethodCounter, null, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(null_pointer, amount, "external pointer has been cleared")) return R.Rf_ScalarReal(0.0);
+
+    const cleared_pointer = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    R.R_ClearExternalPtr(cleared_pointer);
+    if (!expectMethodError(cleared_pointer, amount, "external pointer has been cleared")) return R.Rf_ScalarReal(0.0);
+
+    const address = @intFromPtr(&counter) + 1;
+    const misaligned: *anyopaque = @ptrFromInt(address);
+    const misaligned_pointer = R.Rf_protect(zigr.externalptr.makeTypedRaw(MethodCounter, misaligned, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (!expectMethodError(misaligned_pointer, amount, "external pointer is misaligned for method type")) return R.Rf_ScalarReal(0.0);
+    if (counter.val != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

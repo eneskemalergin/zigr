@@ -74,13 +74,30 @@ pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
     return result;
 }
 
-pub fn extractMessage(cond: R.SEXP) []const u8 {
-    const msg_sym = symbols.install("message");
-    const msg_sexp = R.Rf_getAttrib(cond, msg_sym);
+fn messageText(msg_sexp: R.SEXP) []const u8 {
     if (msg_sexp == R.R_NilValue) return "";
     if (sexp_mod.typeTag(msg_sexp) != 16) return "";
     if (R.XLENGTH(msg_sexp) < 1) return "";
     const elt = R.STRING_ELT(msg_sexp, 0);
     if (elt == R.R_NaString) return "";
     return sexp_mod.charsxpBytes(elt);
+}
+
+/// R error conditions usually keep `message` as a named list element.
+pub fn extractMessage(cond: R.SEXP) []const u8 {
+    const msg_sym = symbols.install("message");
+    const attr_message = messageText(R.Rf_getAttrib(cond, msg_sym));
+    if (attr_message.len != 0) return attr_message;
+    if (sexp_mod.typeTag(cond) != 19) return "";
+
+    const names = R.Rf_getAttrib(cond, symbols.install("names"));
+    if (sexp_mod.typeTag(names) != 16) return "";
+    const len = @min(R.XLENGTH(cond), R.XLENGTH(names));
+    for (0..@intCast(len)) |i| {
+        const name = R.STRING_ELT(names, @intCast(i));
+        if (name != R.R_NaString and std.mem.eql(u8, sexp_mod.charsxpBytes(name), "message")) {
+            return messageText(R.VECTOR_ELT(cond, @intCast(i)));
+        }
+    }
+    return "";
 }
