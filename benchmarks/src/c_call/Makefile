@@ -55,7 +55,7 @@ SRC = $(addprefix $(SRCDIR), \
       task_42_external_ptr.c \
       task_43_rng_stress.c \
       register.c)
-OUT = $(SRCDIR)bench.c.so
+OUT = $(SRCDIR)bench.so
 
 all: $(OUT)
 

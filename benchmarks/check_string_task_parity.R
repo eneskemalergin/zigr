@@ -4,7 +4,7 @@
 # Only tasks with real implementations are tested.
 
 source("src/r/run_all.R")
-dyn.load("zig-out/lib/libzigr_benchmarks.so")
+dyn.load("zig-out/lib/zigr_benchmarks.so")
 
 check <- function(label, got, want) {
   if (is.null(got) || is.na(got) || length(got) == 0) {

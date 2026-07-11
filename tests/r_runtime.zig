@@ -2341,7 +2341,10 @@ export fn zigr_test_export_external() SEXP {
     const ext_fun: *const fn (R.SEXP) callconv(.c) R.SEXP = @ptrCast(@alignCast(ExternalExports.ext_defs[0].fun));
     const arg1 = R.Rf_protect(R.Rf_ScalarReal(3.0));
     const arg2 = R.Rf_protect(R.Rf_ScalarReal(4.0));
-    const pairlist = R.Rf_protect(R.Rf_cons(arg1, R.Rf_cons(arg2, R.R_NilValue)));
+    const pairlist = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_external_sum"),
+        R.Rf_cons(arg1, R.Rf_cons(arg2, R.R_NilValue)),
+    ));
     R.Rf_unprotect(3);
 
     const result = ext_fun(pairlist);

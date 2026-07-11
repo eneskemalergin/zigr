@@ -196,17 +196,20 @@ timing_summary_fields <- function(bm = NULL) {
 }
 
 if (call_type != "r") {
+  loaded_dlls <- list()
   so_path <- file.path(root_dir, cfg$so_path)
   if (!file.exists(so_path)) stop(sprintf("library not found: %s", so_path))
-  tryCatch(dyn.load(so_path),
-           error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+  main_dll <- tryCatch(dyn.load(so_path),
+                       error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+  loaded_dlls[[main_dll[["name"]]]] <- main_dll
 
   extra_so_paths <- cfg$extra_so_paths %||% list()
   for (extra_so in extra_so_paths) {
     extra_path <- file.path(root_dir, extra_so)
     if (!file.exists(extra_path)) stop(sprintf("library not found: %s", extra_path))
-    tryCatch(dyn.load(extra_path),
-             error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+    extra_dll <- tryCatch(dyn.load(extra_path),
+                          error = function(e) stop(sprintf("load error: %s", conditionMessage(e))))
+    loaded_dlls[[extra_dll[["name"]]]] <- extra_dll
   }
 }
 
@@ -215,6 +218,117 @@ source(file.path(root_dir, "src/r/run_all.R"))
 r_cfg_path <- file.path(root_dir, "runners", "r.json")
 r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
 validate_r_reference_map(manifest, r_ref)
+
+capture_result <- function(fn) {
+  error <- NA_character_
+  value <- tryCatch(fn(), error = function(e) {
+    error <<- conditionMessage(e)
+    NULL
+  })
+  list(ok = is.na(error), value = value, error = error)
+}
+
+resolve_registered_exports <- function(export_names, cfg) {
+  package_overrides <- cfg$package_overrides %||% list()
+  package_name <- cfg$package_name %||% ""
+  if (!nzchar(package_name)) stop(sprintf("runner %s enables registered_symbols but has no package_name", runner_name))
+  resolved <- export_names
+  for (tid in names(export_names)) {
+    package_for_task <- package_overrides[[tid]] %||% package_name
+    dll <- loaded_dlls[[package_for_task]]
+    if (is.null(dll)) stop(sprintf(
+      "registered symbol lookup has no loaded DLL named %s for runner %s task %s",
+      package_for_task, runner_name, tid
+    ))
+    info <- tryCatch(
+      getNativeSymbolInfo(export_names[[tid]], PACKAGE = dll, withRegistrationInfo = TRUE),
+      error = function(e) stop(sprintf(
+        "registered symbol lookup failed for runner %s task %s (%s in package %s): %s",
+        runner_name, tid, export_names[[tid]], package_for_task, conditionMessage(e)
+      ))
+    )
+    resolved[[tid]] <- info$address
+  }
+  resolved
+}
+
+validate_registration_fixture <- function(cfg) {
+  fixture <- cfg$registration_fixture
+  if (is.null(fixture)) return(invisible(NULL))
+  required <- c("scalar", "vector", "new", "method", "error", "external")
+  missing <- required[vapply(required, function(key) is.null(fixture[[key]]) || !nzchar(fixture[[key]]), logical(1))]
+  if (length(missing) > 0L) stop(sprintf(
+    "runner %s registration_fixture is missing: %s", runner_name, paste(missing, collapse = ", ")
+  ))
+  package_name <- cfg$package_name
+  dll <- loaded_dlls[[package_name]]
+  if (is.null(dll)) stop(sprintf(
+    "registration fixture has no loaded DLL named %s for runner %s", package_name, runner_name
+  ))
+  symbol <- function(key) {
+    info <- tryCatch(
+      getNativeSymbolInfo(fixture[[key]], PACKAGE = dll, withRegistrationInfo = TRUE),
+      error = function(e) stop(sprintf(
+        "registration fixture lookup failed for runner %s (%s in package %s): %s",
+        runner_name, fixture[[key]], package_name, conditionMessage(e)
+      ))
+    )
+    info$address
+  }
+  call_symbol <- symbol("scalar")
+  vector_symbol <- symbol("vector")
+  new_symbol <- symbol("new")
+  method_symbol <- symbol("method")
+  error_symbol <- symbol("error")
+  external_symbol <- symbol("external")
+
+  scalar <- capture_result(function() do.call(.Call, list(call_symbol, 3.5)))
+  if (!scalar$ok || !isTRUE(all.equal(scalar$value, 3.5))) stop(sprintf(
+    "registration fixture scalar check failed for %s: %s", runner_name, scalar$error %||% "wrong result"
+  ))
+  vector <- capture_result(function() do.call(.Call, list(vector_symbol, c(1.0, 2.0, 3.0))))
+  if (!vector$ok || !isTRUE(all.equal(vector$value, 6.0))) stop(sprintf(
+    "registration fixture vector check failed for %s: %s", runner_name, vector$error %||% "wrong result"
+  ))
+  receiver <- capture_result(function() do.call(.Call, list(new_symbol)))
+  if (!receiver$ok || !identical(typeof(receiver$value), "externalptr")) stop(sprintf(
+    "registration fixture constructor check failed for %s: %s", runner_name, receiver$error %||% "wrong result"
+  ))
+  method <- capture_result(function() do.call(.Call, list(method_symbol, receiver$value, 7L)))
+  if (!method$ok || !isTRUE(all.equal(method$value, 7L))) stop(sprintf(
+    "registration fixture method check failed for %s: %s", runner_name, method$error %||% "wrong result"
+  ))
+  expected_error <- capture_result(function() do.call(.Call, list(error_symbol, 1.0)))
+  if (expected_error$ok || !grepl("fixture error", expected_error$error, fixed = TRUE)) stop(sprintf(
+    "registration fixture error check failed for %s", runner_name
+  ))
+  external <- capture_result(function() do.call(.External, list(external_symbol, 4.0)))
+  if (!external$ok || !isTRUE(all.equal(external$value, 5.0))) stop(sprintf(
+    "registration fixture .External check failed for %s: %s", runner_name, external$error %||% "wrong result"
+  ))
+
+  wrong_call <- capture_result(function() do.call(.Call, list(external_symbol, 4.0)))
+  if (wrong_call$ok) stop(sprintf("registration fixture accepted an external routine through .Call for %s", runner_name))
+  wrong_external <- capture_result(function() do.call(.External, list(call_symbol, 3.5)))
+  if (wrong_external$ok) stop(sprintf("registration fixture accepted a .Call routine through .External for %s", runner_name))
+  bad_call_arity <- capture_result(function() do.call(.Call, list(call_symbol, 3.5, 4.5)))
+  if (bad_call_arity$ok) stop(sprintf("registration fixture accepted invalid .Call arity for %s", runner_name))
+  bad_external_arity <- capture_result(function() do.call(.External, list(external_symbol)))
+  if (bad_external_arity$ok) stop(sprintf("registration fixture accepted invalid .External arity for %s", runner_name))
+  bad_receiver <- capture_result(function() do.call(.Call, list(method_symbol, 1L, 7L)))
+  if (bad_receiver$ok) stop(sprintf("registration fixture accepted an invalid method receiver for %s", runner_name))
+  missing_symbol <- capture_result(function() getNativeSymbolInfo("zigr_or_c_fixture_missing", PACKAGE = dll, withRegistrationInfo = TRUE))
+  if (missing_symbol$ok) stop(sprintf("registration fixture exposed an unregistered symbol for %s", runner_name))
+  cat(sprintf("Registration preflight passed for %s\n", runner_name))
+  invisible(NULL)
+}
+
+registered_export_names <- NULL
+if (isTRUE(cfg$registered_symbols)) {
+  registered_export_names <- cfg$exports
+  cfg$exports <- resolve_registered_exports(registered_export_names, cfg)
+  validate_registration_fixture(cfg)
+}
 
 if (check_only) {
   validate_task_arguments(manifest, all_tasks)
@@ -275,15 +389,6 @@ compare_correctness <- function(expected, actual, path = "result") {
   result(FALSE, sprintf("%s values differ", path))
 }
 
-capture_result <- function(fn) {
-  error <- NA_character_
-  value <- tryCatch(fn(), error = function(e) {
-    error <<- conditionMessage(e)
-    NULL
-  })
-  list(ok = is.na(error), value = value, error = error)
-}
-
 result_preview <- function(value) {
   gsub(",", " ", substr(paste(deparse(value), collapse = ""), 1, 120))
 }
@@ -302,7 +407,7 @@ for (task in all_tasks) {
   correctness_message <- if (call_type == "r") "R reference runner" else ""
   task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
   cfun <- exports[[tid]]
-  if (call_type == ".Call" && !is.null(cfun)) {
+  if (call_type == ".Call" && is.null(registered_export_names) && !is.null(cfun)) {
     package_overrides <- cfg$package_overrides %||% list()
     package_name <- package_overrides[[tid]]
     if (!is.null(package_name)) {

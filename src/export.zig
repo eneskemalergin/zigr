@@ -1,16 +1,27 @@
 //! Comptime export generator.
 //!
 //! Usage:
-//!   const e = zigr.export.generateExports("mypkg", &.{.{ .name = "my_sum", .func = my_sum }}, &.{});
+//!   const Exports = zigr.@"export".generateExports(
+//!       &.{.{ .name = "my_sum", .func = my_sum }}, &.{});
+//!
+//! The package root owns the actual C entry points:
+//!   export fn R_init_mypkg(info: *R.DllInfo) callconv(.c) void {
+//!       Exports.init(info);
+//!   }
+//!   export fn R_unload_mypkg(info: *R.DllInfo) callconv(.c) void {
+//!       Exports.unload(info);
+//!   }
 //!
 //! # Longjmp safety
 //!
-//! - **.Call wrappers** (`makeWrapper`, `makeMethodWrapper`): use
-//!   `protectCallData` which wraps in `R_UnwindProtect`. Arenas free
-//!   and cleanup frames fire on longjmp. Safe.
+//! - **.Call wrappers** (`makeWrapper`, `makeMethodWrapper`) enter
+//!   `protectCallData`, which wraps the call in `R_UnwindProtect`.
+//!   The current arena cleanup frame still carries a pointer to a
+//!   stack-local arena, so arena-backed longjmp safety is a P1 contract
+//!   item and must not be described as complete yet.
 //!
-//! - **.External wrappers** (`makeExternalWrapper`) also use
-//!   `protectCallData`. Safe.
+//! - **.External wrappers** (`makeExternalWrapper`) also enter
+//!   `protectCallData`; the same arena-frame limitation applies.
 //!
 //! Errors signal Rf_error instead of panicking.
 //!
@@ -18,8 +29,11 @@
 //! convert.StringSliceView, []const u8 (RAWSXP), []const Rcomplex,
 //! f64, i32, bool, ?f64, ?i32, ?bool,
 //! void, R.SEXP.
-//! Scalar f64/i32/bool require a non-empty, non-NA length-1 vector.
-//! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as null.
+//! The P1 contract requires scalar f64/i32/bool to receive a non-NA
+//! length-1 vector. The current conversion rejects empty and NA values;
+//! P1.4 adds the length-greater-than-one rejection.
+//! Optional scalar ?f64/?i32/?bool accept NULL and typed NA as nullish;
+//! P1.4 applies the same exact-length rule to non-null values.
 //! Use R.SEXP or a vector parameter when NA values need custom handling.
 //! []const u8 maps to RAWSXP (raw bytes), not STRSXP. For scalar strings,
 //! extract via R.STRING_ELT inside the function body.
@@ -90,8 +104,11 @@ fn signalError(msg: []const u8) noreturn {
 }
 
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
+    if (comptime T == R.SEXP) {
+        return sexp;
+    }
     if (comptime @typeInfo(T) == .optional) {
-        const child = @typeInfo(T).Optional.child;
+        const child = @typeInfo(T).optional.child;
         if (convert.optionalInputIsNullish(child, sexp)) return null;
         return @as(T, fromSexp(child, sexp, arena));
     }
@@ -125,16 +142,14 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
         return view.constSlice();
     }
-    if (comptime T == R.SEXP) {
-        return sexp;
-    }
     @compileError("unsupported parameter type: " ++ @typeName(T));
 }
 
 fn toSexp(value: anytype, comptime T: type) R.SEXP {
+    if (comptime T == R.SEXP) return value;
     if (comptime @typeInfo(T) == .optional) {
         if (value) |v| {
-            return toSexp(v, @typeInfo(T).Optional.child);
+            return toSexp(v, @typeInfo(T).optional.child);
         } else {
             return R.R_NilValue;
         }
@@ -148,7 +163,6 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     if (comptime T == []const []const u8) return convert.fromStringSlice(value);
     if (comptime T == []const u8) return convert.fromRawSlice(value);
     if (comptime T == []const convert.Rcomplex) return convert.fromComplexSlice(value);
-    if (comptime T == R.SEXP) return value;
     @compileError("unsupported return type: " ++ @typeName(T));
 }
 
@@ -337,6 +351,12 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     return W.wrap;
 }
 
+fn externalArg(args: R.SEXP, comptime index: usize) R.SEXP {
+    var current = args;
+    inline for (0..index + 1) |_| current = R.CDR(current);
+    return R.CAR(current);
+}
+
 fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R.SEXP {
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const n = func_info.params.len;
@@ -362,64 +382,67 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
             defer if (have_arena) cleanup.popFrame();
             const alloc = if (have_arena) arena.allocator() else panic_allocator;
 
+            if (comptime n == 0) {
+                return toSexp(func(), ret_type);
+            }
             if (comptime n == 1) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
                 return toSexp(func(p0), ret_type);
             }
             if (comptime n == 2) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
                 return toSexp(func(p0, p1), ret_type);
             }
             if (comptime n == 3) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
                 return toSexp(func(p0, p1, p2), ret_type);
             }
             if (comptime n == 4) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
                 return toSexp(func(p0, p1, p2, p3), ret_type);
             }
             if (comptime n == 5) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, externalArg(args, 4), alloc);
                 return toSexp(func(p0, p1, p2, p3, p4), ret_type);
             }
             if (comptime n == 6) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, externalArg(args, 4), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, externalArg(args, 5), alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5), ret_type);
             }
             if (comptime n == 7) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
-                const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, externalArg(args, 4), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, externalArg(args, 5), alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, externalArg(args, 6), alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5, p6), ret_type);
             }
             if (comptime n == 8) {
-                const p0 = fromSexp(func_info.params[0].type.?, R.CAR(args), alloc);
-                const p1 = fromSexp(func_info.params[1].type.?, R.CADR(args), alloc);
-                const p2 = fromSexp(func_info.params[2].type.?, R.CADDR(args), alloc);
-                const p3 = fromSexp(func_info.params[3].type.?, R.CADDDR(args), alloc);
-                const p4 = fromSexp(func_info.params[4].type.?, R.CAD4R(args), alloc);
-                const p5 = fromSexp(func_info.params[5].type.?, R.CAD5R(args), alloc);
-                const p6 = fromSexp(func_info.params[6].type.?, R.CAR(R.CDDR(R.CDDR(R.CDDR(args)))), alloc);
-                const p7 = fromSexp(func_info.params[7].type.?, R.CAR(R.CDR(R.CDDR(R.CDDR(R.CDDR(args))))), alloc);
+                const p0 = fromSexp(func_info.params[0].type.?, externalArg(args, 0), alloc);
+                const p1 = fromSexp(func_info.params[1].type.?, externalArg(args, 1), alloc);
+                const p2 = fromSexp(func_info.params[2].type.?, externalArg(args, 2), alloc);
+                const p3 = fromSexp(func_info.params[3].type.?, externalArg(args, 3), alloc);
+                const p4 = fromSexp(func_info.params[4].type.?, externalArg(args, 4), alloc);
+                const p5 = fromSexp(func_info.params[5].type.?, externalArg(args, 5), alloc);
+                const p6 = fromSexp(func_info.params[6].type.?, externalArg(args, 6), alloc);
+                const p7 = fromSexp(func_info.params[7].type.?, externalArg(args, 7), alloc);
                 return toSexp(func(p0, p1, p2, p3, p4, p5, p6, p7), ret_type);
             }
             @compileError("unsupported param count, max 8 for .External");
@@ -529,7 +552,7 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
     const ext_count = external_exports.len;
 
     return struct {
-        var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
+        pub var call_defs: [call_count + 1]R.R_CallMethodDef = undefined;
         pub var ext_defs: [ext_count + 1]R.R_ExternalMethodDef = undefined;
         var initialized: bool = false;
 
@@ -625,4 +648,15 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
 
         pub fn unload(_: *R.DllInfo) callconv(.c) void {}
     };
+}
+
+fn compileExampleSum(value: f64) f64 {
+    return value;
+}
+
+const CompileExampleExports = generateExports(&.{.{ .name = "my_sum", .func = compileExampleSum }}, &.{});
+
+test "generateExports .Call usage example compiles" {
+    const init_fn = CompileExampleExports.init;
+    _ = init_fn;
 }

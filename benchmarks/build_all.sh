@@ -59,8 +59,8 @@ make -C src/savvy
 echo "=== Done ==="
 echo ""
 echo "Built runners:"
-ls -lh zig-out/lib/libzigr_benchmarks.so \
-      src/c_call/bench.c.so \
+ls -lh zig-out/lib/zigr_benchmarks.so \
+      src/c_call/bench.so \
       src/cpp/rcpp_benchmarks.so \
       src/extendr/extendr_benchmarks.so \
       src/savvy/savvy_benchmarks.so \

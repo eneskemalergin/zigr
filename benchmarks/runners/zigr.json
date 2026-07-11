@@ -2,13 +2,23 @@
   "name": "zigr",
   "label": "zigr (Zig)",
   "build_command": "zig build -Doptimize=ReleaseFast",
-  "so_path": "zig-out/lib/libzigr_benchmarks.so",
+  "so_path": "zig-out/lib/zigr_benchmarks.so",
   "extra_so_paths": [
-    "zig-out/lib/libzigr_benchmarks_task28.so"
+    "zig-out/lib/zigr_benchmarks_task28.so"
   ],
   "call_type": ".Call",
+  "registered_symbols": true,
+  "package_name": "zigr_benchmarks",
+  "registration_fixture": {
+    "scalar": "zigr_fixture_scalar",
+    "vector": "zigr_fixture_vector",
+    "new": "zigr_fixture_new",
+    "method": "zigr_fixture_method",
+    "error": "zigr_fixture_error",
+    "external": "zigr_fixture_external"
+  },
   "package_overrides": {
-    "28_cholesky": "libzigr_benchmarks_task28"
+    "28_cholesky": "zigr_benchmarks_task28"
   },
   "exports": {
     "01_vectorsum": "zigr_bench_vectorsum",

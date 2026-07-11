@@ -2,8 +2,18 @@
   "name": "c_call",
   "label": "c_call (C)",
   "build_command": "make",
-  "so_path": "src/c_call/bench.c.so",
+  "so_path": "src/c_call/bench.so",
   "call_type": ".Call",
+  "registered_symbols": true,
+  "package_name": "bench",
+  "registration_fixture": {
+    "scalar": "c_fixture_scalar",
+    "vector": "c_fixture_vector",
+    "new": "c_fixture_new",
+    "method": "c_fixture_method",
+    "error": "c_fixture_error",
+    "external": "c_fixture_external"
+  },
   "exports": {
     "01_vectorsum": "c_call_bench_vectorsum",
     "02_elem_ops": "c_call_bench_elem_ops",

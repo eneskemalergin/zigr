@@ -66,7 +66,7 @@ t45 <- function() {
   cat("  Building x86_64-linux...\n")
   unlink("zig-out", recursive = TRUE)
   run_cmd(sprintf('"%s" build %s', zig_bin, build_flags), "native build")
-  native_so <- "zig-out/lib/libzigr_benchmarks.so"
+  native_so <- "zig-out/lib/zigr_benchmarks.so"
   native_size <- if (file.exists(native_so)) file.info(native_so)$size else NA
 
   # Cross: aarch64-linux (compile only, link may fail without R lib for target)
@@ -76,7 +76,7 @@ t45 <- function() {
     sprintf('"%s" build %s -Dtarget=aarch64-linux', zig_bin, build_flags),
     "aarch64-linux build"
   )
-  aarch64_so <- "zig-out/lib/libzigr_benchmarks.so"
+  aarch64_so <- "zig-out/lib/zigr_benchmarks.so"
   aarch64_size <- if (file.exists(aarch64_so)) file.info(aarch64_so)$size else NA
 
   # Cross: x86_64-windows (compile only, link likely fails)
@@ -86,7 +86,7 @@ t45 <- function() {
     sprintf('"%s" build %s -Dtarget=x86_64-windows', zig_bin, build_flags),
     "x86_64-windows build"
   )
-  win_so <- "zig-out/lib/libzigr_benchmarks.dll"
+  win_so <- "zig-out/lib/zigr_benchmarks.dll"
   win_size <- if (file.exists(win_so)) file.info(win_so)$size else NA
 
   list(

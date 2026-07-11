@@ -47,6 +47,54 @@ extern SEXP c_call_bench_serialize_roundtrip(SEXP);
 extern SEXP c_call_bench_external_ptr(SEXP);
 extern SEXP c_call_bench_rng_stress(SEXP);
 
+static int fixture_state = 0;
+
+static SEXP c_fixture_scalar(SEXP value) {
+    if (TYPEOF(value) != REALSXP || XLENGTH(value) != 1) {
+        Rf_error("c fixture scalar expected one REAL value");
+    }
+    return Rf_ScalarReal(REAL(value)[0]);
+}
+
+static SEXP c_fixture_vector(SEXP value) {
+    if (TYPEOF(value) != REALSXP) {
+        Rf_error("c fixture vector expected a REAL vector");
+    }
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < XLENGTH(value); ++i) total += REAL(value)[i];
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_fixture_new(void) {
+    fixture_state = 0;
+    return R_MakeExternalPtr(&fixture_state, R_NilValue, R_NilValue);
+}
+
+static SEXP c_fixture_method(SEXP receiver, SEXP amount) {
+    if (TYPEOF(receiver) != EXTPTRSXP || R_ExternalPtrAddr(receiver) == NULL) {
+        Rf_error("c fixture method expected a live external pointer");
+    }
+    if (TYPEOF(amount) != INTSXP || XLENGTH(amount) != 1 || INTEGER(amount)[0] == NA_INTEGER) {
+        Rf_error("c fixture method expected one non-missing integer");
+    }
+    int *state = (int *) R_ExternalPtrAddr(receiver);
+    *state += INTEGER(amount)[0];
+    return Rf_ScalarInteger(*state);
+}
+
+static SEXP c_fixture_error(SEXP value) {
+    (void) value;
+    Rf_error("c fixture error: expected failure");
+    return R_NilValue;
+}
+
+static SEXP c_fixture_external(SEXP args) {
+    if (args == R_NilValue || TYPEOF(CADR(args)) != REALSXP || XLENGTH(CADR(args)) != 1) {
+        Rf_error("c fixture external expected one REAL value");
+    }
+    return Rf_ScalarReal(REAL(CADR(args))[0] + 1.0);
+}
+
 static const R_CallMethodDef CallEntries[] = {
   {"c_call_bench_vectorsum",        (DL_FUNC) &c_call_bench_vectorsum,        1},
   {"c_call_bench_elem_ops",         (DL_FUNC) &c_call_bench_elem_ops,         1},
@@ -92,10 +140,21 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_call_bench_serialize_roundtrip",(DL_FUNC)&c_call_bench_serialize_roundtrip,1},
   {"c_call_bench_external_ptr",     (DL_FUNC) &c_call_bench_external_ptr,     1},
   {"c_call_bench_rng_stress",       (DL_FUNC) &c_call_bench_rng_stress,       1},
+  {"c_fixture_scalar",               (DL_FUNC) &c_fixture_scalar,               1},
+  {"c_fixture_vector",               (DL_FUNC) &c_fixture_vector,               1},
+  {"c_fixture_new",                  (DL_FUNC) &c_fixture_new,                  0},
+  {"c_fixture_method",               (DL_FUNC) &c_fixture_method,               2},
+  {"c_fixture_error",                (DL_FUNC) &c_fixture_error,                1},
+  {NULL, NULL, 0}
+};
+
+static const R_ExternalMethodDef ExternalEntries[] = {
+  {"c_fixture_external", (DL_FUNC) &c_fixture_external, 1},
   {NULL, NULL, 0}
 };
 
 void R_init_bench(DllInfo *dll) {
-    R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
+    R_registerRoutines(dll, NULL, CallEntries, NULL, ExternalEntries);
     R_useDynamicSymbols(dll, FALSE);
+    R_forceSymbols(dll, TRUE);
 }

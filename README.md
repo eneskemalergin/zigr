@@ -67,10 +67,10 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 
 ## What you get
 
-22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces the CRAN-mandated `R_init_`, `R_registerRoutines`, and `R_useDynamicSymbols` automatically. No registration boilerplate.
+22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
 
 - SEXP types and 24 classification helpers
-- PROTECT/UNPROTECT with R_UnwindProtect longjmp safety
+- PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated arena-backed cleanup is being hardened in P1
 - Type conversion (real, int, string, logical, raw, complex)
 - Zero-copy export views for numeric, complex, and read-only string inputs via `convert.StringSliceView`
 - SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
