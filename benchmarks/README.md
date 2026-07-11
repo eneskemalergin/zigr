@@ -2,7 +2,7 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. `results/CANONICAL_RUN.json` identifies the current published baseline. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
+Six runner backends. The published report below records canonical run `p0-7-20260710-full`; a local promotion writes `results/CANONICAL_RUN.json`, but `results/` is intentionally ignored because raw samples are large and regenerated. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
 
 - **r** (R baseline): 81 manifest task references in `src/r/run_all.R`
 - **zigr** (Zig): 44 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
@@ -88,33 +88,53 @@ The boundary budget baseline is complete focused run `20260711T232455Z-pid2`: re
 
 Most small boundary pairs are below the 0.01 ms timer floor, so their ratios remain visible but do not decide acceptance. The large ordinary numeric pair is above the floor and low-noise: generated `0.08410 ms`, handwritten `0.08332 ms`, absolute overhead `0.00078 ms`, ratio `1.00936x`, and CV 7.48%/9.02%. It passes the `0.01 ms` and `1.10x` limits. The integer ALTREP rows use different ownership strategies, so the generated `0.31285 ms` contiguous copy is budgeted on its own and is not judged against the handwritten region stream.
 
-| Class | Current maximum generated median | Budget | Eligible overhead current / budget | Eligible ratio current / budget |
-| --- | ---: | ---: | ---: | ---: |
-| Safe wrapper | 0.00177 ms | 0.01 ms | N/A | N/A |
-| Scalar and optional | 0.00176 ms | 0.01 ms | N/A | N/A |
-| Borrowed numeric/raw/complex | 0.08410 ms | 0.12 ms | 0.00078 / 0.01 ms | 1.00936x / 1.10x |
-| Copied ALTREP | 0.31285 ms | 0.40 ms | N/A | N/A |
-| String view | 0.00213 ms | 0.01 ms | N/A | N/A |
-| Fixed schema | 0.00194 ms | 0.01 ms | N/A | N/A |
-| Typed method | 0.00182 ms | 0.01 ms | N/A | N/A |
+The category rows below publish the generated warm median beside the separately measured cold call and endpoint RSS. The first zero-argument call includes process-local lazy initialization, so its `0.836 ms` cold value and 188 KiB endpoint delta are not treated as steady-state wrapper cost. Every other endpoint delta was zero. RSS is still a post-GC endpoint observation, not peak memory.
+
+| Boundary category   | Warm median | Absolute delta vs handwritten | Cold call | Endpoint RSS | Samples | Comparison          |
+| ------------------- | ----------: | ----------------------------: | --------: | -----------: | ------: | ------------------- |
+| Zero argument       | 0.001680 ms |                   0.000030 ms |  0.836 ms |      188 KiB |     500 | Below floor         |
+| Scalar              | 0.001720 ms |                   0.000110 ms |  0.017 ms |        0 KiB |     500 | Below floor         |
+| Optional `NULL`     | 0.001710 ms |                   0.000160 ms |  0.016 ms |        0 KiB |     500 | Below floor         |
+| Optional typed `NA` | 0.001760 ms |                   0.000125 ms |  0.016 ms |        0 KiB |     500 | Below floor         |
+| Small numeric       | 0.001810 ms |                   0.000220 ms |  0.016 ms |        0 KiB |     500 | Below floor         |
+| Large numeric       | 0.084100 ms |                   0.000780 ms |  0.108 ms |        0 KiB |     500 | Eligible            |
+| Integer ALTREP      | 0.312850 ms |                   0.202570 ms |  0.396 ms |        0 KiB |     500 | Different ownership |
+| String view         | 0.002130 ms |                   0.000460 ms |  0.018 ms |        0 KiB |     500 | Below floor         |
+| Raw                 | 0.001780 ms |                   0.000020 ms |  0.018 ms |        0 KiB |     500 | Below floor         |
+| Complex             | 0.001740 ms |                   0.000140 ms |  0.033 ms |        0 KiB |     500 | Below floor         |
+| Fixed schema        | 0.001940 ms |                   0.000150 ms |  0.017 ms |        0 KiB |     500 | Below floor         |
+| Typed method        | 0.001815 ms |                   0.000135 ms |  0.016 ms |        0 KiB |     500 | Below floor         |
+| `.External`         | 0.001770 ms |                   0.000150 ms |  0.017 ms |        0 KiB |     500 | Below floor         |
+
+| Class                        | Current maximum generated median |  Budget | Eligible overhead current / budget | Eligible ratio current / budget |
+| ---------------------------- | -------------------------------: | ------: | ---------------------------------: | ------------------------------: |
+| Safe wrapper                 |                       0.00177 ms | 0.01 ms |                                N/A |                             N/A |
+| Scalar and optional          |                       0.00176 ms | 0.01 ms |                                N/A |                             N/A |
+| Borrowed numeric/raw/complex |                       0.08410 ms | 0.12 ms |                  0.00078 / 0.01 ms |                1.00936x / 1.10x |
+| Copied ALTREP                |                       0.31285 ms | 0.40 ms |                                N/A |                             N/A |
+| String view                  |                       0.00213 ms | 0.01 ms |                                N/A |                             N/A |
+| Fixed schema                 |                       0.00194 ms | 0.01 ms |                                N/A |                             N/A |
+| Typed method                 |                       0.00182 ms | 0.01 ms |                                N/A |                             N/A |
 
 Representation budgets retain setup work and ownership differences instead of combining them into one score:
 
-| Task | Current median | Budget | Signal |
-| --- | ---: | ---: | --- |
-| String view, one pass | 0.38325 ms | 0.50 ms | above floor, CV 4.55% |
-| String cache build | 0.96667 ms | 1.20 ms | above floor, CV 5.85% |
-| String cache plus one pass | 0.98778 ms | 1.25 ms | above floor, CV 5.67% |
-| String headers, one pass | 0.55555 ms | 0.70 ms | above floor, CV 6.61% |
-| String view, four passes | 1.54981 ms | 1.90 ms | above floor, CV 3.19% |
-| String cache, four passes | 1.05715 ms | 1.35 ms | above floor, CV 7.00% |
-| String headers, four passes | 0.57154 ms | 0.75 ms | above floor, CV 6.37% |
-| Raw view | 0.00714 ms | 0.01 ms | below floor, CV 79.07% |
-| Raw copy | 0.15097 ms | 0.20 ms | above floor, CV 16.53% |
-| Complex view | 0.02928 ms | 0.05 ms | above floor, CV 40.63% |
-| Complex return | 0.04378 ms | 0.06 ms | above floor, CV 36.68% |
+| Task                        | Current median |  Budget | Signal                 |
+| --------------------------- | -------------: | ------: | ---------------------- |
+| String view, one pass       |     0.38325 ms | 0.50 ms | above floor, CV 4.55%  |
+| String cache build          |     0.96667 ms | 1.20 ms | above floor, CV 5.85%  |
+| String cache plus one pass  |     0.98778 ms | 1.25 ms | above floor, CV 5.67%  |
+| String headers, one pass    |     0.55555 ms | 0.70 ms | above floor, CV 6.61%  |
+| String view, four passes    |     1.54981 ms | 1.90 ms | above floor, CV 3.19%  |
+| String cache, four passes   |     1.05715 ms | 1.35 ms | above floor, CV 7.00%  |
+| String headers, four passes |     0.57154 ms | 0.75 ms | above floor, CV 6.37%  |
+| Raw view                    |     0.00714 ms | 0.01 ms | below floor, CV 79.07% |
+| Raw copy                    |     0.15097 ms | 0.20 ms | above floor, CV 16.53% |
+| Complex view                |     0.02928 ms | 0.05 ms | above floor, CV 40.63% |
+| Complex return              |     0.04378 ms | 0.06 ms | above floor, CV 36.68% |
 
 Every row reached the 500-sample cap rather than the 1% rolling-CV stop. New runs store full-precision samples; summaries remain rounded for display, while intervals, CV classification, and budget decisions use the stored samples. The reports retain exact median intervals, timer-floor status, cold-call time, endpoint RSS, sample count, and stopping condition. Complex view and return remain noisy diagnostics even though their medians are above the timer floor. Error, longjmp, finalizer, and forced-GC behavior remain runtime safety gates, not performance budgets.
+
+ReleaseSafe allocation diagnostics remain outside these ReleaseFast timings. The ordinary numeric view recorded zero allocator calls. A 1,024-element compact integer ALTREP recorded one 4,096-byte allocation and one matching free. A three-element cached string view recorded one metadata allocation and one matching free. Fixed scalar-schema parsing recorded zero allocator calls. The cleanup diagnostic recorded one cleanup frame, one unwind boundary, and protection depth one; separate runtime cases exercise the full 16-frame capacity. Forced-GC ownership tests cover generated numeric, raw, string, cached-string, fixed-schema, call-expression, fixed-tier, and spilled results. Typed external-pointer tests require one finalization and verify an idempotent second finalizer call. These are exact safety assertions from the 237-test ReleaseSafe runtime suite, not inferred counts from RSS.
 
 ## Results (canonical baseline)
 
@@ -137,13 +157,13 @@ Ratios are runner median divided by the reference median; lower is better. Aggre
 
 ### Category results for zigr
 
-| Category       | Tasks | Aggregate tasks | Low-noise aggregate tasks | Median vs R | Geomedian vs R | Median vs best native | Geomedian vs best native |
-| ------------- | -----: | --------------: | --------------: | -----------: | --------------: | ---------------------: | ------------------------: |
-| kernels       | 11    | 11              | 8               | 0.297        | 0.222           | 1.110                  | 1.110                     |
-| boundary      | 13    | 13              | 3               | 0.166        | 0.108           | 1.043                  | 1.043                     |
-| altrep        | 8     | 8               | 6               | 1.232        | 0.519           | 1.149                  | 1.116                     |
-| r_runtime     | 6     | 4               | 2               | 0.975        | 0.805           | 1.010                  | 1.065                     |
-| synthetic_api | 6     | 0               | 0               | NA           | NA              | NA                     | NA                        |
+| Category      | Tasks | Aggregate tasks | Low-noise aggregate tasks | Median vs R | Geomedian vs R | Median vs best native | Geomedian vs best native |
+| ------------- | ----: | --------------: | ------------------------: | ----------: | -------------: | --------------------: | -----------------------: |
+| kernels       |    11 |              11 |                         8 |       0.297 |          0.222 |                 1.110 |                    1.110 |
+| boundary      |    13 |              13 |                         3 |       0.166 |          0.108 |                 1.043 |                    1.043 |
+| altrep        |     8 |               8 |                         6 |       1.232 |          0.519 |                 1.149 |                    1.116 |
+| r_runtime     |     6 |               4 |                         2 |       0.975 |          0.805 |                 1.010 |                    1.065 |
+| synthetic_api |     6 |               0 |                         0 |          NA |             NA |                    NA |                       NA |
 
 ### Task-level wins and parity
 
@@ -151,32 +171,32 @@ zigr is the fastest native runner on 17 aggregate tasks: `01_vectorsum`, `04_sor
 
 ### Material losses and low-noise review
 
-| Task                  | Best native | zigr vs best | Signal |
-| --------------------- | ----------- | -----------: | ------ |
-| 03_memcpy_bandwidth   | extendr     | 1.868x       | noisy, CV 42.92% |
-| 21_attrib_ops         | savvy       | 1.429x       | below timer floor, CV 151.69% |
-| 05_fib_recursive      | rcpp        | 1.424x       | low-noise, CV 6.69% |
-| 38_struct_convert     | extendr     | 1.258x       | below timer floor, CV 147.91% |
-| 30_altrep_create      | savvy       | 1.207x       | below timer floor, CV 156.81% |
-| 34_altrep_sum_via_R   | c_call      | 1.182x       | below timer floor, CV 133.75% |
-| 32_altrep_elt_walk    | extendr     | 1.156x       | low-noise, CV 3.27% |
-| 36_altrep_min_max     | savvy       | 1.150x       | low-noise, CV 5.21% |
-| 35_altrep_sum_native  | savvy       | 1.149x       | low-noise, CV 3.84% |
-| 02_elem_ops           | c_call      | 1.148x       | noisy, CV 35.92% |
-| 24_long_vector_idx    | savvy       | 1.145x       | noisy/below floor, CV 60.29% |
-| 37_altrep_no_na_query | savvy       | 1.101x       | low-noise, CV 9.06% |
+| Task                  | Best native | zigr vs best | Signal                        |
+| --------------------- | ----------- | -----------: | ----------------------------- |
+| 03_memcpy_bandwidth   | extendr     |       1.868x | noisy, CV 42.92%              |
+| 21_attrib_ops         | savvy       |       1.429x | below timer floor, CV 151.69% |
+| 05_fib_recursive      | rcpp        |       1.424x | low-noise, CV 6.69%           |
+| 38_struct_convert     | extendr     |       1.258x | below timer floor, CV 147.91% |
+| 30_altrep_create      | savvy       |       1.207x | below timer floor, CV 156.81% |
+| 34_altrep_sum_via_R   | c_call      |       1.182x | below timer floor, CV 133.75% |
+| 32_altrep_elt_walk    | extendr     |       1.156x | low-noise, CV 3.27%           |
+| 36_altrep_min_max     | savvy       |       1.150x | low-noise, CV 5.21%           |
+| 35_altrep_sum_native  | savvy       |       1.149x | low-noise, CV 3.84%           |
+| 02_elem_ops           | c_call      |       1.148x | noisy, CV 35.92%              |
+| 24_long_vector_idx    | savvy       |       1.145x | noisy/below floor, CV 60.29%  |
+| 37_altrep_no_na_query | savvy       |       1.101x | low-noise, CV 9.06%           |
 
 The remaining low-noise losses are near parity: `39_r_eval` (1.001x), `31_altrep_materialize` (1.005x), and `28_cholesky` (1.007x). `09_longjmp_safety` and `43_rng_stress` are also low-noise task-level losses but are excluded because their strategies or outputs are not directly comparable. Task `07b_protect_scaling` is not evidence about binding design: zigr executes the protection loop, while the Savvy fixture returns a scalar without performing it. The task remains excluded, and its cross-runner timing must not be interpreted.
 
 ### Exclusions and skipped correctness comparisons
 
-| Tasks | Policy | Reason |
-| ----- | ------ | ------ |
-| 07a, 07b | native invariant | R API protection loops have no shared R semantic reference |
+| Tasks      | Policy           | Reason                                                               |
+| ---------- | ---------------- | -------------------------------------------------------------------- |
+| 07a, 07b   | native invariant | R API protection loops have no shared R semantic reference           |
 | 08, 10, 11 | native invariant | Direct SEXP inspection/allocation has no shared R semantic reference |
-| 09 | native invariant | Native error and unwind strategies differ |
-| 42 | native invariant | Pointer identity and finalization are not shared R values |
-| 43 | nondeterministic | Random output is not compared by value |
+| 09         | native invariant | Native error and unwind strategies differ                            |
+| 42         | native invariant | Pointer identity and finalization are not shared R values            |
+| 43         | nondeterministic | Random output is not compared by value                               |
 
 These tasks still passed their declared structural or native-invariant correctness contracts and remain available in `task_comparisons.csv`; they simply do not define the primary aggregate.
 

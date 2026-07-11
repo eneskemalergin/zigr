@@ -78,6 +78,9 @@ jobs:
 
       - run: zig build test
 
+      - name: Run live R runtime tests
+        run: Rscript tests/run_r_tests.R
+
   build-macos:
     name: build + test (macOS)
     runs-on: macos-latest
@@ -132,4 +135,3 @@ jobs:
         shell: Rscript {0}
 
       - run: zig build test
-

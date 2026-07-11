@@ -62,7 +62,7 @@ export R_HOME=/usr/lib/R
 export R_INCLUDE=/usr/share/R/include
 zig build check   # verify setup + formatting
 zig build test    # run standalone tests
-zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.R)
+Rscript tests/run_r_tests.R  # build and run the live R runtime suite
 ```
 
 ## What you get
@@ -111,6 +111,92 @@ I keep native state explicit. `generateMethods(T, ...)` accepts a method only wh
 
 Use `externalptr.makeTyped(T, ptr, backing)` for a borrowed `*T`. `backing` remains reachable through the pointer's typed metadata and keeps R-owned state alive. `makeTypedRaw` is the explicit interop escape hatch for an erased address. The caller still owns the native lifetime: these checks do not prove that arbitrary foreign C memory remains valid. Use `externalptr.createTyped` when R should own a `c_allocator` value; its finalizer clears the address before running `deinit` and freeing it.
 
+### Generated exports
+
+I keep the generated layer small. `generateExports` builds registered `.Call` and `.External` tables from ordinary Zig functions. `generateMethods` does the same for functions whose first parameter is exactly `*T`. The package root still owns `R_init_<package>` and calls each generated `init` hook. Registration records the Zig parameter count as the R arity and disables dynamic symbol lookup.
+
+`.Call` passes each R argument directly. `.External` receives R's pairlist and the wrapper extracts the declared arguments before conversion. A generated function supports up to eight parameters. A generated method supports the receiver plus four parameters; the receiver is the first R argument for both call styles. Method symbols are registered as `<zig_type>__<name>`, with dots in the Zig type name replaced by underscores.
+
+| Zig boundary type | Parameter | Return | R contract |
+| --- | :---: | :---: | --- |
+| `f64`, `i32`, `bool` | yes | yes | Exactly one REAL, INTEGER, or LOGICAL value; required typed `NA` is an error |
+| `?f64`, `?i32`, `?bool` | yes | yes | `NULL` or one typed `NA` becomes `null`; a null return becomes `NULL`; real `NaN` remains a value |
+| `[]const f64`, `[]const i32` | yes | yes | Ordinary input is borrowed; ALTREP input may be copied into call-scoped storage |
+| `StringSliceView`, `CachedStringSliceView`, `[]const []const u8` | yes | no, no, yes | The two view types preserve `NA` and encoding metadata; the slice-of-slices form owns call-scoped headers and discards that metadata |
+| `RawSliceView`, `[]const u8` | yes | no, yes | Raw bytes are not strings; the view borrows ordinary RAWSXP storage and may own an ALTREP fallback |
+| `[]const convert.Rcomplex` | yes | yes | Uses R's complex layout and preserves component-level NA/NaN values |
+| `void` | no | yes | Returns `NULL` |
+| `R.SEXP` | yes | yes | Direct escape hatch with no conversion, ownership, or type guarantee |
+
+Structs are deliberately absent from this table. Use an `R.SEXP` adapter and call `convert.tryFromSEXP`, `convert.fromSEXP`, or `convert.asSEXP` when a fixed named-list schema belongs at the boundary. Generated functions must handle Zig error unions themselves, and they must not panic.
+
+```zig
+const R = @import("R");
+const zigr = @import("zigr");
+
+fn sum(values: []const f64) f64 {
+    var total: f64 = 0;
+    for (values) |value| total += value;
+    return total;
+}
+
+const Exports = zigr.@"export".generateExports(
+    &.{.{ .name = "my_sum", .func = sum }},
+    &.{},
+);
+
+export fn R_init_mypackage(info: *R.DllInfo) callconv(.c) void {
+    Exports.init(info);
+}
+```
+
+The R wrapper can then use `.Call("my_sum", x)`. Package code should normally add R-side defaults, coercion, and user-facing error context there instead of making the native core guess.
+
+### Boundary ownership
+
+Borrowed numeric, raw, complex, and string views are valid only for the enclosing generated call. A direct ordinary vector does not copy its payload. An ALTREP fallback and copied string metadata live in the wrapper's two-tier arena: the first 8 KiB is fixed call storage, and overflow uses unwind-safe native allocation. Neither tier may escape the call.
+
+Returned vectors and strings are new R objects. Fixed-schema lists are also R-owned, but callers must protect an unprotected constructor result before another allocating R call. `RAllocator` is for explicit R-managed allocations; `CountingAllocator` is diagnostic-only and does not count R heap or unrelated libc work. Native state created with `createTyped` is owned by its finalizer. Borrowed pointers created with `makeTyped` remain the caller's lifetime responsibility.
+
+Every generated wrapper runs inside `R_UnwindProtect`. Conversion scratch, arena spill, protected temporaries, and registered cleanup are released on normal return and R longjmp. Zig `defer` alone is not a longjmp boundary. A finalizer clears its external pointer before destruction so a repeated finalizer cannot free the same value twice.
+
+### What each reference proves
+
+| Path | Role here | What I use it for | What it does not prove |
+| --- | --- | --- | --- |
+| R | Semantic correctness reference | Types, values, attributes, NA/NaN, and encoding | Native boundary cost |
+| Handwritten C | ABI and R C API reference | Registration, protection, pointer checks, and comparable C entry points | zigr's generated-wrapper cost |
+| Handwritten Zig | Kernel reference | The canonical compute baseline and the cost beneath generated glue | The public generated API |
+| Generated zigr | Public target | Conversion, unwind, ownership, methods, and package-shaped registration | Higher-level package ergonomics or all-platform readiness |
+| Savvy | Architectural reference | Generated registration, typed ownership distinctions, result and unwind design | A direct performance baseline for zigr; most local Savvy rows use raw FFI |
+
+The published kernel report in `benchmarks/README.md` records canonical run `p0-7-20260710-full`. The published generated-boundary report there records focused run `20260711T232455Z-pid2`. Local raw runs and the promotion pointer live under the ignored `benchmarks/results/` tree, so I do not present those paths as files shipped by the repository. The two reports answer different questions and are not combined into one score.
+
+### Acceptance checks
+
+I use the existing flows for acceptance:
+
+```bash
+zig build fmt
+zig build check -Doptimize=ReleaseSafe
+zig build test -Doptimize=ReleaseSafe
+Rscript tests/run_r_tests.R
+cd benchmarks
+Rscript check_coverage.R
+Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75
+```
+
+The command above is the generated-versus-handwritten development smoke. It validates the run artifacts before marking the run complete, but it deliberately omits representation rows and cannot be exported as a budget baseline. A boundary baseline uses every boundary and representation row:
+
+```bash
+Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86 --build
+Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
+```
+
+The exporter validates the complete artifact again and rejects a stale budget policy or a failed budget. A full six-runner release baseline still uses an unfiltered `run_benchmarks.R` invocation. Every path keeps the unchanged adaptive policy. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
+
+This bare core does not close the later work. Cross-target ABI fallback and compatibility belong to portability work; advanced ALTREP classes belong to integrations; reflective schemas, coercion, and higher-level objects belong to ergonomics; package workloads and end-to-end memory belong to application benchmarks; all-platform release and CRAN readiness belong to release engineering.
+
 ## CI
 
 Every push and pull request runs:
@@ -118,8 +204,7 @@ Every push and pull request runs:
 - `zig fmt` (format compliance)
 - Cross-compilation check (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
 - `zig build test` (unit tests on ubuntu, macOS experimental, Windows experimental)
-- System diagnostics (build time, binary size, cross-compile time, memory allocation count)
-- Sanity check (zigr runner on tasks 1 and 18)
+- Live R runtime tests on Ubuntu, including generated wrappers, GC, finalizers, and unwind recovery
 
 macOS and Windows builds use `continue-on-error`. Native cross-compilation from Linux covers all three CRAN targets plus aarch64 variants.
 
