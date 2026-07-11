@@ -16,7 +16,13 @@
         "68_p13_complex_generated", "69_p13_complex_handwritten",
         "70_p13_schema_generated", "71_p13_schema_handwritten",
         "72_p13_external_method_generated", "73_p13_external_method_handwritten",
-        "74_p13_external_generated", "75_p13_external_handwritten"
+        "74_p13_external_generated", "75_p13_external_handwritten",
+        "76_p17_string_view_one", "77_p17_string_cache_build",
+        "78_p17_string_cache_one", "79_p17_string_headers_one",
+        "80_p17_string_view_repeated", "81_p17_string_cache_repeated",
+        "82_p17_string_headers_repeated", "83_p17_raw_view",
+        "84_p17_raw_copy", "85_p17_complex_view",
+        "86_p17_complex_return"
     ],
     "exports": {
         "01_vectorsum": "savvy_bench_vectorsum__impl",

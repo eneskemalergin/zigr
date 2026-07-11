@@ -26,7 +26,8 @@
 //! Errors signal Rf_error instead of panicking.
 //!
 //! Supported types: []const f64, []const i32, []const []const u8,
-//! convert.StringSliceView, []const u8 (RAWSXP), []const Rcomplex,
+//! convert.StringSliceView, convert.CachedStringSliceView,
+//! convert.RawSliceView, []const u8 (copied RAWSXP), []const Rcomplex,
 //! f64, i32, bool, ?f64, ?i32, ?bool,
 //! void, R.SEXP.
 //! The P1 contract requires scalar f64/i32/bool to receive a non-NA
@@ -40,7 +41,14 @@
 //! extract via R.STRING_ELT inside the function body.
 //! `[]const []const u8` still allocates slice headers because Zig needs a
 //! concrete slice-of-slices container. `convert.StringSliceView` is the
-//! zero-copy input-only alternative for read-only string access.
+//! header-free input-only alternative for read-only string access. Encoding
+//! translation can still allocate R transient storage for the call.
+//! `convert.CachedStringSliceView` allocates one metadata buffer and is only
+//! appropriate when the declared function performs repeated passes.
+//! `convert.RawSliceView` avoids an ordinary raw payload copy; `[]const u8`
+//! keeps the older explicit copied-byte conversion. Generated wrappers enter
+//! `protectCallData`, so native string-header/cache allocation and any raw or
+//! complex fallback allocation has an active longjmp cleanup boundary.
 
 const std = @import("std");
 const R = @import("R");
@@ -143,6 +151,9 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime T == convert.StringSliceView) {
         return convert.toStringSliceView(sexp) catch |err| signalErrorMsg("toStringSliceView", @errorName(err));
     }
+    if (comptime T == convert.CachedStringSliceView) {
+        return convert.toCachedStringSliceView(arena, sexp) catch |err| signalErrorMsg("toCachedStringSliceView", @errorName(err));
+    }
     if (comptime T == f64) {
         return convert.toRealScalar(sexp) catch |err| convert.signalError(err);
     }
@@ -154,6 +165,9 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     }
     if (comptime T == []const u8) {
         return convert.toRawSlice(arena, sexp) catch |err| signalErrorMsg("toRawSlice", @errorName(err));
+    }
+    if (comptime T == convert.RawSliceView) {
+        return convert.toRawSliceView(arena, sexp) catch |err| signalErrorMsg("toRawSliceView", @errorName(err));
     }
     if (comptime T == []const convert.Rcomplex) {
         const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
@@ -247,6 +261,7 @@ const TwoTierArena = struct {
 
 fn needsInputArena(comptime T: type) bool {
     if (comptime T == convert.StringSliceView) return false;
+    if (comptime T == convert.RawSliceView or T == convert.CachedStringSliceView) return true;
     return switch (@typeInfo(T)) {
         .optional => |info| needsInputArena(info.child),
         .pointer => |info| info.size == .slice,
@@ -670,6 +685,8 @@ test "scalar and optional scalar wrappers do not need an arena" {
     try std.testing.expect(!needsInputArena(?i32));
     try std.testing.expect(!needsInputArena(?bool));
     try std.testing.expect(!needsInputArena(convert.StringSliceView));
+    try std.testing.expect(needsInputArena(convert.RawSliceView));
+    try std.testing.expect(needsInputArena(convert.CachedStringSliceView));
     try std.testing.expect(needsInputArena([]const f64));
     try std.testing.expect(needsInputArena([]const u8));
 }

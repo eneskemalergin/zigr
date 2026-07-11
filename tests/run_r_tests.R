@@ -147,6 +147,8 @@ tests <- list(
   "zigr_test_altraw_create",
   "zigr_test_altcomplex_create",
   "zigr_test_altstring_create",
+  "zigr_test_p17_string_representations",
+  "zigr_test_p17_altstring_inputs",
   "zigr_test_p15_borrowed_views",
   "zigr_test_p15_compact_altrep_views",
   "zigr_test_p15_short_region",
@@ -268,6 +270,10 @@ tests <- list(
   "zigr_test_p16_generated_ownership_gc",
   list(name="zigr_test_p16_generated_spill_longjmp", expect_error=TRUE),
   "zigr_test_p16_externalptr_finalizer",
+  "zigr_test_p17_raw_views",
+  "zigr_test_p17_complex_boundary",
+  "zigr_test_p17_generated_string_shapes",
+  "zigr_test_p17_string_allocation_longjmp",
 
   # Export system: error signaling
   list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),
@@ -329,6 +335,7 @@ tests <- list(
   "zigr_fuzz_toStringSlice_type",
   "zigr_fuzz_toListSlice_type",
   "zigr_fuzz_toRawSlice_type",
+  "zigr_fuzz_toRawSliceView_type",
   "zigr_fuzz_toRealSliceView_type",
   "zigr_fuzz_toIntSliceView_type",
   "zigr_fuzz_toComplexSlice_type",

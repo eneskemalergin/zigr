@@ -44,7 +44,7 @@ validate_task_manifest <- function(manifest) {
   if (length(missing) > 0L) {
     stop(sprintf("task manifest missing columns: %s", paste(missing, collapse = ", ")))
   }
-  if (nrow(manifest) != 70L) stop(sprintf("task manifest must contain 70 rows, got %d", nrow(manifest)))
+  if (nrow(manifest) != 81L) stop(sprintf("task manifest must contain 81 rows, got %d", nrow(manifest)))
   if (anyDuplicated(manifest$task)) stop("task manifest contains duplicate task IDs")
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
   if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
@@ -125,6 +125,7 @@ validate_result_contract <- function(value, contract) {
     real_scalar = is.double(value) && is.null(dim(value)) && length(value) == 1L,
     integer_scalar = is.integer(value) && is.null(dim(value)) && length(value) == 1L,
     real_vector = is.double(value) && is.null(dim(value)),
+    complex_vector = is.complex(value) && is.null(dim(value)),
     named_real_vector = is.double(value) && is.null(dim(value)) && !is.null(names(value)),
     real_matrix = is.double(value) && !is.null(dim(value)) && length(dim(value)) == 2L,
     real_list = is.list(value),

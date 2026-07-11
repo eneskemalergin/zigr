@@ -2,10 +2,10 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. The current published baseline is `p0-7-20260710-full`, referenced by `results/CANONICAL_RUN.json`. The canonical P0 comparison remains 44 tasks; P1.3 adds 26 focused generated-boundary rows without changing that aggregate. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
+Six runner backends. The current published baseline is `p0-7-20260710-full`, referenced by `results/CANONICAL_RUN.json`. The canonical P0 comparison remains 44 tasks; P1.3 adds 26 focused generated-boundary rows and P1.7 adds 11 representation diagnostics without changing that aggregate. extendr uses raw FFI wrappers for 4 tasks (matmul, struct_convert, external_ptr, rng_stress) where extendr's `#[extendr]` Robj wrapper caused Rust double-panics.
 
-- **r** (R baseline): 70 manifest task references in `src/r/run_all.R`
-- **zigr** (Zig): 44 direct task files plus registered P1.3 fixtures under `src/zig/`, built via `build.zig`
+- **r** (R baseline): 81 manifest task references in `src/r/run_all.R`
+- **zigr** (Zig): 44 direct task files plus registered P1.3 and P1.7 fixtures under `src/zig/`, built via `build.zig`
 - **c_call** (C): 44 task files plus P1.3 fixtures in `register.c` under `src/c_call/`
 - **rcpp** (C++): Single `main.cpp` under `src/cpp/`
 - **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`
@@ -13,7 +13,7 @@ Six runner backends. The current published baseline is `p0-7-20260710-full`, ref
 
 ## Task matrix
 
-70 manifest rows: 44 P0 tasks (`01` through `43`, plus `07a`/`07b` splitting original task 07) and 26 P1.3 boundary rows (`50` through `75`).
+81 manifest rows: 44 P0 tasks (`01` through `43`, plus `07a`/`07b` splitting original task 07), 26 P1.3 boundary rows (`50` through `75`), and 11 P1.7 representation diagnostics (`76` through `86`).
 
 - **Layer 1** (tasks 01-06): vector sum, element-wise ops, memory bandwidth, sort, recursion, broadcast
 - **Layer 2** (tasks 07a, 07b, 08-11): PROTECT shallow/scaling, type dispatch, longjmp, SEXP create/inspect
@@ -24,8 +24,9 @@ Six runner backends. The current published baseline is `p0-7-20260710-full`, ref
 - **Layer 6 extra** (task 42): external pointer (non-deterministic, H.2 skipped)
 - **Layer 7** (tasks 44-47): system diagnostics (build time, binary size, cross-compile time, memory allocation counts) (zigr only)
 - **P1.3 boundary pairs** (tasks 50-75): generated/handwritten zero-arg, scalar, optional, materialized numeric, ALTREP conversion diagnostic, string, raw, complex, fixed-schema named-list validation, external-pointer method, and `.External` fixtures. These are `api_overhead` and `non_comparable`; generated and handwritten variants are separated in `analysis_summary.csv`.
+- **P1.7 representation diagnostics** (tasks 76-86): one-pass and declared four-pass `StringSliceView`, cached metadata, and allocated headers; cached metadata construction alone; borrowed and copied RAWSXP; borrowed complex input; and an R-owned complex return. The string input is an ordinary ASCII STRSXP so timing isolates representation rather than R encoding translation. These are `api_overhead` and `non_comparable` because they compare distinct ownership representations rather than substitute implementations.
 
-The P1.3 fixtures are implemented for `r`, `c_call`, and `zigr`. Rcpp, extendr, and Savvy declare the rows as optional until their equivalent public-boundary fixtures are owned by later P1 splits; a full run records those rows as explicit `N/A` rather than timing a mismatched substitute.
+The P1.3 fixtures are implemented for `r`, `c_call`, and `zigr`. The P1.7 diagnostics are implemented for `r` and `zigr`. C, Rcpp, extendr, and Savvy declare the P1.7 rows as optional until their equivalent representation contracts are owned by later P1 work; a full run records those rows as explicit `N/A` rather than timing a mismatched substitute.
 
 The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows deliberately compare zigr's contiguous owned-copy conversion with a handwritten region-stream implementation, so they are a P1.5 conversion-policy diagnostic rather than wrapper-overhead evidence. The schema rows validate a fixed named-list through `SEXP`; generated typed struct conversion is P1.8. The generated method row invokes `generateMethods` on a valid `.Call` receiver; generated tag, foreign-pointer, finalizer, and lifetime guarantees remain P1.9 work.
 

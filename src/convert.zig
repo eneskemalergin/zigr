@@ -1,9 +1,9 @@
 //! Convert between Zig native types and R SEXPs.
 //!
 //! Each vector type has toSlice (allocate on caller's allocator, copy) and
-//! fromSlice (allocate on R's heap, copy). Numeric types also expose an
-//! explicit borrowed-or-owned SliceView. from* functions unprotect their
-//! result before returning (standard R pattern).
+//! fromSlice (allocate on R's heap, copy). Numeric, raw, and complex inputs
+//! also expose an explicit borrowed-or-owned SliceView. from* functions
+//! unprotect their result before returning (standard R pattern).
 //!
 //! asSEXP/fromSEXP convert Zig structs to/from R named lists using
 //! @typeInfo reflection. Field names become list names.
@@ -262,6 +262,16 @@ fn directLogicalSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[
     return ptr[0..n];
 }
 
+fn directRawSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const u8 {
+    const n = representation.len;
+    if (n == 0) return &.{};
+    if (!representation.altrep) return R.RAW(sexp)[0..n];
+
+    const ptr = R.RAW_OR_NULL(sexp);
+    if (ptr == null) return null;
+    return ptr[0..n];
+}
+
 fn directComplexSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[]const Rcomplex {
     const n = representation.len;
     if (n == 0) return &.{};
@@ -311,6 +321,13 @@ pub fn SliceView(comptime T: type) type {
         }
     };
 }
+
+/// Read-only raw bytes borrowed from R when a direct pointer is available,
+/// otherwise one explicit native fallback allocation. Raw bytes are not R
+/// strings: they preserve zero and non-text bytes and carry no encoding or
+/// `NA_STRING` semantics. The view is valid only for the R boundary that
+/// owns its source SEXP.
+pub const RawSliceView = SliceView(u8);
 
 /// Returns a borrowed `REALSXP` buffer when R exposes one without
 /// materialization. Otherwise allocates exactly one native buffer and fills
@@ -405,9 +422,16 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 
 /// Default string boundary helper (W4.2).
 ///
-/// Allocates a `[][]const u8` of slice headers. Each slice points into
-/// the CHARSXP bytes after a call to `Rf_translateCharUTF8` (Latin-1 and
-/// native-encoded strings are normalized to UTF-8 on the way in).
+/// Allocates a `[][]const u8` of slice headers. Each slice points at exposed
+/// C-string bytes: Latin-1 and native input is normalized by
+/// `Rf_translateCharUTF8`, while CE_BYTES retains R's byte-marked C-string
+/// bytes because R can reject its UTF-8 translation. A translation can
+/// allocate R transient storage that persists only for the enclosing R call.
+/// The returned headers own neither those bytes nor the source SEXP, so every
+/// returned slice has that same enclosing-call lifetime. When this allocating
+/// helper is called directly from an R-facing entry point, call it inside
+/// `cleanup.protectCall*`: `STRING_ELT` and string translation may longjmp.
+/// Generated wrappers already provide that boundary.
 /// NA strings map to empty slices; the NA/empty distinction is lost.
 /// Use `toStringSliceNullable` to preserve it, or `toStringSliceView`
 /// or `toCachedStringSliceView` if you need `is_na` on each element.
@@ -425,14 +449,17 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 ///     downstream code without per-element dereference.
 ///
 /// When to prefer the view variants:
-///   - Memory-constrained single-pass: `toStringSliceView`. No alloc,
-///     but each pass costs ~15ms (R API call per access).
+///   - Memory-constrained single-pass: `toStringSliceView`. It avoids Zig
+///     slice-header allocation, but each pass costs ~15ms (R API call per
+///     access) and translation may use R call-scoped storage.
 ///   - NA preservation with multi-pass: `toCachedStringSliceView`.
 ///     40MB peak, 2ms per pass, but NA preserved as `StringView.is_na`.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     const result = try allocator.alloc([]const u8, n);
+    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init([]const u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    defer cleanup.popFrame();
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
         result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
@@ -442,10 +469,14 @@ pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
 
 /// STRSXP: borrow CHARSXP data into a Zig slice of nullable strings.
 /// NA_STRING elements become `null`, preserving the NA/empty distinction.
+/// The headers and bytes are call-scoped borrows; see `toStringSlice` for the
+/// required `cleanup.protectCall*` boundary for direct R-facing callers.
 pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     const result = try allocator.alloc(?[]const u8, n);
+    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(?[]const u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    defer cleanup.popFrame();
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
         result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
@@ -454,10 +485,20 @@ pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]con
 }
 
 pub const StringView = struct {
+    /// The source CHARSXP. It is borrowed from the source STRSXP and cannot
+    /// outlive the documented R call boundary.
     charsxp: SEXP,
+    /// UTF-8 bytes from Rf_translateCharUTF8, except CE_BYTES inputs retain
+    /// R's byte-marked C-string bytes because R can reject their translation.
+    /// R owns any translated transient storage through the enclosing call.
+    /// Use RawSliceView for arbitrary binary data, including embedded zero
+    /// bytes.
     bytes: []const u8,
     len: usize,
     is_na: bool,
+    /// The encoding mark R reports for the source CHARSXP before translation.
+    /// NA_STRING uses CE_NATIVE as a stable sentinel, not as provenance.
+    encoding_mark: R.cetype_t,
 };
 
 fn makeStringView(elt: SEXP) StringView {
@@ -468,19 +509,22 @@ fn makeStringView(elt: SEXP) StringView {
         .bytes = bytes,
         .len = bytes.len,
         .is_na = is_na,
+        .encoding_mark = if (is_na) @as(R.cetype_t, @intCast(R.CE_NATIVE)) else R.Rf_getCharCE(elt),
     };
 }
 
+/// Input-only STRSXP view. The view and every StringView obtained from it
+/// borrow R-managed data and are valid only for the enclosing R call. It
+/// avoids Zig slice-header allocation, but encoding translation can allocate
+/// transient R storage for that same call.
 pub const StringSliceView = struct {
     sexp: SEXP,
     len: usize,
 
     pub fn at(self: StringSliceView, index: usize) StringView {
+        if (index >= self.len) @panic("StringSliceView.at index out of bounds");
         if (R.ALTREP(self.sexp) == 0) {
-            const elt = sexp_mod.fastVectorElt(self.sexp, index);
-            const is_na = elt == R.R_NaString;
-            const bytes = if (is_na) "" else sexp_mod.charsxpBytes(elt);
-            return .{ .charsxp = elt, .bytes = bytes, .len = bytes.len, .is_na = is_na };
+            return makeStringView(sexp_mod.fastVectorElt(self.sexp, index));
         }
         const elt = R.STRING_ELT(self.sexp, @intCast(index));
         return makeStringView(elt);
@@ -504,10 +548,15 @@ pub const StringSliceView = struct {
 };
 
 pub const CachedStringSliceView = struct {
+    /// Metadata allocation owned by allocator. The byte slices and CHARSXPs
+    /// still borrow from the source SEXP and any R translation storage, so
+    /// neither the cache nor its items survive the R boundary.
     items: []const StringView,
     len: usize,
+    allocator: std.mem.Allocator,
 
     pub fn at(self: CachedStringSliceView, index: usize) StringView {
+        if (index >= self.len) @panic("CachedStringSliceView.at index out of bounds");
         return self.items[index];
     }
 
@@ -526,9 +575,18 @@ pub const CachedStringSliceView = struct {
     pub fn iterator(self: CachedStringSliceView) Iterator {
         return .{ .view = self };
     }
+
+    /// Releases cached slice metadata. This never releases or preserves the
+    /// source SEXP, so callers must keep that SEXP alive for every use.
+    pub fn deinit(self: *CachedStringSliceView) void {
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
 };
 
-/// STRSXP: borrow CHARSXP data without allocating slice headers.
+/// STRSXP: borrow CHARSXP data without Zig slice-header allocation. Encoding
+/// translation can still allocate R transient storage. The result is
+/// input-only and cannot outlive the enclosing R call.
 pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     return .{
@@ -538,16 +596,22 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
 }
 
 /// STRSXP: cache per-element string metadata once for repeated multi-pass use.
+/// Its metadata is native allocation, while its bytes remain call-scoped
+/// borrows. Direct R-facing callers must use `cleanup.protectCall*` so an R
+/// longjmp during `STRING_ELT` or translation releases that metadata.
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     const items = try allocator.alloc(StringView, n);
+    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(StringView, allocator, items, @returnAddress()), AllocSliceCleanup.fire);
+    defer cleanup.popFrame();
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
     }
     return .{
         .items = items,
         .len = n,
+        .allocator = allocator,
     };
 }
 
@@ -631,12 +695,23 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
     return vec.get();
 }
 
-/// Loops on RAW_GET_REGION for partial reads (ALTREP). @memcpy from RAW() for non-ALTREP.
+/// RAWSXP: allocate and copy. Use toRawSliceView when a borrow is sufficient.
+/// The returned bytes preserve zero and non-text values, unlike a STRSXP view.
+/// An ALTREP fallback calls `RAW_GET_REGION` after allocation, so direct
+/// R-facing callers must use `cleanup.protectCall*`; generated wrappers
+/// already provide that boundary.
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
-    const n = try tryXlength(sexp);
+    return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+}
+
+fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const u8 {
+    const n = representation.len;
     const result = try allocator.alloc(u8, n);
-    if (R.ALTREP(sexp) != 0) {
+    errdefer allocator.free(result);
+    if (directRawSliceOrNull(sexp, representation)) |data| {
+        @memcpy(result, data);
+    } else if (representation.altrep) {
         _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
@@ -647,9 +722,21 @@ pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
             offset += got;
         }
     } else {
-        @memcpy(result, R.RAW(sexp)[0..n]);
+        unreachable;
     }
     return result;
+}
+
+/// Returns a borrowed RAWSXP buffer when R exposes one without
+/// materialization. Otherwise allocates exactly one native buffer and fills
+/// it through RAW_GET_REGION. An ALTREP fallback therefore requires the same
+/// `cleanup.protectCall*` boundary for direct R-facing callers. See
+/// RawSliceView for lifetime and cleanup.
+pub fn toRawSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RawSliceView {
+    try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
+    const representation = try vectorRepresentation(sexp);
+    if (directRawSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    return .{ .owned = .{ .data = try toRawSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
 pub fn fromRawSlice(slice: []const u8) SEXP {
@@ -660,8 +747,12 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
     return vec.get();
 }
 
-/// Loops on COMPLEX_GET_REGION for partial reads (ALTREP). @memcpy from COMPLEX() for non-ALTREP.
-pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]Rcomplex {
+/// CPLXSXP: allocate and copy read-only complex values. The public result is
+/// const because incoming R objects are never writable through the strict
+/// core. Use toComplexSliceView when a borrowed input is sufficient. An
+/// ALTREP fallback calls `COMPLEX_GET_REGION` after allocation, so direct
+/// R-facing callers must use `cleanup.protectCall*`.
+pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
 }
@@ -689,7 +780,8 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
 }
 
 /// Complex equivalent of `toRealSliceView`, using `COMPLEX_OR_NULL` before
-/// the explicit one-buffer `COMPLEX_GET_REGION` fallback.
+/// the explicit one-buffer `COMPLEX_GET_REGION` fallback. Direct R-facing
+/// callers need `cleanup.protectCall*` for that allocating fallback.
 pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(Rcomplex) {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const representation = try vectorRepresentation(sexp);
@@ -783,8 +875,7 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
 }
 
 fn charsxpBytes(elt: SEXP) []const u8 {
-    if (elt == R.R_NaString) return "";
-    return std.mem.sliceTo(R.Rf_translateCharUTF8(elt), 0);
+    return sexp_mod.charsxpBytes(elt);
 }
 
 fn buildNameIndex(ns: SEXP, allocator: std.mem.Allocator) !std.StringHashMapUnmanaged(usize) {
@@ -1742,7 +1833,13 @@ test "Rcomplex has the right fields" {
 }
 
 test "StringView type compiles" {
-    const v = StringView{ .charsxp = undefined, .bytes = "", .len = 0, .is_na = false };
+    const v = StringView{
+        .charsxp = undefined,
+        .bytes = "",
+        .len = 0,
+        .is_na = false,
+        .encoding_mark = @as(R.cetype_t, @intCast(R.CE_NATIVE)),
+    };
     try std.testing.expectEqual(@TypeOf(v.is_na), bool);
 }
 
@@ -1753,6 +1850,6 @@ test "StringSliceView type compiles" {
 
 test "CachedStringSliceView type compiles" {
     const items: []const StringView = &.{};
-    const v = CachedStringSliceView{ .items = items, .len = 0 };
+    const v = CachedStringSliceView{ .items = items, .len = 0, .allocator = std.testing.allocator };
     try std.testing.expectEqual(@TypeOf(v.len), usize);
 }

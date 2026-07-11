@@ -214,6 +214,99 @@ fn fixtureComplex(values: []const convert.Rcomplex) f64 {
     return total;
 }
 
+// P1.7 representation diagnostics. The four-pass variants declare repeated
+// traversal as the workload so cache setup remains visible rather than being
+// silently amortized inside an unrelated kernel.
+const p17_repeated_passes = 4;
+
+fn fixtureP17StringViewOne(values: convert.StringSliceView) i32 {
+    var total: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (!value.is_na) total += @intCast(value.len);
+    }
+    return total;
+}
+
+fn fixtureP17StringCacheBuild(values: convert.CachedStringSliceView) i32 {
+    var cached = values;
+    defer cached.deinit();
+    return @intCast(cached.len);
+}
+
+fn fixtureP17StringCacheOne(values: convert.CachedStringSliceView) i32 {
+    var cached = values;
+    defer cached.deinit();
+    var total: i32 = 0;
+    var iterator = cached.iterator();
+    while (iterator.next()) |value| {
+        if (!value.is_na) total += @intCast(value.len);
+    }
+    return total;
+}
+
+fn fixtureP17StringHeadersOne(values: []const []const u8) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += @intCast(value.len);
+    return total;
+}
+
+fn fixtureP17StringViewRepeated(values: convert.StringSliceView) i32 {
+    var total: i32 = 0;
+    for (0..p17_repeated_passes) |_| {
+        var iterator = values.iterator();
+        while (iterator.next()) |value| {
+            if (!value.is_na) total += @intCast(value.len);
+        }
+    }
+    return total;
+}
+
+fn fixtureP17StringCacheRepeated(values: convert.CachedStringSliceView) i32 {
+    var cached = values;
+    defer cached.deinit();
+    var total: i32 = 0;
+    for (0..p17_repeated_passes) |_| {
+        var iterator = cached.iterator();
+        while (iterator.next()) |value| {
+            if (!value.is_na) total += @intCast(value.len);
+        }
+    }
+    return total;
+}
+
+fn fixtureP17StringHeadersRepeated(values: []const []const u8) i32 {
+    var total: i32 = 0;
+    for (0..p17_repeated_passes) |_| {
+        for (values) |value| total += @intCast(value.len);
+    }
+    return total;
+}
+
+fn fixtureP17RawView(values: convert.RawSliceView) i32 {
+    var view = values;
+    defer view.deinit();
+    var total: i32 = 0;
+    for (view.constSlice()) |value| total += @intCast(value);
+    return total;
+}
+
+fn fixtureP17RawCopy(values: []const u8) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += @intCast(value);
+    return total;
+}
+
+fn fixtureP17ComplexView(values: []const convert.Rcomplex) f64 {
+    var total: f64 = 0;
+    for (values) |value| total += value.r + value.i;
+    return total;
+}
+
+fn fixtureP17ComplexReturn(values: []const convert.Rcomplex) []const convert.Rcomplex {
+    return values;
+}
+
 fn validateFixtureSchema(value: R.SEXP) void {
     if (R.TYPEOF(value) != R.VECSXP or R.XLENGTH(value) != 4) {
         R.Rf_error("zigr P1.3 schema expected a four-field named list");
@@ -414,6 +507,17 @@ const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_fixture_string_view", .func = fixtureStringView },
     .{ .name = "zigr_fixture_raw", .func = fixtureRaw },
     .{ .name = "zigr_fixture_complex", .func = fixtureComplex },
+    .{ .name = "zigr_p17_string_view_one", .func = fixtureP17StringViewOne },
+    .{ .name = "zigr_p17_string_cache_build", .func = fixtureP17StringCacheBuild },
+    .{ .name = "zigr_p17_string_cache_one", .func = fixtureP17StringCacheOne },
+    .{ .name = "zigr_p17_string_headers_one", .func = fixtureP17StringHeadersOne },
+    .{ .name = "zigr_p17_string_view_repeated", .func = fixtureP17StringViewRepeated },
+    .{ .name = "zigr_p17_string_cache_repeated", .func = fixtureP17StringCacheRepeated },
+    .{ .name = "zigr_p17_string_headers_repeated", .func = fixtureP17StringHeadersRepeated },
+    .{ .name = "zigr_p17_raw_view", .func = fixtureP17RawView },
+    .{ .name = "zigr_p17_raw_copy", .func = fixtureP17RawCopy },
+    .{ .name = "zigr_p17_complex_view", .func = fixtureP17ComplexView },
+    .{ .name = "zigr_p17_complex_return", .func = fixtureP17ComplexReturn },
     .{ .name = "zigr_fixture_schema", .func = fixtureSchema },
     .{ .name = "zigr_fixture_wrong_tag", .func = fixtureWrongTag },
     .{ .name = "zigr_fixture_cleared", .func = fixtureCleared },

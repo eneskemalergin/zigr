@@ -99,7 +99,18 @@
     "72_p13_external_method_generated": "main_FixtureState__increment",
     "73_p13_external_method_handwritten": "zigr_p13_direct_method",
     "74_p13_external_generated": "zigr_fixture_external",
-    "75_p13_external_handwritten": "zigr_p13_direct_external"
+    "75_p13_external_handwritten": "zigr_p13_direct_external",
+    "76_p17_string_view_one": "zigr_p17_string_view_one",
+    "77_p17_string_cache_build": "zigr_p17_string_cache_build",
+    "78_p17_string_cache_one": "zigr_p17_string_cache_one",
+    "79_p17_string_headers_one": "zigr_p17_string_headers_one",
+    "80_p17_string_view_repeated": "zigr_p17_string_view_repeated",
+    "81_p17_string_cache_repeated": "zigr_p17_string_cache_repeated",
+    "82_p17_string_headers_repeated": "zigr_p17_string_headers_repeated",
+    "83_p17_raw_view": "zigr_p17_raw_view",
+    "84_p17_raw_copy": "zigr_p17_raw_copy",
+    "85_p17_complex_view": "zigr_p17_complex_view",
+    "86_p17_complex_return": "zigr_p17_complex_return"
   },
   "needs_r_home": true
 }

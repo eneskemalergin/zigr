@@ -120,11 +120,19 @@ pub fn tryXlength(sexp: SEXP) !usize {
     return @as(usize, @intCast(len));
 }
 
-/// Returns the UTF-8 bytes of a CHARSXP's string value.
-/// Calls Rf_translateCharUTF8 which converts Latin-1/native-encoded
-/// strings to UTF-8. Returns "" for NA_STRING.
+/// Returns the exposed bytes of a CHARSXP string value.
+///
+/// Rf_translateCharUTF8 converts Latin-1/native-encoded strings to UTF-8.
+/// Its translation storage is R-managed and persists for the enclosing R
+/// call. R can reject translation of CE_BYTES strings, so those retain their
+/// byte-marked, NUL-terminated R_CHAR representation. STRSXP cannot contain
+/// embedded NUL bytes; use RAWSXP for arbitrary binary data. Returns "" for
+/// NA_STRING.
 pub fn charsxpBytes(charsxp: SEXP) []const u8 {
     if (charsxp == R.R_NaString) return "";
+    if (R.Rf_getCharCE(charsxp) == @as(R.cetype_t, @intCast(R.CE_BYTES))) {
+        return std.mem.sliceTo(R.R_CHAR(charsxp), 0);
+    }
     return std.mem.sliceTo(R.Rf_translateCharUTF8(charsxp), 0);
 }
 

@@ -46,10 +46,7 @@ pub fn RVector(comptime T: type) type {
             return switch (T) {
                 f64 => try convert.toRealSliceView(allocator, self.sexp),
                 i32 => try convert.toIntSliceView(allocator, self.sexp),
-                // Raw remains a copied conversion until P1.7 establishes its
-                // own direct-view contract, but it still keeps its allocator
-                // ownership instead of leaking through this wrapper.
-                u8 => .{ .owned = .{ .data = try convert.toRawSlice(allocator, self.sexp), .allocator = allocator } },
+                u8 => try convert.toRawSliceView(allocator, self.sexp),
                 convert.Rcomplex => try convert.toComplexSliceView(allocator, self.sexp),
                 else => unreachable,
             };

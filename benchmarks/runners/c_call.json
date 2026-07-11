@@ -6,6 +6,14 @@
   "call_type": ".Call",
   "registered_symbols": true,
   "package_name": "bench",
+  "optional_tasks": [
+    "76_p17_string_view_one", "77_p17_string_cache_build",
+    "78_p17_string_cache_one", "79_p17_string_headers_one",
+    "80_p17_string_view_repeated", "81_p17_string_cache_repeated",
+    "82_p17_string_headers_repeated", "83_p17_raw_view",
+    "84_p17_raw_copy", "85_p17_complex_view",
+    "86_p17_complex_return"
+  ],
   "registration_fixture": {
     "scalar": "c_fixture_scalar",
     "integer": "c_fixture_int_scalar",

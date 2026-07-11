@@ -72,6 +72,17 @@
         "72_p13_external_method_generated": "r_p13_external_method",
         "73_p13_external_method_handwritten": "r_p13_external_method",
         "74_p13_external_generated": "r_p13_external",
-        "75_p13_external_handwritten": "r_p13_external"
+        "75_p13_external_handwritten": "r_p13_external",
+        "76_p17_string_view_one": "r_p17_string_total",
+        "77_p17_string_cache_build": "r_p17_string_cache_build",
+        "78_p17_string_cache_one": "r_p17_string_total",
+        "79_p17_string_headers_one": "r_p17_string_total",
+        "80_p17_string_view_repeated": "r_p17_string_repeated_total",
+        "81_p17_string_cache_repeated": "r_p17_string_repeated_total",
+        "82_p17_string_headers_repeated": "r_p17_string_repeated_total",
+        "83_p17_raw_view": "r_p17_raw",
+        "84_p17_raw_copy": "r_p17_raw",
+        "85_p17_complex_view": "r_p17_complex_view",
+        "86_p17_complex_return": "r_p17_complex_return"
     }
 }

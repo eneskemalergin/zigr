@@ -72,7 +72,7 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 - SEXP types and 24 classification helpers
 - PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated arena-backed cleanup is being hardened in P1
 - Type conversion (real, int, string, logical, raw, complex)
-- Zero-copy export views for numeric, complex, and read-only string inputs via `convert.StringSliceView`
+- Explicit borrowed-or-owned export views for numeric and complex inputs, plus a header-free read-only string view via `convert.StringSliceView`
 - SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
 - ALTREP consumption and creation (real, integer, logical classes)
 - Data frames, attributes, S4 objects, external pointers, weak references
@@ -102,7 +102,7 @@ Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks
 
 - The published P0 baseline (`p0-7-20260710-full`) covers 36 comparable tasks: zigr is `0.212x` versus R by geomedian (`0.263x` by median), and `1.082x` versus the best native runner by geomedian (`1.003x` by median), with 17 aggregate wins or ties. These are handwritten/direct-entry benchmark results; generated public API performance is a P1 workstream. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
 - ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
-- String ops are slower because each `CHAR()` call produces a new Zig slice header. The zero-copy `StringSliceView` avoids this but requires adapter code in export functions.
+- String ops are slower because each `CHAR()` call produces a new Zig slice header. The header-free `StringSliceView` avoids those Zig headers but requires adapter code in export functions; R encoding translation may still use call-scoped storage.
 
 ## Philosophy
 
@@ -154,7 +154,7 @@ export R_HOME=/usr/lib/R && zig build
 zig build -Dr-home=/usr/lib/R
 ```
 
-For exported read-only character vectors, prefer `zigr.convert.StringSliceView` over `[]const []const u8`. The old slice-of-slices form still works, but it has to allocate Zig slice headers. `StringSliceView` keeps the call zero-copy and lets you iterate element-by-element.
+For exported read-only character vectors, prefer `zigr.convert.StringSliceView` over `[]const []const u8`. The old slice-of-slices form still works, but it allocates Zig slice headers. `StringSliceView` avoids those headers and lets you iterate element-by-element; encoding translation may still use R-managed storage for the enclosing call.
 
 ```zig
 const zigr = @import("zigr");

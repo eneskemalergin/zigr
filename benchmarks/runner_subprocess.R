@@ -46,6 +46,18 @@ if (!check_only) {
 }
 
 # Tasks are shared across all runners. IDs match exports in runner JSONs.
+p17_string_input <- function() {
+  rep(c("zigr", "boundary", NA_character_, ""), length.out = 32768L)
+}
+
+p17_raw_input <- function() {
+  as.raw((seq_len(262144L) - 1L) %% 251L)
+}
+
+p17_complex_input <- function() {
+  complex(real = as.double(seq_len(32768L)), imaginary = as.double(seq_len(32768L)) * 0.5)
+}
+
 all_tasks <- list(
   list(id = "01_vectorsum", name = "Vector Sum (1e7)",
        args = function() list(runif(1e7))),
@@ -196,7 +208,29 @@ all_tasks <- list(
        args = function() list(4.0)),
   list(id = "75_p13_external_handwritten", name = "P1.3 handwritten .External boundary",
        call_type = ".External",
-       args = function() list(4.0))
+       args = function() list(4.0)),
+  list(id = "76_p17_string_view_one", name = "P1.7 one-pass StringSliceView (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "77_p17_string_cache_build", name = "P1.7 cached string metadata build (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "78_p17_string_cache_one", name = "P1.7 one-pass cached string metadata (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "79_p17_string_headers_one", name = "P1.7 one-pass string headers (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "80_p17_string_view_repeated", name = "P1.7 four-pass StringSliceView (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "81_p17_string_cache_repeated", name = "P1.7 four-pass cached string metadata (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "82_p17_string_headers_repeated", name = "P1.7 four-pass string headers (32k)",
+       args = function() list(p17_string_input())),
+  list(id = "83_p17_raw_view", name = "P1.7 borrowed raw view (256k)",
+       args = function() list(p17_raw_input())),
+  list(id = "84_p17_raw_copy", name = "P1.7 copied raw input (256k)",
+       args = function() list(p17_raw_input())),
+  list(id = "85_p17_complex_view", name = "P1.7 complex input view (32k)",
+       args = function() list(p17_complex_input())),
+  list(id = "86_p17_complex_return", name = "P1.7 complex return copy (32k)",
+       args = function() list(p17_complex_input()))
 )
 
 source(file.path(root_dir, "lib", "task_manifest.R"))

@@ -686,6 +686,69 @@ fn shortRegionAltInteger() SEXP {
     return R.R_new_altrep(short_region_class, R.R_NilValue, R.R_NilValue);
 }
 
+var short_raw_region_class: R.R_altrep_class_t = undefined;
+var short_raw_region_registered = false;
+var short_raw_region_get_calls: usize = 0;
+var short_raw_region_elt_calls: usize = 0;
+
+fn shortRawRegionElt(_: SEXP, index: R.R_xlen_t) callconv(.c) R.Rbyte {
+    short_raw_region_elt_calls += 1;
+    return @intCast(@as(usize, @intCast(index)) % 251);
+}
+
+fn shortRawRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffer: [*c]R.Rbyte) callconv(.c) R.R_xlen_t {
+    if (buffer == null) return 0;
+    const offset: usize = @intCast(start);
+    if (offset >= short_region_len) return 0;
+
+    short_raw_region_get_calls += 1;
+    const count = @min(@min(@as(usize, @intCast(requested)), short_region_cap), short_region_len - offset);
+    const out: [*]u8 = @ptrCast(buffer);
+    for (0..count) |i| out[i] = @intCast((offset + i) % 251);
+    return @intCast(count);
+}
+
+fn shortRegionAltRaw() SEXP {
+    if (!short_raw_region_registered) {
+        short_raw_region_class = R.R_make_altraw_class("p17_short_region_raw", "zigr", null);
+        R.R_set_altrep_Length_method(short_raw_region_class, shortRegionLength);
+        R.R_set_altvec_Dataptr_or_null_method(short_raw_region_class, shortRegionDataptrOrNull);
+        R.R_set_altraw_Elt_method(short_raw_region_class, shortRawRegionElt);
+        R.R_set_altraw_Get_region_method(short_raw_region_class, shortRawRegionGetRegion);
+        short_raw_region_registered = true;
+    }
+    return R.R_new_altrep(short_raw_region_class, R.R_NilValue, R.R_NilValue);
+}
+
+var short_complex_region_class: R.R_altrep_class_t = undefined;
+var short_complex_region_registered = false;
+var short_complex_region_get_calls: usize = 0;
+
+fn shortComplexRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffer: ?*R.Rcomplex) callconv(.c) R.R_xlen_t {
+    const output: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(buffer orelse return 0));
+    const offset: usize = @intCast(start);
+    if (offset >= short_region_len) return 0;
+
+    short_complex_region_get_calls += 1;
+    const count = @min(@min(@as(usize, @intCast(requested)), short_region_cap), short_region_len - offset);
+    for (0..count) |i| {
+        const value: f64 = @floatFromInt(offset + i + 1);
+        output[i] = .{ .r = value, .i = -value };
+    }
+    return @intCast(count);
+}
+
+fn shortRegionAltComplex() SEXP {
+    if (!short_complex_region_registered) {
+        short_complex_region_class = R.R_make_altcomplex_class("p17_short_region_complex", "zigr", null);
+        R.R_set_altrep_Length_method(short_complex_region_class, shortRegionLength);
+        R.R_set_altvec_Dataptr_or_null_method(short_complex_region_class, shortRegionDataptrOrNull);
+        R.R_set_altcomplex_Get_region_method(short_complex_region_class, shortComplexRegionGetRegion);
+        short_complex_region_registered = true;
+    }
+    return R.R_new_altrep(short_complex_region_class, R.R_NilValue, R.R_NilValue);
+}
+
 fn compactIntSequence(n: i32) ?SEXP {
     const length = R.Rf_protect(R.Rf_ScalarInteger(n));
     defer R.Rf_unprotect(1);
@@ -1136,6 +1199,197 @@ export fn zigr_test_altstring_create() SEXP {
     const data = [_][]const u8{ "alpha", "beta", "gamma" };
     const vec = MyAltString.init(data[0..]);
     if (R.XLENGTH(vec) != 3) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.7: string representations preserve NA metadata and source encodings.
+/// StringView normalizes non-CE_BYTES input to UTF-8, while CE_BYTES retains
+/// its byte-marked R string representation rather than becoming raw data.
+export fn zigr_test_p17_string_representations() SEXP {
+    const utf8 = "na\xc3\xafve";
+    const byte_marked = [_]u8{ 'x', 0xff, 'y' };
+    const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
+    const latin1_utf8 = "caf\xc3\xa9";
+    const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 5));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vec, 0, R.Rf_mkCharLenCE(@ptrCast(utf8.ptr), @intCast(utf8.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vec, 1, R.Rf_mkCharLenCE("", 0, @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vec, 2, R.R_NaString);
+    R.SET_STRING_ELT(vec, 3, R.Rf_mkCharLenCE(@ptrCast(&byte_marked), @intCast(byte_marked.len), @as(R.cetype_t, @intCast(R.CE_BYTES))));
+    R.SET_STRING_ELT(vec, 4, R.Rf_mkCharLenCE(@ptrCast(&latin1), @intCast(latin1.len), @as(R.cetype_t, @intCast(R.CE_LATIN1))));
+
+    const view = zigr_convert.toStringSliceView(vec) catch return R.Rf_ScalarReal(0.0);
+    const first = view.at(0);
+    const empty = view.at(1);
+    const na = view.at(2);
+    const bytes = view.at(3);
+    const translated_latin1 = view.at(4);
+    if (first.is_na or first.encoding_mark != @as(R.cetype_t, @intCast(R.CE_UTF8)) or !std.mem.eql(u8, first.bytes, utf8)) return R.Rf_ScalarReal(0.0);
+    if (empty.is_na or empty.len != 0) return R.Rf_ScalarReal(0.0);
+    if (!na.is_na or na.len != 0 or na.encoding_mark != @as(R.cetype_t, @intCast(R.CE_NATIVE))) return R.Rf_ScalarReal(0.0);
+    if (bytes.is_na or bytes.encoding_mark != @as(R.cetype_t, @intCast(R.CE_BYTES)) or !std.mem.eql(u8, bytes.bytes, &byte_marked)) return R.Rf_ScalarReal(0.0);
+    if (translated_latin1.is_na or translated_latin1.encoding_mark != @as(R.cetype_t, @intCast(R.CE_LATIN1)) or !std.mem.eql(u8, translated_latin1.bytes, latin1_utf8)) return R.Rf_ScalarReal(0.0);
+
+    var cache_storage: [5 * @sizeOf(zigr_convert.StringView)]u8 align(@alignOf(zigr_convert.StringView)) = undefined;
+    var cache_fba = std.heap.FixedBufferAllocator.init(&cache_storage);
+    var cached = zigr_convert.toCachedStringSliceView(cache_fba.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    if (cached.at(2).is_na != na.is_na or cached.at(3).encoding_mark != bytes.encoding_mark or !std.mem.eql(u8, cached.at(4).bytes, latin1_utf8)) return R.Rf_ScalarReal(0.0);
+    if (cache_fba.end_index != cache_storage.len) return R.Rf_ScalarReal(0.0);
+
+    var headers_storage: [5 * @sizeOf([]const u8)]u8 align(@alignOf([]const u8)) = undefined;
+    var headers_fba = std.heap.FixedBufferAllocator.init(&headers_storage);
+    const headers = zigr_convert.toStringSlice(headers_fba.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    defer headers_fba.allocator().free(headers);
+    if (!std.mem.eql(u8, headers[0], utf8) or headers[1].len != 0 or headers[2].len != 0 or !std.mem.eql(u8, headers[3], &byte_marked) or !std.mem.eql(u8, headers[4], latin1_utf8)) return R.Rf_ScalarReal(0.0);
+
+    var view_total: usize = 0;
+    var cached_total: usize = 0;
+    var headers_total: usize = 0;
+    for (0..3) |_| {
+        var iterator = view.iterator();
+        while (iterator.next()) |item| {
+            if (!item.is_na) view_total += item.len;
+        }
+        var cached_iterator = cached.iterator();
+        while (cached_iterator.next()) |item| {
+            if (!item.is_na) cached_total += item.len;
+        }
+        for (headers) |item| headers_total += item.len;
+    }
+    if (view_total != cached_total or view_total != headers_total) return R.Rf_ScalarReal(0.0);
+    cached.deinit();
+    if (cache_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.7: ALTSTRING input uses STRING_ELT through both string view forms.
+export fn zigr_test_p17_altstring_inputs() SEXP {
+    const data = [_][]const u8{ "alpha", "", "gamma" };
+    const vec = MyAltString.init(data[0..]);
+    if (R.ALTREP(vec) == 0) return R.Rf_ScalarReal(0.0);
+
+    const view = zigr_convert.toStringSliceView(vec) catch return R.Rf_ScalarReal(0.0);
+    if (view.len != data.len or !std.mem.eql(u8, view.at(0).bytes, "alpha") or view.at(1).len != 0 or !std.mem.eql(u8, view.at(2).bytes, "gamma")) return R.Rf_ScalarReal(0.0);
+
+    var storage: [data.len * @sizeOf(zigr_convert.StringView)]u8 align(@alignOf(zigr_convert.StringView)) = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&storage);
+    var cached = zigr_convert.toCachedStringSliceView(fba.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    defer cached.deinit();
+    if (cached.len != data.len or !std.mem.eql(u8, cached.at(0).bytes, "alpha") or cached.at(1).len != 0 or !std.mem.eql(u8, cached.at(2).bytes, "gamma")) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+// P1.7 allocation/unwind probe. Each string representation allocates its
+// native headers or metadata before an R error is raised. The allocator's
+// raw-free count proves that the conversion's own inline cleanup frame fired;
+// a surrounding `tryCatch` lets this test inspect the state after the error.
+const P17StringCleanupState = struct {
+    allocations: usize = 0,
+    frees: usize = 0,
+};
+
+threadlocal var p17_string_cleanup_state: P17StringCleanupState = .{};
+threadlocal var p17_string_cleanup_input: SEXP = null;
+threadlocal var p17_string_cleanup_mode: u2 = 0;
+threadlocal var p17_string_cleanup_elt_calls: usize = 0;
+
+var p17_string_error_class: R.R_altrep_class_t = undefined;
+var p17_string_error_registered = false;
+
+fn p17StringErrorLength(_: SEXP) callconv(.c) R.R_xlen_t {
+    return 1;
+}
+
+fn p17StringErrorElt(_: SEXP, _: R.R_xlen_t) callconv(.c) SEXP {
+    p17_string_cleanup_elt_calls += 1;
+    R.Rf_error("zigr P1.7 string allocation cleanup: expected ALTSTRING error");
+}
+
+fn p17StringErrorAltString() SEXP {
+    if (!p17_string_error_registered) {
+        p17_string_error_class = R.R_make_altstring_class("p17_string_error", "zigr", null);
+        R.R_set_altrep_Length_method(p17_string_error_class, p17StringErrorLength);
+        R.R_set_altstring_Elt_method(p17_string_error_class, p17StringErrorElt);
+        p17_string_error_registered = true;
+    }
+    return R.R_new_altrep(p17_string_error_class, R.R_NilValue, R.R_NilValue);
+}
+
+const P17StringCleanupAllocator = struct {
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+        const state: *P17StringCleanupState = @ptrCast(@alignCast(ctx));
+        const memory = std.heap.c_allocator.rawAlloc(len, alignment, return_address) orelse return null;
+        state.allocations += 1;
+        return memory;
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+        const state: *P17StringCleanupState = @ptrCast(@alignCast(ctx));
+        std.heap.c_allocator.rawFree(memory, alignment, return_address);
+        state.frees += 1;
+    }
+
+    fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+        return false;
+    }
+
+    fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+        return null;
+    }
+
+    fn allocator() std.mem.Allocator {
+        return .{
+            .ptr = @ptrCast(&p17_string_cleanup_state),
+            .vtable = &.{
+                .alloc = alloc,
+                .free = free,
+                .resize = resize,
+                .remap = remap,
+            },
+        };
+    }
+};
+
+fn p17StringAllocationThenError() SEXP {
+    switch (p17_string_cleanup_mode) {
+        0 => {
+            const headers = zigr_convert.toStringSlice(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            _ = headers;
+        },
+        1 => {
+            const headers = zigr_convert.toStringSliceNullable(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            _ = headers;
+        },
+        2 => {
+            const cache = zigr_convert.toCachedStringSliceView(P17StringCleanupAllocator.allocator(), p17_string_cleanup_input) catch return R.R_NilValue;
+            _ = cache;
+        },
+        else => unreachable,
+    }
+    R.Rf_error("zigr P1.7 string allocation cleanup: ALTSTRING Elt unexpectedly returned");
+}
+
+/// P1.7: all allocating string representations release their own native
+/// allocation when `STRING_ELT` longjmps through the protected boundary.
+export fn zigr_test_p17_string_allocation_longjmp() SEXP {
+    const input = R.Rf_protect(p17StringErrorAltString());
+    defer R.Rf_unprotect(1);
+    p17_string_cleanup_input = input;
+    defer p17_string_cleanup_input = null;
+
+    for (0..3) |mode| {
+        p17_string_cleanup_state = .{};
+        p17_string_cleanup_mode = @intCast(mode);
+        p17_string_cleanup_elt_calls = 0;
+        if (trycatch_mod.tryCatch(struct {
+            fn call() SEXP {
+                return cleanup.protectCall(p17StringAllocationThenError);
+            }
+        }.call)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |_| {}
+        if (p17_string_cleanup_elt_calls != 1 or p17_string_cleanup_state.allocations != 1 or p17_string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -2715,6 +2969,70 @@ fn initP16Exports() bool {
     return true;
 }
 
+// P1.7 generated-wrapper probes use each declared representation at the
+// public boundary. The cached form is intentionally the only repeated-pass
+// string form; it owns its metadata and must release it before returning.
+fn p17StringViewLengths(values: zigr_convert.StringSliceView) i32 {
+    var total: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (!value.is_na) total += @intCast(value.len);
+    }
+    return total;
+}
+
+fn p17CachedStringLengths(values: zigr_convert.CachedStringSliceView) i32 {
+    var cached = values;
+    defer cached.deinit();
+    var total: i32 = 0;
+    for (0..4) |_| {
+        var iterator = cached.iterator();
+        while (iterator.next()) |value| {
+            if (!value.is_na) total += @intCast(value.len);
+        }
+    }
+    return total;
+}
+
+fn p17StringHeaderLengths(values: []const []const u8) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += @intCast(value.len);
+    return total;
+}
+
+fn p17RawViewSum(values: zigr_convert.RawSliceView) i32 {
+    var view = values;
+    defer view.deinit();
+    var total: i32 = 0;
+    for (view.constSlice()) |value| total += @intCast(value);
+    return total;
+}
+
+fn p17ComplexEcho(values: []const zigr_convert.Rcomplex) []const zigr_convert.Rcomplex {
+    return values;
+}
+
+const P17Exports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_p17_string_view_lengths", .func = p17StringViewLengths },
+    .{ .name = "zigr_p17_cached_string_lengths", .func = p17CachedStringLengths },
+    .{ .name = "zigr_p17_string_header_lengths", .func = p17StringHeaderLengths },
+    .{ .name = "zigr_p17_raw_view_sum", .func = p17RawViewSum },
+    .{ .name = "zigr_p17_complex_echo", .func = p17ComplexEcho },
+}, &.{});
+
+const P17Call = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+
+fn p17Call(index: usize, arg: SEXP) SEXP {
+    const fun: P17Call = @ptrCast(@alignCast(P17Exports.call_defs[index].fun));
+    return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+}
+
+fn initP17Exports() bool {
+    const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return false);
+    P17Exports.init(dll);
+    return true;
+}
+
 /// Guard against: generateExports failing to compile for
 /// external exports, or init() corrupting the DllInfo.  Also
 /// tests that the external wrapper correctly extracts scalars
@@ -2845,6 +3163,161 @@ export fn zigr_test_p16_externalptr_finalizer() SEXP {
     R.R_gc();
     R.R_gc();
     return R.Rf_ScalarReal(if (p16_externalptr_finalized) 1.0 else 0.0);
+}
+
+/// P1.7: ordinary raw vectors expose borrowed bytes, including zero and
+/// non-text values. The copied conversion remains independent after the R
+/// source changes, and RVector(u8) now uses the same view contract.
+export fn zigr_test_p17_raw_views() SEXP {
+    const expected = [_]u8{ 0x00, 0xff, 0x7f };
+    const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, @intCast(expected.len)));
+    defer R.Rf_unprotect(1);
+    @memcpy(R.RAW(raw)[0..expected.len], &expected);
+
+    var no_alloc_storage: [0]u8 align(16) = .{};
+    var no_alloc = std.heap.FixedBufferAllocator.init(&no_alloc_storage);
+    var view = zigr_convert.toRawSliceView(no_alloc.allocator(), raw) catch return R.Rf_ScalarReal(0.0);
+    defer view.deinit();
+    switch (view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    if (!std.mem.eql(u8, view.constSlice(), &expected) or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const rvector = zigr.rvector.RVector(u8).init(raw) catch return R.Rf_ScalarReal(0.0);
+    var rvector_view = rvector.view(no_alloc.allocator()) catch return R.Rf_ScalarReal(0.0);
+    defer rvector_view.deinit();
+    switch (rvector_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    if (!std.mem.eql(u8, rvector_view.constSlice(), &expected) or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    var copy_storage: [expected.len]u8 align(16) = undefined;
+    var copy_fba = std.heap.FixedBufferAllocator.init(&copy_storage);
+    const copied = zigr_convert.toRawSlice(copy_fba.allocator(), raw) catch return R.Rf_ScalarReal(0.0);
+    defer copy_fba.allocator().free(copied);
+    R.RAW(raw)[0] = 0x42;
+    if (!std.mem.eql(u8, copied, &expected)) return R.Rf_ScalarReal(0.0);
+
+    const raw_altrep = R.Rf_protect(shortRegionAltRaw());
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(raw_altrep) == 0 or R.RAW_OR_NULL(raw_altrep) != null) return R.Rf_ScalarReal(0.0);
+    var fallback_storage: [short_region_len]u8 align(16) = undefined;
+    var fallback_fba = std.heap.FixedBufferAllocator.init(&fallback_storage);
+    short_raw_region_get_calls = 0;
+    short_raw_region_elt_calls = 0;
+    {
+        var fallback_view = zigr_convert.toRawSliceView(fallback_fba.allocator(), raw_altrep) catch return R.Rf_ScalarReal(0.0);
+        defer fallback_view.deinit();
+        switch (fallback_view) {
+            .borrowed => return R.Rf_ScalarReal(0.0),
+            .owned => {},
+        }
+        const fallback = fallback_view.constSlice();
+        if (fallback.len != short_region_len or fallback[0] != 0 or fallback[250] != 250 or fallback[251] != 0) return R.Rf_ScalarReal(0.0);
+        const expected_region_calls = (short_region_len + short_region_cap - 1) / short_region_cap;
+        if (short_raw_region_get_calls != expected_region_calls or short_raw_region_elt_calls != 0) return R.Rf_ScalarReal(0.0);
+    }
+    if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
+    const generated = R.Rf_protect(p17Call(3, raw));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(generated) != R.INTSXP or R.INTEGER(generated)[0] != 448) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.7: complex views keep Rcomplex alignment, length, and component-wise
+/// NA versus NaN semantics. Complex results are copied into an R-owned
+/// CPLXSXP before the generated wrapper returns.
+export fn zigr_test_p17_complex_boundary() SEXP {
+    const complex = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 3));
+    defer R.Rf_unprotect(1);
+    const raw_ptr = R.COMPLEX(complex) orelse return R.Rf_ScalarReal(0.0);
+    const ptr: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(raw_ptr));
+    ptr[0] = .{ .r = 1.0, .i = -2.0 };
+    ptr[1] = .{ .r = R.NA_REAL(), .i = std.math.nan(f64) };
+    ptr[2] = .{ .r = std.math.nan(f64), .i = R.NA_REAL() };
+
+    var no_alloc_storage: [0]u8 align(16) = .{};
+    var no_alloc = std.heap.FixedBufferAllocator.init(&no_alloc_storage);
+    var view = zigr_convert.toComplexSliceView(no_alloc.allocator(), complex) catch return R.Rf_ScalarReal(0.0);
+    defer view.deinit();
+    switch (view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const values = view.constSlice();
+    if (@intFromPtr(values.ptr) % @alignOf(zigr_convert.Rcomplex) != 0 or values.len != 3) return R.Rf_ScalarReal(0.0);
+    if (values[0].r != 1.0 or values[0].i != -2.0) return R.Rf_ScalarReal(0.0);
+    if (R.ISNA(values[1].r) == 0 or R.ISNA(values[1].i) != 0 or !R.ISNAN(values[1].i)) return R.Rf_ScalarReal(0.0);
+    if (R.ISNA(values[2].r) != 0 or !R.ISNAN(values[2].r) or R.ISNA(values[2].i) == 0) return R.Rf_ScalarReal(0.0);
+
+    const altrep = R.Rf_protect(shortRegionAltComplex());
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(altrep) == 0 or R.COMPLEX_OR_NULL(altrep) != null) return R.Rf_ScalarReal(0.0);
+    var fallback_storage: [short_region_len * @sizeOf(zigr_convert.Rcomplex)]u8 align(@alignOf(zigr_convert.Rcomplex)) = undefined;
+    var fallback_fba = std.heap.FixedBufferAllocator.init(&fallback_storage);
+    short_complex_region_get_calls = 0;
+    {
+        var fallback_view = zigr_convert.toComplexSliceView(fallback_fba.allocator(), altrep) catch return R.Rf_ScalarReal(0.0);
+        defer fallback_view.deinit();
+        switch (fallback_view) {
+            .borrowed => return R.Rf_ScalarReal(0.0),
+            .owned => {},
+        }
+        const fallback = fallback_view.constSlice();
+        if (fallback.len != short_region_len or fallback[0].r != 1.0 or fallback[0].i != -1.0 or fallback[250].r != 251.0 or fallback[250].i != -251.0) return R.Rf_ScalarReal(0.0);
+        const expected_region_calls = (short_region_len + short_region_cap - 1) / short_region_cap;
+        if (short_complex_region_get_calls != expected_region_calls) return R.Rf_ScalarReal(0.0);
+    }
+    if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    var copy_storage: [3 * @sizeOf(zigr_convert.Rcomplex)]u8 align(@alignOf(zigr_convert.Rcomplex)) = undefined;
+    var copy_fba = std.heap.FixedBufferAllocator.init(&copy_storage);
+    const copied = zigr_convert.toComplexSlice(copy_fba.allocator(), complex) catch return R.Rf_ScalarReal(0.0);
+    defer copy_fba.allocator().free(copied);
+    if (copied.len != values.len or R.ISNA(copied[1].r) == 0 or !R.ISNAN(copied[2].r)) return R.Rf_ScalarReal(0.0);
+
+    const returned = R.Rf_protect(zigr_convert.fromComplexSlice(copied));
+    defer R.Rf_unprotect(1);
+    const returned_ptr = R.COMPLEX(returned) orelse return R.Rf_ScalarReal(0.0);
+    const returned_values: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(returned_ptr));
+    if (R.TYPEOF(returned) != R.CPLXSXP or R.XLENGTH(returned) != 3 or R.ISNA(returned_values[1].r) == 0 or !R.ISNAN(returned_values[2].r)) return R.Rf_ScalarReal(0.0);
+
+    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
+    const generated = R.Rf_protect(p17Call(4, complex));
+    defer R.Rf_unprotect(1);
+    const generated_ptr = R.COMPLEX(generated) orelse return R.Rf_ScalarReal(0.0);
+    const generated_values: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(generated_ptr));
+    if (R.TYPEOF(generated) != R.CPLXSXP or R.XLENGTH(generated) != 3 or R.ISNA(generated_values[1].r) == 0 or !R.ISNAN(generated_values[2].r)) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.7: generated wrappers make the one-pass, cached repeated-pass, and
+/// header-array string contracts distinct while preserving NA_STRING.
+export fn zigr_test_p17_generated_string_shapes() SEXP {
+    if (!initP17Exports()) return R.Rf_ScalarReal(0.0);
+
+    const strings = [_][]const u8{ "alpha", "", "beta" };
+    const vec = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 4));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vec, 0, R.Rf_mkCharLenCE(@ptrCast(strings[0].ptr), @intCast(strings[0].len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vec, 1, R.Rf_mkCharLenCE(@ptrCast(strings[1].ptr), @intCast(strings[1].len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vec, 2, R.R_NaString);
+    R.SET_STRING_ELT(vec, 3, R.Rf_mkCharLenCE(@ptrCast(strings[2].ptr), @intCast(strings[2].len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+
+    const view_result = R.Rf_protect(p17Call(0, vec));
+    defer R.Rf_unprotect(1);
+    const cached_result = R.Rf_protect(p17Call(1, vec));
+    defer R.Rf_unprotect(1);
+    const headers_result = R.Rf_protect(p17Call(2, vec));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(view_result) != R.INTSXP or R.INTEGER(view_result)[0] != 9) return R.Rf_ScalarReal(0.0);
+    if (R.TYPEOF(cached_result) != R.INTSXP or R.INTEGER(cached_result)[0] != 36) return R.Rf_ScalarReal(0.0);
+    if (R.TYPEOF(headers_result) != R.INTSXP or R.INTEGER(headers_result)[0] != 9) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 // generateMethods comptime method dispatch
@@ -3108,6 +3581,14 @@ export fn zigr_fuzz_toRawSlice_type() SEXP {
     R.Rf_unprotect(1);
     const alloc = std.heap.page_allocator;
     _ = zigr_convert.toRawSlice(alloc, v) catch return R.Rf_ScalarReal(1.0);
+    return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_fuzz_toRawSliceView_type() SEXP {
+    const v = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    R.Rf_unprotect(1);
+    const alloc = std.heap.page_allocator;
+    _ = zigr_convert.toRawSliceView(alloc, v) catch return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
 }
 

@@ -304,6 +304,20 @@ r_p13_schema <- function(x) x
 r_p13_external_method <- function(receiver, amount) as.integer(amount)
 r_p13_external <- function(x) as.double(x + 1.0)
 
+# P1.7 representation diagnostics. The repeated forms intentionally perform
+# four traversals; that declared workload exposes whether cached metadata
+# repays its construction cost without changing the harness repetition policy.
+r_p17_string_total <- function(x) as.integer(sum(nchar(x, type = "bytes"), na.rm = TRUE))
+r_p17_string_cache_build <- function(x) as.integer(length(x))
+r_p17_string_repeated_total <- function(x) {
+  total <- 0L
+  for (pass in seq_len(4L)) total <- total + r_p17_string_total(x)
+  total
+}
+r_p17_raw <- function(x) as.integer(sum(as.integer(x)))
+r_p17_complex_view <- function(x) sum(Re(x) + Im(x))
+r_p17_complex_return <- function(x) x + (0 + 0i)
+
 # Task 10: SEXP create (100k small vectors)
 r_bench_sexp_create <- function(n) {
   for (i in seq_len(n)) {
