@@ -249,12 +249,21 @@ static SEXP c_boundary_complex(SEXP value) {
 static int c_boundary_schema_is_valid(SEXP value) {
     static const char *const fields[] = {"id", "count", "ratio", "enabled"};
     if (TYPEOF(value) != VECSXP || XLENGTH(value) != 4) return 0;
+    if (R_getAttribCount(value) != 1 || !R_hasAttrib(value, R_NamesSymbol)) return 0;
     SEXP names = Rf_getAttrib(value, R_NamesSymbol);
-    if (TYPEOF(names) != STRSXP || XLENGTH(names) != 4) return 0;
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != 4 || R_getAttribCount(names) != 0) return 0;
     for (R_xlen_t i = 0; i < 4; ++i) {
         SEXP name = STRING_ELT(names, i);
         if (name == R_NaString || strcmp(CHAR(name), fields[i]) != 0) return 0;
     }
+    SEXP id = VECTOR_ELT(value, 0);
+    SEXP count = VECTOR_ELT(value, 1);
+    SEXP ratio = VECTOR_ELT(value, 2);
+    SEXP enabled = VECTOR_ELT(value, 3);
+    if (TYPEOF(id) != INTSXP || XLENGTH(id) != 1 || INTEGER(id)[0] == NA_INTEGER) return 0;
+    if (TYPEOF(count) != INTSXP || XLENGTH(count) != 1 || INTEGER(count)[0] == NA_INTEGER) return 0;
+    if (TYPEOF(ratio) != REALSXP || XLENGTH(ratio) != 1 || ISNA(REAL(ratio)[0])) return 0;
+    if (TYPEOF(enabled) != LGLSXP || XLENGTH(enabled) != 1 || LOGICAL(enabled)[0] == NA_LOGICAL) return 0;
     return 1;
 }
 

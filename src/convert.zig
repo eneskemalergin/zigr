@@ -50,14 +50,16 @@ pub const ConvertError = error{
     ExpectedLogical,
     ExpectedString,
     ExpectedList,
-    ExpectedNamedList,
+    ExpectedSchema,
     ExpectedRaw,
     ExpectedComplex,
     ZeroLength,
     ScalarLength,
     ScalarNA,
     AltRepRegionRead,
-    MissingField,
+    SchemaLength,
+    SchemaNames,
+    SchemaAttributes,
     OutOfMemory,
     NegativeLength,
     LengthOverflow,
@@ -80,28 +82,19 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.ExpectedLogical => "expected LGLSXP",
         error.ExpectedString => "expected STRSXP",
         error.ExpectedList => "expected VECSXP",
-        error.ExpectedNamedList => "expected named VECSXP",
+        error.ExpectedSchema => "expected fixed-schema named VECSXP",
         error.ExpectedRaw => "expected RAWSXP",
         error.ExpectedComplex => "expected CPLXSXP",
         error.ZeroLength => "expected non-empty vector",
         error.ScalarLength => "scalar inputs must have length one",
         error.ScalarNA => "scalar inputs must not be NA",
         error.AltRepRegionRead => "ALTREP region read failed",
-        error.MissingField => "missing required field in R list",
+        error.SchemaLength => "fixed schema field count does not match",
+        error.SchemaNames => "fixed schema names do not match",
+        error.SchemaAttributes => "fixed schema has unsupported attributes",
         error.OutOfMemory => "out of memory during SEXP conversion",
         else => @errorName(err),
     };
-}
-
-fn expectNamedList(sexp: SEXP) ConvertError!SEXP {
-    try expectType(sexp, R.VECSXP, error.ExpectedNamedList);
-    const ns = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
-    if (ns == R.R_NilValue or sexp_mod.typeTag(ns) != 16) return error.ExpectedNamedList;
-    if (R.XLENGTH(ns) != R.XLENGTH(sexp)) return error.ExpectedNamedList;
-    for (0..xlength(ns)) |i| {
-        if (R.STRING_ELT(ns, @intCast(i)) == R.R_NaString) return error.ExpectedNamedList;
-    }
-    return ns;
 }
 
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
@@ -660,6 +653,7 @@ pub fn fromComplexSlice(slice: []const Rcomplex) SEXP {
 }
 
 fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
+    if (comptime T == SEXP) return value;
     if (comptime @typeInfo(T) == .optional) {
         if (value) |v| return zigToSexp(v, @TypeOf(v), arena);
         return R.R_NilValue;
@@ -678,14 +672,14 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
         return result.get();
     }
     if (comptime T == []const Rcomplex) return fromComplexSlice(value);
-    if (comptime T == SEXP) return value;
     if (comptime @typeInfo(T) == .@"struct") {
-        return structToSexp(value, T, arena);
+        return fixedSchemaToSexp(value, T, arena);
     }
     @compileError("unsupported type in struct conversion: " ++ @typeName(T));
 }
 
 fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
+    if (comptime T == SEXP) return sexp;
     if (comptime T == ?f64) return try toOptionalRealScalar(sexp);
     if (comptime T == ?i32) return try toOptionalIntScalar(sexp);
     if (comptime T == ?bool) return try toOptionalBoolScalar(sexp);
@@ -708,14 +702,13 @@ fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     }
     if (comptime T == []const u8) return try toRawSlice(arena, sexp);
     if (comptime T == []const Rcomplex) return try toComplexSlice(arena, sexp);
-    if (comptime T == SEXP) return sexp;
     if (comptime @typeInfo(T) == .@"struct") {
-        return try structFromSexp(T, sexp, arena);
+        return try fixedSchemaFromSexp(T, sexp, arena);
     }
     @compileError("unsupported type in struct conversion: " ++ @typeName(T));
 }
 
-fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
+fn fixedSchemaToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     const fields = @typeInfo(T).@"struct".fields;
     const n: R.R_xlen_t = @intCast(fields.len);
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, n));
@@ -735,41 +728,24 @@ fn structToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     return vec.get();
 }
 
-fn charsxpBytes(elt: SEXP) []const u8 {
-    return sexp_mod.charsxpBytes(elt);
-}
-
-fn buildNameIndex(ns: SEXP, allocator: std.mem.Allocator) !std.StringHashMapUnmanaged(usize) {
-    var index: std.StringHashMapUnmanaged(usize) = .empty;
-    errdefer index.deinit(allocator);
-
-    for (0..xlength(ns)) |i| {
-        const elt = R.STRING_ELT(ns, @intCast(i));
-        if (elt == R.R_NaString) continue;
-
-        const name = charsxpBytes(elt);
-        const gop = try index.getOrPut(allocator, name);
-        if (!gop.found_existing) gop.value_ptr.* = i;
-    }
-
-    return index;
-}
-
-fn structFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
+fn fixedSchemaFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     const fields = @typeInfo(T).@"struct".fields;
-    const ns = try expectNamedList(sexp);
-    var name_index = try buildNameIndex(ns, arena);
-    defer name_index.deinit(arena);
+    try expectType(sexp, R.VECSXP, error.ExpectedSchema);
+    if (R.XLENGTH(sexp) != @as(R.R_xlen_t, @intCast(fields.len))) return error.SchemaLength;
+    if (R.R_getAttribCount(sexp) != 1 or !R.R_hasAttrib(sexp, R.R_NamesSymbol)) return error.SchemaAttributes;
+
+    const names = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
+    if (sexp_mod.typeTag(names) != @as(u5, @intCast(R.STRSXP)) or R.XLENGTH(names) != R.XLENGTH(sexp)) {
+        return error.SchemaNames;
+    }
+    if (R.R_getAttribCount(names) != 0) return error.SchemaAttributes;
+
     var result: T = undefined;
 
-    inline for (fields) |field| {
-        if (name_index.get(field.name)) |i| {
-            const elem = R.VECTOR_ELT(sexp, @intCast(i));
-            @field(result, field.name) = try sexpToZig(field.type, elem, arena);
-        } else {
-            if (comptime @typeInfo(field.type) != .optional) return error.MissingField;
-            @field(result, field.name) = @as(field.type, null);
-        }
+    inline for (fields, 0..) |field, i| {
+        const name = R.STRING_ELT(names, @intCast(i));
+        if (name == R.R_NaString or !std.mem.eql(u8, sexp_mod.charsxpBytes(name), field.name)) return error.SchemaNames;
+        @field(result, field.name) = try sexpToZig(field.type, R.VECTOR_ELT(sexp, @intCast(i)), arena);
     }
 
     return result;
@@ -1482,9 +1458,9 @@ pub fn cumsum(sexp: SEXP) SEXP {
     return result.get();
 }
 
-/// The returned SEXP is unprotected; protect it before another R allocation.
+/// The result is unprotected so the caller controls protection across later R allocations.
 pub fn asSEXPAlloc(st: anytype, arena: std.mem.Allocator) SEXP {
-    return structToSexp(st, @TypeOf(st), arena);
+    return fixedSchemaToSexp(st, @TypeOf(st), arena);
 }
 
 pub fn asSEXP(st: anytype) SEXP {
@@ -1493,9 +1469,14 @@ pub fn asSEXP(st: anytype) SEXP {
     return asSEXPAlloc(st, arena.allocator());
 }
 
-/// Slice fields borrow the source SEXP, which must outlive the result.
+/// Fixed positions avoid a runtime name map; slices and raw SEXP fields borrow the source.
+pub fn tryFromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) ConvertError!T {
+    return fixedSchemaFromSexp(T, sexp, arena);
+}
+
+/// R-facing adapters use this to keep Zig errors inside the native boundary.
 pub fn fromSEXP(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) T {
-    return structFromSexp(T, sexp, arena) catch |err| signalError(err);
+    return tryFromSEXP(T, sexp, arena) catch |err| signalError(err);
 }
 
 pub fn typeToSEXPTYPE(comptime T: type) R.SEXPTYPE {
@@ -1568,14 +1549,16 @@ test "errorMessage covers all ConvertError variants" {
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedLogical), "expected LGLSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedString), "expected STRSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedList), "expected VECSXP");
-    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedNamedList), "expected named VECSXP");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedSchema), "expected fixed-schema named VECSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedRaw), "expected RAWSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedComplex), "expected CPLXSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ZeroLength), "expected non-empty vector");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ScalarLength), "scalar inputs must have length one");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ScalarNA), "scalar inputs must not be NA");
     try std.testing.expectEqualSlices(u8, errorMessage(error.AltRepRegionRead), "ALTREP region read failed");
-    try std.testing.expectEqualSlices(u8, errorMessage(error.MissingField), "missing required field in R list");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaLength), "fixed schema field count does not match");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaNames), "fixed schema names do not match");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaAttributes), "fixed schema has unsupported attributes");
     try std.testing.expectEqualSlices(u8, errorMessage(error.OutOfMemory), "out of memory during SEXP conversion");
 }
 

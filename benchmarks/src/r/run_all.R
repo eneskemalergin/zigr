@@ -243,7 +243,15 @@ r_boundary_altrep_integer <- function(x) as.double(sum(x))
 r_boundary_string_view <- function(x) as.integer(sum(!is.na(x)))
 r_boundary_raw <- function(x) as.integer(sum(as.integer(x)))
 r_boundary_complex <- function(x) sum(Re(x))
-r_boundary_schema <- function(x) x
+r_boundary_schema <- function(x) {
+  fields <- c("id", "count", "ratio", "enabled")
+  if (typeof(x) != "list" || length(x) != 4L || !identical(attributes(x), list(names = fields))) stop("fixed schema expected names only")
+  if (!is.integer(x[[1L]]) || length(x[[1L]]) != 1L || is.na(x[[1L]])) stop("fixed schema expected a non-missing integer id")
+  if (!is.integer(x[[2L]]) || length(x[[2L]]) != 1L || is.na(x[[2L]])) stop("fixed schema expected a non-missing integer count")
+  if (!is.double(x[[3L]]) || length(x[[3L]]) != 1L || (is.na(x[[3L]]) && !is.nan(x[[3L]]))) stop("fixed schema expected a non-missing real ratio")
+  if (!is.logical(x[[4L]]) || length(x[[4L]]) != 1L || is.na(x[[4L]])) stop("fixed schema expected a non-missing logical enabled")
+  x
+}
 r_boundary_external_method <- function(receiver, amount) as.integer(amount)
 r_boundary_external <- function(x) as.double(x + 1.0)
 

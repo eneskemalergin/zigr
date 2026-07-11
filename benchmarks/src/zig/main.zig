@@ -305,13 +305,24 @@ fn fixtureComplexReturn(values: []const convert.Rcomplex) []const convert.Rcompl
     return values;
 }
 
-fn validateFixtureSchema(value: R.SEXP) void {
+const FixtureSchema = struct {
+    id: i32,
+    count: i32,
+    ratio: f64,
+    enabled: bool,
+};
+
+fn validateDirectSchema(value: R.SEXP) void {
     if (R.TYPEOF(value) != R.VECSXP or R.XLENGTH(value) != 4) {
         R.Rf_error("zigr fixture expected a four-field named list");
         unreachable;
     }
+    if (R.R_getAttribCount(value) != 1 or !R.R_hasAttrib(value, R.R_NamesSymbol)) {
+        R.Rf_error("zigr fixture expected only a names attribute");
+        unreachable;
+    }
     const names = R.Rf_getAttrib(value, R.R_NamesSymbol);
-    if (R.TYPEOF(names) != R.STRSXP or R.XLENGTH(names) != 4) {
+    if (R.TYPEOF(names) != R.STRSXP or R.XLENGTH(names) != 4 or R.R_getAttribCount(names) != 0) {
         R.Rf_error("zigr fixture expected four field names");
         unreachable;
     }
@@ -323,10 +334,31 @@ fn validateFixtureSchema(value: R.SEXP) void {
             unreachable;
         }
     }
+    const id = R.VECTOR_ELT(value, 0);
+    const count = R.VECTOR_ELT(value, 1);
+    const ratio = R.VECTOR_ELT(value, 2);
+    const enabled = R.VECTOR_ELT(value, 3);
+    if (R.TYPEOF(id) != R.INTSXP or R.XLENGTH(id) != 1 or R.INTEGER(id)[0] == R.R_NaInt) {
+        R.Rf_error("zigr fixture expected a non-missing integer id");
+        unreachable;
+    }
+    if (R.TYPEOF(count) != R.INTSXP or R.XLENGTH(count) != 1 or R.INTEGER(count)[0] == R.R_NaInt) {
+        R.Rf_error("zigr fixture expected a non-missing integer count");
+        unreachable;
+    }
+    if (R.TYPEOF(ratio) != R.REALSXP or R.XLENGTH(ratio) != 1 or R.ISNA(R.REAL(ratio)[0]) != 0) {
+        R.Rf_error("zigr fixture expected a non-missing real ratio");
+        unreachable;
+    }
+    if (R.TYPEOF(enabled) != R.LGLSXP or R.XLENGTH(enabled) != 1 or R.LOGICAL(enabled)[0] == R.R_NaInt) {
+        R.Rf_error("zigr fixture expected a non-missing logical enabled");
+        unreachable;
+    }
 }
 
 fn fixtureSchema(value: R.SEXP) R.SEXP {
-    validateFixtureSchema(value);
+    const schema = convert.fromSEXP(FixtureSchema, value, std.heap.page_allocator);
+    _ = schema;
     return value;
 }
 
@@ -445,7 +477,7 @@ fn directComplex(value: R.SEXP) R.SEXP {
 }
 
 fn directSchema(value: R.SEXP) R.SEXP {
-    validateFixtureSchema(value);
+    validateDirectSchema(value);
     return value;
 }
 

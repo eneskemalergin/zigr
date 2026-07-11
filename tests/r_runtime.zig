@@ -1826,8 +1826,14 @@ export fn zigr_test_embed_null() SEXP {
 export fn zigr_test_struct_to_sexp_empty() SEXP {
     const Empty = struct {};
     const result = zigr_convert.asSEXP(Empty{});
-    if (R.XLENGTH(result) == 0) return R.Rf_ScalarReal(1.0);
-    return R.Rf_ScalarReal(0.0);
+    if (R.XLENGTH(result) != 0 or R.R_getAttribCount(result) != 1) return R.Rf_ScalarReal(0.0);
+    const names = R.Rf_getAttrib(result, R.R_NamesSymbol);
+    if (R.TYPEOF(names) != R.STRSXP or R.XLENGTH(names) != 0) return R.Rf_ScalarReal(0.0);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    _ = zigr_convert.tryFromSEXP(Empty, result, arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_struct_to_sexp_nested() SEXP {
@@ -1842,7 +1848,7 @@ export fn zigr_test_struct_to_sexp_nested() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-export fn zigr_test_struct_from_sexp_optional_missing() SEXP {
+export fn zigr_test_struct_from_sexp_missing_optional_field() SEXP {
     const Test = struct { x: f64, y: ?f64 };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1882,6 +1888,152 @@ export fn zigr_test_struct_from_sexp_optional_present() SEXP {
 
     const result = zigr_convert.fromSEXP(Test, vec, arena.allocator());
     if (result.x != 1.0 or result.y != 2.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_fixed_schema_contract() SEXP {
+    const Schema = struct { id: i32, ratio: f64, enabled: bool };
+    const Short = struct { id: i32, ratio: f64 };
+    const Extra = struct { id: i32, ratio: f64, enabled: bool, extra: i32 };
+    const WrongField = struct { id: f64, ratio: f64, enabled: bool };
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const valid = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    const parsed = zigr_convert.tryFromSEXP(Schema, valid, arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (parsed.id != 7 or parsed.ratio != 2.5 or !parsed.enabled) return R.Rf_ScalarReal(0.0);
+
+    var no_alloc_storage: [0]u8 align(16) = .{};
+    var no_alloc = std.heap.FixedBufferAllocator.init(&no_alloc_storage);
+    const no_alloc_parsed = zigr_convert.tryFromSEXP(Schema, valid, no_alloc.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (no_alloc_parsed.id != 7 or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    const short = R.Rf_protect(zigr_convert.asSEXP(Short{ .id = 7, .ratio = 2.5 }));
+    defer R.Rf_unprotect(1);
+    if (zigr_convert.tryFromSEXP(Schema, short, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaLength) return R.Rf_ScalarReal(0.0);
+    }
+
+    const extra = R.Rf_protect(zigr_convert.asSEXP(Extra{ .id = 7, .ratio = 2.5, .enabled = true, .extra = 1 }));
+    defer R.Rf_unprotect(1);
+    if (zigr_convert.tryFromSEXP(Schema, extra, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaLength) return R.Rf_ScalarReal(0.0);
+    }
+
+    const reordered = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    const reordered_names = R.Rf_getAttrib(reordered, R.R_NamesSymbol);
+    const first_name = R.STRING_ELT(reordered_names, 0);
+    R.SET_STRING_ELT(reordered_names, 0, R.STRING_ELT(reordered_names, 1));
+    R.SET_STRING_ELT(reordered_names, 1, first_name);
+    if (zigr_convert.tryFromSEXP(Schema, reordered, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaNames) return R.Rf_ScalarReal(0.0);
+    }
+
+    const duplicate = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    const duplicate_names = R.Rf_getAttrib(duplicate, R.R_NamesSymbol);
+    R.SET_STRING_ELT(duplicate_names, 1, R.STRING_ELT(duplicate_names, 0));
+    if (zigr_convert.tryFromSEXP(Schema, duplicate, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaNames) return R.Rf_ScalarReal(0.0);
+    }
+
+    const unnamed = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    _ = R.Rf_setAttrib(unnamed, R.R_NamesSymbol, R.R_NilValue);
+    if (zigr_convert.tryFromSEXP(Schema, unnamed, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaAttributes) return R.Rf_ScalarReal(0.0);
+    }
+
+    const attributed = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    const class = R.Rf_protect(R.Rf_ScalarString(R.Rf_mkChar("schema")));
+    defer R.Rf_unprotect(1);
+    _ = R.Rf_setAttrib(attributed, R.R_ClassSymbol, class);
+    if (zigr_convert.tryFromSEXP(Schema, attributed, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaAttributes) return R.Rf_ScalarReal(0.0);
+    }
+
+    const decorated_names = R.Rf_protect(zigr_convert.asSEXP(Schema{ .id = 7, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    const names_class = R.Rf_protect(R.Rf_ScalarString(R.Rf_mkChar("schema-names")));
+    defer R.Rf_unprotect(1);
+    _ = R.Rf_setAttrib(R.Rf_getAttrib(decorated_names, R.R_NamesSymbol), R.R_ClassSymbol, names_class);
+    if (zigr_convert.tryFromSEXP(Schema, decorated_names, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.SchemaAttributes) return R.Rf_ScalarReal(0.0);
+    }
+
+    const wrong_field = R.Rf_protect(zigr_convert.asSEXP(WrongField{ .id = 7.0, .ratio = 2.5, .enabled = true }));
+    defer R.Rf_unprotect(1);
+    if (zigr_convert.tryFromSEXP(Schema, wrong_field, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.ExpectedInteger) return R.Rf_ScalarReal(0.0);
+    }
+
+    if (zigr_convert.tryFromSEXP(Schema, R.R_NilValue, arena.allocator())) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |convert_err| {
+        if (convert_err != error.ExpectedSchema) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_fixed_schema_nested_optional_long() SEXP {
+    const Inner = struct { count: i32 };
+    const Outer = struct {
+        inner: Inner,
+        value: ?f64,
+        sequence: zigr.sexp.SEXP,
+        optional_inner: ?Inner,
+        raw_null: zigr.sexp.SEXP,
+    };
+    const root_sequence = compactRealSequence(2_147_483_648.0) orelse return R.Rf_ScalarReal(0.0);
+    const sequence: zigr.sexp.SEXP = @ptrCast(root_sequence);
+    defer R.Rf_unprotect(1);
+
+    const encoded = R.Rf_protect(zigr_convert.asSEXP(Outer{
+        .inner = .{ .count = 3 },
+        .value = null,
+        .sequence = sequence,
+        .optional_inner = null,
+        .raw_null = null,
+    }));
+    defer R.Rf_unprotect(1);
+    if (R.R_getAttribCount(encoded) != 1) return R.Rf_ScalarReal(0.0);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const decoded = zigr_convert.tryFromSEXP(Outer, encoded, arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (decoded.inner.count != 3 or decoded.value != null or decoded.sequence != sequence or decoded.optional_inner != null or decoded.raw_null != null) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.xlength(decoded.sequence) != 2_147_483_648) return R.Rf_ScalarReal(0.0);
+
+    const present_inner = R.Rf_protect(zigr_convert.asSEXP(Inner{ .count = 9 }));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(encoded, 3, present_inner);
+    const present_decoded = zigr_convert.tryFromSEXP(Outer, encoded, arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (present_decoded.optional_inner == null or present_decoded.optional_inner.?.count != 9) return R.Rf_ScalarReal(0.0);
+
+    const typed_na = R.Rf_protect(R.Rf_ScalarReal(R.NA_REAL()));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(encoded, 1, typed_na);
+    const typed_na_decoded = zigr_convert.tryFromSEXP(Outer, encoded, arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    if (typed_na_decoded.value != null or typed_na_decoded.optional_inner == null or typed_na_decoded.optional_inner.?.count != 9) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

@@ -23,12 +23,12 @@ Six runner backends. `results/CANONICAL_RUN.json` identifies the current publish
 - **Runtime services** (tasks 38-41, 43): struct convert, R eval, try eval, serialize roundtrip, RNG stress
 - **External pointer** (task 42): non-deterministic structural validation
 - **Diagnostics** (tasks 44-47): build time, binary size, cross-compile time, and memory allocation counts (zigr only)
-- **Boundary pairs** (tasks 50-75): generated and handwritten zero-arg, scalar, optional, numeric, ALTREP, string, raw, complex, fixed-schema, external-pointer, and `.External` calls. They are `api_overhead` and `non_comparable`; `analysis_summary.csv` keeps each variant separate.
+- **Boundary pairs** (tasks 50-75): generated and handwritten zero-arg, scalar, optional, numeric, ALTREP, string, raw, complex, fixed-schema, external-pointer, and `.External` calls. The generated schema row uses an explicit `SEXP` adapter and the handwritten row validates the same fixed contract. They are `api_overhead` and `non_comparable`; `analysis_summary.csv` keeps each variant separate.
 - **Representation rows** (tasks 76-86): one and four passes through strings as views, cached metadata, or headers; raw views and copies; complex views and returns. The string input is ordinary ASCII so the timing stays about representation rather than translation. These rows are `api_overhead` and `non_comparable` because the ownership models differ.
 
 The boundary fixtures run in `r`, `c_call`, and `zigr`. The representation rows run in `r` and `zigr`; other runners report them as `N/A` instead of timing a substitute with different ownership.
 
-The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows compare zigr's contiguous copy with a handwritten region stream, so they describe a conversion choice rather than wrapper overhead. Schema rows validate a fixed named list through `SEXP`. The generated method row covers a valid `.Call` receiver only; tags, foreign pointers, finalizers, and lifetimes are not claimed here.
+The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows compare zigr's contiguous copy with a handwritten region stream, so they describe a conversion choice rather than wrapper overhead. The generated schema row parses a declared fixed schema through `SEXP`; the handwritten and R rows validate the same plain names and scalar-field contract. The generated method row covers a valid `.Call` receiver only; tags, foreign pointers, finalizers, and lifetimes are not claimed here.
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, task groups, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 

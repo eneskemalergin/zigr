@@ -80,9 +80,15 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 - Condition handling (`tryCatch`, `tryCatchError`)
 - Serialization, RNG management, error/warning signaling
 - R-managed memory allocator
-- Struct-to-SEXP reflection (`asSEXP`/`fromSEXP`)
+- Fixed struct schemas (`asSEXP`/`tryFromSEXP`/`fromSEXP`) with declaration-order names and no runtime name map
 - generateExports (`.Call` and `.External`) and generateMethods (EXTPTRSXP)
 - Zero dependencies (build.zig.zon is empty)
+
+### Fixed schemas
+
+`asSEXP` emits a `VECSXP` with declaration-order names and no other list attributes. `tryFromSEXP` accepts only that shape: the field count and every name must match, and the names vector itself must have no attributes. Optional fields must still be present; `NULL` and typed `NA` use the existing optional-scalar rules.
+
+Use `tryFromSEXP` when Zig code needs a conversion error. Use `fromSEXP` inside an R entry point when that error should become an R error. Generated exports deliberately keep a struct boundary explicit: accept or return `R.SEXP`, then call the conversion helper in the package adapter. Protect an `asSEXP` result before any later R allocation.
 
 ## CI
 
@@ -120,7 +126,7 @@ src/
 ├── sexp.zig           SEXPTYPE enum, 24 classification helpers
 ├── protect.zig        PROTECT/UNPROTECT with depth tracking
 ├── cleanup.zig        R_UnwindProtect bridge + cleanup stack
-├── convert.zig        Type conversion + struct reflection
+├── convert.zig        Type conversion + fixed struct schemas
 ├── error.zig          Rf_error / Rf_warning signaling
 ├── interrupt.zig      R_CheckUserInterrupt, stack checking
 ├── memory.zig         RAllocator (R_chk_calloc / R_chk_free)

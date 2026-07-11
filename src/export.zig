@@ -123,7 +123,7 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
         return view.constSlice();
     }
-    @compileError("unsupported parameter type: " ++ @typeName(T));
+    @compileError("unsupported generated parameter type: " ++ @typeName(T) ++ "; accept R.SEXP and call convert.fromSEXP for a fixed schema");
 }
 
 fn toSexp(value: anytype, comptime T: type) R.SEXP {
@@ -144,7 +144,7 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     if (comptime T == []const []const u8) return convert.fromStringSlice(value);
     if (comptime T == []const u8) return convert.fromRawSlice(value);
     if (comptime T == []const convert.Rcomplex) return convert.fromComplexSlice(value);
-    @compileError("unsupported return type: " ++ @typeName(T));
+    @compileError("unsupported generated return type: " ++ @typeName(T) ++ "; return R.SEXP from an explicit adapter or call convert.asSEXP");
 }
 
 /// Its spill state survives an R longjmp.
