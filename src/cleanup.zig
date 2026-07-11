@@ -22,10 +22,43 @@ const Frame = struct {
 
 threadlocal var stack: [MAX_NESTING]Frame = undefined;
 threadlocal var count: usize = 0;
+threadlocal var protect_depth: i32 = 0;
+
+const Boundary = struct {
+    frame_count: usize,
+    protect_depth: i32,
+};
+
+threadlocal var boundaries: [MAX_NESTING]Boundary = undefined;
+threadlocal var boundary_count: usize = 0;
+
+fn beginBoundary() void {
+    if (boundary_count >= MAX_NESTING) err.signal("unwind boundary stack overflow");
+    boundaries[boundary_count] = .{
+        .frame_count = count,
+        .protect_depth = protect_depth,
+    };
+    boundary_count += 1;
+}
+
+fn finishBoundary(jump: bool) void {
+    if (boundary_count == 0) return;
+    boundary_count -= 1;
+    const boundary = boundaries[boundary_count];
+    if (jump) {
+        while (count > boundary.frame_count) {
+            count -= 1;
+            stack[count].func(stack[count].data);
+        }
+    } else {
+        count = boundary.frame_count;
+    }
+    protect_depth = boundary.protect_depth;
+}
 
 fn cleanHandler(_data: ?*anyopaque, jump: R.Rboolean) callconv(.c) void {
     _ = _data;
-    if (jump == 1) zigr_on_unwind() else zigr_on_return();
+    finishBoundary(jump == 1);
 }
 
 export fn zigr_make_unwind_cont() R.SEXP {
@@ -37,6 +70,7 @@ export fn zigr_protect_call(
     data: ?*anyopaque,
     cont: R.SEXP,
 ) R.SEXP {
+    beginBoundary();
     return R.R_UnwindProtect(fun, data, cleanHandler, null, cont);
 }
 
@@ -59,6 +93,14 @@ pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) vo
 
 pub fn popFrame() void {
     if (count > 0) count -= 1;
+}
+
+pub fn getProtectDepth() i32 {
+    return protect_depth;
+}
+
+pub fn adjustProtectDepth(delta: i32) void {
+    protect_depth += delta;
 }
 
 /// Inline state survives longjmp and must fit the frame's fixed storage.

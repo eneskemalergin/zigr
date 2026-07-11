@@ -58,6 +58,7 @@ tests <- list(
   "zigr_test_protect",
   "zigr_test_return42",
   list(name="zigr_test_longjmp", expect_error=TRUE),
+  "zigr_longjmp_flag",
   "zigr_test_longjmp_normal",
 
   list(name="zigr_test_error_signal", expect_error=TRUE),
@@ -77,6 +78,9 @@ tests <- list(
   "zigr_test_ralloc",
 
   list(name="zigr_test_preserve_longjmp", expect_error=TRUE),
+  "zigr_preserve_flag",
+  list(name="zigr_test_nested_outer", expect_error=TRUE),
+  "zigr_nested_flags",
 
   "zigr_test_to_real_slice",
   "zigr_test_from_real_slice",
@@ -237,6 +241,7 @@ tests <- list(
   "zigr_test_generated_method_receiver_errors",
   "zigr_test_generated_ownership_gc",
   list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
+  "zigr_test_generated_result_longjmp",
   "zigr_test_externalptr_finalizer",
   "zigr_test_externalptr_finalizer_idempotent",
   "zigr_test_externalptr_typed_protected",
@@ -244,6 +249,7 @@ tests <- list(
   "zigr_test_complex_boundary",
   "zigr_test_generated_string_shapes",
   "zigr_test_string_allocation_longjmp",
+  "zigr_test_conversion_allocation_longjmp",
 
   list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),
 
@@ -256,6 +262,8 @@ tests <- list(
   "zigr_typeof_nil",
 
   "zigr_test_cleanup_fires_on_longjmp",
+  "zigr_test_nested_unwind_state",
+  "zigr_test_cleanup_capacity_recovers",
   "zigr_test_with_rng_longjmp",
 
   "zigr_test_fib_recursive",
@@ -303,7 +311,8 @@ tests <- list(
   "zigr_fuzz_toStringSliceView_type",
   "zigr_fuzz_toCachedStringSliceView_type",
   "zigr_fuzz_scalar_na",
-  "zigr_fuzz_scalar_empty"
+  "zigr_fuzz_scalar_empty",
+  "zigr_test_final_cleanup_state"
 )
 
 cat("\n=== zigr R runtime tests ===\n")

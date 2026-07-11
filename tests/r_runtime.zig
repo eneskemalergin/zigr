@@ -107,16 +107,15 @@ fn markCleanupFired(_: ?*anyopaque) void {
 
 export fn zigr_test_longjmp() SEXP {
     longjmp_cleanup_fired = false;
-    cleanup.pushFrame(markCleanupFired, null);
 
     _ = cleanup.protectCall(struct {
         fn doBoom() R.SEXP {
+            cleanup.pushFrame(markCleanupFired, null);
             R.Rf_error("zigr longjmp test: expected error");
             return R.R_NilValue;
         }
     }.doBoom);
 
-    cleanup.popFrame();
     return R.Rf_ScalarReal(0.0);
 }
 
@@ -227,22 +226,27 @@ export fn zigr_test_ralloc() SEXP {
 
 var preserve_released: bool = false;
 
-fn releasePreserved(_: ?*anyopaque) void {
-    preserve_released = true;
+const PreservedCleanup = struct {
+    value: SEXP,
+    armed: bool = false,
+
+    fn fire(self: *@This()) void {
+        if (!self.armed) return;
+        R.R_ReleaseObject(self.value);
+        preserve_released = true;
+    }
+};
+
+fn preserveThenError() SEXP {
+    const state = cleanup.pushFrameInline(PreservedCleanup, .{ .value = R.Rf_ScalarReal(99.0) }, PreservedCleanup.fire);
+    R.R_PreserveObject(state.value);
+    state.armed = true;
+    R.Rf_error("preserve: expected");
 }
 
 export fn zigr_test_preserve_longjmp() SEXP {
     preserve_released = false;
-    const obj = R.Rf_ScalarReal(99.0);
-    R.R_PreserveObject(obj);
-    cleanup.pushFrame(releasePreserved, null);
-    _ = cleanup.protectCall(struct {
-        fn doBoom() SEXP {
-            R.Rf_error("preserve: expected");
-            return R.R_NilValue;
-        }
-    }.doBoom);
-    cleanup.popFrame();
+    _ = cleanup.protectCall(preserveThenError);
     return R.Rf_ScalarReal(0.0);
 }
 
@@ -261,19 +265,20 @@ fn markInner(_: ?*anyopaque) void {
 }
 
 export fn zigr_test_nested_inner() SEXP {
-    cleanup.pushFrame(markInner, null);
-    R.Rf_error("nested inner: expected");
-    cleanup.popFrame();
-    return R.R_NilValue;
+    return cleanup.protectCall(struct {
+        fn call() SEXP {
+            cleanup.pushFrame(markInner, null);
+            R.Rf_error("nested inner: expected");
+        }
+    }.call);
 }
 
 export fn zigr_test_nested_outer() SEXP {
     nested_outer_fired = false;
     nested_inner_fired = false;
-    cleanup.pushFrame(markOuter, null);
-
     _ = cleanup.protectCall(struct {
         fn doNested() R.SEXP {
+            cleanup.pushFrame(markOuter, null);
             const fn_name = R.Rf_mkChar("zigr_test_nested_inner");
             const fn_string = R.Rf_ScalarString(fn_name);
             const call_sexp = test_lang.call1(
@@ -284,7 +289,6 @@ export fn zigr_test_nested_outer() SEXP {
         }
     }.doNested);
 
-    cleanup.popFrame();
     return R.R_NilValue;
 }
 
@@ -292,7 +296,7 @@ export fn zigr_nested_flags() SEXP {
     var v: i32 = 0;
     if (nested_outer_fired) v += 1;
     if (nested_inner_fired) v += 2;
-    return R.Rf_ScalarInteger(v);
+    return R.Rf_ScalarInteger(if (v == 3) 1 else 0);
 }
 
 export fn zigr_test_to_real_slice() SEXP {
@@ -1241,6 +1245,92 @@ export fn zigr_test_string_allocation_longjmp() SEXP {
             return R.Rf_ScalarReal(0.0);
         } else |_| {}
         if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var conversion_cleanup_input: SEXP = null;
+threadlocal var conversion_cleanup_mode: u3 = 0;
+var conversion_error_classes: [6]R.R_altrep_class_t = undefined;
+var conversion_error_registered = false;
+
+fn conversionErrorReal(_: SEXP, _: R.R_xlen_t) callconv(.c) f64 {
+    R.Rf_error("expected real conversion error");
+}
+
+fn conversionErrorInteger(_: SEXP, _: R.R_xlen_t) callconv(.c) c_int {
+    R.Rf_error("expected integer conversion error");
+}
+
+fn conversionErrorLogical(_: SEXP, _: R.R_xlen_t) callconv(.c) c_int {
+    R.Rf_error("expected logical conversion error");
+}
+
+fn conversionErrorRaw(_: SEXP, _: R.R_xlen_t) callconv(.c) R.Rbyte {
+    R.Rf_error("expected raw conversion error");
+}
+
+fn conversionErrorComplex(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: ?*R.Rcomplex) callconv(.c) R.R_xlen_t {
+    R.Rf_error("expected complex conversion error");
+}
+
+fn conversionErrorList(_: SEXP, _: R.R_xlen_t) callconv(.c) SEXP {
+    R.Rf_error("expected list conversion error");
+}
+
+fn conversionErrorInput(mode: usize) SEXP {
+    if (!conversion_error_registered) {
+        conversion_error_classes[0] = R.R_make_altreal_class("conversion_error_real", "zigr", null);
+        conversion_error_classes[1] = R.R_make_altinteger_class("conversion_error_integer", "zigr", null);
+        conversion_error_classes[2] = R.R_make_altlogical_class("conversion_error_logical", "zigr", null);
+        conversion_error_classes[3] = R.R_make_altraw_class("conversion_error_raw", "zigr", null);
+        conversion_error_classes[4] = R.R_make_altcomplex_class("conversion_error_complex", "zigr", null);
+        conversion_error_classes[5] = R.R_make_altlist_class("conversion_error_list", "zigr", null);
+        for (conversion_error_classes) |class| R.R_set_altrep_Length_method(class, stringErrorLength);
+        R.R_set_altreal_Elt_method(conversion_error_classes[0], conversionErrorReal);
+        R.R_set_altinteger_Elt_method(conversion_error_classes[1], conversionErrorInteger);
+        R.R_set_altlogical_Elt_method(conversion_error_classes[2], conversionErrorLogical);
+        R.R_set_altraw_Elt_method(conversion_error_classes[3], conversionErrorRaw);
+        R.R_set_altcomplex_Get_region_method(conversion_error_classes[4], conversionErrorComplex);
+        R.R_set_altlist_Elt_method(conversion_error_classes[5], conversionErrorList);
+        conversion_error_registered = true;
+    }
+    return R.R_new_altrep(conversion_error_classes[mode], R.R_NilValue, R.R_NilValue);
+}
+
+fn conversionAllocationThenError() SEXP {
+    const allocator = StringCleanupAllocator.allocator();
+    switch (conversion_cleanup_mode) {
+        0 => _ = zigr_convert.toRealSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        1 => _ = zigr_convert.toIntSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        2 => _ = zigr_convert.toLogicalSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        3 => _ = zigr_convert.toRawSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        4 => _ = zigr_convert.toComplexSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        5 => _ = zigr_convert.toListSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        else => unreachable,
+    }
+    R.Rf_error("conversion unexpectedly returned");
+}
+
+export fn zigr_test_conversion_allocation_longjmp() SEXP {
+    for (0..conversion_error_classes.len) |mode| {
+        const input = R.Rf_protect(conversionErrorInput(mode));
+        conversion_cleanup_input = input;
+        conversion_cleanup_mode = @intCast(mode);
+        string_cleanup_state = .{};
+
+        if (trycatch_mod.tryCatch(struct {
+            fn call() SEXP {
+                return cleanup.protectCall(conversionAllocationThenError);
+            }
+        }.call)) |_| {
+            R.Rf_unprotect(1);
+            return R.Rf_ScalarReal(0.0);
+        } else |_| {}
+
+        R.Rf_unprotect(1);
+        conversion_cleanup_input = null;
+        if (string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     }
     return R.Rf_ScalarReal(1.0);
 }
@@ -2710,12 +2800,20 @@ fn spillThenError(values: []const i32) void {
     R.Rf_error("zigr generated spill: expected error");
 }
 
+fn invalidStringResult() []const []const u8 {
+    const values = struct {
+        const items = [_][]const u8{"invalid\x00string"};
+    };
+    return values.items[0..];
+}
+
 const ArenaExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_arena_scalar", .func = arenaScalar },
     .{ .name = "zigr_fixed_scratch_raw", .func = fixedScratchRaw },
     .{ .name = "zigr_spill_allocate", .func = spillThenAllocate },
     .{ .name = "zigr_arena_vector_output", .func = arenaVectorOutput },
     .{ .name = "zigr_spill_error", .func = spillThenError },
+    .{ .name = "zigr_invalid_string_result", .func = invalidStringResult },
 }, &.{});
 
 const ArenaCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
@@ -2869,6 +2967,19 @@ export fn zigr_test_generated_spill_longjmp() SEXP {
     const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
     if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
     return arenaCall(4, compact);
+}
+
+export fn zigr_test_generated_result_longjmp() SEXP {
+    if (!initArenaExports()) return R.Rf_ScalarReal(0.0);
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return arenaCall(5, R.R_NilValue);
+        }
+    }.call)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+
+    return arenaCall(0, R.Rf_ScalarReal(1.0));
 }
 
 var externalptr_finalizer_count: u8 = 0;
@@ -3138,20 +3249,25 @@ fn expectExternalMethodError(args: R.SEXP, expected: []const u8) bool {
     return if (condition) |value| std.mem.eql(u8, trycatch_mod.extractMessage(value), expected) else false;
 }
 
-var cleanup_longjmp_fired: bool = false;
+var inner_cleanup_fired: bool = false;
+var outer_cleanup_fired: bool = false;
 
-fn markCleanupFiredTest(_: ?*anyopaque) void {
-    cleanup_longjmp_fired = true;
+fn markInnerCleanup(_: ?*anyopaque) void {
+    inner_cleanup_fired = true;
+}
+
+fn markOuterCleanup(_: ?*anyopaque) void {
+    outer_cleanup_fired = true;
 }
 
 export fn zigr_test_cleanup_fires_on_longjmp() SEXP {
-    cleanup_longjmp_fired = false;
-    cleanup.pushFrame(markCleanupFiredTest, null);
+    inner_cleanup_fired = false;
 
     if (trycatch_mod.tryCatch(struct {
         fn call() R.SEXP {
             return cleanup.protectCall(struct {
                 fn inner() R.SEXP {
+                    cleanup.pushFrame(markInnerCleanup, null);
                     R.Rf_error("expected cleanup test error");
                     return R.R_NilValue;
                 }
@@ -3159,9 +3275,82 @@ export fn zigr_test_cleanup_fires_on_longjmp() SEXP {
         }
     }.call)) |_| {} else |_| {}
 
+    return R.Rf_ScalarReal(if (inner_cleanup_fired) 1.0 else 0.0);
+}
+
+export fn zigr_test_nested_unwind_state() SEXP {
+    const initial_depth = protect.getDepth();
+    inner_cleanup_fired = false;
+    outer_cleanup_fired = false;
+    cleanup.pushFrame(markOuterCleanup, null);
+
+    var iteration: usize = 0;
+    while (iteration < 32) : (iteration += 1) {
+        inner_cleanup_fired = false;
+        if (trycatch_mod.tryCatch(struct {
+            fn call() R.SEXP {
+                return cleanup.protectCall(struct {
+                    fn inner() R.SEXP {
+                        cleanup.pushFrame(markInnerCleanup, null);
+                        _ = protect.protect(R.Rf_ScalarReal(1.0));
+                        R.Rf_error("expected nested unwind error");
+                        return R.R_NilValue;
+                    }
+                }.inner);
+            }
+        }.call)) |_| {} else |_| {}
+
+        if (!inner_cleanup_fired or outer_cleanup_fired) {
+            cleanup.popFrame();
+            return R.Rf_ScalarReal(0.0);
+        }
+        if (protect.getDepth() != initial_depth) {
+            cleanup.popFrame();
+            return R.Rf_ScalarReal(0.0);
+        }
+    }
+
     cleanup.popFrame();
-    if (cleanup_longjmp_fired) return R.Rf_ScalarReal(1.0);
-    return R.Rf_ScalarReal(0.0);
+    const fresh = cleanup.protectCall(struct {
+        fn call() R.SEXP {
+            return R.Rf_ScalarReal(1.0);
+        }
+    }.call);
+    if (outer_cleanup_fired or protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+    return fresh;
+}
+
+var capacity_cleanup_count: usize = 0;
+
+fn countCapacityCleanup(_: ?*anyopaque) void {
+    capacity_cleanup_count += 1;
+}
+
+export fn zigr_test_cleanup_capacity_recovers() SEXP {
+    capacity_cleanup_count = 0;
+    if (trycatch_mod.tryCatch(struct {
+        fn call() R.SEXP {
+            return cleanup.protectCall(struct {
+                fn fill() R.SEXP {
+                    for (0..cleanup.MAX_NESTING + 1) |_| cleanup.pushFrame(countCapacityCleanup, null);
+                    return R.R_NilValue;
+                }
+            }.fill);
+        }
+    }.call)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (capacity_cleanup_count != cleanup.MAX_NESTING) return R.Rf_ScalarReal(0.0);
+
+    return cleanup.protectCall(struct {
+        fn call() R.SEXP {
+            return R.Rf_ScalarReal(1.0);
+        }
+    }.call);
+}
+
+export fn zigr_test_final_cleanup_state() SEXP {
+    return zigr_test_cleanup_capacity_recovers();
 }
 
 export fn zigr_test_str_na_nullable() SEXP {

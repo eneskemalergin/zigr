@@ -6,18 +6,18 @@ const std = @import("std");
 const builtin = @import("builtin");
 const SEXP = @import("sexp.zig").SEXP;
 const R = @import("R");
+const cleanup = @import("cleanup");
 
 const track_depth = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
 
-threadlocal var depth: i32 = 0;
 const leak_warn_threshold = 64;
 
 pub fn protect(value: SEXP) SEXP {
     if (track_depth) {
-        if (depth > leak_warn_threshold) {
-            std.log.warn("protect depth is {} (possible leak)", .{depth});
+        if (cleanup.getProtectDepth() > leak_warn_threshold) {
+            std.log.warn("protect depth is {} (possible leak)", .{cleanup.getProtectDepth()});
         }
-        depth += 1;
+        cleanup.adjustProtectDepth(1);
     }
     return R.Rf_protect(value);
 }
@@ -52,9 +52,9 @@ pub fn scoped(value: SEXP) ScopedProtect {
 
 pub fn unprotect() void {
     if (track_depth) {
-        depth -= 1;
-        if (depth < 0) {
-            std.log.warn("protect depth went negative ({})", .{depth});
+        cleanup.adjustProtectDepth(-1);
+        if (cleanup.getProtectDepth() < 0) {
+            std.log.warn("protect depth went negative ({})", .{cleanup.getProtectDepth()});
         }
     }
     R.Rf_unprotect(1);
@@ -63,9 +63,9 @@ pub fn unprotect() void {
 pub fn protectWithIndex(value: SEXP, index: *R.PROTECT_INDEX) void {
     R.R_ProtectWithIndex(value, index);
     if (track_depth) {
-        depth += 1;
-        if (depth > leak_warn_threshold) {
-            std.log.warn("protect depth is {} (possible leak)", .{depth});
+        cleanup.adjustProtectDepth(1);
+        if (cleanup.getProtectDepth() > leak_warn_threshold) {
+            std.log.warn("protect depth is {} (possible leak)", .{cleanup.getProtectDepth()});
         }
     }
 }
@@ -77,17 +77,17 @@ pub fn reprotect(value: SEXP, index: R.PROTECT_INDEX) void {
 pub fn unprotectN(count: usize) void {
     if (count > std.math.maxInt(c_int)) @panic("unprotectN count exceeds c_int range");
     if (track_depth) {
-        const new_depth = depth - @as(i32, @intCast(count));
+        const new_depth = cleanup.getProtectDepth() - @as(i32, @intCast(count));
         if (new_depth < 0) {
             std.log.warn("protect depth went negative ({}) from unprotectN({})", .{ new_depth, count });
         }
-        depth = new_depth;
+        cleanup.adjustProtectDepth(new_depth - cleanup.getProtectDepth());
     }
     R.Rf_unprotect(@intCast(count));
 }
 
 pub fn getDepth() i32 {
-    if (track_depth) return depth;
+    if (track_depth) return cleanup.getProtectDepth();
     return 0;
 }
 

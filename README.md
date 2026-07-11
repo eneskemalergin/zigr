@@ -90,6 +90,8 @@ zig build rtest   # build R runtime test .so (run via Rscript tests/run_r_tests.
 
 Use `tryFromSEXP` when Zig code needs a conversion error. Use `fromSEXP` inside an R entry point when that error should become an R error. Generated exports deliberately keep a struct boundary explicit: accept or return `R.SEXP`, then call the conversion helper in the package adapter. Protect an `asSEXP` result before any later R allocation.
 
+Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R errors, and call-scoped native storage is released when R longjmps. Handle Zig error unions inside your function or an explicit adapter before returning to the generated boundary. A Zig panic cannot be caught there, so exported functions must not panic. Returned slices are converted to R objects before call-scoped storage is released; do not retain borrowed R slices after the call.
+
 ### Native-state methods
 
 I keep native state explicit. `generateMethods(T, ...)` accepts a method only when its first parameter is exactly `*T`; both `.Call` and `.External` take that receiver first and validate its R type, per-type tag, typed protected metadata, address, and alignment before casting it.

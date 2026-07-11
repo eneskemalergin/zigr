@@ -20,12 +20,16 @@ pub fn release() void {
 
 /// The cleanup frame releases R's state after a non-local exit.
 pub fn withRng(comptime func: *const fn () R.SEXP) R.SEXP {
-    acquire();
-    cleanup.pushFrame(releaseRng, null);
-    const result = func();
-    cleanup.popFrame();
-    release();
-    return result;
+    return cleanup.protectCall(struct {
+        fn call() R.SEXP {
+            acquire();
+            cleanup.pushFrame(releaseRng, null);
+            const result = func();
+            cleanup.popFrame();
+            release();
+            return result;
+        }
+    }.call);
 }
 
 test "withRng type" {

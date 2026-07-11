@@ -553,6 +553,8 @@ pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
     const n = try tryXlength(sexp);
     const result = try allocator.alloc(SEXP, n);
+    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(SEXP, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    defer cleanup.popFrame();
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
     return result;
 }

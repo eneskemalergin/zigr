@@ -2,7 +2,7 @@
 //!
 //! Keep the package's C entry points at the package root. Generated calls run
 //! inside R's unwind boundary so temporary native storage is released on both
-//! return and error. Errors become R errors rather than Zig panics.
+//! return and error. Conversion failures become R errors.
 
 const std = @import("std");
 const R = @import("R");
@@ -11,21 +11,20 @@ const cleanup = @import("cleanup");
 const externalptr = @import("externalptr.zig");
 const memory = @import("memory.zig");
 
-/// Allocation here means the wrapper's compile-time routing is wrong.
-fn panicAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+fn rejectAlloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
     _ = ctx;
     _ = len;
     _ = alignment;
     _ = ra;
-    @panic("allocation triggered without arena. Bug in arena_needed check or fromSexp type routing");
+    return null;
 }
-fn panicFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+fn rejectFree(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
     _ = ctx;
     _ = buf;
     _ = alignment;
     _ = ra;
 }
-fn panicResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+fn rejectResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
     _ = ctx;
     _ = buf;
     _ = alignment;
@@ -33,7 +32,7 @@ fn panicResize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len
     _ = ra;
     return false;
 }
-fn panicRemap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+fn rejectRemap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
     _ = ctx;
     _ = buf;
     _ = alignment;
@@ -41,13 +40,13 @@ fn panicRemap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len:
     _ = ra;
     return null;
 }
-const panic_allocator = std.mem.Allocator{
+const no_alloc_allocator = std.mem.Allocator{
     .ptr = undefined,
     .vtable = &.{
-        .alloc = panicAlloc,
-        .free = panicFree,
-        .resize = panicResize,
-        .remap = panicRemap,
+        .alloc = rejectAlloc,
+        .free = rejectFree,
+        .resize = rejectResize,
+        .remap = rejectRemap,
     },
 };
 
@@ -123,6 +122,9 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
 }
 
 fn toSexp(value: anytype, comptime T: type) R.SEXP {
+    if (comptime @typeInfo(T) == .error_union) {
+        @compileError("generated functions must handle Zig errors before returning to R");
+    }
     if (comptime T == R.SEXP) return value;
     if (comptime @typeInfo(T) == .optional) {
         if (value) |v| {
@@ -239,7 +241,7 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
             defer if (comptime arena_needed) arena.deinit();
-            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
+            const alloc = if (comptime arena_needed) arena.allocator() else no_alloc_allocator;
 
             if (comptime n == 0) return toSexp(func(), ret_type);
             if (comptime n == 1) {
@@ -337,7 +339,7 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
             defer if (comptime arena_needed) arena.deinit();
-            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
+            const alloc = if (comptime arena_needed) arena.allocator() else no_alloc_allocator;
 
             if (comptime n == 0) {
                 return toSexp(func(), ret_type);
@@ -475,7 +477,7 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
             defer if (comptime arena_needed) arena.deinit();
-            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
+            const alloc = if (comptime arena_needed) arena.allocator() else no_alloc_allocator;
 
             const ptr = externalptr.checkedPointer(T, args.a0) catch |pointer_err| externalptr.signalPointerError(pointer_err);
 
@@ -527,7 +529,7 @@ fn makeExternalMethodWrapper(comptime T: type, comptime func: anytype) *const fn
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
             defer if (comptime arena_needed) arena.deinit();
-            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
+            const alloc = if (comptime arena_needed) arena.allocator() else no_alloc_allocator;
             const ptr = externalptr.checkedPointer(T, externalArg(args, 0)) catch |pointer_err| externalptr.signalPointerError(pointer_err);
 
             if (comptime n == 1) return toSexp(func(ptr), ret_type);
