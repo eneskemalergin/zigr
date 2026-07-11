@@ -265,6 +265,9 @@ tests <- list(
 
   # Export system: generateMethods comptime codegen
   "zigr_test_export_generatemethods",
+  "zigr_test_p16_generated_ownership_gc",
+  list(name="zigr_test_p16_generated_spill_longjmp", expect_error=TRUE),
+  "zigr_test_p16_externalptr_finalizer",
 
   # Export system: error signaling
   list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),

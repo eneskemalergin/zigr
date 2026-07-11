@@ -9,6 +9,7 @@ const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
 const err = @import("error");
+const protect = @import("protect.zig");
 
 pub const ComplexElem = extern struct {
     r: f64,
@@ -73,7 +74,10 @@ fn wrapFromAltrep(comptime kind: AltKind, x: R.SEXP) *Wrap(kind) {
 }
 
 fn freeWrapImpl(comptime kind: AltKind, sexp: R.SEXP) void {
-    std.heap.c_allocator.destroy(wrapFromData1(kind, sexp));
+    const raw = R.R_ExternalPtrAddr(sexp) orelse return;
+    R.R_ClearExternalPtr(sexp);
+    const wrap: *Wrap(kind) = @ptrCast(@alignCast(raw));
+    std.heap.c_allocator.destroy(wrap);
 }
 
 fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
@@ -422,6 +426,10 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             registered = true;
         }
 
+        /// The caller must run this under `cleanup.protectCall*` whenever R
+        /// allocation can signal an error. The generated export boundary does
+        /// so; the inline transfer guard then owns native state until R owns
+        /// its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
             if (!registered) {
                 class = buildClass(kind, pkg, name, null);
@@ -429,20 +437,29 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             }
 
             const w = makeWrap(kind, slice);
-            const Free = struct {
-                fn fire(ptr: ?*anyopaque) void {
-                    std.heap.c_allocator.destroy(@as(*Wrap(kind), @ptrCast(@alignCast(ptr))));
+            const Pending = struct {
+                wrap: *Wrap(kind),
+                data1: ?R.SEXP = null,
+
+                fn fire(self: *@This()) void {
+                    // If the external pointer has received a finalizer but
+                    // ALTREP construction then errors, clear it before
+                    // freeing the wrapper so a later GC cannot double-free.
+                    if (self.data1) |d1| R.R_ClearExternalPtr(d1);
+                    std.heap.c_allocator.destroy(self.wrap);
                 }
             };
-            cleanup.pushFrame(Free.fire, @as(?*anyopaque, @ptrCast(w)));
+            const pending = cleanup.pushFrameInline(Pending, .{ .wrap = w }, Pending.fire);
             const tag = tagSymbol(kind);
-            const d1 = R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(w)), tag, R.R_NilValue);
-            R.R_RegisterCFinalizerEx(d1, struct {
+            var d1 = protect.scoped(R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(w)), tag, R.R_NilValue));
+            defer d1.deinit();
+            pending.data1 = d1.get();
+            R.R_RegisterCFinalizerEx(d1.get(), struct {
                 fn f(sexp: R.SEXP) callconv(.c) void {
                     freeWrapImpl(kind, sexp);
                 }
             }.f, 1);
-            const result = R.R_new_altrep(class, d1, R.R_NilValue);
+            const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
             cleanup.popFrame();
             return result;
         }
@@ -474,16 +491,30 @@ const StringWrap = struct {
     len: usize,
 };
 
+fn destroyStringWrap(wrap: *StringWrap) void {
+    std.heap.c_allocator.free(wrap.ptr[0..wrap.len]);
+    std.heap.c_allocator.destroy(wrap);
+}
+
 fn makeStringWrap(slice: []const []const u8) *StringWrap {
     const values = std.heap.c_allocator.alloc(R.SEXP, slice.len) catch err.signal("out of memory during ALTREP string creation");
-    errdefer std.heap.c_allocator.free(values);
+    const PendingValues = struct {
+        values: []R.SEXP,
+
+        fn fire(self: *@This()) void {
+            std.heap.c_allocator.free(self.values);
+        }
+    };
+    _ = cleanup.pushFrameInline(PendingValues, .{ .values = values }, PendingValues.fire);
     for (slice, 0..) |item, index| {
         values[index] = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
     }
 
     const wrap = std.heap.c_allocator.create(StringWrap) catch err.signal("out of memory during ALTREP string creation");
-    errdefer std.heap.c_allocator.destroy(wrap);
     wrap.* = .{ .ptr = values.ptr, .len = values.len };
+    // `wrap` now owns values; do not free the transfer buffer on normal
+    // return. The surrounding ALTREP construction arms its own guard.
+    cleanup.popFrame();
     return wrap;
 }
 
@@ -497,9 +528,9 @@ fn stringWrapFromAltrep(x: R.SEXP) *StringWrap {
 }
 
 fn freeStringWrap(sexp: R.SEXP) void {
-    const wrap = stringWrapFromData1(sexp);
-    std.heap.c_allocator.free(wrap.ptr[0..wrap.len]);
-    std.heap.c_allocator.destroy(wrap);
+    const raw = R.R_ExternalPtrAddr(sexp) orelse return;
+    R.R_ClearExternalPtr(sexp);
+    destroyStringWrap(@ptrCast(@alignCast(raw)));
 }
 
 fn stringElt(x: R.SEXP, i: R.R_xlen_t) callconv(.c) R.SEXP {
@@ -562,6 +593,8 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             registered = true;
         }
 
+        /// See `OwnedAltVector.init`: this construction must execute inside a
+        /// `cleanup.protectCall*` dynamic extent when R errors are possible.
         pub fn init(slice: []const []const u8) R.SEXP {
             if (!registered) {
                 class = buildStringClass(null);
@@ -569,21 +602,25 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             }
 
             const wrap = makeStringWrap(slice);
-            const Free = struct {
-                fn fire(ptr: ?*anyopaque) void {
-                    const w: *StringWrap = @ptrCast(@alignCast(ptr));
-                    std.heap.c_allocator.free(w.ptr[0..w.len]);
-                    std.heap.c_allocator.destroy(w);
+            const Pending = struct {
+                wrap: *StringWrap,
+                data1: ?R.SEXP = null,
+
+                fn fire(self: *@This()) void {
+                    if (self.data1) |d1| R.R_ClearExternalPtr(d1);
+                    destroyStringWrap(self.wrap);
                 }
             };
-            cleanup.pushFrame(Free.fire, @as(?*anyopaque, @ptrCast(wrap)));
-            const d1 = R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(wrap)), R.Rf_install("zigr_altstring_slice_wrap"), R.R_NilValue);
-            R.R_RegisterCFinalizerEx(d1, struct {
+            const pending = cleanup.pushFrameInline(Pending, .{ .wrap = wrap }, Pending.fire);
+            var d1 = protect.scoped(R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(wrap)), R.Rf_install("zigr_altstring_slice_wrap"), R.R_NilValue));
+            defer d1.deinit();
+            pending.data1 = d1.get();
+            R.R_RegisterCFinalizerEx(d1.get(), struct {
                 fn f(sexp: R.SEXP) callconv(.c) void {
                     freeStringWrap(sexp);
                 }
             }.f, 1);
-            const result = R.R_new_altrep(class, d1, R.R_NilValue);
+            const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
             cleanup.popFrame();
             return result;
         }

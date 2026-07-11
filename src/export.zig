@@ -16,12 +16,12 @@
 //!
 //! - **.Call wrappers** (`makeWrapper`, `makeMethodWrapper`) enter
 //!   `protectCallData`, which wraps the call in `R_UnwindProtect`.
-//!   The current arena cleanup frame still carries a pointer to a
-//!   stack-local arena, so arena-backed longjmp safety is a P1 contract
-//!   item and must not be described as complete yet.
+//!   Fixed scratch is stack-local and needs no cleanup; a heap spill stores
+//!   its mutable arena state inline in the thread-local cleanup stack, so it
+//!   is released on both normal return and R longjmp.
 //!
-//! - **.External wrappers** (`makeExternalWrapper`) also enter
-//!   `protectCallData`; the same arena-frame limitation applies.
+//! - **.External wrappers** (`makeExternalWrapper`) use the same ownership
+//!   rule and cleanup path.
 //!
 //! Errors signal Rf_error instead of panicking.
 //!
@@ -46,6 +46,7 @@ const std = @import("std");
 const R = @import("R");
 const convert = @import("convert.zig");
 const cleanup = @import("cleanup");
+const memory = @import("memory.zig");
 const sexp_mod = @import("sexp.zig");
 
 /// Panics on any allocation. Used when arena_needed is false (all param/return types are scalars or SEXP). If this fires, a code path reached fromSexp with a type needing allocation despite arena_needed=false, which is a bug.
@@ -182,20 +183,23 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     @compileError("unsupported return type: " ++ @typeName(T));
 }
 
-/// Two-tier allocator: stack buffer first, heap on spill. The fixed buffer covers ~90% of export calls; the heap arena exists only for large returns.
+/// Two-tier call scratch allocator. The fixed 8 KiB buffer is paid only by
+/// wrappers with an input conversion that can allocate. A heap spill is lazy
+/// and its state is longjmp-safe through `memory.UnwindArena`.
 const TwoTierArena = struct {
-    fixed_buf: [8192]u8,
-    fba: std.heap.FixedBufferAllocator,
-    heap_arena: std.heap.ArenaAllocator,
+    const fixed_capacity = 8192;
 
-    fn init() TwoTierArena {
-        var self = TwoTierArena{
-            .fixed_buf = undefined,
-            .fba = undefined,
-            .heap_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
-        };
+    fixed_buf: [fixed_capacity]u8 align(64),
+    fba: std.heap.FixedBufferAllocator,
+    spill: memory.UnwindArena,
+
+    /// Must initialize in place: FixedBufferAllocator stores a pointer into
+    /// `fixed_buf`, so returning a pre-initialized arena by value would leave
+    /// that pointer referring to the callee's temporary stack frame.
+    fn init(self: *TwoTierArena) void {
+        self.fixed_buf = undefined;
+        self.spill = memory.UnwindArena.init();
         self.fba = std.heap.FixedBufferAllocator.init(&self.fixed_buf);
-        return self;
     }
 
     fn allocator(self: *TwoTierArena) std.mem.Allocator {
@@ -211,21 +215,20 @@ const TwoTierArena = struct {
     }
 
     fn deinit(self: *TwoTierArena) void {
-        self.heap_arena.deinit();
+        self.spill.deinit();
     }
 
     fn allocFn(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
         const self: *TwoTierArena = @ptrCast(@alignCast(ctx));
-        const fixed_result = self.fba.allocator().alloc(u8, len) catch null;
-        if (fixed_result) |mem| return mem.ptr;
-        return self.heap_arena.allocator().rawAlloc(len, alignment, ra);
+        if (self.fba.allocator().rawAlloc(len, alignment, ra)) |fixed| return fixed;
+        return self.spill.allocator().rawAlloc(len, alignment, ra);
     }
 
-    fn freeFn(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
-        const self: *TwoTierArena = @ptrCast(@alignCast(ctx));
-        // Fixed buffer: free is a no-op (reset on next alloc).
-        // Heap arena: individual frees are not supported; arena deinit frees all.
-        _ = self;
+    fn freeFn(_: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        // Both tiers are call arenas. Individual frees are intentionally a
+        // no-op; `deinit` releases the spill and the fixed buffer dies with
+        // the wrapper frame. Do not dereference `ctx`: conversion cleanup can
+        // fire after an R longjmp has invalidated that wrapper frame.
         _ = buf;
         _ = alignment;
         _ = ra;
@@ -237,22 +240,15 @@ const TwoTierArena = struct {
         return false;
     }
 
-    fn remapFn(_: *anyopaque, memory: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
-        _ = memory;
-        _ = new_len;
+    fn remapFn(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
         return null;
     }
 };
 
-const FreeArena = struct {
-    fn fire(ptr: ?*anyopaque) void {
-        @as(*TwoTierArena, @ptrCast(@alignCast(ptr))).deinit();
-    }
-};
-
-fn needsArena(comptime T: type) bool {
+fn needsInputArena(comptime T: type) bool {
+    if (comptime T == convert.StringSliceView) return false;
     return switch (@typeInfo(T)) {
-        .optional => |info| needsArena(info.child),
+        .optional => |info| needsInputArena(info.child),
         .pointer => |info| info.size == .slice,
         .@"struct" => true,
         else => false,
@@ -265,8 +261,8 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     const ret_type = func_info.return_type orelse void;
 
     const arena_needed = comptime blk: {
-        var needed = needsArena(ret_type);
-        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        var needed = false;
+        for (func_info.params) |p| needed = needed or needsInputArena(p.type.?);
         break :blk needed;
     };
 
@@ -284,16 +280,15 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
 
         fn doCall(data: ?*anyopaque) R.SEXP {
             const args: *CallArgs = @ptrCast(@alignCast(data.?));
-            var arena: TwoTierArena = undefined;
-            var have_arena = false;
-            if (arena_needed) {
-                arena = TwoTierArena.init();
-                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                have_arena = true;
-            }
-            defer if (have_arena) arena.deinit();
-            defer if (have_arena) cleanup.popFrame();
-            const alloc = if (have_arena) arena.allocator() else panic_allocator;
+            // Keep the 8 KiB buffer entirely out of scalar-only wrapper
+            // frames. `arena_needed` is comptime-known for every generated
+            // wrapper, so the empty type and both arena operations vanish
+            // from wrappers whose input conversion cannot allocate.
+            const Arena = if (arena_needed) TwoTierArena else struct {};
+            var arena: Arena = undefined;
+            if (comptime arena_needed) arena.init();
+            defer if (comptime arena_needed) arena.deinit();
+            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
 
             if (comptime n == 0) return toSexp(func(), ret_type);
             if (comptime n == 1) {
@@ -379,24 +374,19 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     const ret_type = func_info.return_type orelse void;
 
     const arena_needed = comptime blk: {
-        var needed = needsArena(ret_type);
-        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        var needed = false;
+        for (func_info.params) |p| needed = needed or needsInputArena(p.type.?);
         break :blk needed;
     };
 
     const W = struct {
         fn doCall(args_ptr: ?*anyopaque) R.SEXP {
             const args: R.SEXP = @ptrCast(@alignCast(args_ptr.?));
-            var arena: TwoTierArena = undefined;
-            var have_arena = false;
-            if (arena_needed) {
-                arena = TwoTierArena.init();
-                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                have_arena = true;
-            }
-            defer if (have_arena) arena.deinit();
-            defer if (have_arena) cleanup.popFrame();
-            const alloc = if (have_arena) arena.allocator() else panic_allocator;
+            const Arena = if (arena_needed) TwoTierArena else struct {};
+            var arena: Arena = undefined;
+            if (comptime arena_needed) arena.init();
+            defer if (comptime arena_needed) arena.deinit();
+            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
 
             if (comptime n == 0) {
                 return toSexp(func(), ret_type);
@@ -494,8 +484,8 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
     const ret_type = func_info.return_type orelse void;
 
     const arena_needed = comptime blk: {
-        var needed = needsArena(ret_type);
-        for (func_info.params) |p| needed = needed or needsArena(p.type.?);
+        var needed = false;
+        for (func_info.params) |p| needed = needed or needsInputArena(p.type.?);
         break :blk needed;
     };
 
@@ -513,16 +503,11 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
 
         fn doCall(data: ?*anyopaque) R.SEXP {
             const args: *MethodCallArgs = @ptrCast(@alignCast(data.?));
-            var arena: TwoTierArena = undefined;
-            var have_arena = false;
-            if (arena_needed) {
-                arena = TwoTierArena.init();
-                cleanup.pushFrame(FreeArena.fire, @as(?*anyopaque, @ptrCast(&arena)));
-                have_arena = true;
-            }
-            defer if (have_arena) arena.deinit();
-            defer if (have_arena) cleanup.popFrame();
-            const alloc = if (have_arena) arena.allocator() else panic_allocator;
+            const Arena = if (arena_needed) TwoTierArena else struct {};
+            var arena: Arena = undefined;
+            if (comptime arena_needed) arena.init();
+            defer if (comptime arena_needed) arena.deinit();
+            const alloc = if (comptime arena_needed) arena.allocator() else panic_allocator;
 
             if (sexp_mod.typeTag(args.a0) != 22) signalError("expected external pointer");
             const raw_ptr = R.R_ExternalPtrAddr(args.a0) orelse signalError("null external pointer");
@@ -678,10 +663,32 @@ test "generateExports .Call usage example compiles" {
 }
 
 test "scalar and optional scalar wrappers do not need an arena" {
-    try std.testing.expect(!needsArena(f64));
-    try std.testing.expect(!needsArena(i32));
-    try std.testing.expect(!needsArena(bool));
-    try std.testing.expect(!needsArena(?f64));
-    try std.testing.expect(!needsArena(?i32));
-    try std.testing.expect(!needsArena(?bool));
+    try std.testing.expect(!needsInputArena(f64));
+    try std.testing.expect(!needsInputArena(i32));
+    try std.testing.expect(!needsInputArena(bool));
+    try std.testing.expect(!needsInputArena(?f64));
+    try std.testing.expect(!needsInputArena(?i32));
+    try std.testing.expect(!needsInputArena(?bool));
+    try std.testing.expect(!needsInputArena(convert.StringSliceView));
+    try std.testing.expect(needsInputArena([]const f64));
+    try std.testing.expect(needsInputArena([]const u8));
+}
+
+test "TwoTierArena honors alignment and spills beyond fixed capacity" {
+    var fixed: TwoTierArena = undefined;
+    fixed.init();
+    defer fixed.deinit();
+    const aligned = fixed.allocator().rawAlloc(32, .@"64", @returnAddress()) orelse return error.OutOfMemory;
+    try std.testing.expect(std.mem.Alignment.@"64".check(@intFromPtr(aligned)));
+    const fixed_start = @intFromPtr(fixed.fixed_buf[0..].ptr);
+    const fixed_end = fixed_start + fixed.fixed_buf.len;
+    try std.testing.expect(@intFromPtr(aligned) >= fixed_start and @intFromPtr(aligned) < fixed_end);
+
+    var spilled: TwoTierArena = undefined;
+    spilled.init();
+    defer spilled.deinit();
+    const overflow = spilled.allocator().rawAlloc(TwoTierArena.fixed_capacity + 1, .of(u8), @returnAddress()) orelse return error.OutOfMemory;
+    const spill_start = @intFromPtr(spilled.fixed_buf[0..].ptr);
+    const spill_end = spill_start + spilled.fixed_buf.len;
+    try std.testing.expect(@intFromPtr(overflow) < spill_start or @intFromPtr(overflow) >= spill_end);
 }

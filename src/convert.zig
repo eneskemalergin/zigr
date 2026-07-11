@@ -29,7 +29,9 @@ pub const Rcomplex = extern struct { r: f64, i: f64 };
 
 const Unprot = struct {
     fn fire(_: ?*anyopaque) void {
-        R.Rf_unprotect(1);
+        // Keep ReleaseSafe/Debug depth accounting in step with the actual
+        // protection stack when R interrupts fromStringSlice mid-loop.
+        protect.unprotect();
     }
 };
 
@@ -342,7 +344,7 @@ fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repre
     if (directRealSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(f64, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(f64, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
@@ -378,7 +380,7 @@ fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
     if (directIntSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
@@ -549,6 +551,9 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
     };
 }
 
+/// Construct a STRSXP from UTF-8 byte slices. When called directly from an
+/// R-facing entry point, keep it inside `cleanup.protectCall*`: mkChar can
+/// longjmp and its protection guard is intentionally a cleanup frame.
 pub fn fromStringSlice(slice: []const []const u8) SEXP {
     const len: R.R_xlen_t = @intCast(slice.len);
     var vec = protect.scoped(R.Rf_allocVector(R.STRSXP, len));
@@ -577,7 +582,7 @@ fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
     if (directLogicalSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
@@ -632,7 +637,7 @@ pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     const n = try tryXlength(sexp);
     const result = try allocator.alloc(u8, n);
     if (R.ALTREP(sexp) != 0) {
-        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
@@ -668,7 +673,7 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
     if (directComplexSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
         defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
@@ -714,14 +719,10 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     if (comptime T == []const []const u8) return fromStringSlice(value);
     if (comptime T == []const u8) return fromRawSlice(value);
     if (comptime T == []const bool) {
-        const int_slice = arena.alloc(i32, value.len) catch {
-            R.Rf_error("out of memory in struct-to-SEXP bool conversion");
-            return R.R_NilValue;
-        };
-        for (value, 0..) |b, i| int_slice[i] = if (b) 1 else 0;
-        const result = fromLogicalSlice(int_slice);
-        arena.free(int_slice);
-        return result;
+        var result = protect.scoped(R.Rf_allocVector(R.LGLSXP, @intCast(value.len)));
+        defer result.deinit();
+        for (value, 0..) |b, i| R.LOGICAL(result.get())[i] = if (b) 1 else 0;
+        return result.get();
     }
     if (comptime T == []const Rcomplex) return fromComplexSlice(value);
     if (comptime T == SEXP) return value;

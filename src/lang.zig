@@ -4,7 +4,6 @@
 //! names mirror R's C conventions (car/cdr/tag) and are self-explanatory.
 //! Doc comments are omitted on one-liners for brevity.
 
-const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
@@ -114,9 +113,12 @@ pub fn consList(items: []const R.SEXP) R.SEXP {
 
 /// Build a call node from a function SEXP and positional arguments.
 /// Intermediate pairlist nodes are protected only while the call is assembled.
+/// The returned call is unprotected; protect it before another allocating R
+/// operation. `eval.call` does this internally.
 pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
-    const arg_list = consList(args);
-    var call_expr = protect.scoped(R.Rf_lcons(fun, arg_list));
+    var arg_list = protect.scoped(consList(args));
+    defer arg_list.deinit();
+    var call_expr = protect.scoped(R.Rf_lcons(fun, arg_list.get()));
     defer call_expr.deinit();
     return call_expr.get();
 }
@@ -131,13 +133,11 @@ pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
     }
 
     const fields = info.@"struct".fields;
-    const values = std.heap.page_allocator.alloc(R.SEXP, fields.len) catch {
-        R.Rf_error("out of memory in buildNamedCall");
-        return R.R_NilValue;
-    };
-    defer std.heap.page_allocator.free(values);
+    // Tuple arity is comptime-known. Keeping these transient SEXP handles on
+    // the C stack avoids a native allocation that an R longjmp would bypass.
+    var values: [fields.len]R.SEXP = undefined;
     inline for (fields, 0..) |field, index| {
         values[index] = @field(args, field.name);
     }
-    return buildCall(symbol(name), values);
+    return buildCall(symbol(name), values[0..]);
 }

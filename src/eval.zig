@@ -21,6 +21,7 @@
 const std = @import("std");
 const R = @import("R");
 const lang = @import("lang.zig");
+const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 
 fn resolveEnv(envir: ?R.SEXP) R.SEXP {
@@ -88,8 +89,9 @@ pub const emptyEnv: R.SEXP = R.R_EmptyEnv;
 /// Looks up function by name, builds call expression, evaluates it.
 pub fn call(name: []const u8, args: []const R.SEXP) R.SEXP {
     const fun = R.Rf_findFun(installSym(name), R.R_GlobalEnv);
-    const call_expr = lang.buildCall(fun, args);
-    return R.Rf_eval(call_expr, R.R_GlobalEnv);
+    var call_expr = protect.scoped(lang.buildCall(fun, args));
+    defer call_expr.deinit();
+    return R.Rf_eval(call_expr.get(), R.R_GlobalEnv);
 }
 
 /// Returns null if an error is signaled, instead of longjmp-ing.

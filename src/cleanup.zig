@@ -8,9 +8,10 @@
 //! protectCall is safe to nest: each call saves and restores the caller's
 //! frame count. On the normal path the caller's frames are preserved. On
 //! longjmp all frames fire regardless of nesting depth because R's longjmp
-//! tears down the entire Zig call stack anyway. Callers must push their
-//! cleanup frames before calling protectCall to ensure they fire on
-//! longjmp.
+//! tears down the entire Zig call stack anyway. A frame must be active within
+//! a `protectCall*` dynamic extent before the R API call that may longjmp;
+//! it may be pushed by the protected function itself. Pop every frame on the
+//! normal path.
 
 const std = @import("std");
 const R = @import("R");
@@ -101,7 +102,7 @@ pub fn pushFrameInline(
     comptime T: type,
     value: T,
     comptime fireFn: *const fn (data: *T) void,
-) void {
+) *T {
     comptime {
         if (@sizeOf(T) > INLINE_DATA_SIZE) {
             @compileError(std.fmt.comptimePrint(
@@ -134,17 +135,19 @@ pub fn pushFrameInline(
     frame.func = W.wrapper;
     frame.data = @ptrCast(slot);
     count += 1;
+    return slot;
 }
 
 /// Call a Zig function inside an R_UnwindProtect guard.
-/// R_MakeUnwindCont keeps the continuation token alive for the duration
-/// of the R_UnwindProtect call, so no extra R_PreserveObject is needed.
+/// The continuation token is PROTECTed for the whole `R_UnwindProtect`
+/// call, as required by R's C API. It needs no preservation beyond that
+/// dynamic extent.
 /// On longjmp every cleanup frame fires (not just this one). See the
 /// module-level contract above.
 pub fn protectCall(comptime func: *const fn () R.SEXP) R.SEXP {
-    const cont = zigr_make_unwind_cont();
-
     const saved_count = count;
+    const cont = R.Rf_protect(zigr_make_unwind_cont());
+    defer R.Rf_unprotect(1);
 
     const W = struct {
         fn trampoline(_: ?*anyopaque) callconv(.c) R.SEXP {
@@ -160,9 +163,9 @@ pub fn protectCall(comptime func: *const fn () R.SEXP) R.SEXP {
 /// Use when the wrapped function needs runtime context (e.g. SEXP args
 /// from an .External wrapper) that cannot be captured inline.
 pub fn protectCallData(comptime func: *const fn (?*anyopaque) R.SEXP, data: ?*anyopaque) R.SEXP {
-    const cont = zigr_make_unwind_cont();
-
     const saved_count = count;
+    const cont = R.Rf_protect(zigr_make_unwind_cont());
+    defer R.Rf_unprotect(1);
 
     const W = struct {
         fn trampoline(d: ?*anyopaque) callconv(.c) R.SEXP {
@@ -189,6 +192,19 @@ test "pushFrame and popFrame balance" {
     try std.testing.expectEqual(count, 1);
     popFrame();
     try std.testing.expectEqual(count, 0);
+}
+
+test "cleanup stack accepts its documented capacity" {
+    const saved = count;
+    defer count = saved;
+    count = 0;
+
+    const Guard = struct {
+        fn fire(_: ?*anyopaque) void {}
+    };
+    for (0..MAX_NESTING) |_| pushFrame(Guard.fire, null);
+    try std.testing.expectEqual(count, MAX_NESTING);
+    while (count > 0) popFrame();
 }
 
 test "popFrame on empty stack is safe" {
@@ -312,8 +328,9 @@ test "pushFrameInline copies state into frame buffer" {
     };
 
     var g = Guard{ .counter = 7, .marker = 0xDEADBEEFCAFEBABE };
-    pushFrameInline(Guard, g, Guard.fire);
+    const stored = pushFrameInline(Guard, g, Guard.fire);
     try std.testing.expectEqual(count, 1);
+    try std.testing.expect(@intFromPtr(stored) != @intFromPtr(&g));
 
     // The local `g` is independent of the frame's copy: mutating it
     // must not affect what `fire` will see.
@@ -343,7 +360,7 @@ test "pushFrameInline survives pop without firing" {
     };
 
     var fired = false;
-    pushFrameInline(Guard, Guard{ .fired = &fired }, Guard.fire);
+    _ = pushFrameInline(Guard, Guard{ .fired = &fired }, Guard.fire);
     popFrame();
 
     try std.testing.expect(!fired);
@@ -374,8 +391,8 @@ test "pushFrameInline fires on zigr_on_unwind with LIFO order" {
     var a_result: i32 = 0;
     var b_result: i32 = 0;
 
-    pushFrameInline(A, A{ .value = &a_result }, A.fire);
-    pushFrameInline(B, B{ .value = &b_result }, B.fire);
+    _ = pushFrameInline(A, A{ .value = &a_result }, A.fire);
+    _ = pushFrameInline(B, B{ .value = &b_result }, B.fire);
 
     zigr_on_unwind();
     // B pushed last -> fires first -> b_result = 20

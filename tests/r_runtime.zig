@@ -267,6 +267,20 @@ export fn zigr_test_ralloc() SEXP {
     defer alloc.free(buf);
     buf[0] = 42;
     if (buf[0] != 42) return R.Rf_ScalarReal(0.0);
+
+    var grown = alloc.alloc(u8, 8) catch return R.Rf_ScalarReal(0.0);
+    grown[0] = 7;
+    grown = alloc.realloc(grown, 64) catch return R.Rf_ScalarReal(0.0);
+    defer alloc.free(grown);
+    if (grown[0] != 7) return R.Rf_ScalarReal(0.0);
+
+    const aligned = alloc.alignedAlloc(f64, null, 2) catch return R.Rf_ScalarReal(0.0);
+    defer alloc.free(aligned);
+    if (!std.mem.Alignment.of(f64).check(@intFromPtr(aligned.ptr))) return R.Rf_ScalarReal(0.0);
+    if (alloc.alignedAlloc(u8, .@"64", 1)) |over_aligned| {
+        alloc.free(over_aligned);
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -2648,6 +2662,59 @@ const ExternalExports = zigr.@"export".generateExports(&.{}, &.{
     .{ .name = "zigr_test_external_sum", .func = externalSum },
 });
 
+// P1.6 generated-wrapper probes. They cover the three arena states without
+// adding another harness: scalar/no arena, a 64-byte fixed-tier raw copy, and
+// a compact integer ALTREP copy that spills before user code allocates R data.
+const p16_vector_output = [_]f64{ 2.0, 4.0, 8.0 };
+
+fn p16Scalar(value: f64) f64 {
+    return value;
+}
+
+fn p16RawFixed(values: []const u8) i32 {
+    var total: i32 = 0;
+    for (values) |value| total += @intCast(value);
+    return total;
+}
+
+fn p16SpillThenAllocate(values: []const i32) R.SEXP {
+    // The compact-input fallback must remain valid across this R allocation.
+    const result = R.Rf_allocVector(R.REALSXP, 2);
+    R.REAL(result)[0] = @floatFromInt(values[0]);
+    R.REAL(result)[1] = @floatFromInt(values[values.len - 1]);
+    return result;
+}
+
+fn p16VectorOutput(_: f64) []const f64 {
+    return p16_vector_output[0..];
+}
+
+fn p16SpillThenError(values: []const i32) void {
+    _ = values;
+    R.Rf_error("zigr P1.6 generated spill: expected error");
+}
+
+const P16Exports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_p16_scalar", .func = p16Scalar },
+    .{ .name = "zigr_p16_raw_fixed", .func = p16RawFixed },
+    .{ .name = "zigr_p16_spill_allocate", .func = p16SpillThenAllocate },
+    .{ .name = "zigr_p16_vector_output", .func = p16VectorOutput },
+    .{ .name = "zigr_p16_spill_error", .func = p16SpillThenError },
+}, &.{});
+
+const P16Call = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+
+fn p16Call(index: usize, arg: SEXP) SEXP {
+    const fun: P16Call = @ptrCast(@alignCast(P16Exports.call_defs[index].fun));
+    return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+}
+
+fn initP16Exports() bool {
+    const dll = test_dll orelse (R.R_getEmbeddingDllInfo() orelse return false);
+    P16Exports.init(dll);
+    return true;
+}
+
 /// Guard against: generateExports failing to compile for
 /// external exports, or init() corrupting the DllInfo.  Also
 /// tests that the external wrapper correctly extracts scalars
@@ -2671,6 +2738,113 @@ export fn zigr_test_export_external() SEXP {
     const val = R.REAL(result)[0];
     if (val != 7.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.6: generated outputs and arena-backed input copies survive R heap
+/// pressure. Every result is protected by this caller before deliberately
+/// allocating additional R objects; this models the documented ownership
+/// hand-off at the native boundary.
+export fn zigr_test_p16_generated_ownership_gc() SEXP {
+    if (!initP16Exports()) return R.Rf_ScalarReal(0.0);
+
+    const scalar_arg = R.Rf_protect(R.Rf_ScalarReal(3.25));
+    defer R.Rf_unprotect(1);
+    const scalar_result = R.Rf_protect(p16Call(0, scalar_arg));
+    defer R.Rf_unprotect(1);
+
+    const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 64));
+    defer R.Rf_unprotect(1);
+    for (0..64) |i| R.RAW(raw)[i] = @intCast(i + 1);
+    const raw_result = R.Rf_protect(p16Call(1, raw));
+    defer R.Rf_unprotect(1);
+
+    const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
+    const spill_result = R.Rf_protect(p16Call(2, compact));
+    defer R.Rf_unprotect(1);
+
+    const vector_result = R.Rf_protect(p16Call(3, scalar_arg));
+    defer R.Rf_unprotect(1);
+
+    // `eval.call` builds a temporary pairlist/call and then evaluates it.
+    // Its intermediate call must remain protected across Rf_eval.
+    const call_args = [_]SEXP{ scalar_arg, scalar_arg };
+    const call_result = R.Rf_protect(test_eval.call("sum", call_args[0..]));
+    defer R.Rf_unprotect(1);
+
+    const strings = [_][]const u8{ "p16", "ownership" };
+    const string_result = R.Rf_protect(zigr_convert.fromStringSlice(strings[0..]));
+    defer R.Rf_unprotect(1);
+
+    const named_values = [_]f64{ 5.0, 7.0 };
+    const Named = struct { id: i32, values: []const f64 };
+    const named_result = R.Rf_protect(zigr_convert.asSEXP(Named{ .id = 9, .values = named_values[0..] }));
+    defer R.Rf_unprotect(1);
+
+    // Force allocation pressure after ownership has transferred to protected
+    // caller roots. This exercises scalar/vector/string/named-list outputs
+    // and the compact-ALTREP arena copy without timed-path instrumentation.
+    for (0..16) |_| {
+        const noise = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 262_144));
+        R.REAL(noise)[0] = 1.0;
+        R.Rf_unprotect(1);
+    }
+
+    if (R.REAL(scalar_result)[0] != 3.25) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(raw_result)[0] != 2080) return R.Rf_ScalarReal(0.0);
+    if (R.XLENGTH(spill_result) != 2 or R.REAL(spill_result)[0] != 1.0 or R.REAL(spill_result)[1] != 100000.0) return R.Rf_ScalarReal(0.0);
+    if (R.XLENGTH(vector_result) != 3 or R.REAL(vector_result)[2] != 8.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(call_result)[0] != 6.5) return R.Rf_ScalarReal(0.0);
+    if (R.STRING_ELT(string_result, 0) == R.R_NaString or R.STRING_ELT(string_result, 1) == R.R_NaString) return R.Rf_ScalarReal(0.0);
+    if (R.VECTOR_ELT(named_result, 0) == R.R_NilValue or R.INTEGER(R.VECTOR_ELT(named_result, 0))[0] != 9) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(R.VECTOR_ELT(named_result, 1))[1] != 7.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+/// P1.6: force an actual generated heap spill, then signal an R error. The
+/// enclosing generated wrapper must release its stable inline cleanup state
+/// before the error resumes in R. Registered as an expected error.
+export fn zigr_test_p16_generated_spill_longjmp() SEXP {
+    if (!initP16Exports()) return R.Rf_ScalarReal(0.0);
+    const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
+    // A direct integer pointer would use the fixed tier; require the compact
+    // no-pointer representation so this error path really crosses a spill.
+    if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
+    return p16Call(4, compact);
+}
+
+var p16_externalptr_finalized: bool = false;
+
+const P16ExternalValue = struct {
+    value: i32,
+};
+
+fn p16ExternalDeinit(value: *P16ExternalValue) void {
+    p16_externalptr_finalized = value.value == 17;
+}
+
+/// P1.6: prove the external-pointer transfer reaches its finalizer once the
+/// R object loses its last root. This uses the existing runtime runner rather
+/// than another native test harness.
+export fn zigr_test_p16_externalptr_finalizer() SEXP {
+    p16_externalptr_finalized = false;
+    var ext = R.Rf_protect(zigr.externalptr.create(P16ExternalValue, .{ .value = 17 }, p16ExternalDeinit));
+    const raw = zigr.externalptr.addr(ext) orelse {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    };
+    const value: *P16ExternalValue = @ptrCast(@alignCast(raw));
+    if (value.value != 17) {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    R.Rf_unprotect(1);
+    ext = R.R_NilValue;
+    R.R_gc();
+    R.R_gc();
+    return R.Rf_ScalarReal(if (p16_externalptr_finalized) 1.0 else 0.0);
 }
 
 // generateMethods comptime method dispatch
