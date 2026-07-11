@@ -2,6 +2,7 @@
 
 library(jsonlite)
 source("lib/run_manifest.R")
+source("lib/task_manifest.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 run_dir <- NULL
@@ -18,8 +19,19 @@ if (identical(run_dir, target_dir)) stop("--target-dir must differ from --run-di
 metadata <- read_run_manifest(run_dir)
 if (!identical(as.character(metadata$status), "complete")) stop("only complete runs can be promoted")
 if (!isTRUE(metadata$full_matrix)) stop("only an unfiltered full-matrix run can be promoted")
+if (is.null(metadata$boundary_budget_policy_version) ||
+    !identical(as.character(metadata$boundary_budget_policy_version), boundary_budget_policy_version())) {
+  stop("run boundary budget policy version differs from the current policy; collect a new baseline")
+}
 validate_run_artifacts(run_dir, metadata)
-for (name in c("comparative_metrics.csv", "task_comparisons.csv", "category_metrics.csv")) {
+for (exporter in c("export_comparative_metrics.R", "export_boundary_metrics.R")) {
+  status <- system2("Rscript", args = c(exporter, sprintf("--run-dir=%s", run_dir)))
+  if (!identical(status, 0L)) stop(sprintf("%s failed with exit code %d", exporter, status))
+}
+for (name in c(
+  "comparative_metrics.csv", "task_comparisons.csv", "category_metrics.csv",
+  "boundary_metrics.csv", "boundary_budgets.csv", "representation_budgets.csv"
+)) {
   if (!file.exists(file.path(run_dir, name))) stop(sprintf("run is missing %s", name))
 }
 

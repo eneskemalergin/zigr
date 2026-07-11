@@ -218,6 +218,39 @@ validate_run_artifacts <- function(run_dir, metadata) {
   if (length(missing) > 0L) stop(sprintf("run summaries missing columns: %s", paste(missing, collapse = ", ")))
   if (!all(as.character(summaries$run_id) == expected_run_id)) stop("run summaries contain mixed run IDs")
 
+  if (!is.null(metadata$timing_policy)) {
+    policy <- metadata$timing_policy
+    numeric_policy_fields <- c(
+      "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
+      "convergence_cv_threshold_pct", "timer_noise_floor_ms"
+    )
+    for (name in numeric_policy_fields) {
+      if (any(as.numeric(summaries[[name]]) != as.numeric(policy[[name]]))) {
+        stop(sprintf("run summaries disagree with timing policy field %s", name))
+      }
+    }
+    for (name in c("rss_metric", "gc_policy")) {
+      if (any(as.character(summaries[[name]]) != as.character(policy[[name]]))) {
+        stop(sprintf("run summaries disagree with timing policy field %s", name))
+      }
+    }
+    pass_rows <- summaries$status == "PASS"
+    if (any(!summaries$stopping_condition[pass_rows] %in% c("rolling_cv", "max_iterations"))) {
+      stop("PASS summaries contain an invalid stopping condition")
+    }
+    if (any(summaries$n_iterations[pass_rows] < 1L |
+            summaries$n_iterations[pass_rows] > as.integer(policy$max_iterations) |
+            summaries$n_iterations[pass_rows] %% as.integer(policy$block_size) != 0L)) {
+      stop("PASS summaries contain an invalid measured sample count")
+    }
+    max_rows <- pass_rows & summaries$stopping_condition == "max_iterations"
+    if (any(summaries$n_iterations[max_rows] != as.integer(policy$max_iterations)) || any(summaries$converged[max_rows])) {
+      stop("max-iteration summaries disagree with the timing policy")
+    }
+    converged_rows <- pass_rows & summaries$stopping_condition == "rolling_cv"
+    if (any(!summaries$converged[converged_rows])) stop("rolling-CV summaries are not marked converged")
+  }
+
   if (anyNA(summaries$status) || any(!nzchar(as.character(summaries$status)))) {
     stop("run summaries contain blank or missing statuses")
   }
@@ -273,6 +306,24 @@ validate_run_artifacts <- function(run_dir, metadata) {
       raw <- read.csv(raw_file, stringsAsFactors = FALSE)
       if (!"run_id" %in% names(raw)) stop(sprintf("raw result lacks run_id: %s", raw_file))
       if (!all(as.character(raw$run_id) == expected_run_id)) stop("raw results contain mixed run IDs")
+      if (!"wall_ms" %in% names(raw) || any(!is.finite(raw$wall_ms))) stop(sprintf("raw result has invalid wall_ms: %s", raw_file))
+      task <- sub("\\.csv$", "", sub("^task_", "", basename(raw_file)))
+      summary_row <- summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE]
+      if (nrow(summary_row) != 1L || nrow(raw) != summary_row$n_iterations[[1]]) {
+        stop(sprintf("raw result sample count differs from summary: %s", raw_file))
+      }
+      if (!is.null(metadata$boundary_budget_policy_version)) {
+        raw_median <- median(raw$wall_ms)
+        raw_mean <- mean(raw$wall_ms)
+        raw_cv <- if (raw_mean > 0) sd(raw$wall_ms) / raw_mean * 100 else 0
+        if (summary_row$median_ms[[1]] != round(raw_median, 4) || summary_row$cv_pct[[1]] != round(raw_cv, 2)) {
+          stop(sprintf("raw result statistics differ from summary: %s", raw_file))
+        }
+        expected_noise <- if (raw_median < as.numeric(metadata$timing_policy$timer_noise_floor_ms)) "below_floor" else "above_floor"
+        if (summary_row$timer_noise_status[[1]] != expected_noise) {
+          stop(sprintf("raw result disagrees with timer-noise policy: %s", raw_file))
+        }
+      }
     }
     if (!is.null(metadata$timing_policy)) {
       cold_file <- file.path(runner_dir, "cold_start.csv")

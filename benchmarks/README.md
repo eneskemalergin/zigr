@@ -61,6 +61,9 @@ Rscript run_benchmarks.R --tasks=1,2,6
 Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53
 Rscript run_benchmarks.R --build    # rebuild then run
 
+# Export a complete focused boundary run
+Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
+
 # Promote a completed full-matrix run explicitly
 Rscript promote_run.R --run-dir=results/runs/<run_id>
 
@@ -77,7 +80,41 @@ Each run manifest records a source-tree digest, host and CPU identity, R and Zig
 
 ## Output files
 
-The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. Comparative export also writes `task_comparisons.csv` with noise and median-interval fields plus `category_metrics.csv`. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
+The pipeline writes per-task timing CSVs, per-runner summaries, a run manifest, and cross-runner comparisons under one run directory. Comparative export also writes `task_comparisons.csv` with noise and median-interval fields plus `category_metrics.csv`. Boundary export writes `boundary_metrics.csv`, `boundary_budgets.csv`, and `representation_budgets.csv`. `analysis/summarize.R` writes `analysis_summary.csv` beside the selected run.
+
+## Generated boundary budgets
+
+The boundary budget baseline is complete focused run `20260711T232455Z-pid2`: rebuilt ReleaseFast libraries, native target, Zig 0.16.0, R 4.6.1, budget policy `2026-07-11-1`, and the same adaptive policy as the canonical suite. C passed all 26 boundary rows and reported the 11 zigr-only representation rows as `N/A`; R and zigr passed all 37 selected rows. This run locks generated-boundary budgets but does not replace the six-runner primary aggregate below.
+
+Most small boundary pairs are below the 0.01 ms timer floor, so their ratios remain visible but do not decide acceptance. The large ordinary numeric pair is above the floor and low-noise: generated `0.08410 ms`, handwritten `0.08332 ms`, absolute overhead `0.00078 ms`, ratio `1.00936x`, and CV 7.48%/9.02%. It passes the `0.01 ms` and `1.10x` limits. The integer ALTREP rows use different ownership strategies, so the generated `0.31285 ms` contiguous copy is budgeted on its own and is not judged against the handwritten region stream.
+
+| Class | Current maximum generated median | Budget | Eligible overhead current / budget | Eligible ratio current / budget |
+| --- | ---: | ---: | ---: | ---: |
+| Safe wrapper | 0.00177 ms | 0.01 ms | N/A | N/A |
+| Scalar and optional | 0.00176 ms | 0.01 ms | N/A | N/A |
+| Borrowed numeric/raw/complex | 0.08410 ms | 0.12 ms | 0.00078 / 0.01 ms | 1.00936x / 1.10x |
+| Copied ALTREP | 0.31285 ms | 0.40 ms | N/A | N/A |
+| String view | 0.00213 ms | 0.01 ms | N/A | N/A |
+| Fixed schema | 0.00194 ms | 0.01 ms | N/A | N/A |
+| Typed method | 0.00182 ms | 0.01 ms | N/A | N/A |
+
+Representation budgets retain setup work and ownership differences instead of combining them into one score:
+
+| Task | Current median | Budget | Signal |
+| --- | ---: | ---: | --- |
+| String view, one pass | 0.38325 ms | 0.50 ms | above floor, CV 4.55% |
+| String cache build | 0.96667 ms | 1.20 ms | above floor, CV 5.85% |
+| String cache plus one pass | 0.98778 ms | 1.25 ms | above floor, CV 5.67% |
+| String headers, one pass | 0.55555 ms | 0.70 ms | above floor, CV 6.61% |
+| String view, four passes | 1.54981 ms | 1.90 ms | above floor, CV 3.19% |
+| String cache, four passes | 1.05715 ms | 1.35 ms | above floor, CV 7.00% |
+| String headers, four passes | 0.57154 ms | 0.75 ms | above floor, CV 6.37% |
+| Raw view | 0.00714 ms | 0.01 ms | below floor, CV 79.07% |
+| Raw copy | 0.15097 ms | 0.20 ms | above floor, CV 16.53% |
+| Complex view | 0.02928 ms | 0.05 ms | above floor, CV 40.63% |
+| Complex return | 0.04378 ms | 0.06 ms | above floor, CV 36.68% |
+
+Every row reached the 500-sample cap rather than the 1% rolling-CV stop. New runs store full-precision samples; summaries remain rounded for display, while intervals, CV classification, and budget decisions use the stored samples. The reports retain exact median intervals, timer-floor status, cold-call time, endpoint RSS, sample count, and stopping condition. Complex view and return remain noisy diagnostics even though their medians are above the timer floor. Error, longjmp, finalizer, and forced-GC behavior remain runtime safety gates, not performance budgets.
 
 ## Results (canonical baseline)
 

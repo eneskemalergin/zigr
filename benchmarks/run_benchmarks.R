@@ -76,6 +76,7 @@ run_metadata <- list(
   tasks = selected_tasks,
   allowed_na_tasks = sort(intersect(selected_tasks, optional_tasks)),
   timing_policy = benchmark_timing_policy(),
+  boundary_budget_policy_version = boundary_budget_policy_version(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()
 )
@@ -152,6 +153,12 @@ if (is.null(runners_filter) && is.null(tasks_filter)) {
                   stdout = "", stderr = "")
   if (code != 0) {
     run_error <- sprintf("comparative metrics export failed with exit code %d", code)
+    stop(run_error)
+  }
+  code <- system2("Rscript", args = c("export_boundary_metrics.R", sprintf("--run-dir=%s", run_dir)),
+                  stdout = "", stderr = "")
+  if (code != 0) {
+    run_error <- sprintf("boundary metrics export failed with exit code %d", code)
     stop(run_error)
   }
   cat("\n")

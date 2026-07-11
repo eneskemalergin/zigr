@@ -32,6 +32,52 @@ task_matrix_variant <- function(task) {
          sub("^[0-9]{2}_boundary_.*_(generated|handwritten)$", "\\1", value), "")
 }
 
+boundary_budget_class <- function(group) {
+  mapping <- c(
+    zero = "safe_wrapper",
+    external = "safe_wrapper",
+    scalar = "scalar",
+    optional_null = "scalar",
+    optional_typed_na = "scalar",
+    numeric_small = "borrowed_numeric",
+    numeric_large = "borrowed_numeric",
+    raw = "borrowed_numeric",
+    complex = "borrowed_numeric",
+    altrep_integer = "copied_altrep",
+    string_view = "strings",
+    schema = "structs",
+    external_method = "methods"
+  )
+  result <- unname(mapping[as.character(group)])
+  if (anyNA(result)) stop("boundary matrix has an unmapped budget class")
+  result
+}
+
+boundary_budget_policy <- function() {
+  data.frame(
+    budget_class = c("safe_wrapper", "scalar", "borrowed_numeric", "copied_altrep", "strings", "structs", "methods"),
+    max_generated_median_ms = c(0.01, 0.01, 0.12, 0.40, 0.01, 0.01, 0.01),
+    max_eligible_overhead_ms = c(NA, NA, 0.01, NA, NA, NA, NA),
+    max_eligible_ratio = c(NA, NA, 1.10, NA, NA, NA, NA),
+    stringsAsFactors = FALSE
+  )
+}
+
+boundary_budget_policy_version <- function() "2026-07-11-1"
+
+representation_budget_policy <- function() {
+  data.frame(
+    task = c(
+      "76_string_view_one", "77_string_cache_build", "78_string_cache_one",
+      "79_string_headers_one", "80_string_view_repeated", "81_string_cache_repeated",
+      "82_string_headers_repeated", "83_raw_view", "84_raw_copy",
+      "85_complex_view", "86_complex_return"
+    ),
+    max_median_ms = c(0.50, 1.20, 1.25, 0.70, 1.90, 1.35, 0.75, 0.01, 0.20, 0.05, 0.06),
+    stringsAsFactors = FALSE
+  )
+}
+
 validate_task_manifest <- function(manifest) {
   required <- c("task", "workload_group", "display_name", "category", "input_factory", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
@@ -58,6 +104,11 @@ validate_task_manifest <- function(manifest) {
   if (any(manifest$comparison_policy == "non_comparable" & !nzchar(manifest$comparison_note))) stop("non-comparable tasks need exclusion notes")
   required_special <- c("07a_protect_shallow", "07b_protect_scaling", "42_external_ptr", "43_rng_stress")
   if (!all(required_special %in% manifest$task)) stop("task manifest is missing required special tasks")
+  boundary_tasks <- manifest$task[grepl("^[0-9]{2}_boundary_.*_(generated|handwritten)$", manifest$task)]
+  boundary_classes <- boundary_budget_class(task_matrix_group(boundary_tasks))
+  if (!setequal(unique(boundary_classes), boundary_budget_policy()$budget_class)) stop("boundary budget policy does not cover every boundary class")
+  representation_tasks <- manifest$task[grepl("^(76|77|78|79|80|81|82|83|84|85|86)_", manifest$task)]
+  if (!setequal(representation_tasks, representation_budget_policy()$task)) stop("representation budget policy does not cover every representation task")
   invisible(manifest)
 }
 

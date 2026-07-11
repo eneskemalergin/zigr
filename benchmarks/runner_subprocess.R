@@ -822,7 +822,7 @@ for (task in all_tasks) {
     task        = tid,
     call_type   = task_call_type,
     iteration   = seq_len(length(bm$times)),
-    wall_ms     = round(bm$times, 4),
+    wall_ms     = bm$times,
     peak_rss_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$peak_rss),
     error       = NA_character_,
     run_id      = run_id,
