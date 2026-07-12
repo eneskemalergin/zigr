@@ -107,11 +107,18 @@ Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conve
 
 ### SEXP ABI selection
 
-`sexp.active_abi_contract` selects one access policy at compile time. Little-endian 64-bit targets built with R 4.x headers use the named `r4_64` layout contract. Other pointer widths, byte orders, and R major versions use `checked_r_api`, which routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API.
+`sexp.active_abi_contract` selects one access policy at compile time. Little-endian x86_64 targets built with R 4.6 headers use the named `r4_6_x86_64` layout contract. Every other configuration uses `checked_r_api`, which routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API.
+
+| Contract | Selection | Evidence |
+| --- | --- | --- |
+| `r4_6_x86_64` | R 4.6 headers, little-endian x86_64 target, and no force-fallback flag | Local R 4.6 parity suite and locked boundary budgets |
+| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Full live R suite when forced; declared five-target Debug compile matrix and 32-bit fallback compile check |
 
 The direct contract keeps its offsets in one private layout definition. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
 
-The live R suite compares the active path with the checked path on the native R 4.x 64-bit target. A compile-only 32-bit check forces the fallback branch. That proves the fallback compiles; it is not a 32-bit R runtime or cross-target ABI claim.
+Use `zig build abi-info` to print the selected contract and translated R header version. Pass `-Dchecked-sexp=true` to force the checked path for tests or diagnostics. The offsets cannot come from public `offsetof` probes because installed R headers keep `SEXPREC` opaque. zigr therefore keeps the two R 4.x offsets private, gates them by pointer width, byte order, and R major version, and checks them against public accessors in the live runtime suite.
+
+CI runs the live R suite once with the native contract and once with `checked_r_api` forced. A compile-only 32-bit check also selects the fallback branch. These checks prove same-host semantic parity and fallback compilation; they are not a 32-bit R runtime or cross-target link/load claim.
 
 ### Native-state methods
 

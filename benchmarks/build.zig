@@ -3,6 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const force_checked_sexp = b.option(bool, "checked-sexp", "Force checked R API SEXP access") orelse false;
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "force_checked_sexp", force_checked_sexp);
 
     const r_include = blk: {
         const opt = b.option([]const u8, "r-include", "Path to R header directory");
@@ -49,6 +53,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cleanup", .module = cleanup_mod },
             .{ .name = "error", .module = err_mod },
             .{ .name = "simd", .module = simd_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 

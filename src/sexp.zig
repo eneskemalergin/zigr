@@ -1,11 +1,11 @@
 //! R SEXP classification and guarded access.
 //!
-//! `active_abi_contract` selects direct R 4.x 64-bit layout access once at
-//! compile time. Other targets use R's checked API accessors.
+//! `active_abi_contract` selects one access path at compile time.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const R = @import("R");
+const build_options = @import("build_options");
 
 pub const SEXP = R.SEXP;
 
@@ -13,21 +13,33 @@ pub const max_symbol_name = 256;
 
 /// Compile-time policy for SEXP layout access.
 pub const AbiContract = enum {
-    r4_64,
+    r4_6_x86_64,
     checked_r_api,
 };
 
-const r4_version_min = 4 * 65536;
-const r5_version_min = 5 * 65536;
+const r4_6_version_min = 4 * 65536 + 6 * 256;
+const r4_7_version_min = 4 * 65536 + 7 * 256;
 
-/// The direct layout is limited to the configuration validated by the runtime suite.
-pub const active_abi_contract: AbiContract = if (@sizeOf(usize) == 8 and
-    builtin.target.cpu.arch.endian() == .little and
-    R.R_VERSION >= r4_version_min and
-    R.R_VERSION < r5_version_min) .r4_64 else .checked_r_api;
+pub const r_header_version = R.R_VERSION;
 
-/// True when the active build uses the private R 4.x layout.
-pub const uses_direct_layout = active_abi_contract == .r4_64;
+fn selectAbiContract(force_checked: bool, pointer_bytes: usize, is_x86_64: bool, is_little: bool, r_version: c_int) AbiContract {
+    if (!force_checked and pointer_bytes == 8 and is_x86_64 and is_little and
+        r_version >= r4_6_version_min and r_version < r4_7_version_min)
+    {
+        return .r4_6_x86_64;
+    }
+    return .checked_r_api;
+}
+
+pub const active_abi_contract = selectAbiContract(
+    build_options.force_checked_sexp,
+    @sizeOf(usize),
+    builtin.target.cpu.arch == .x86_64,
+    builtin.target.cpu.arch.endian() == .little,
+    r_header_version,
+);
+
+pub const uses_direct_layout = active_abi_contract == .r4_6_x86_64;
 
 const R4_64 = struct {
     const length_offset = 0x20;
@@ -100,6 +112,7 @@ fn directLength(sexp: SEXP) R.R_xlen_t {
     return slot.*;
 }
 
+/// Caller assumes non-null inputs are vectors or CHARSXPs.
 pub fn fastLength(sexp: SEXP) R.R_xlen_t {
     if (sexp == null) return 0;
     if (R.ALTREP(sexp) != 0 or !uses_direct_layout) return checked.length(sexp);
@@ -107,7 +120,9 @@ pub fn fastLength(sexp: SEXP) R.R_xlen_t {
 }
 
 /// ALTREP can withhold a direct pointer.
+/// Caller assumes non-null, non-ALTREP inputs have vector storage.
 pub fn fastDataPtr(sexp: SEXP) ?*anyopaque {
+    if (sexp == null) return null;
     if (R.ALTREP(sexp) != 0) return null;
     if (comptime !uses_direct_layout) return checked.dataPtr(sexp);
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
@@ -115,7 +130,7 @@ pub fn fastDataPtr(sexp: SEXP) ?*anyopaque {
     return @as(*anyopaque, @ptrCast(@alignCast(base + R4_64.data_offset)));
 }
 
-/// The caller assumes a vector-like SEXP and an in-bounds index.
+/// Caller assumes a STRSXP, VECSXP, or EXPRSXP and an in-bounds index.
 pub fn fastVectorElt(sexp: SEXP, index: usize) SEXP {
     if (comptime !uses_direct_layout) return checked.vectorElt(sexp, index);
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
@@ -144,6 +159,7 @@ pub fn fastGetCharCE(charsxp: SEXP) i32 {
     return 0;
 }
 
+/// Caller assumes non-null inputs accept `XLENGTH`.
 pub fn xlength(sexp: SEXP) usize {
     if (sexp == null) return 0;
     const len = fastLength(sexp);
@@ -151,6 +167,7 @@ pub fn xlength(sexp: SEXP) usize {
     return @as(usize, @intCast(len));
 }
 
+/// Caller assumes non-null inputs accept `XLENGTH`.
 pub fn tryXlength(sexp: SEXP) !usize {
     if (sexp == null) return error.NullPointer;
     const len = fastLength(sexp);
@@ -289,13 +306,14 @@ test "typeTag has correct type" {
 }
 
 test "ABI contract gates direct layout" {
-    try std.testing.expectEqual(
-        @sizeOf(usize) == 8 and
-            builtin.target.cpu.arch.endian() == .little and
-            R.R_VERSION >= r4_version_min and
-            R.R_VERSION < r5_version_min,
-        uses_direct_layout,
-    );
+    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(false, 8, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(false, 8, true, true, r4_7_version_min - 1));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, 8, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 4, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, false, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, false, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, true, r4_6_version_min - 1));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, true, r4_7_version_min));
 }
 
 test "checked fallback surface compiles" {

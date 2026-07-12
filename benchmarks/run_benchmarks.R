@@ -106,6 +106,7 @@ build_settings <- list(
   optimization = Sys.getenv("ZIGR_OPTIMIZE", unset = "ReleaseFast"),
   target = Sys.getenv("ZIGR_TARGET", unset = "native"),
   cpu_features = Sys.getenv("ZIGR_CPU_FEATURES", unset = "default"),
+  sexp_abi = Sys.getenv("ZIGR_SEXP_ABI", unset = "auto"),
   command = if (do_build) "bash build_all.sh" else "prebuilt runner libraries",
   requested_rebuild = do_build
 )

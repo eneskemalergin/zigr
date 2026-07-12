@@ -31,6 +31,8 @@ build_so <- function() {
   if (nzchar(target) && target != "native") build_args <- c(build_args, paste0("-Dtarget=", target))
   cpu_features <- Sys.getenv("ZIGR_CPU_FEATURES", "")
   if (nzchar(cpu_features) && cpu_features != "default") build_args <- c(build_args, paste0("-Dcpu=", cpu_features))
+  checked_sexp <- tolower(Sys.getenv("ZIGR_CHECKED_SEXP", "false"))
+  if (checked_sexp %in% c("1", "true", "yes")) build_args <- c(build_args, "-Dchecked-sexp=true")
 
   cat("Building test .so...\n")
   cat("  ", paste(c(zig, build_args), collapse = " "), "\n")

@@ -76,7 +76,7 @@ Rscript run_system_tasks.R
 
 `run_benchmarks.R` creates a run manifest before execution, spawns `runner_subprocess.R` per runner with that run directory, validates coverage, marks the run complete, and exports comparisons from that one directory. Failed or interrupted runs remain `incomplete` and cannot be exported or promoted; a later project run marks `running` manifests older than six hours as incomplete while retaining their artifacts. Existing root-level CSVs are legacy evidence.
 
-Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, BLAS details and thread settings, locale, relevant environment variables, runner configuration, shared-library fingerprints, and the explicitly allowed `N/A` task set. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, and `ZIGR_CPU_FEATURES` when the build differs from the native `ReleaseFast` defaults.
+Each run manifest records a source-tree digest, host and CPU identity, R and Zig versions, declared target/optimization/CPU features, SEXP ABI selection, BLAS details and thread settings, locale, relevant environment variables, runner configuration, shared-library fingerprints, and the explicitly allowed `N/A` task set. Set `ZIGR_TARGET`, `ZIGR_OPTIMIZE`, `ZIGR_CPU_FEATURES`, and `ZIGR_SEXP_ABI` when the build differs from the native `ReleaseFast` defaults.
 
 ## Output files
 
@@ -134,7 +134,27 @@ Representation budgets retain setup work and ownership differences instead of co
 
 Every row reached the 500-sample cap rather than the 1% rolling-CV stop. New runs store full-precision samples; summaries remain rounded for display, while intervals, CV classification, and budget decisions use the stored samples. The reports retain exact median intervals, timer-floor status, cold-call time, endpoint RSS, sample count, and stopping condition. Complex view and return remain noisy diagnostics even though their medians are above the timer floor. Error, longjmp, finalizer, and forced-GC behavior remain runtime safety gates, not performance budgets.
 
-ReleaseSafe allocation diagnostics remain outside these ReleaseFast timings. The ordinary numeric view recorded zero allocator calls. A 1,024-element compact integer ALTREP recorded one 4,096-byte allocation and one matching free. A three-element cached string view recorded one metadata allocation and one matching free. Fixed scalar-schema parsing recorded zero allocator calls. The cleanup diagnostic recorded one cleanup frame, one unwind boundary, and protection depth one; separate runtime cases exercise the full 16-frame capacity. Forced-GC ownership tests cover generated numeric, raw, string, cached-string, fixed-schema, call-expression, fixed-tier, and spilled results. Typed external-pointer tests require one finalization and verify an idempotent second finalizer call. These are exact safety assertions from the 237-test ReleaseSafe runtime suite, not inferred counts from RSS.
+ReleaseSafe allocation diagnostics remain outside these ReleaseFast timings. The ordinary numeric view recorded zero allocator calls. A 1,024-element compact integer ALTREP recorded one 4,096-byte allocation and one matching free. A three-element cached string view recorded one metadata allocation and one matching free. Fixed scalar-schema parsing recorded zero allocator calls. The cleanup diagnostic recorded one cleanup frame, one unwind boundary, and protection depth one; separate runtime cases exercise the full 16-frame capacity. Forced-GC ownership tests cover generated numeric, raw, string, cached-string, fixed-schema, call-expression, fixed-tier, and spilled results. Typed external-pointer tests require one finalization and verify an idempotent second finalizer call. These are exact safety assertions from the 238-test ReleaseSafe runtime suite, not inferred counts from RSS.
+
+### SEXP ABI comparison
+
+The primary budgets stay on the direct contract, and I measure the checked fallback separately. Primary ReleaseFast run `20260712T045623Z-pid908112` passed every boundary and representation budget through the fail-closed exporter. Forced `checked_r_api` run `20260712T050028Z-pid912770` passed correctness for all 37 selected R and zigr rows; C passed its 26 shared rows and reported the representation rows as declared `N/A`. Both runs record source digest `b4f9fb75ff710215c49ebd1ada149411` and their explicit ABI selection.
+
+| Path | Direct median | Checked median | Checked/direct |
+| --- | ---: | ---: | ---: |
+| Large generated numeric | 0.08407 ms | 0.08418 ms | 1.001x |
+| String view, one pass | 0.36254 ms | 0.58905 ms | 1.625x |
+| String cache build | 0.93618 ms | 0.96640 ms | 1.032x |
+| String cache plus one pass | 0.96523 ms | 0.99134 ms | 1.027x |
+| String headers, one pass | 0.54001 ms | 0.54853 ms | 1.016x |
+| String view, four passes | 1.40232 ms | 2.30151 ms | 1.641x |
+| String cache, four passes | 1.03172 ms | 1.06125 ms | 1.029x |
+| String headers, four passes | 0.56008 ms | 0.57281 ms | 1.023x |
+| Raw copy | 0.15131 ms | 0.15109 ms | 0.999x |
+| Complex view | 0.02930 ms | 0.02921 ms | 0.997x |
+| Complex return | 0.03944 ms | 0.03687 ms | 0.935x |
+
+The header-free string view is the material fallback cost. `checked.vectorElt` validates kind and bounds for each element, so repeated uncached access pays for repeated R API calls. Cached metadata and copied header paths decide representation once and remain near the direct path. I keep this cost visible rather than weakening fallback validation. The raw-view row remains below the timer floor and is omitted from the ratio table.
 
 ## Results (canonical baseline)
 

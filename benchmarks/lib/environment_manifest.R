@@ -145,7 +145,7 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
   environment_names <- c(
     "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_NUM_THREADS",
     "R_LIBS", "R_LIBS_USER", "R_INCLUDE", "R_LIB", "ZIG", "ZIGR_OPTIMIZE",
-    "ZIGR_TARGET", "ZIGR_CPU_FEATURES", "CC", "CFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH",
+    "ZIGR_TARGET", "ZIGR_CPU_FEATURES", "ZIGR_SEXP_ABI", "CC", "CFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH",
     "LANG", "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES"
   )
   process_environment <- as.list(Sys.getenv(environment_names, unset = ""))

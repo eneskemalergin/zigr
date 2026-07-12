@@ -36,6 +36,10 @@ fn rBuild(
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const force_checked_sexp = b.option(bool, "checked-sexp", "Force checked R API SEXP access") orelse false;
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "force_checked_sexp", force_checked_sexp);
 
     const fmt_step = b.step("fmt", "Check zig fmt compliance");
     const fmt_check = b.addFmt(.{ .paths = &.{"."}, .check = true });
@@ -74,6 +78,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cleanup", .module = cleanup_mod },
             .{ .name = "error", .module = err_mod },
             .{ .name = "simd", .module = simd_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
@@ -88,6 +93,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "cleanup", .module = cleanup_mod },
                 .{ .name = "error", .module = err_mod },
                 .{ .name = "simd", .module = simd_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -102,6 +108,19 @@ pub fn build(b: *std.Build) void {
     const run_zigr_tests = b.addRunArtifact(zigr_tests);
     const test_step = b.step("test", "Run zigr tests");
     test_step.dependOn(&run_zigr_tests.step);
+
+    const abi_info = b.addExecutable(.{
+        .name = "zigr_abi_info",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/abi_info.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zigr", .module = zigr }},
+        }),
+    });
+    const run_abi_info = b.addRunArtifact(abi_info);
+    const abi_info_step = b.step("abi-info", "Report the selected SEXP ABI contract");
+    abi_info_step.dependOn(&run_abi_info.step);
 
     if (b.findProgram(&.{"Rscript"}, &.{})) |_| {
         const so = b.addLibrary(.{
