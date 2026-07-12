@@ -1,11 +1,26 @@
 //! R language nodes and call construction.
 //!
 //! `car` and related helpers are unchecked C API access. Constructors may
-//! allocate and longjmp; built calls are returned unprotected.
+//! allocate and longjmp. Inputs remain caller-rooted during construction and
+//! built calls are returned unprotected.
 
+const std = @import("std");
 const R = @import("R");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
+
+const max_name_len = @import("sexp.zig").max_symbol_name;
+
+pub const CallError = error{
+    InvalidName,
+    NullArgument,
+    NullFunction,
+};
+
+pub const Argument = struct {
+    value: R.SEXP,
+    name: ?[]const u8 = null,
+};
 
 pub fn car(sexp: R.SEXP) R.SEXP {
     return R.CAR(sexp);
@@ -93,14 +108,15 @@ pub fn lcons(car_val: R.SEXP, cdr_val: R.SEXP) R.SEXP {
 
 pub fn consList(items: []const R.SEXP) R.SEXP {
     var list = R.R_NilValue;
-    var protect_count: usize = 0;
+    var index: R.PROTECT_INDEX = 0;
+    protect.protectWithIndex(list, &index);
+    defer protect.unprotect();
     var i = items.len;
     while (i > 0) {
         i -= 1;
-        list = protect.protect(R.Rf_lcons(items[i], list));
-        protect_count += 1;
+        list = R.Rf_cons(items[i], list);
+        protect.reprotect(list, index);
     }
-    if (protect_count > 0) protect.unprotectN(protect_count);
     return list;
 }
 
@@ -111,6 +127,40 @@ pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
     var call_expr = protect.scoped(R.Rf_lcons(fun, arg_list.get()));
     defer call_expr.deinit();
     return call_expr.get();
+}
+
+pub fn buildCallChecked(fun: R.SEXP, args: []const R.SEXP) CallError!R.SEXP {
+    if (fun == null) return error.NullFunction;
+    for (args) |arg| {
+        if (arg == null) return error.NullArgument;
+    }
+    return buildCall(fun, args);
+}
+
+/// Argument names become pairlist tags; unnamed arguments keep a nil tag.
+pub fn buildTaggedCall(fun: R.SEXP, args: []const Argument) CallError!R.SEXP {
+    if (fun == null) return error.NullFunction;
+    for (args) |arg| {
+        if (arg.value == null) return error.NullArgument;
+        if (arg.name) |name| {
+            if (!validName(name)) return error.InvalidName;
+        }
+    }
+
+    var list = R.R_NilValue;
+    var index: R.PROTECT_INDEX = 0;
+    protect.protectWithIndex(list, &index);
+    defer protect.unprotect();
+    var i = args.len;
+    while (i > 0) {
+        i -= 1;
+        const name = if (args[i].name) |name| symbols.install(name) else R.R_NilValue;
+        list = R.Rf_cons(args[i].value, list);
+        protect.reprotect(list, index);
+        if (name != R.R_NilValue) R.SET_TAG(list, name);
+    }
+
+    return R.Rf_lcons(fun, list);
 }
 
 pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
@@ -127,4 +177,8 @@ pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {
         values[index] = @field(args, field.name);
     }
     return buildCall(symbol(name), values[0..]);
+}
+
+fn validName(name: []const u8) bool {
+    return name.len != 0 and name.len < max_name_len and std.mem.indexOfScalar(u8, name, 0) == null;
 }

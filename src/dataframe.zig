@@ -2,9 +2,36 @@
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 const xlength = @import("sexp.zig").xlength;
 const sexp_mod = @import("sexp.zig");
+
+pub const DataFrameError = error{
+    NameColumnCount,
+    NullColumn,
+    ColumnLength,
+    RowCountTooLarge,
+    InvalidName,
+    MalformedNames,
+};
+
+const HeaderCleanup = struct {
+    allocator: std.mem.Allocator,
+    values: [][]const u8,
+
+    fn fire(self: *@This()) void {
+        self.allocator.free(self.values);
+    }
+};
+
+const MapCleanup = struct {
+    map: std.StringHashMap(i64),
+
+    fn fire(self: *@This()) void {
+        self.map.deinit();
+    }
+};
 
 pub const DataFrame = struct {
     sexp: R.SEXP,
@@ -26,12 +53,15 @@ pub const DataFrame = struct {
         return R.XLENGTH(col0);
     }
 
-    pub fn columnNames(self: DataFrame, allocator: std.mem.Allocator) ![][]const u8 {
+    /// Headers are caller-owned; bytes borrow from the data frame.
+    pub fn columnNames(self: DataFrame, allocator: std.mem.Allocator) (DataFrameError || std.mem.Allocator.Error)![][]const u8 {
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
         if (ns == R.R_NilValue) return allocator.alloc([]const u8, 0);
-        const nlen = R.XLENGTH(ns);
-        const n = @as(usize, @intCast(if (nlen < 0) @as(R.R_xlen_t, 0) else nlen));
+        if (R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != self.columnCount()) return error.MalformedNames;
+        const n = @as(usize, @intCast(R.XLENGTH(ns)));
         const result = try allocator.alloc([]const u8, n);
+        _ = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator, .values = result }, HeaderCleanup.fire);
+        defer cleanup.popFrame();
         for (0..n) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
@@ -42,7 +72,7 @@ pub const DataFrame = struct {
     pub fn columnIndex(self: DataFrame, name: []const u8) ?i64 {
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
-        if (ns == R.R_NilValue) return null;
+        if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != ncols) return null;
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
@@ -52,6 +82,12 @@ pub const DataFrame = struct {
         return null;
     }
 
+    pub fn columnAt(self: DataFrame, index: usize) ?R.SEXP {
+        if (index >= @as(usize, @intCast(self.columnCount()))) return null;
+        return R.VECTOR_ELT(self.sexp, @intCast(index));
+    }
+
+    /// Caller assumes `index` is non-negative and in bounds.
     pub fn columnByIndex(self: DataFrame, index: i64) R.SEXP {
         return R.VECTOR_ELT(self.sexp, @intCast(index));
     }
@@ -61,16 +97,21 @@ pub const DataFrame = struct {
         return self.columnByIndex(idx);
     }
 
+    /// Map keys borrow R string storage and cannot outlive the data frame.
     pub fn columnMap(self: DataFrame, allocator: std.mem.Allocator) !std.StringHashMap(i64) {
         var map = std.StringHashMap(i64).init(allocator);
+        errdefer map.deinit();
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
-        if (ns == R.R_NilValue) return map;
+        if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != ncols) return map;
+        try map.ensureTotalCapacity(@intCast(ncols));
+        _ = cleanup.pushFrameInline(MapCleanup, .{ .map = map }, MapCleanup.fire);
+        defer cleanup.popFrame();
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
             const cn = sexp_mod.charsxpBytes(elt);
-            try map.put(cn, @intCast(i));
+            map.putAssumeCapacity(cn, @intCast(i));
         }
         return map;
     }
@@ -90,10 +131,23 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
     return false;
 }
 
-/// The result is unprotected, so protect it before another R allocation.
-pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
-    if (names.len == 0 or columns.len == 0) return R.R_NilValue;
-    if (names.len != columns.len) return R.R_NilValue;
+/// Shares `columns`; callers keep them reachable during construction. The result is unprotected.
+pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFrameError!R.SEXP {
+    if (names.len != columns.len) return error.NameColumnCount;
+    for (names) |name| {
+        if (std.mem.indexOfScalar(u8, name, 0) != null) return error.InvalidName;
+    }
+
+    const nrows: usize = if (columns.len == 0) 0 else blk: {
+        if (columns[0] == null) return error.NullColumn;
+        break :blk xlength(columns[0]);
+    };
+    if (nrows > std.math.maxInt(c_int)) return error.RowCountTooLarge;
+    for (columns) |column| {
+        if (column == null) return error.NullColumn;
+        if (xlength(column) != nrows) return error.ColumnLength;
+    }
+
     const ncols: R.R_xlen_t = @intCast(names.len);
 
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, ncols));
@@ -120,15 +174,14 @@ pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
     R.SET_STRING_ELT(cls.get(), 0, R.Rf_mkChar("data.frame"));
     _ = R.Rf_classgets(vec.get(), cls.get());
 
-    const nrows = xlength(columns[0]);
-    if (nrows <= std.math.maxInt(c_int)) {
-        const rnp = R.INTEGER(rn.get());
-        rnp[0] = R.R_NaInt;
-        rnp[1] = -@as(c_int, @intCast(nrows));
-        _ = R.Rf_setAttrib(vec.get(), R.R_RowNamesSymbol, rn.get());
-    } else {
-        _ = R.Rf_setAttrib(vec.get(), R.R_RowNamesSymbol, R.R_NilValue);
-    }
+    const rnp = R.INTEGER(rn.get());
+    rnp[0] = R.R_NaInt;
+    rnp[1] = -@as(c_int, @intCast(nrows));
+    _ = R.Rf_setAttrib(vec.get(), R.R_RowNamesSymbol, rn.get());
 
     return vec.get();
+}
+
+pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
+    return buildChecked(names, columns) catch R.R_NilValue;
 }

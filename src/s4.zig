@@ -1,46 +1,83 @@
-//! S4 helpers.
+//! Registered S4 class construction and slot access.
 //!
-//! `newS4Object` skips R's initializer, so use it only for simple classes
-//! whose representation needs no setup.
+//! New objects use the class prototype but do not run `initialize` or validity methods.
+//! Returned objects and slot values are unprotected.
 
+const std = @import("std");
 const R = @import("R");
+const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 
-fn toSym(name: []const u8) R.SEXP {
-    return symbols.install(name);
-}
+const max_name_len = @import("sexp.zig").max_symbol_name;
+
+pub const S4Error = error{
+    InvalidClassName,
+    InvalidSlotName,
+    MissingClass,
+    MissingSlot,
+    NotS4,
+    NullValue,
+};
 
 pub fn isS4(sexp: R.SEXP) bool {
-    return R.Rf_isS4(sexp) != 0;
+    return sexp != null and R.Rf_isS4(sexp) != 0;
 }
 
-pub fn setS4Object(sexp: R.SEXP, value: bool) void {
-    _ = R.Rf_asS4(sexp, if (value) @as(R.Rboolean, 1) else 0, 1);
+/// The returned object may differ from `sexp`.
+pub fn setS4Object(sexp: R.SEXP, value: bool) R.SEXP {
+    return R.Rf_asS4(sexp, if (value) @as(R.Rboolean, 1) else 0, 1);
 }
 
 pub fn hasSlot(sexp: R.SEXP, name: []const u8) bool {
-    return R.R_has_slot(sexp, toSym(name)) != 0;
+    if (!isS4(sexp) or !validName(name)) return false;
+    return R.R_has_slot(sexp, symbols.install(name)) != 0;
 }
 
+/// The returned value borrows from `sexp`; a missing slot raises an R error.
 pub fn getSlot(sexp: R.SEXP, name: []const u8) R.SEXP {
-    return R.R_do_slot(sexp, toSym(name));
+    return R.R_do_slot(sexp, symbols.install(name));
 }
 
-pub fn setSlot(sexp: R.SEXP, name: []const u8, value: R.SEXP) void {
-    _ = R.R_do_slot_assign(sexp, toSym(name), value);
+pub fn getSlotChecked(sexp: R.SEXP, name: []const u8) S4Error!R.SEXP {
+    if (!isS4(sexp)) return error.NotS4;
+    if (!validName(name)) return error.InvalidSlotName;
+    const slot = symbols.install(name);
+    if (R.R_has_slot(sexp, slot) == 0) return error.MissingSlot;
+    return R.R_do_slot(sexp, slot);
 }
 
-/// Skips custom initialization and validity hooks. The result is unprotected.
-pub fn newS4Object(class_name: []const u8, slot_count: i32) R.SEXP {
-    const obj = R.Rf_protect(R.Rf_allocVector(R.VECSXP, slot_count));
-    _ = R.Rf_asS4(obj, 1, 1);
-    const cls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
-    R.SET_STRING_ELT(cls, 0, R.Rf_mkCharLenCE(
-        @ptrCast(class_name.ptr),
-        @intCast(class_name.len),
-        @as(R.cetype_t, @intCast(R.CE_UTF8)),
-    ));
-    _ = R.Rf_classgets(obj, cls);
-    R.Rf_unprotect(2);
-    return obj;
+/// The returned object may differ from `sexp`, notably for `.Data` assignment.
+pub fn setSlot(sexp: R.SEXP, name: []const u8, value: R.SEXP) R.SEXP {
+    return R.R_do_slot_assign(sexp, symbols.install(name), value);
+}
+
+pub fn setSlotChecked(sexp: R.SEXP, name: []const u8, value: R.SEXP) S4Error!R.SEXP {
+    if (!isS4(sexp)) return error.NotS4;
+    if (value == null) return error.NullValue;
+    if (!validName(name)) return error.InvalidSlotName;
+    const slot = symbols.install(name);
+    if (R.R_has_slot(sexp, slot) == 0) return error.MissingSlot;
+    return R.R_do_slot_assign(sexp, slot, value);
+}
+
+/// Resolves the class through R's methods registry and returns its unprotected prototype object.
+pub fn newObjectChecked(class_name: []const u8) S4Error!R.SEXP {
+    if (!validName(class_name)) return error.InvalidClassName;
+    var name: [max_name_len:0]u8 = undefined;
+    @memcpy(name[0..class_name.len], class_name);
+    name[class_name.len] = 0;
+
+    const definition = R.R_getClassDef(@ptrCast(&name));
+    if (definition == R.R_NilValue) return error.MissingClass;
+    var protected_definition = protect.scoped(definition);
+    defer protected_definition.deinit();
+    return R.R_do_new_object(protected_definition.get());
+}
+
+pub fn newObject(class_name: []const u8) R.SEXP {
+    return newObjectChecked(class_name) catch R.R_NilValue;
+}
+
+fn validName(name: []const u8) bool {
+    return name.len != 0 and name.len < max_name_len and std.mem.indexOfScalar(u8, name, 0) == null;
 }

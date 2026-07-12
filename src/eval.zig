@@ -3,7 +3,6 @@
 //! R can longjmp through these calls. Callers holding native state must
 //! establish their own cleanup boundary first.
 
-const std = @import("std");
 const R = @import("R");
 const lang = @import("lang.zig");
 const protect = @import("protect.zig");
@@ -44,7 +43,11 @@ pub fn findVarInFrame(frame: R.SEXP, name: []const u8) R.SEXP {
 }
 
 pub fn findFunction(name: []const u8) R.SEXP {
-    return R.Rf_findFun(installSym(name), R.R_GlobalEnv);
+    return findFunctionIn(name, R.R_GlobalEnv);
+}
+
+pub fn findFunctionIn(name: []const u8, envir: R.SEXP) R.SEXP {
+    return R.Rf_findFun(installSym(name), envir);
 }
 
 pub fn setVar(sym: R.SEXP, val: R.SEXP, envir: ?R.SEXP) void {
@@ -67,10 +70,29 @@ pub const baseEnv: R.SEXP = R.R_BaseEnv;
 pub const emptyEnv: R.SEXP = R.R_EmptyEnv;
 
 pub fn call(name: []const u8, args: []const R.SEXP) R.SEXP {
-    const fun = R.Rf_findFun(installSym(name), R.R_GlobalEnv);
+    return callIn(name, args, R.R_GlobalEnv);
+}
+
+/// Function lookup and evaluation both start in `envir`; the result is unprotected.
+pub fn callIn(name: []const u8, args: []const R.SEXP, envir: R.SEXP) R.SEXP {
+    const fun = findFunctionIn(name, envir);
     var call_expr = protect.scoped(lang.buildCall(fun, args));
     defer call_expr.deinit();
-    return R.Rf_eval(call_expr.get(), R.R_GlobalEnv);
+    return R.Rf_eval(call_expr.get(), envir);
+}
+
+/// Evaluates an already resolved function with positional arguments.
+pub fn callFunctionIn(fun: R.SEXP, args: []const R.SEXP, envir: R.SEXP) lang.CallError!R.SEXP {
+    var call_expr = protect.scoped(try lang.buildCallChecked(fun, args));
+    defer call_expr.deinit();
+    return R.Rf_eval(call_expr.get(), envir);
+}
+
+/// Evaluates an already resolved function with positional or tagged arguments.
+pub fn callTaggedIn(fun: R.SEXP, args: []const lang.Argument, envir: R.SEXP) lang.CallError!R.SEXP {
+    var call_expr = protect.scoped(try lang.buildTaggedCall(fun, args));
+    defer call_expr.deinit();
+    return R.Rf_eval(call_expr.get(), envir);
 }
 
 pub fn tryEval(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {

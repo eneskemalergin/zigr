@@ -10,6 +10,8 @@ const rng = zigr.rng;
 const mem = zigr.memory;
 const zigr_convert = zigr.convert;
 const df = zigr.dataframe;
+const factor = zigr.factor;
+const s4 = zigr.s4;
 const attrib = zigr.attrib;
 const altrep_create = zigr.altrep_create;
 const test_lang = zigr.lang;
@@ -308,6 +310,82 @@ export fn zigr_test_eval_contract() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+export fn zigr_test_language_call_contract() SEXP {
+    var envir = protect.scoped(R.R_NewEnv(R.R_BaseEnv, 1, 29));
+    defer envir.deinit();
+    var function = protect.scoped(embed.rCodeEval("function(x, scale=1) x * scale", R.R_BaseEnv));
+    defer function.deinit();
+    test_eval.defineVarIn("zigr_local_scale", function.get(), envir.get());
+    const resolved = test_eval.findFunctionIn("zigr_local_scale", envir.get());
+    if (resolved != function.get()) return R.Rf_ScalarReal(0.0);
+
+    var value = protect.scoped(R.Rf_ScalarReal(6.0));
+    defer value.deinit();
+    var scale = protect.scoped(R.Rf_ScalarReal(7.0));
+    defer scale.deinit();
+    const args = [_]test_lang.Argument{
+        .{ .value = value.get() },
+        .{ .name = "scale", .value = scale.get() },
+    };
+    var call = protect.scoped(test_lang.buildTaggedCall(resolved, args[0..]) catch return R.Rf_ScalarReal(0.0));
+    defer call.deinit();
+    if (R.TYPEOF(call.get()) != R.LANGSXP or R.TYPEOF(R.CDR(call.get())) != R.LISTSXP) return R.Rf_ScalarReal(0.0);
+    if (R.TAG(R.CDR(call.get())) != R.R_NilValue) return R.Rf_ScalarReal(0.0);
+    if (R.TAG(R.CDR(R.CDR(call.get()))) != test_lang.symbol("scale")) return R.Rf_ScalarReal(0.0);
+
+    const result = test_eval.rEval(call.get(), envir.get());
+    if (R.TYPEOF(result) != R.REALSXP or R.REAL(result)[0] != 42.0) return R.Rf_ScalarReal(0.0);
+    const direct = test_eval.callTaggedIn(resolved, args[0..], envir.get()) catch return R.Rf_ScalarReal(0.0);
+    if (R.REAL(direct)[0] != 42.0) return R.Rf_ScalarReal(0.0);
+
+    const positional = [_]SEXP{value.get()};
+    const defaulted = test_eval.callIn("zigr_local_scale", positional[0..], envir.get());
+    if (R.REAL(defaulted)[0] != 6.0) return R.Rf_ScalarReal(0.0);
+    if (test_lang.buildTaggedCall(resolved, &.{.{ .name = "bad\x00name", .value = value.get() }})) |_| return R.Rf_ScalarReal(0.0) else |call_error| {
+        if (call_error != error.InvalidName) return R.Rf_ScalarReal(0.0);
+    }
+    if (test_lang.buildCallChecked(null, positional[0..])) |_| return R.Rf_ScalarReal(0.0) else |call_error| {
+        if (call_error != error.NullFunction) return R.Rf_ScalarReal(0.0);
+    }
+    if (test_lang.buildCallChecked(resolved, &.{null})) |_| return R.Rf_ScalarReal(0.0) else |call_error| {
+        if (call_error != error.NullArgument) return R.Rf_ScalarReal(0.0);
+    }
+
+    var empty_call = protect.scoped(test_lang.buildCallChecked(resolved, &.{}) catch return R.Rf_ScalarReal(0.0));
+    defer empty_call.deinit();
+    if (R.CDR(empty_call.get()) != R.R_NilValue) return R.Rf_ScalarReal(0.0);
+
+    const initial_depth = protect.getDepth();
+    const many_args = [_]SEXP{value.get()} ** 2048;
+    var long_call = protect.scoped(test_lang.buildCallChecked(resolved, many_args[0..]) catch return R.Rf_ScalarReal(0.0));
+    if (R.TYPEOF(R.CDR(long_call.get())) != R.LISTSXP or R.Rf_length(R.CDR(long_call.get())) != many_args.len) return R.Rf_ScalarReal(0.0);
+    long_call.deinit();
+    if (protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn languageCallError() SEXP {
+    const message = protect.protect(R.Rf_mkString("expected language call error"));
+    defer protect.unprotect();
+    return test_eval.callIn("stop", &.{message}, R.R_GlobalEnv);
+}
+
+export fn zigr_test_language_call_longjmp() SEXP {
+    const initial_depth = protect.getDepth();
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return cleanup.protectCall(languageCallError);
+        }
+    }.call)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+
+    var value = protect.scoped(R.Rf_ScalarInteger(9));
+    defer value.deinit();
+    const result = test_eval.callIn("identity", &.{value.get()}, R.R_BaseEnv);
+    if (R.TYPEOF(result) != R.INTSXP or R.INTEGER(result)[0] != 9) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_rng() SEXP {
     rng.acquire();
     rng.release();
@@ -559,11 +637,13 @@ export fn zigr_test_df_build() SEXP {
     defer arena.deinit();
 
     const vals = [_]f64{ 1.0, 2.0, 3.0 };
-    const col1 = @as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(vals[0..])));
+    var col1 = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(vals[0..]))));
+    defer col1.deinit();
     const strs = [_][]const u8{ "a", "b", "c" };
-    const col2 = @as(R.SEXP, @ptrCast(zigr_convert.fromStringSlice(strs[0..])));
+    var col2 = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromStringSlice(strs[0..]))));
+    defer col2.deinit();
     const names = [_][]const u8{ "x", "y" };
-    const cols = [_]R.SEXP{ col1, col2 };
+    const cols = [_]R.SEXP{ col1.get(), col2.get() };
 
     const df_sexp = df.build(names[0..], cols[0..]);
     const wrap = df.DataFrame.wrap(df_sexp) orelse return R.Rf_ScalarReal(0.0);
@@ -577,9 +657,10 @@ export fn zigr_test_df_column() SEXP {
     defer arena.deinit();
 
     const vals = [_]f64{ 10.0, 20.0 };
-    const col1 = @as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(vals[0..])));
+    var col1 = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(vals[0..]))));
+    defer col1.deinit();
     const names = [_][]const u8{"val"};
-    const cols = [_]R.SEXP{col1};
+    const cols = [_]R.SEXP{col1.get()};
     const df_sexp = df.build(names[0..], cols[0..]);
 
     const df_wrap = df.DataFrame.wrap(df_sexp) orelse return R.R_NilValue;
@@ -588,6 +669,186 @@ export fn zigr_test_df_column() SEXP {
     const ptr: [*]f64 = @ptrCast(R.REAL(rcol));
     if (ptr[0] == 10.0 and ptr[1] == 20.0) return R.Rf_ScalarReal(1.0);
     return R.Rf_ScalarReal(0.0);
+}
+
+export fn zigr_test_df_contract() SEXP {
+    const left_values = [_]f64{ 1.0, 2.0 };
+    var left = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(left_values[0..]))));
+    defer left.deinit();
+    const right_values = [_]i32{ 3, 4 };
+    var right = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromIntSlice(right_values[0..]))));
+    defer right.deinit();
+
+    const names = [_][]const u8{ "left", "right" };
+    const columns = [_]R.SEXP{ left.get(), right.get() };
+    var frame = protect.scoped(df.buildChecked(names[0..], columns[0..]) catch return R.Rf_ScalarReal(0.0));
+    defer frame.deinit();
+    const wrapped = df.DataFrame.wrap(frame.get()) orelse return R.Rf_ScalarReal(0.0);
+    if (wrapped.rowCount() != 2 or wrapped.columnCount() != 2) return R.Rf_ScalarReal(0.0);
+    if (wrapped.columnAt(0) != left.get() or wrapped.columnAt(2) != null) return R.Rf_ScalarReal(0.0);
+    const column_names = wrapped.columnNames(std.heap.page_allocator) catch return R.Rf_ScalarReal(0.0);
+    defer std.heap.page_allocator.free(column_names);
+    if (column_names.len != 2 or !std.mem.eql(u8, column_names[0], "left") or !std.mem.eql(u8, column_names[1], "right")) return R.Rf_ScalarReal(0.0);
+    var column_map = wrapped.columnMap(std.heap.page_allocator) catch return R.Rf_ScalarReal(0.0);
+    defer column_map.deinit();
+    if (column_map.get("left") != 0 or column_map.get("right") != 1) return R.Rf_ScalarReal(0.0);
+
+    const row_names = R.Rf_getAttrib(frame.get(), R.R_RowNamesSymbol);
+    if (R.TYPEOF(row_names) != R.INTSXP or R.XLENGTH(row_names) != 2) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(row_names)[0] != 1 or R.INTEGER(row_names)[1] != 2) return R.Rf_ScalarReal(0.0);
+
+    const short_values = [_]f64{1.0};
+    var short = protect.scoped(@as(R.SEXP, @ptrCast(zigr_convert.fromRealSlice(short_values[0..]))));
+    defer short.deinit();
+    const short_columns = [_]R.SEXP{ left.get(), short.get() };
+    if (df.buildChecked(names[0..], short_columns[0..])) |_| return R.Rf_ScalarReal(0.0) else |build_error| {
+        if (build_error != error.ColumnLength) return R.Rf_ScalarReal(0.0);
+    }
+    if (df.buildChecked(names[0..1], columns[0..])) |_| return R.Rf_ScalarReal(0.0) else |build_error| {
+        if (build_error != error.NameColumnCount) return R.Rf_ScalarReal(0.0);
+    }
+
+    var empty = protect.scoped(df.buildChecked(&.{}, &.{}) catch return R.Rf_ScalarReal(0.0));
+    defer empty.deinit();
+    const empty_frame = df.DataFrame.wrap(empty.get()) orelse return R.Rf_ScalarReal(0.0);
+    if (empty_frame.columnCount() != 0 or empty_frame.rowCount() != 0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_factor_contract() SEXP {
+    var input = protect.scoped(R.Rf_allocVector(R.STRSXP, 4));
+    defer input.deinit();
+    R.SET_STRING_ELT(input.get(), 0, R.Rf_mkChar("b"));
+    R.SET_STRING_ELT(input.get(), 1, R.Rf_mkChar("a"));
+    R.SET_STRING_ELT(input.get(), 2, R.Rf_mkChar("b"));
+    R.SET_STRING_ELT(input.get(), 3, R.R_NaString);
+
+    var result = protect.scoped(factor.asFactorChecked(input.get()) catch return R.Rf_ScalarReal(0.0));
+    defer result.deinit();
+    const codes = R.INTEGER(result.get());
+    if (codes[0] != 2 or codes[1] != 1 or codes[2] != 2 or codes[3] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
+    if (R.Rf_inherits(result.get(), "factor") == 0) return R.Rf_ScalarReal(0.0);
+    const levels = R.Rf_getAttrib(result.get(), R.R_LevelsSymbol);
+    if (R.XLENGTH(levels) != 2 or R.STRING_ELT(levels, 0) != R.Rf_mkChar("a") or R.STRING_ELT(levels, 1) != R.Rf_mkChar("b")) return R.Rf_ScalarReal(0.0);
+    codes[0] = 1;
+    if (R.STRING_ELT(input.get(), 0) != R.Rf_mkChar("b")) return R.Rf_ScalarReal(0.0);
+
+    var empty_input = protect.scoped(R.Rf_allocVector(R.STRSXP, 0));
+    defer empty_input.deinit();
+    var empty = protect.scoped(factor.asFactorChecked(empty_input.get()) catch return R.Rf_ScalarReal(0.0));
+    defer empty.deinit();
+    if (R.XLENGTH(empty.get()) != 0 or R.XLENGTH(R.Rf_getAttrib(empty.get(), R.R_LevelsSymbol)) != 0) return R.Rf_ScalarReal(0.0);
+
+    const utf8 = "caf\xc3\xa9";
+    const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
+    var encoded = protect.scoped(R.Rf_allocVector(R.STRSXP, 2));
+    defer encoded.deinit();
+    R.SET_STRING_ELT(encoded.get(), 0, R.Rf_mkCharLenCE(@ptrCast(utf8.ptr), @intCast(utf8.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(encoded.get(), 1, R.Rf_mkCharLenCE(@ptrCast(&latin1), @intCast(latin1.len), @as(R.cetype_t, @intCast(R.CE_LATIN1))));
+    var encoded_factor = protect.scoped(factor.asFactorChecked(encoded.get()) catch return R.Rf_ScalarReal(0.0));
+    defer encoded_factor.deinit();
+    if (R.XLENGTH(R.Rf_getAttrib(encoded_factor.get(), R.R_LevelsSymbol)) != 1) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(encoded_factor.get())[0] != 1 or R.INTEGER(encoded_factor.get())[1] != 1) return R.Rf_ScalarReal(0.0);
+
+    const alt_data = [_][]const u8{ "b", "a", "b" };
+    var alt = protect.scoped(MyAltString.init(alt_data[0..]));
+    defer alt.deinit();
+    var alt_factor = protect.scoped(factor.asFactorChecked(alt.get()) catch return R.Rf_ScalarReal(0.0));
+    defer alt_factor.deinit();
+    if (R.ALTREP(alt.get()) == 0 or R.INTEGER(alt_factor.get())[0] != 2 or R.XLENGTH(R.Rf_getAttrib(alt_factor.get(), R.R_LevelsSymbol)) != 2) return R.Rf_ScalarReal(0.0);
+
+    const many_count = 1025;
+    var many = protect.scoped(R.Rf_allocVector(R.STRSXP, many_count));
+    defer many.deinit();
+    for (0..many_count) |i| {
+        var buffer: [16]u8 = undefined;
+        const value = std.fmt.bufPrint(&buffer, "level-{d:0>4}", .{i}) catch return R.Rf_ScalarReal(0.0);
+        R.SET_STRING_ELT(many.get(), @intCast(i), R.Rf_mkCharLen(@ptrCast(value.ptr), @intCast(value.len)));
+    }
+    var many_factor = protect.scoped(factor.asFactorChecked(many.get()) catch return R.Rf_ScalarReal(0.0));
+    defer many_factor.deinit();
+    if (R.XLENGTH(R.Rf_getAttrib(many_factor.get(), R.R_LevelsSymbol)) != many_count) return R.Rf_ScalarReal(0.0);
+
+    var wrong = protect.scoped(R.Rf_allocVector(R.INTSXP, 1));
+    defer wrong.deinit();
+    if (factor.asFactorChecked(wrong.get())) |_| return R.Rf_ScalarReal(0.0) else |factor_error| {
+        if (factor_error != error.WrongType) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn defineS4ContractClass() bool {
+    const result = embed.rCodeEval(
+        "if (!methods::isClass('ZigrS4Contract')) methods::setClass('ZigrS4Contract', slots=c(value='numeric', label='character'), prototype=list(value=7, label='base')) else TRUE",
+        R.R_GlobalEnv,
+    );
+    return result != R.R_NilValue;
+}
+
+export fn zigr_test_s4_contract() SEXP {
+    if (!defineS4ContractClass()) return R.Rf_ScalarReal(0.0);
+
+    var object = protect.scoped(s4.newObjectChecked("ZigrS4Contract") catch return R.Rf_ScalarReal(0.0));
+    defer object.deinit();
+    if (!s4.isS4(object.get()) or !s4.hasSlot(object.get(), "value") or !s4.hasSlot(object.get(), "label")) return R.Rf_ScalarReal(0.0);
+    const initial = s4.getSlotChecked(object.get(), "value") catch return R.Rf_ScalarReal(0.0);
+    if (R.TYPEOF(initial) != R.REALSXP or R.XLENGTH(initial) != 1 or R.REAL(initial)[0] != 7.0) return R.Rf_ScalarReal(0.0);
+
+    var duplicate = protect.scoped(R.Rf_duplicate(object.get()));
+    defer duplicate.deinit();
+    var replacement = protect.scoped(R.Rf_ScalarReal(19.0));
+    defer replacement.deinit();
+    var assigned = protect.scoped(s4.setSlotChecked(duplicate.get(), "value", replacement.get()) catch return R.Rf_ScalarReal(0.0));
+    defer assigned.deinit();
+    R.R_gc();
+    const changed = s4.getSlotChecked(assigned.get(), "value") catch return R.Rf_ScalarReal(0.0);
+    const unchanged = s4.getSlotChecked(object.get(), "value") catch return R.Rf_ScalarReal(0.0);
+    if (R.REAL(changed)[0] != 19.0 or R.REAL(unchanged)[0] != 7.0) return R.Rf_ScalarReal(0.0);
+
+    var ordinary = protect.scoped(R.Rf_allocVector(R.VECSXP, 0));
+    defer ordinary.deinit();
+    if (s4.getSlotChecked(ordinary.get(), "value")) |_| return R.Rf_ScalarReal(0.0) else |slot_error| {
+        if (slot_error != error.NotS4) return R.Rf_ScalarReal(0.0);
+    }
+    if (s4.getSlotChecked(object.get(), "missing")) |_| return R.Rf_ScalarReal(0.0) else |slot_error| {
+        if (slot_error != error.MissingSlot) return R.Rf_ScalarReal(0.0);
+    }
+    if (s4.newObjectChecked("ZigrMissingS4Class")) |_| return R.Rf_ScalarReal(0.0) else |class_error| {
+        if (class_error != error.MissingClass) return R.Rf_ScalarReal(0.0);
+    }
+    if (s4.newObjectChecked("bad\x00class")) |_| return R.Rf_ScalarReal(0.0) else |class_error| {
+        if (class_error != error.InvalidClassName) return R.Rf_ScalarReal(0.0);
+    }
+    if (s4.setSlotChecked(object.get(), "value", null)) |_| return R.Rf_ScalarReal(0.0) else |slot_error| {
+        if (slot_error != error.NullValue) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var s4_error_object: SEXP = null;
+
+fn readMissingS4Slot() SEXP {
+    return s4.getSlot(s4_error_object, "missing");
+}
+
+export fn zigr_test_s4_longjmp() SEXP {
+    if (!defineS4ContractClass()) return R.Rf_ScalarReal(0.0);
+    var object = protect.scoped(s4.newObjectChecked("ZigrS4Contract") catch return R.Rf_ScalarReal(0.0));
+    defer object.deinit();
+    s4_error_object = object.get();
+
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return cleanup.protectCall(readMissingS4Slot);
+        }
+    }.call)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+
+    s4_error_object = null;
+    var fresh = protect.scoped(s4.newObjectChecked("ZigrS4Contract") catch return R.Rf_ScalarReal(0.0));
+    defer fresh.deinit();
+    const value = s4.getSlotChecked(fresh.get(), "value") catch return R.Rf_ScalarReal(0.0);
+    if (R.REAL(value)[0] != 7.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_raw_create() SEXP {
@@ -1293,6 +1554,109 @@ export fn zigr_test_altstring_inputs() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+export fn zigr_test_altrep_owned_storage() SEXP {
+    var numbers = [_]f64{ 1.0, 2.0, 3.0 };
+    const numeric = R.Rf_protect(MyAlt.init(numbers[0..]));
+    defer R.Rf_unprotect(2);
+    numbers = .{ 9.0, 9.0, 9.0 };
+
+    const words = [_][]const u8{ "alpha", "beta" };
+    const strings = R.Rf_protect(MyAltString.init(words[0..]));
+    if (R.TYPEOF(R.R_altrep_data1(strings)) != R.STRSXP) return R.Rf_ScalarReal(0.0);
+    if (R.STRING_IS_SORTED(strings) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+
+    R.R_gc();
+    if (R.REAL_ELT(numeric, 0) != 1.0 or R.REAL_ELT(numeric, 2) != 3.0) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(strings, 0)), 0), "alpha")) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(strings, 1)), 0), "beta")) return R.Rf_ScalarReal(0.0);
+
+    var duplicate = protect.scoped(R.Rf_duplicate(numeric));
+    defer duplicate.deinit();
+    if (R.ALTREP(duplicate.get()) != 0 or R.TYPEOF(duplicate.get()) != R.REALSXP) return R.Rf_ScalarReal(0.0);
+    R.REAL(duplicate.get())[0] = 20.0;
+    if (R.REAL_ELT(numeric, 0) != 1.0 or R.REAL(duplicate.get())[0] != 20.0) return R.Rf_ScalarReal(0.0);
+
+    var string_duplicate = protect.scoped(R.Rf_duplicate(strings));
+    defer string_duplicate.deinit();
+    if (R.ALTREP(string_duplicate.get()) != 0 or R.TYPEOF(string_duplicate.get()) != R.STRSXP) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(string_duplicate.get(), 1)), 0), "beta")) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn evalSummary(name: []const u8, value: SEXP, na_rm: bool) SEXP {
+    var flag = protect.scoped(R.Rf_ScalarLogical(if (na_rm) 1 else 0));
+    defer flag.deinit();
+    var call = protect.scoped(R.Rf_lang3(test_eval.findFunction(name), value, flag.get()));
+    defer call.deinit();
+    R.SET_TAG(R.CDR(R.CDR(call.get())), zigr.symbols.install("na.rm"));
+    return test_eval.rEval(call.get(), R.R_GlobalEnv);
+}
+
+export fn zigr_test_altrep_summary_contract() SEXP {
+    var real_data = [_]f64{ 4.0, 1.0, 3.0 };
+    var real = protect.scoped(MyAlt.init(real_data[0..]));
+    defer real.deinit();
+    if (R.REAL(evalSummary("sum", real.get(), false))[0] != 8.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", real.get(), false))[0] != 1.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("max", real.get(), false))[0] != 4.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL_IS_SORTED(real.get()) != R.KNOWN_UNSORTED) return R.Rf_ScalarReal(0.0);
+
+    const descending_data = [_]f64{ 3.0, 2.0, 1.0 };
+    var descending = protect.scoped(MyAlt.init(descending_data[0..]));
+    defer descending.deinit();
+    if (R.REAL_IS_SORTED(descending.get()) != R.SORTED_DECR) return R.Rf_ScalarReal(0.0);
+
+    real_data = .{ R.NA_REAL(), std.math.nan(f64), 3.0 };
+    var missing_real = protect.scoped(MyAlt.init(real_data[0..]));
+    defer missing_real.deinit();
+    if (R.ISNA(R.REAL(evalSummary("sum", missing_real.get(), false))[0]) == 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("sum", missing_real.get(), true))[0] != 3.0) return R.Rf_ScalarReal(0.0);
+    if (R.ISNA(R.REAL(evalSummary("min", missing_real.get(), false))[0]) == 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", missing_real.get(), true))[0] != 3.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL_IS_SORTED(missing_real.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+
+    var int_data = [_]i32{ 4, R.R_NaInt, 3 };
+    var missing_int = protect.scoped(MyAltInt.init(int_data[0..]));
+    defer missing_int.deinit();
+    if (R.INTEGER(evalSummary("sum", missing_int.get(), false))[0] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(evalSummary("sum", missing_int.get(), true))[0] != 7) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(evalSummary("max", missing_int.get(), true))[0] != 4) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER_IS_SORTED(missing_int.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+
+    const no_reals = [_]f64{};
+    var empty_real = protect.scoped(MyAlt.init(no_reals[0..]));
+    defer empty_real.deinit();
+    if (R.REAL(evalSummary("sum", empty_real.get(), false))[0] != 0.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", empty_real.get(), false))[0] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("max", empty_real.get(), false))[0] != -std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+
+    const large_ints = [_]i32{ std.math.maxInt(i32), 1 };
+    var large_int = protect.scoped(MyAltInt.init(large_ints[0..]));
+    defer large_int.deinit();
+    const large_sum = evalSummary("sum", large_int.get(), false);
+    if (R.TYPEOF(large_sum) != R.REALSXP or R.REAL(large_sum)[0] != 2147483648.0) return R.Rf_ScalarReal(0.0);
+
+    const only_na = [_]i32{R.R_NaInt};
+    var empty_after_rm = protect.scoped(MyAltInt.init(only_na[0..]));
+    defer empty_after_rm.deinit();
+    const empty_min = evalSummary("min", empty_after_rm.get(), true);
+    if (R.TYPEOF(empty_min) != R.REALSXP or R.REAL(empty_min)[0] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+
+    var real_lanes = [_]f64{ 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0 };
+    real_lanes[3] = R.NA_REAL();
+    var real_simd = protect.scoped(MyAlt.init(real_lanes[0..]));
+    defer real_simd.deinit();
+    if (R.ISNA(R.REAL(evalSummary("max", real_simd.get(), false))[0]) == 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", real_simd.get(), true))[0] != 1.0) return R.Rf_ScalarReal(0.0);
+
+    const int_lanes = [_]i32{ 8, 7, 6, R.R_NaInt, 4, 3, 2, 1 };
+    var int_simd = protect.scoped(MyAltInt.init(int_lanes[0..]));
+    defer int_simd.deinit();
+    if (R.INTEGER(evalSummary("min", int_simd.get(), false))[0] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(evalSummary("max", int_simd.get(), true))[0] != 8) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
 const StringCleanupState = struct {
     allocations: usize = 0,
     frees: usize = 0,
@@ -1517,6 +1881,42 @@ export fn zigr_test_attrib_allocation_longjmp() SEXP {
 
     attribute_cleanup_object = null;
     attribute_cleanup_symbol = null;
+    if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var dataframe_cleanup_object: SEXP = null;
+
+fn dataframeNamesThenError() SEXP {
+    const wrapped = df.DataFrame.wrap(dataframe_cleanup_object) orelse return R.R_NilValue;
+    _ = wrapped.columnNames(StringCleanupAllocator.allocator()) catch return R.R_NilValue;
+    R.Rf_error("data-frame names unexpectedly returned");
+}
+
+export fn zigr_test_df_names_longjmp() SEXP {
+    const values = [_]f64{1.0};
+    var column = protect.scoped(@as(SEXP, @ptrCast(zigr_convert.fromRealSlice(values[0..]))));
+    defer column.deinit();
+    const names = [_][]const u8{"value"};
+    const columns = [_]SEXP{column.get()};
+    var frame = protect.scoped(df.buildChecked(names[0..], columns[0..]) catch return R.Rf_ScalarReal(0.0));
+    defer frame.deinit();
+    var error_names = protect.scoped(stringErrorAltString());
+    defer error_names.deinit();
+    _ = R.Rf_setAttrib(frame.get(), R.R_NamesSymbol, error_names.get());
+
+    dataframe_cleanup_object = frame.get();
+    string_cleanup_state = .{};
+    string_cleanup_elt_calls = 0;
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return cleanup.protectCall(dataframeNamesThenError);
+        }
+    }.call)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+
+    dataframe_cleanup_object = null;
     if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }

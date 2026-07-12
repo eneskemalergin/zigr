@@ -53,10 +53,25 @@ fn Wrap(comptime kind: AltKind) type {
 
 fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
     const W = Wrap(kind);
-    // R finalizes this after the original call, outside R's checked heap.
+    const values = std.heap.c_allocator.dupe(ElemType(kind), slice) catch
+        err.signal("out of memory during ALTREP creation");
+    const PendingValues = struct {
+        values: []ElemType(kind),
+
+        fn fire(self: *@This()) void {
+            std.heap.c_allocator.free(self.values);
+        }
+    };
+    _ = cleanup.pushFrameInline(PendingValues, .{ .values = values }, PendingValues.fire);
     const w = std.heap.c_allocator.create(W) catch err.signal("out of memory during ALTREP creation");
-    w.* = .{ .ptr = slice.ptr, .len = slice.len };
+    w.* = .{ .ptr = values.ptr, .len = values.len };
+    cleanup.popFrame();
     return w;
+}
+
+fn destroyWrap(comptime kind: AltKind, wrap: *Wrap(kind)) void {
+    std.heap.c_allocator.free(wrap.ptr[0..wrap.len]);
+    std.heap.c_allocator.destroy(wrap);
 }
 
 fn wrapFromData1(comptime kind: AltKind, sexp: R.SEXP) *Wrap(kind) {
@@ -72,7 +87,7 @@ fn freeWrapImpl(comptime kind: AltKind, sexp: R.SEXP) void {
     const raw = R.R_ExternalPtrAddr(sexp) orelse return;
     R.R_ClearExternalPtr(sexp);
     const wrap: *Wrap(kind) = @ptrCast(@alignCast(raw));
-    std.heap.c_allocator.destroy(wrap);
+    destroyWrap(kind, wrap);
 }
 
 fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
@@ -81,7 +96,6 @@ fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
 
 fn dataptrImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) ?*anyopaque {
     const w = wrapFromAltrep(kind, x);
-    // The class exclusively owns its backing storage, so no copy-on-write is needed.
     return @as(?*anyopaque, @ptrCast(@constCast(w.ptr)));
 }
 
@@ -126,11 +140,15 @@ fn getRegionImpl(comptime kind: AltKind, x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t
 }
 
 fn isSortedNumeric(comptime T: type, slice: []const T) c_int {
-    if (slice.len <= 1) return 1;
+    if (slice.len <= 1) return R.SORTED_INCR;
+    var increasing = true;
+    var decreasing = true;
     for (0..slice.len - 1) |i| {
-        if (slice[i] > slice[i + 1]) return 0;
+        if (slice[i] > slice[i + 1]) increasing = false;
+        if (slice[i] < slice[i + 1]) decreasing = false;
+        if (!increasing and !decreasing) return R.KNOWN_UNSORTED;
     }
-    return 1;
+    return if (increasing) R.SORTED_INCR else R.SORTED_DECR;
 }
 
 fn noNAMethodImpl(comptime kind: AltKind, x: R.SEXP) c_int {
@@ -160,11 +178,12 @@ fn noNAMethodImpl(comptime kind: AltKind, x: R.SEXP) c_int {
 
 fn isSortedMethodImpl(comptime kind: AltKind, x: R.SEXP) c_int {
     const w = wrapFromAltrep(kind, x);
+    if (noNAMethodImpl(kind, x) == 0) return R.UNKNOWN_SORTEDNESS;
     return switch (kind) {
         .real => isSortedNumeric(f64, w.ptr[0..w.len]),
         .integer, .logical => isSortedNumeric(i32, w.ptr[0..w.len]),
         .raw => isSortedNumeric(u8, w.ptr[0..w.len]),
-        .complex => 0,
+        .complex => R.UNKNOWN_SORTEDNESS,
     };
 }
 
@@ -184,7 +203,7 @@ fn rawElt(x: R.SEXP, i: R.R_xlen_t) callconv(.c) R.Rbyte {
     return wrapFromAltrep(.raw, x).ptr[@as(usize, @intCast(i))];
 }
 
-fn realSum(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn realSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
     const n = w.len;
     if (n == 0) return R.Rf_ScalarReal(0.0);
@@ -192,19 +211,47 @@ fn realSum(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     const V = simd.f64_lanes;
     var i: usize = 0;
     var vec: @Vector(V, f64) = @splat(0.0);
+    var nan_seen = false;
     while (i + V <= n) : (i += V) {
         const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
-        vec += chunk;
+        const valid = chunk == chunk;
+        if (!@reduce(.And, valid) and na_rm == 0) {
+            inline for (0..V) |lane| {
+                if (!valid[lane]) {
+                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
+                    nan_seen = true;
+                }
+            }
+        }
+        vec += @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(0.0)));
     }
     var total = @reduce(.Add, vec);
-    for (i..n) |j| total += ptr[j];
+    for (i..n) |j| {
+        if (R.ISNA(ptr[j]) != 0) {
+            if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
+            continue;
+        }
+        if (R.ISNAN(ptr[j])) {
+            if (na_rm == 0) nan_seen = true;
+            continue;
+        }
+        total += ptr[j];
+    }
+    if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
     return R.Rf_ScalarReal(total);
 }
 
-fn integerSum(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn integerSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
     var total: i64 = 0;
-    for (w.ptr[0..w.len]) |value| total += value;
+    for (w.ptr[0..w.len]) |value| {
+        if (value == R.R_NaInt) {
+            if (na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
+            continue;
+        }
+        total += value;
+    }
+    if (total >= std.math.minInt(i32) and total <= std.math.maxInt(i32)) return R.Rf_ScalarInteger(@intCast(total));
     return R.Rf_ScalarReal(@floatFromInt(total));
 }
 
@@ -218,83 +265,134 @@ fn logicalSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
         }
         if (value != 0) total += 1;
     }
+    if (total <= std.math.maxInt(i32)) return R.Rf_ScalarInteger(@intCast(total));
     return R.Rf_ScalarReal(@floatFromInt(total));
 }
 
-fn realMin(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn realMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
-    const n = w.len;
-    if (n == 0) return R.Rf_ScalarReal(std.math.inf(f64));
-    const ptr = w.ptr;
     const V = simd.f64_lanes;
+    var lanes: @Vector(V, f64) = @splat(std.math.inf(f64));
+    var nan_seen = false;
     var i: usize = 0;
-    var vec: @Vector(V, f64) = @splat(std.math.inf(f64));
-    while (i + V <= n) : (i += V) {
-        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
-        vec = @select(f64, chunk < vec, chunk, vec);
+    while (i + V <= w.len) : (i += V) {
+        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(w.ptr + i)).*);
+        const valid = chunk == chunk;
+        if (!@reduce(.And, valid) and na_rm == 0) {
+            inline for (0..V) |lane| {
+                if (!valid[lane]) {
+                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
+                    nan_seen = true;
+                }
+            }
+        }
+        const clean = @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(std.math.inf(f64))));
+        lanes = @select(f64, clean < lanes, clean, lanes);
     }
-    var val = @reduce(.Min, vec);
-    for (i..n) |j| {
-        if (ptr[j] < val) val = ptr[j];
+    var value = @reduce(.Min, lanes);
+    for (w.ptr[i..w.len]) |item| {
+        if (R.ISNA(item) != 0) {
+            if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
+            continue;
+        }
+        if (R.ISNAN(item)) {
+            if (na_rm == 0) nan_seen = true;
+            continue;
+        }
+        if (item < value) value = item;
     }
-    return R.Rf_ScalarReal(val);
+    if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
+    return R.Rf_ScalarReal(value);
 }
 
-fn realMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn realMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
-    const n = w.len;
-    if (n == 0) return R.Rf_ScalarReal(-std.math.inf(f64));
-    const ptr = w.ptr;
     const V = simd.f64_lanes;
+    var lanes: @Vector(V, f64) = @splat(-std.math.inf(f64));
+    var nan_seen = false;
     var i: usize = 0;
-    var vec: @Vector(V, f64) = @splat(-std.math.inf(f64));
-    while (i + V <= n) : (i += V) {
-        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
-        vec = @select(f64, chunk > vec, chunk, vec);
+    while (i + V <= w.len) : (i += V) {
+        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(w.ptr + i)).*);
+        const valid = chunk == chunk;
+        if (!@reduce(.And, valid) and na_rm == 0) {
+            inline for (0..V) |lane| {
+                if (!valid[lane]) {
+                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
+                    nan_seen = true;
+                }
+            }
+        }
+        const clean = @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(-std.math.inf(f64))));
+        lanes = @select(f64, clean > lanes, clean, lanes);
     }
-    var val = @reduce(.Max, vec);
-    for (i..n) |j| {
-        if (ptr[j] > val) val = ptr[j];
+    var value = @reduce(.Max, lanes);
+    for (w.ptr[i..w.len]) |item| {
+        if (R.ISNA(item) != 0) {
+            if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
+            continue;
+        }
+        if (R.ISNAN(item)) {
+            if (na_rm == 0) nan_seen = true;
+            continue;
+        }
+        if (item > value) value = item;
     }
-    return R.Rf_ScalarReal(val);
+    if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
+    return R.Rf_ScalarReal(value);
 }
 
-fn integerMin(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn integerMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
-    const n = w.len;
-    if (n == 0) return R.Rf_ScalarInteger(std.math.maxInt(i32));
-    const ptr = w.ptr;
     const V = simd.i32_lanes;
+    var lanes: @Vector(V, i32) = @splat(std.math.maxInt(i32));
+    var found = false;
     var i: usize = 0;
-    var vec: @Vector(V, i32) = @splat(std.math.maxInt(i32));
-    while (i + V <= n) : (i += V) {
-        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(ptr + i)).*);
-        vec = @select(i32, chunk < vec, chunk, vec);
+    while (i + V <= w.len) : (i += V) {
+        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(w.ptr + i)).*);
+        const valid = chunk != @as(@Vector(V, i32), @splat(R.R_NaInt));
+        if (!@reduce(.And, valid) and na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
+        found = found or @reduce(.Or, valid);
+        const clean = @select(i32, valid, chunk, @as(@Vector(V, i32), @splat(std.math.maxInt(i32))));
+        lanes = @select(i32, clean < lanes, clean, lanes);
     }
-    var val = @reduce(.Min, vec);
-    for (i..n) |j| {
-        if (ptr[j] < val) val = ptr[j];
+    var value = @reduce(.Min, lanes);
+    for (w.ptr[i..w.len]) |item| {
+        if (item == R.R_NaInt) {
+            if (na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
+            continue;
+        }
+        found = true;
+        if (item < value) value = item;
     }
-    return R.Rf_ScalarInteger(val);
+    if (!found) return R.Rf_ScalarReal(std.math.inf(f64));
+    return R.Rf_ScalarInteger(value);
 }
 
-fn integerMax(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
+fn integerMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
-    const n = w.len;
-    if (n == 0) return R.Rf_ScalarInteger(std.math.minInt(i32));
-    const ptr = w.ptr;
     const V = simd.i32_lanes;
+    var lanes: @Vector(V, i32) = @splat(std.math.minInt(i32) + 1);
+    var found = false;
     var i: usize = 0;
-    var vec: @Vector(V, i32) = @splat(std.math.minInt(i32));
-    while (i + V <= n) : (i += V) {
-        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(ptr + i)).*);
-        vec = @select(i32, chunk > vec, chunk, vec);
+    while (i + V <= w.len) : (i += V) {
+        const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(w.ptr + i)).*);
+        const valid = chunk != @as(@Vector(V, i32), @splat(R.R_NaInt));
+        if (!@reduce(.And, valid) and na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
+        found = found or @reduce(.Or, valid);
+        const clean = @select(i32, valid, chunk, @as(@Vector(V, i32), @splat(std.math.minInt(i32) + 1)));
+        lanes = @select(i32, clean > lanes, clean, lanes);
     }
-    var val = @reduce(.Max, vec);
-    for (i..n) |j| {
-        if (ptr[j] > val) val = ptr[j];
+    var value = @reduce(.Max, lanes);
+    for (w.ptr[i..w.len]) |item| {
+        if (item == R.R_NaInt) {
+            if (na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
+            continue;
+        }
+        found = true;
+        if (item > value) value = item;
     }
-    return R.Rf_ScalarInteger(val);
+    if (!found) return R.Rf_ScalarReal(-std.math.inf(f64));
+    return R.Rf_ScalarInteger(value);
 }
 
 fn buildClass(comptime kind: AltKind, comptime pkg: []const u8, comptime name: []const u8, info: anytype) R.R_altrep_class_t {
@@ -419,7 +517,7 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             registered = true;
         }
 
-        /// The pending guard keeps native data alive until R owns its finalizer.
+        /// Copies `slice`; the returned SEXP is unprotected and owns the copy through its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
             if (!registered) {
                 class = buildClass(kind, pkg, name, null);
@@ -432,9 +530,8 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                 data1: ?R.SEXP = null,
 
                 fn fire(self: *@This()) void {
-                    // Clear first so a later GC cannot free the wrapper twice.
                     if (self.data1) |d1| R.R_ClearExternalPtr(d1);
-                    std.heap.c_allocator.destroy(self.wrap);
+                    destroyWrap(kind, self.wrap);
                 }
             };
             const pending = cleanup.pushFrameInline(Pending, .{ .wrap = w }, Pending.fire);
@@ -474,83 +571,32 @@ pub fn AltComplex(comptime pkg: []const u8, comptime name: []const u8) type {
     return OwnedAltVector(.complex, pkg, name);
 }
 
-const StringWrap = struct {
-    ptr: [*]const R.SEXP,
-    len: usize,
-};
-
-fn destroyStringWrap(wrap: *StringWrap) void {
-    std.heap.c_allocator.free(wrap.ptr[0..wrap.len]);
-    std.heap.c_allocator.destroy(wrap);
-}
-
-fn makeStringWrap(slice: []const []const u8) *StringWrap {
-    const values = std.heap.c_allocator.alloc(R.SEXP, slice.len) catch err.signal("out of memory during ALTREP string creation");
-    const PendingValues = struct {
-        values: []R.SEXP,
-
-        fn fire(self: *@This()) void {
-            std.heap.c_allocator.free(self.values);
-        }
-    };
-    _ = cleanup.pushFrameInline(PendingValues, .{ .values = values }, PendingValues.fire);
-    for (slice, 0..) |item, index| {
-        values[index] = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
-    }
-
-    const wrap = std.heap.c_allocator.create(StringWrap) catch err.signal("out of memory during ALTREP string creation");
-    wrap.* = .{ .ptr = values.ptr, .len = values.len };
-    // The wrapper owns `values` after this point.
-    cleanup.popFrame();
-    return wrap;
-}
-
-fn stringWrapFromData1(sexp: R.SEXP) *StringWrap {
-    const raw = R.R_ExternalPtrAddr(sexp) orelse @panic("null ALTREP string data pointer");
-    return @ptrCast(@alignCast(raw));
-}
-
-fn stringWrapFromAltrep(x: R.SEXP) *StringWrap {
-    return stringWrapFromData1(R.R_altrep_data1(x));
-}
-
-fn freeStringWrap(sexp: R.SEXP) void {
-    const raw = R.R_ExternalPtrAddr(sexp) orelse return;
-    R.R_ClearExternalPtr(sexp);
-    destroyStringWrap(@ptrCast(@alignCast(raw)));
+fn stringValues(x: R.SEXP) R.SEXP {
+    return R.R_altrep_data1(x);
 }
 
 fn stringElt(x: R.SEXP, i: R.R_xlen_t) callconv(.c) R.SEXP {
-    return stringWrapFromAltrep(x).ptr[@as(usize, @intCast(i))];
+    return R.STRING_ELT(stringValues(x), i);
 }
 
 fn stringIsSorted(x: R.SEXP) callconv(.c) c_int {
-    const wrap = stringWrapFromAltrep(x);
-    if (wrap.len <= 1) return 1;
-    for (0..wrap.len - 1) |i| {
-        const lhs = std.mem.sliceTo(R.Rf_translateCharUTF8(wrap.ptr[i]), 0);
-        const rhs = std.mem.sliceTo(R.Rf_translateCharUTF8(wrap.ptr[i + 1]), 0);
-        if (std.mem.order(u8, lhs, rhs) == .gt) return 0;
-    }
-    return 1;
+    const values = stringValues(x);
+    const len = @as(usize, @intCast(R.XLENGTH(values)));
+    if (len <= 1 and stringNoNA(x) != 0) return R.SORTED_INCR;
+    return R.UNKNOWN_SORTEDNESS;
 }
 
 fn stringNoNA(x: R.SEXP) callconv(.c) c_int {
-    const wrap = stringWrapFromAltrep(x);
-    for (wrap.ptr[0..wrap.len]) |value| {
-        if (value == R.R_NaString) return 0;
+    const values = stringValues(x);
+    const len = @as(usize, @intCast(R.XLENGTH(values)));
+    for (0..len) |i| {
+        if (R.STRING_ELT(values, @intCast(i)) == R.R_NaString) return 0;
     }
     return 1;
 }
 
 fn duplicateString(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
-    const wrap = stringWrapFromAltrep(x);
-    const dup = R.Rf_protect(R.Rf_allocVector(R.STRSXP, @intCast(wrap.len)));
-    defer R.Rf_unprotect(1);
-    for (0..wrap.len) |i| {
-        R.SET_STRING_ELT(dup, @intCast(i), wrap.ptr[i]);
-    }
-    return dup;
+    return R.Rf_duplicate(stringValues(x));
 }
 
 pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
@@ -562,12 +608,11 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             const cls = R.R_make_altstring_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info);
             R.R_set_altrep_Length_method(cls, struct {
                 fn f(x: R.SEXP) callconv(.c) R.R_xlen_t {
-                    return @intCast(stringWrapFromAltrep(x).len);
+                    return R.XLENGTH(stringValues(x));
                 }
             }.f);
             R.R_set_altrep_Duplicate_method(cls, duplicateString);
             R.R_set_altstring_Elt_method(cls, stringElt);
-            // R strings are SEXP arrays, not a flat buffer with DATAPTR hooks.
             R.R_set_altstring_Is_sorted_method(cls, stringIsSorted);
             R.R_set_altstring_No_NA_method(cls, stringNoNA);
             return cls;
@@ -578,35 +623,20 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             registered = true;
         }
 
-        /// The pending guard keeps native data alive until R owns its finalizer.
+        /// Copies UTF-8 bytes into R strings; the returned SEXP is unprotected.
         pub fn init(slice: []const []const u8) R.SEXP {
             if (!registered) {
                 class = buildStringClass(null);
                 registered = true;
             }
 
-            const wrap = makeStringWrap(slice);
-            const Pending = struct {
-                wrap: *StringWrap,
-                data1: ?R.SEXP = null,
-
-                fn fire(self: *@This()) void {
-                    if (self.data1) |d1| R.R_ClearExternalPtr(d1);
-                    destroyStringWrap(self.wrap);
-                }
-            };
-            const pending = cleanup.pushFrameInline(Pending, .{ .wrap = wrap }, Pending.fire);
-            var d1 = protect.scoped(R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(wrap)), R.Rf_install("zigr_altstring_slice_wrap"), R.R_NilValue));
-            defer d1.deinit();
-            pending.data1 = d1.get();
-            R.R_RegisterCFinalizerEx(d1.get(), struct {
-                fn f(sexp: R.SEXP) callconv(.c) void {
-                    freeStringWrap(sexp);
-                }
-            }.f, 1);
-            const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
-            cleanup.popFrame();
-            return result;
+            var values = protect.scoped(R.Rf_allocVector(R.STRSXP, @intCast(slice.len)));
+            defer values.deinit();
+            for (slice, 0..) |item, index| {
+                const charsxp = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
+                R.SET_STRING_ELT(values.get(), @intCast(index), charsxp);
+            }
+            return R.R_new_altrep(class, values.get(), R.R_NilValue);
         }
     };
 }

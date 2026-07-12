@@ -78,6 +78,8 @@ tests <- list(
   "zigr_test_rev_lang3",
   "zigr_test_symbol_contract",
   "zigr_test_eval_contract",
+  "zigr_test_language_call_contract",
+  "zigr_test_language_call_longjmp",
 
   "zigr_test_rng",
 
@@ -104,11 +106,16 @@ tests <- list(
 
   "zigr_test_df_build",
   "zigr_test_df_column",
+  "zigr_test_df_contract",
+  "zigr_test_factor_contract",
+  "zigr_test_s4_contract",
+  "zigr_test_s4_longjmp",
 
   "zigr_test_attrib_class",
   "zigr_test_attrib_names",
   "zigr_test_attrib_contract",
   "zigr_test_attrib_allocation_longjmp",
+  "zigr_test_df_names_longjmp",
 
   "zigr_test_altrep_create",
   "zigr_test_altrep_sum_simd",
@@ -138,6 +145,8 @@ tests <- list(
   "zigr_test_altstring_create",
   "zigr_test_string_representations",
   "zigr_test_altstring_inputs",
+  "zigr_test_altrep_owned_storage",
+  "zigr_test_altrep_summary_contract",
   "zigr_test_borrowed_views",
   "zigr_test_compact_altrep_views",
   "zigr_test_short_region",

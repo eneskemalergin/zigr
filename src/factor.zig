@@ -1,105 +1,79 @@
-//! Factor construction.
+//! Factor construction using R's string matching and collation rules.
 //!
-//! ALTREP input uses R element access because its backing pointer may be absent.
+//! ALTREP input is copied to an ordinary string vector before R sorts and matches it.
 
 const std = @import("std");
 const R = @import("R");
-const sexp = @import("sexp.zig");
+const protect = @import("protect.zig");
 
-const max_levels = 1024;
+pub const FactorError = error{
+    WrongType,
+    TooLong,
+};
 
-/// Uses R's default alphabetical level order.
+pub fn asFactorChecked(vec: R.SEXP) FactorError!R.SEXP {
+    if (vec == null or R.TYPEOF(vec) != R.STRSXP) return error.WrongType;
+
+    var input = protect.scoped(vec);
+    defer input.deinit();
+
+    const len = R.XLENGTH(input.get());
+    if (len < 0 or len > std.math.maxInt(c_int)) return error.TooLong;
+    const n: c_int = @intCast(len);
+
+    var working = protect.scoped(if (R.ALTREP(input.get()) != 0) R.Rf_allocVector(R.STRSXP, len) else input.get());
+    defer working.deinit();
+    if (R.ALTREP(input.get()) != 0) {
+        for (0..@as(usize, @intCast(n))) |i| {
+            R.SET_STRING_ELT(working.get(), @intCast(i), R.STRING_ELT(input.get(), @intCast(i)));
+        }
+    }
+
+    var first = protect.scoped(R.Rf_match(working.get(), working.get(), 0));
+    defer first.deinit();
+
+    const first_ptr: [*]const c_int = @ptrCast(R.INTEGER(first.get()));
+    var level_count: R.R_xlen_t = 0;
+    for (0..@as(usize, @intCast(n))) |i| {
+        if (R.STRING_ELT(working.get(), @intCast(i)) == R.R_NaString) continue;
+        if (first_ptr[i] == @as(c_int, @intCast(i + 1))) level_count += 1;
+    }
+
+    var unique = protect.scoped(R.Rf_allocVector(R.STRSXP, level_count));
+    defer unique.deinit();
+    var level_index: R.R_xlen_t = 0;
+    for (0..@as(usize, @intCast(n))) |i| {
+        const value = R.STRING_ELT(working.get(), @intCast(i));
+        if (value == R.R_NaString) continue;
+        if (first_ptr[i] != @as(c_int, @intCast(i + 1))) continue;
+        R.SET_STRING_ELT(unique.get(), level_index, value);
+        level_index += 1;
+    }
+
+    var order = protect.scoped(R.Rf_allocVector(R.INTSXP, level_count));
+    defer order.deinit();
+    const order_ptr: [*]c_int = @ptrCast(R.INTEGER(order.get()));
+    for (0..@as(usize, @intCast(level_count))) |i| order_ptr[i] = @intCast(i);
+    if (level_count > 1) R.R_orderVector1(order_ptr, @intCast(level_count), unique.get(), @as(R.Rboolean, 1), @as(R.Rboolean, 0));
+
+    var levels = protect.scoped(R.Rf_allocVector(R.STRSXP, level_count));
+    defer levels.deinit();
+    for (0..@as(usize, @intCast(level_count))) |i| {
+        R.SET_STRING_ELT(levels.get(), @intCast(i), R.STRING_ELT(unique.get(), order_ptr[i]));
+    }
+
+    var codes = protect.scoped(R.Rf_match(levels.get(), working.get(), R.R_NaInt));
+    defer codes.deinit();
+    _ = R.Rf_setAttrib(codes.get(), R.R_LevelsSymbol, levels.get());
+
+    var class = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
+    defer class.deinit();
+    R.SET_STRING_ELT(class.get(), 0, R.Rf_mkChar("factor"));
+    _ = R.Rf_setAttrib(codes.get(), R.R_ClassSymbol, class.get());
+
+    return codes.get();
+}
+
 pub fn asFactor(vec: R.SEXP) R.SEXP {
-    if (vec == null) return R.R_NilValue;
-    if (sexp.typeTag(vec) != 16) return R.R_NilValue; // STRSXP = 16
-
-    const is_alt = R.ALTREP(vec) != 0;
-    const n_raw: R.R_xlen_t = if (is_alt) R.XLENGTH(vec) else sexp.fastLength(vec);
-    if (n_raw < 0) return R.R_NilValue;
-    const n = @as(usize, @intCast(n_raw));
-
-    const getElt = struct {
-        fn at(v: R.SEXP, i: usize, alt: bool) R.SEXP {
-            return if (alt) R.STRING_ELT(v, @intCast(i)) else sexp.fastVectorElt(v, @intCast(i));
-        }
-    }.at;
-
-    var level_ptrs: [max_levels]R.SEXP = undefined;
-    var level_count: u32 = 0;
-
-    for (0..n) |i| {
-        const elt = getElt(vec, i, is_alt);
-        if (elt == null or elt == R.R_NaString) continue;
-
-        // R interns CHARSXPs, so pointer equality is valid.
-        var found = false;
-        for (0..level_count) |j| {
-            if (level_ptrs[j] == elt) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            if (level_count >= max_levels) return R.R_NilValue;
-            level_ptrs[level_count] = elt;
-            level_count += 1;
-        }
-    }
-
-    if (level_count > 1) {
-        var i: usize = 0;
-        while (i < level_count - 1) {
-            var swapped = false;
-            var j: usize = 0;
-            while (j < level_count - 1 - i) {
-                const c1 = level_ptrs[j];
-                const c2 = level_ptrs[j + 1];
-                const a_slice = sexp.charsxpBytes(c1);
-                const b_slice = sexp.charsxpBytes(c2);
-                const order = std.mem.order(u8, a_slice, b_slice);
-                if (order == .gt) {
-                    level_ptrs[j] = c2;
-                    level_ptrs[j + 1] = c1;
-                    swapped = true;
-                }
-                j += 1;
-            }
-            if (!swapped) break;
-            i += 1;
-        }
-    }
-
-    const codes = R.Rf_protect(R.Rf_allocVector(R.INTSXP, @intCast(n)));
-    defer R.Rf_unprotect(1);
-    const codes_ptr: [*]c_int = @ptrCast(R.INTEGER(codes));
-
-    for (0..n) |i| {
-        const elt = getElt(vec, i, is_alt);
-        if (elt == null or elt == R.R_NaString) {
-            codes_ptr[i] = R.R_NaInt;
-            continue;
-        }
-        var code: c_int = R.R_NaInt;
-        for (0..level_count) |j| {
-            if (level_ptrs[j] == elt) {
-                code = @as(c_int, @intCast(j + 1));
-                break;
-            }
-        }
-        codes_ptr[i] = code;
-    }
-
-    const class = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
-    R.SET_STRING_ELT(class, 0, R.Rf_mkChar("factor"));
-    _ = R.Rf_setAttrib(codes, R.R_ClassSymbol, class);
-    R.Rf_unprotect(1);
-
-    const lvls = R.Rf_protect(R.Rf_allocVector(R.STRSXP, @intCast(level_count)));
-    for (0..level_count) |j| {
-        R.SET_STRING_ELT(lvls, @intCast(j), level_ptrs[j]);
-    }
-    _ = R.Rf_setAttrib(codes, R.R_LevelsSymbol, lvls);
-    R.Rf_unprotect(1);
-
-    return codes;
+    return asFactorChecked(vec) catch R.R_NilValue;
 }

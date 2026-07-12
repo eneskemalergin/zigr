@@ -74,7 +74,7 @@ Rscript tests/run_r_tests.R  # build and run the live R runtime suite
 - Type conversion (real, int, string, logical, raw, complex)
 - Explicit borrowed-or-owned export views for numeric and complex inputs, plus a header-free read-only string view via `convert.StringSliceView`
 - SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
-- ALTREP consumption and creation (real, integer, logical classes)
+- ALTREP consumption and owned creation for real, integer, logical, raw, complex, and string vectors
 - Data frames, attributes, S4 objects, external pointers, weak references
 - R code evaluation (`rCodeEval`, `rRawEval`)
 - Condition handling (`tryCatch`, `tryCatchError`)
@@ -97,9 +97,12 @@ Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R erro
 The core service layer stays close to the R C API:
 
 - `attrib` provides checked string attributes and allocating setters over `Rf_getAttrib`, `Rf_setAttrib`, `Rf_namesgets`, `Rf_classgets`, and `Rf_dimgets`. Returned header arrays are caller-freed; their string bytes remain R-owned. `getString` maps `NA` to empty, while `getOptionalString` preserves it as `null`. R allocation and ALTREP access can longjmp, so native cleanup needs an outer unwind boundary.
+- `dataframe.buildChecked` validates column counts, equal row lengths, names, and compact row-name limits before allocating. It shares the supplied columns instead of copying them, so callers keep those columns reachable during construction and follow R copy-on-write rules afterward. The result is unprotected.
+- `factor.asFactorChecked` uses R's string matching and locale collation, preserves `NA`, and returns an independent integer factor. Inputs longer than the integer-code limit are rejected. ALTREP strings are copied once to an ordinary working vector because R's order and match routines require direct string storage. The result is unprotected.
+- `s4.newObjectChecked` resolves a registered class through R's methods registry and creates an object from its prototype. It does not run `initialize` or validity methods. Checked slot access distinguishes non-S4 objects and missing slots; slot assignment returns the possibly replaced object. Results are unprotected, and class lookup or raw slot operations can longjmp.
 - `symbols.install` wraps `Rf_install` with a fixed 64-entry thread-local cache. R owns and roots each symbol for the session, so callers do not protect it. Installation can longjmp. Names containing NUL or longer than 255 bytes become R errors instead of being truncated.
-- `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. Constructed calls are returned unprotected, so protect them before another R allocation.
-- `eval` wraps lookup, call evaluation, `R_tryEval`, and `R_tryEvalSilent`. Results are borrowed, unprotected `SEXP` values. Evaluation can longjmp; use a generated entry point or another unwind boundary when native cleanup is live.
+- `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. `Argument` adds explicit R argument tags, while checked builders reject null pointers and invalid tag names before allocating. Inputs stay caller-rooted during construction. Constructed calls are returned unprotected.
+- `eval` wraps lookup, positional and tagged calls, `R_tryEval`, and `R_tryEvalSilent`. `callIn`, `callFunctionIn`, and `callTaggedIn` make the evaluation environment explicit; the shorter `call` helper uses `R_GlobalEnv`. Results are borrowed, unprotected `SEXP` values. Function lookup and evaluation can longjmp, so use a generated entry point or another unwind boundary when native cleanup is live.
 - `interrupt` is a thin wrapper over `R_CheckUserInterrupt`, `R_CheckStack`, and `R_CheckStack2`. These checks can longjmp and do not create their own unwind boundary.
 - `memory.CountingAllocator` wraps an allocator when you need allocation diagnostics. Its counts include only successful operations made through that wrapper; they do not include R heap objects or unrelated libc allocation. Keep it out of the allocator passed to timed code unless allocator overhead is the workload.
 
@@ -228,7 +231,7 @@ macOS and Windows builds use `continue-on-error`. Native cross-compilation from 
 Results against 5 other backends (C, Rcpp, extendr, savvy, R) are in `benchmarks/README.md`.
 
 - The published canonical baseline covers 36 comparable tasks: zigr is `0.212x` versus R by geomedian (`0.263x` by median), and `1.082x` versus the best native runner by geomedian (`1.003x` by median), with 17 aggregate wins or ties. These are handwritten/direct-entry results; generated API cost is measured separately. SIMD is the main reason: `@Vector(8, f64)` costs nothing to write and the compiler handles ISA dispatch.
-- ALTREP method delegation (Sum, Min, Max as O(1) callbacks) means R never materializes zigr-backed vectors. This is not a speed win. It is a design win: R asks for the sum, zigr returns it without iterating.
+- ALTREP summary callbacks read owned native storage without materializing an R vector. They still iterate over the values.
 - String ops are slower because each `CHAR()` call produces a new Zig slice header. The header-free `StringSliceView` avoids those Zig headers but requires adapter code in export functions; R encoding translation may still use call-scoped storage.
 
 ## Philosophy
