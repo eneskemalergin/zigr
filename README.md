@@ -105,6 +105,14 @@ The core service layer stays close to the R C API:
 
 Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conversion layer does not cover an R object. They add no ownership or type guarantee.
 
+### SEXP ABI selection
+
+`sexp.active_abi_contract` selects one access policy at compile time. Little-endian 64-bit targets built with R 4.x headers use the named `r4_64` layout contract. Other pointer widths, byte orders, and R major versions use `checked_r_api`, which routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API.
+
+The direct contract keeps its offsets in one private layout definition. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
+
+The live R suite compares the active path with the checked path on the native R 4.x 64-bit target. A compile-only 32-bit check forces the fallback branch. That proves the fallback compiles; it is not a 32-bit R runtime or cross-target ABI claim.
+
 ### Native-state methods
 
 I keep native state explicit. `generateMethods(T, ...)` accepts a method only when its first parameter is exactly `*T`; both `.Call` and `.External` take that receiver first and validate its R type, per-type tag, typed protected metadata, address, and alignment before casting it.

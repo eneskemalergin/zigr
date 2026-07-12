@@ -65,8 +65,13 @@ pub const ConvertError = error{
     LengthOverflow,
 };
 
+fn hasType(sexp: SEXP, expected: c_uint) bool {
+    const actual = sexp_mod.typeTag(sexp);
+    return @as(c_uint, actual) == expected;
+}
+
 fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertError!void {
-    if (@as(c_uint, sexp_mod.typeTag(sexp)) != expected) return err;
+    if (!hasType(sexp, expected)) return err;
 }
 
 fn expectScalarLength(sexp: SEXP) ConvertError!void {
@@ -100,17 +105,17 @@ pub fn errorMessage(err: anyerror) []const u8 {
 pub fn optionalInputIsNullish(comptime T: type, sexp: SEXP) bool {
     if (sexp == R.R_NilValue) return true;
     if (comptime T == f64) {
-        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.REALSXP and
+        return hasType(sexp, R.REALSXP) and
             R.XLENGTH(sexp) == 1 and
             R.ISNA(R.REAL(sexp)[0]) != 0;
     }
     if (comptime T == i32) {
-        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.INTSXP and
+        return hasType(sexp, R.INTSXP) and
             R.XLENGTH(sexp) == 1 and
             R.INTEGER(sexp)[0] == R.R_NaInt;
     }
     if (comptime T == bool) {
-        return @as(c_uint, sexp_mod.typeTag(sexp)) == R.LGLSXP and
+        return hasType(sexp, R.LGLSXP) and
             R.XLENGTH(sexp) == 1 and
             R.LOGICAL(sexp)[0] == R.R_NaInt;
     }
@@ -737,7 +742,7 @@ fn fixedSchemaFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !
     if (R.R_getAttribCount(sexp) != 1 or !R.R_hasAttrib(sexp, R.R_NamesSymbol)) return error.SchemaAttributes;
 
     const names = R.Rf_getAttrib(sexp, R.R_NamesSymbol);
-    if (sexp_mod.typeTag(names) != @as(u5, @intCast(R.STRSXP)) or R.XLENGTH(names) != R.XLENGTH(sexp)) {
+    if (!hasType(names, R.STRSXP) or R.XLENGTH(names) != R.XLENGTH(sexp)) {
         return error.SchemaNames;
     }
     if (R.R_getAttribCount(names) != 0) return error.SchemaAttributes;

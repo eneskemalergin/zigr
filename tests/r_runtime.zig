@@ -99,6 +99,38 @@ export fn zigr_test_return42() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+export fn zigr_test_abi_contract() SEXP {
+    if (zigr.sexp.fastLength(null) != 0) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.checked.typeTag(null) != -1 or zigr.sexp.checked.dataPtr(null) != null) return R.Rf_ScalarReal(0.0);
+
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.REAL(real)[0] = 1.0;
+    R.REAL(real)[1] = 2.0;
+    R.REAL(real)[2] = 3.0;
+
+    if (zigr.sexp.typeTag(real) != zigr.sexp.checked.typeTag(real)) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.fastLength(real) != zigr.sexp.checked.length(real)) return R.Rf_ScalarReal(0.0);
+    const active_data = zigr.sexp.fastDataPtr(real) orelse return R.Rf_ScalarReal(0.0);
+    const checked_data = zigr.sexp.checked.dataPtr(real) orelse return R.Rf_ScalarReal(0.0);
+    if (active_data != checked_data) return R.Rf_ScalarReal(0.0);
+
+    const strings = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 1));
+    defer R.Rf_unprotect(1);
+    const charsxp = R.Rf_mkCharLenCE("layout", 6, @as(R.cetype_t, @intCast(R.CE_UTF8)));
+    R.SET_STRING_ELT(strings, 0, charsxp);
+
+    if (zigr.sexp.fastVectorElt(strings, 0) != zigr.sexp.checked.vectorElt(strings, 0)) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.checked.vectorElt(strings, 1) != null or zigr.sexp.checked.vectorElt(real, 0) != null) return R.Rf_ScalarReal(0.0);
+    const active_chars = zigr.sexp.fastCharData(charsxp) orelse return R.Rf_ScalarReal(0.0);
+    const checked_chars = zigr.sexp.checked.charData(charsxp) orelse return R.Rf_ScalarReal(0.0);
+    if (active_chars != checked_chars or !std.mem.eql(u8, std.mem.sliceTo(active_chars, 0), "layout")) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.fastGetCharCE(charsxp) != zigr.sexp.checked.getCharCE(charsxp)) return R.Rf_ScalarReal(0.0);
+    if (zigr.sexp.checked.charData(real) != null or zigr.sexp.checked.getCharCE(real) != -1) return R.Rf_ScalarReal(0.0);
+
+    return R.Rf_ScalarReal(1.0);
+}
+
 var longjmp_cleanup_fired: bool = false;
 
 fn markCleanupFired(_: ?*anyopaque) void {

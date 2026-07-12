@@ -57,6 +57,7 @@ dyn.load(so_path)
 tests <- list(
   "zigr_test_protect",
   "zigr_test_return42",
+  "zigr_test_abi_contract",
   list(name="zigr_test_longjmp", expect_error=TRUE),
   "zigr_longjmp_flag",
   "zigr_test_longjmp_normal",

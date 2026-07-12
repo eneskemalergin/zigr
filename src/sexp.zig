@@ -1,58 +1,141 @@
-//! R SEXP classification and guarded fast access.
+//! R SEXP classification and guarded access.
 //!
-//! The fast paths depend on the R 4.x 64-bit ABI. Use R accessors when
-//! ALTREP does not expose direct storage.
+//! `active_abi_contract` selects direct R 4.x 64-bit layout access once at
+//! compile time. Other targets use R's checked API accessors.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const R = @import("R");
 
 pub const SEXP = R.SEXP;
 
 pub const max_symbol_name = 256;
 
-const length_offset = 0x20;
-const dataptr_offset = 0x30;
+/// Compile-time policy for SEXP layout access.
+pub const AbiContract = enum {
+    r4_64,
+    checked_r_api,
+};
 
-pub fn typeTag(sexp: SEXP) u5 {
+const r4_version_min = 4 * 65536;
+const r5_version_min = 5 * 65536;
+
+/// The direct layout is limited to the configuration validated by the runtime suite.
+pub const active_abi_contract: AbiContract = if (@sizeOf(usize) == 8 and
+    builtin.target.cpu.arch.endian() == .little and
+    R.R_VERSION >= r4_version_min and
+    R.R_VERSION < r5_version_min) .r4_64 else .checked_r_api;
+
+/// True when the active build uses the private R 4.x layout.
+pub const uses_direct_layout = active_abi_contract == .r4_64;
+
+const R4_64 = struct {
+    const length_offset = 0x20;
+    const data_offset = 0x30;
+};
+
+/// Explicit R API fallback for callers that cannot assume an internal layout.
+pub const checked = struct {
+    /// Returns `-1` for a null SEXP.
+    pub fn typeTag(sexp: SEXP) c_int {
+        if (sexp == null) return -1;
+        return R.TYPEOF(sexp);
+    }
+
+    /// Returns zero for a null SEXP.
+    pub fn length(sexp: SEXP) R.R_xlen_t {
+        if (sexp == null) return 0;
+        return R.XLENGTH(sexp);
+    }
+
+    /// Returns null for null, non-vector, or unavailable storage.
+    pub fn dataPtr(sexp: SEXP) ?*anyopaque {
+        if (sexp == null or R.Rf_isVector(sexp) == 0) return null;
+        const ptr = R.DATAPTR_OR_NULL(sexp) orelse return null;
+        return @constCast(ptr);
+    }
+
+    /// Returns null for null, wrong-kind, or out-of-bounds input.
+    pub fn vectorElt(sexp: SEXP, index: usize) SEXP {
+        if (sexp == null) return null;
+        const tag = R.TYPEOF(sexp);
+        if (tag != R.STRSXP and tag != R.VECSXP and tag != R.EXPRSXP) return null;
+        if (index >= @as(usize, @intCast(R.XLENGTH(sexp)))) return null;
+        if (tag == R.STRSXP) return R.STRING_ELT(sexp, @intCast(index));
+        return R.VECTOR_ELT(sexp, @intCast(index));
+    }
+
+    /// Returns null unless `charsxp` is a CHARSXP.
+    pub fn charData(charsxp: SEXP) ?[*]const u8 {
+        if (charsxp == null or R.TYPEOF(charsxp) != R.CHARSXP) return null;
+        return R.R_CHAR(charsxp);
+    }
+
+    /// Returns `-1` unless `charsxp` is a CHARSXP.
+    pub fn getCharCE(charsxp: SEXP) i32 {
+        if (charsxp == null or R.TYPEOF(charsxp) != R.CHARSXP) return -1;
+        return @intCast(R.Rf_getCharCE(charsxp));
+    }
+};
+
+fn directTypeTag(sexp: SEXP) u5 {
     const byte = @as(*const u8, @ptrCast(sexp)).*;
     return @truncate(byte & 0x1F);
+}
+
+/// The caller assumes `sexp` is non-null.
+pub fn typeTag(sexp: SEXP) u5 {
+    if (comptime uses_direct_layout) return directTypeTag(sexp);
+    return @truncate(@as(c_uint, @intCast(checked.typeTag(sexp))));
 }
 
 pub fn typeOf(sexp: SEXP) SEXPTYPE {
     return @enumFromInt(@as(c_int, typeTag(sexp)));
 }
 
-pub fn fastLength(sexp: SEXP) R.R_xlen_t {
+fn directLength(sexp: SEXP) R.R_xlen_t {
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return 0;
     const base: [*]const u8 = @ptrCast(@alignCast(raw));
-    const slot: *const R.R_xlen_t = @ptrCast(@alignCast(base + length_offset));
+    const slot: *const R.R_xlen_t = @ptrCast(@alignCast(base + R4_64.length_offset));
     return slot.*;
+}
+
+pub fn fastLength(sexp: SEXP) R.R_xlen_t {
+    if (sexp == null) return 0;
+    if (R.ALTREP(sexp) != 0 or !uses_direct_layout) return checked.length(sexp);
+    return directLength(sexp);
 }
 
 /// ALTREP can withhold a direct pointer.
 pub fn fastDataPtr(sexp: SEXP) ?*anyopaque {
     if (R.ALTREP(sexp) != 0) return null;
+    if (comptime !uses_direct_layout) return checked.dataPtr(sexp);
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
     const base: [*]u8 = @ptrCast(@alignCast(raw));
-    return @as(*anyopaque, @ptrCast(@alignCast(base + dataptr_offset)));
+    return @as(*anyopaque, @ptrCast(@alignCast(base + R4_64.data_offset)));
 }
 
+/// The caller assumes a vector-like SEXP and an in-bounds index.
 pub fn fastVectorElt(sexp: SEXP, index: usize) SEXP {
+    if (comptime !uses_direct_layout) return checked.vectorElt(sexp, index);
     const raw = @as(?*anyopaque, @ptrCast(sexp)) orelse return null;
     const base: [*]u8 = @ptrCast(@alignCast(raw));
-    const elts: [*]SEXP = @ptrCast(@alignCast(base + dataptr_offset));
+    const elts: [*]SEXP = @ptrCast(@alignCast(base + R4_64.data_offset));
     return elts[index];
 }
 
 pub fn fastCharData(charsxp: SEXP) ?[*]const u8 {
+    if (charsxp == null or typeTag(charsxp) != R.CHARSXP) return null;
+    if (comptime !uses_direct_layout) return checked.charData(charsxp);
     const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return null;
     const base: [*]const u8 = @ptrCast(@alignCast(raw));
-    return base + dataptr_offset;
+    return base + R4_64.data_offset;
 }
 
 pub fn fastGetCharCE(charsxp: SEXP) i32 {
+    if (charsxp == null or typeTag(charsxp) != R.CHARSXP) return -1;
+    if (comptime !uses_direct_layout) return checked.getCharCE(charsxp);
     const raw = @as(?*anyopaque, @ptrCast(charsxp)) orelse return -1;
-    if (typeTag(charsxp) != 9) return -1; // CHARSXP = 9
     const bytes: [*]const u8 = @ptrCast(@alignCast(raw));
     const b1 = bytes[1];
     if (b1 & 0x08 != 0) return 1;
@@ -63,14 +146,14 @@ pub fn fastGetCharCE(charsxp: SEXP) i32 {
 
 pub fn xlength(sexp: SEXP) usize {
     if (sexp == null) return 0;
-    const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
+    const len = fastLength(sexp);
     if (len < 0) return 0;
     return @as(usize, @intCast(len));
 }
 
 pub fn tryXlength(sexp: SEXP) !usize {
     if (sexp == null) return error.NullPointer;
-    const len = if (R.ALTREP(sexp) != 0) R.XLENGTH(sexp) else fastLength(sexp);
+    const len = fastLength(sexp);
     if (len < 0) return error.NegativeLength;
     return @as(usize, @intCast(len));
 }
@@ -203,6 +286,25 @@ test "fastDataPtr has correct type" {
 
 test "typeTag has correct type" {
     try std.testing.expectEqual(@TypeOf(typeTag), fn (SEXP) u5);
+}
+
+test "ABI contract gates direct layout" {
+    try std.testing.expectEqual(
+        @sizeOf(usize) == 8 and
+            builtin.target.cpu.arch.endian() == .little and
+            R.R_VERSION >= r4_version_min and
+            R.R_VERSION < r5_version_min,
+        uses_direct_layout,
+    );
+}
+
+test "checked fallback surface compiles" {
+    try std.testing.expectEqual(@TypeOf(checked.typeTag), fn (SEXP) c_int);
+    try std.testing.expectEqual(@TypeOf(checked.length), fn (SEXP) R.R_xlen_t);
+    try std.testing.expectEqual(@TypeOf(checked.dataPtr), fn (SEXP) ?*anyopaque);
+    try std.testing.expectEqual(@TypeOf(checked.vectorElt), fn (SEXP, usize) SEXP);
+    try std.testing.expectEqual(@TypeOf(checked.charData), fn (SEXP) ?[*]const u8);
+    try std.testing.expectEqual(@TypeOf(checked.getCharCE), fn (SEXP) i32);
 }
 
 test "classification helpers compile" {
