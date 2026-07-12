@@ -1,9 +1,12 @@
 //! Factor construction using R's string matching and collation rules.
 //!
 //! ALTREP input is copied to an ordinary string vector before R sorts and matches it.
+//! Construction can allocate and longjmp; callers keep input reachable across the call.
+//! Returned factors are unprotected and independent of the input codes.
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 
 pub const FactorError = error{
@@ -11,14 +14,12 @@ pub const FactorError = error{
     TooLong,
 };
 
-pub fn asFactorChecked(vec: R.SEXP) FactorError!R.SEXP {
-    if (vec == null or R.TYPEOF(vec) != R.STRSXP) return error.WrongType;
-
+fn factorCall(data: ?*anyopaque) R.SEXP {
+    const vec: R.SEXP = @ptrCast(@alignCast(data.?));
     var input = protect.scoped(vec);
     defer input.deinit();
 
     const len = R.XLENGTH(input.get());
-    if (len < 0 or len > std.math.maxInt(c_int)) return error.TooLong;
     const n: c_int = @intCast(len);
 
     var working = protect.scoped(if (R.ALTREP(input.get()) != 0) R.Rf_allocVector(R.STRSXP, len) else input.get());
@@ -72,6 +73,13 @@ pub fn asFactorChecked(vec: R.SEXP) FactorError!R.SEXP {
     _ = R.Rf_setAttrib(codes.get(), R.R_ClassSymbol, class.get());
 
     return codes.get();
+}
+
+pub fn asFactorChecked(vec: R.SEXP) FactorError!R.SEXP {
+    if (vec == null or R.TYPEOF(vec) != R.STRSXP) return error.WrongType;
+    const len = R.XLENGTH(vec);
+    if (len < 0 or len > std.math.maxInt(c_int)) return error.TooLong;
+    return cleanup.protectCallData(factorCall, @ptrCast(vec));
 }
 
 pub fn asFactor(vec: R.SEXP) R.SEXP {

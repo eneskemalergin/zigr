@@ -175,6 +175,11 @@ pub fn tryXlength(sexp: SEXP) !usize {
     return @as(usize, @intCast(len));
 }
 
+/// Returns whether a native length is representable as an R vector length.
+pub fn fitsVectorLength(len: usize) bool {
+    return len <= @as(usize, @intCast(R.R_XLEN_T_MAX));
+}
+
 /// R rejects translating `CE_BYTES`, so those bytes stay untouched.
 pub fn charsxpBytes(charsxp: SEXP) []const u8 {
     if (charsxp == R.R_NaString) return "";
@@ -295,6 +300,14 @@ test "xlength returns 0 for zero-length" {
 
 test "fastLength has correct type" {
     try std.testing.expectEqual(@TypeOf(fastLength), fn (SEXP) R.R_xlen_t);
+}
+
+test "vector length uses R public limit" {
+    const max: usize = @intCast(R.R_XLEN_T_MAX);
+    try std.testing.expect(fitsVectorLength(max));
+    if (max < std.math.maxInt(usize)) {
+        try std.testing.expect(!fitsVectorLength(max + 1));
+    }
 }
 
 test "fastDataPtr has correct type" {

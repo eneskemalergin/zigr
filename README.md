@@ -90,7 +90,7 @@ Rscript tests/run_r_tests.R  # build and run the live R runtime suite
 
 ### Serialization
 
-`serialize.toVector` writes portable XDR using R serialization version 3; `toVectorVersion` also permits version 2 explicitly. Serialization rejects null input with an R error. `serialize.fromVectorChecked` returns a Zig error for null or non-raw input before decoding, while malformed raw data raises an R error. Serialized and restored values are returned unprotected, and both directions can allocate and longjmp.
+`serialize.toVector` writes portable XDR using R serialization version 3; `toVectorVersion` also permits version 2 explicitly. Serialization rejects null input with an R error. `serialize.fromVectorChecked` returns a Zig error for null or non-raw input before decoding, while malformed raw data raises an R error. Serialized and restored values are returned unprotected, and both directions can allocate and longjmp. R classifies the custom persistent-stream API used here as highly experimental, so builds stay pinned to the declarations in their installed R headers.
 
 ### Weak references
 
@@ -104,15 +104,25 @@ Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R erro
 
 The core service layer stays close to the R C API:
 
+Call these services only from R's main thread. R's C API, ALTREP callbacks, protection stack, and runtime state are not safe for general worker-thread use.
+
 - `attrib` provides checked string attributes and allocating setters over `Rf_getAttrib`, `Rf_setAttrib`, `Rf_namesgets`, `Rf_classgets`, and `Rf_dimgets`. Returned header arrays are caller-freed; their string bytes remain R-owned. `getString` maps `NA` to empty, while `getOptionalString` preserves it as `null`. R allocation and ALTREP access can longjmp, so native cleanup needs an outer unwind boundary.
-- `dataframe.buildChecked` validates column counts, equal row lengths, names, and compact row-name limits before allocating. It shares the supplied columns instead of copying them, so callers keep those columns reachable during construction and follow R copy-on-write rules afterward. The result is unprotected.
+- `dataframe.buildChecked` validates column counts, equal row counts, non-empty names, C string-length limits, and compact row-name limits before allocating. Matrix and array columns use their first dimension rather than total element length. It shares the supplied columns instead of copying them, so callers keep those columns reachable during construction and follow R copy-on-write rules afterward. The result is unprotected.
 - `factor.asFactorChecked` uses R's string matching and locale collation, preserves `NA`, and returns an independent integer factor. Inputs longer than the integer-code limit are rejected. ALTREP strings are copied once to an ordinary working vector because R's order and match routines require direct string storage. The result is unprotected.
 - `s4.newObjectChecked` resolves a registered class through R's methods registry and creates an object from its prototype. It does not run `initialize` or validity methods. Checked slot access distinguishes non-S4 objects and missing slots; slot assignment returns the possibly replaced object. Results are unprotected, and class lookup or raw slot operations can longjmp.
 - `symbols.install` wraps `Rf_install` with a fixed 64-entry thread-local cache. R owns and roots each symbol for the session, so callers do not protect it. Installation can longjmp. Names containing NUL or longer than 255 bytes become R errors instead of being truncated.
 - `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. `Argument` adds explicit R argument tags, while checked builders reject null pointers and invalid tag names before allocating. Inputs stay caller-rooted during construction. Constructed calls are returned unprotected.
 - `eval` wraps lookup, positional and tagged calls, `R_tryEval`, and `R_tryEvalSilent`. `callIn`, `callFunctionIn`, and `callTaggedIn` make the evaluation environment explicit; the shorter `call` helper uses `R_GlobalEnv`. Results are borrowed, unprotected `SEXP` values. Function lookup and evaluation can longjmp, so use a generated entry point or another unwind boundary when native cleanup is live.
 - `interrupt` is a thin wrapper over `R_CheckUserInterrupt`, `R_CheckStack`, and `R_CheckStack2`. These checks can longjmp and do not create their own unwind boundary.
+- `rng.withRng` balances `GetRNGstate` and `PutRNGstate` on normal return and R longjmp. Nested scopes are rejected because R's RNG state API is not a reentrant stack.
 - `memory.CountingAllocator` wraps an allocator when you need allocation diagnostics. Its counts include only successful operations made through that wrapper; they do not include R heap objects or unrelated libc allocation. Keep it out of the allocator passed to timed code unless allocator overhead is the workload.
+
+ALTREP behavior is explicit across these integrations:
+
+- Data-frame columns, raw attributes, language arguments, S4 slot values, and external-pointer backing are retained without requesting payload storage.
+- Data-frame row validation reads length and at most the first dimension element without requesting contiguous dimension storage.
+- Factor construction copies ALTSTRING elements into an ordinary vector. Attribute string readers likewise iterate `STRING_ELT` because their result is a native header array.
+- Evaluation follows the called R function. Serialization may invoke class callbacks, while unserialization reads ALTREP raw streams through `RAW_GET_REGION`. Weak-reference creation may use R's duplication semantics.
 
 Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conversion layer does not cover an R object. They add no ownership or type guarantee.
 

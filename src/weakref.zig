@@ -3,7 +3,8 @@
 //! Keys may be `R_NilValue`, environments, external pointers, or bytecode. A
 //! live key keeps the value reachable through the weak reference. Before a
 //! finalizer runs, R clears both fields and passes the original key to it.
-//! Returned SEXPs are unprotected.
+//! Returned SEXPs are unprotected. R may duplicate the value during creation,
+//! so an ALTREP value follows its class's duplicate and materialization semantics.
 
 const std = @import("std");
 const R = @import("R");

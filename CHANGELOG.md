@@ -27,7 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- `serialize.zig`: replace nonexistent convenience symbols with R's public persistent-stream API and unwind-safe native buffering.
+- `dataframe.zig`: fix matrix row counts, invalid column names, lazy dimensions, and failed-extraction cleanup.
+- `externalptr.zig`: fix typed metadata protection and ownership cleanup during failed construction.
+- R runtime services: restore cleanup state after longjmp and reject nested RNG scopes.
+- `serialize.zig`: add unwind-safe XDR streams and region-based ALTREP raw decoding.
 - `weakref.zig`: use R's non-C constructor when no C finalizer is supplied, validate every public input, and document the original-key finalizer contract.
 - `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error for missing variables.
 - `convert.zig`: 11 stat functions (`sum`, `norm2`, `min`, `max`, `argmin`, `argmax`, `sum_narm`, `mean_narm`, `scaleAdd`, `cumsum`, `argminmax`) now validate SEXP type before access (was missing type guards).

@@ -1,4 +1,9 @@
-//! Data frame helpers.
+//! Checked data-frame construction and borrowed column access.
+//!
+//! Construction shares caller-owned columns, can allocate and longjmp, and
+//! returns an unprotected frame. It reads column length and the first dimension
+//! element but never requests column payload storage. Callers keep columns
+//! reachable across the call. Name extraction iterates ALTSTRING elements.
 
 const std = @import("std");
 const R = @import("R");
@@ -18,10 +23,10 @@ pub const DataFrameError = error{
 
 const HeaderCleanup = struct {
     allocator: std.mem.Allocator,
-    values: [][]const u8,
+    values: ?[][]const u8 = null,
 
     fn fire(self: *@This()) void {
-        self.allocator.free(self.values);
+        if (self.values) |values| self.allocator.free(values);
     }
 };
 
@@ -50,7 +55,7 @@ pub const DataFrame = struct {
         if (ncols == 0) return 0;
         const col0 = R.VECTOR_ELT(self.sexp, 0);
         if (col0 == R.R_NilValue) return 0;
-        return R.XLENGTH(col0);
+        return R.Rf_nrows(col0);
     }
 
     /// Headers are caller-owned; bytes borrow from the data frame.
@@ -59,13 +64,15 @@ pub const DataFrame = struct {
         if (ns == R.R_NilValue) return allocator.alloc([]const u8, 0);
         if (R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != self.columnCount()) return error.MalformedNames;
         const n = @as(usize, @intCast(R.XLENGTH(ns)));
+        const state = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
+        errdefer cleanup.popFrame();
         const result = try allocator.alloc([]const u8, n);
-        _ = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator, .values = result }, HeaderCleanup.fire);
-        defer cleanup.popFrame();
+        state.values = result;
         for (0..n) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
         }
+        cleanup.popFrame();
         return result;
     }
 
@@ -99,28 +106,33 @@ pub const DataFrame = struct {
 
     /// Map keys borrow R string storage and cannot outlive the data frame.
     pub fn columnMap(self: DataFrame, allocator: std.mem.Allocator) !std.StringHashMap(i64) {
-        var map = std.StringHashMap(i64).init(allocator);
-        errdefer map.deinit();
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
-        if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != ncols) return map;
-        try map.ensureTotalCapacity(@intCast(ncols));
-        _ = cleanup.pushFrameInline(MapCleanup, .{ .map = map }, MapCleanup.fire);
-        defer cleanup.popFrame();
+        if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != ncols) {
+            return std.StringHashMap(i64).init(allocator);
+        }
+        const state = cleanup.pushFrameInline(MapCleanup, .{ .map = std.StringHashMap(i64).init(allocator) }, MapCleanup.fire);
+        errdefer {
+            state.map.deinit();
+            cleanup.popFrame();
+        }
+        try state.map.ensureTotalCapacity(@intCast(ncols));
         for (0..@as(usize, @intCast(ncols))) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             if (elt == R.R_NaString) continue;
             const cn = sexp_mod.charsxpBytes(elt);
-            map.putAssumeCapacity(cn, @intCast(i));
+            state.map.putAssumeCapacity(cn, @intCast(i));
         }
-        return map;
+        const result = state.map;
+        cleanup.popFrame();
+        return result;
     }
 };
 
 fn sexp_isDataFrame(sexp: R.SEXP) bool {
     if (sexp_mod.typeTag(sexp) != 19) return false;
     const cls = R.Rf_getAttrib(sexp, R.R_ClassSymbol);
-    if (cls == R.R_NilValue) return false;
+    if (cls == R.R_NilValue or R.TYPEOF(cls) != R.STRSXP) return false;
     const n = R.XLENGTH(cls);
     for (0..@as(usize, @intCast(n))) |i| {
         const elt = R.STRING_ELT(cls, @intCast(i));
@@ -131,24 +143,29 @@ fn sexp_isDataFrame(sexp: R.SEXP) bool {
     return false;
 }
 
-/// Shares `columns`; callers keep them reachable during construction. The result is unprotected.
-pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFrameError!R.SEXP {
-    if (names.len != columns.len) return error.NameColumnCount;
-    for (names) |name| {
-        if (std.mem.indexOfScalar(u8, name, 0) != null) return error.InvalidName;
+fn columnRowCount(column: R.SEXP) DataFrameError!usize {
+    if (column == null) return error.NullColumn;
+    const dim = R.Rf_getAttrib(column, R.R_DimSymbol);
+    if (dim != R.R_NilValue) {
+        if (R.TYPEOF(dim) != R.INTSXP or R.XLENGTH(dim) < 1) return error.ColumnLength;
+        const rows = R.INTEGER_ELT(dim, 0);
+        if (rows < 0) return error.ColumnLength;
+        return @intCast(rows);
     }
+    const rows = xlength(column);
+    if (rows > std.math.maxInt(c_int)) return error.RowCountTooLarge;
+    return rows;
+}
 
-    const nrows: usize = if (columns.len == 0) 0 else blk: {
-        if (columns[0] == null) return error.NullColumn;
-        break :blk xlength(columns[0]);
-    };
-    if (nrows > std.math.maxInt(c_int)) return error.RowCountTooLarge;
-    for (columns) |column| {
-        if (column == null) return error.NullColumn;
-        if (xlength(column) != nrows) return error.ColumnLength;
-    }
+const BuildRequest = struct {
+    names: []const []const u8,
+    columns: []const R.SEXP,
+    nrows: usize,
+};
 
-    const ncols: R.R_xlen_t = @intCast(names.len);
+fn buildCall(data: ?*anyopaque) R.SEXP {
+    const request: *BuildRequest = @ptrCast(@alignCast(data.?));
+    const ncols: R.R_xlen_t = @intCast(request.names.len);
 
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, ncols));
     var cnames = protect.scoped(R.Rf_allocVector(R.STRSXP, ncols));
@@ -162,11 +179,11 @@ pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFram
     }
 
     for (0..@as(usize, @intCast(ncols))) |i| {
-        _ = R.SET_VECTOR_ELT(vec.get(), @intCast(i), columns[i]);
+        _ = R.SET_VECTOR_ELT(vec.get(), @intCast(i), request.columns[i]);
     }
 
     for (0..@as(usize, @intCast(ncols))) |i| {
-        const cs = R.Rf_mkCharLenCE(@ptrCast(names[i].ptr), @intCast(names[i].len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
+        const cs = R.Rf_mkCharLenCE(@ptrCast(request.names[i].ptr), @intCast(request.names[i].len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
         R.SET_STRING_ELT(cnames.get(), @intCast(i), cs);
     }
     _ = R.Rf_namesgets(vec.get(), cnames.get());
@@ -176,10 +193,26 @@ pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFram
 
     const rnp = R.INTEGER(rn.get());
     rnp[0] = R.R_NaInt;
-    rnp[1] = -@as(c_int, @intCast(nrows));
+    rnp[1] = -@as(c_int, @intCast(request.nrows));
     _ = R.Rf_setAttrib(vec.get(), R.R_RowNamesSymbol, rn.get());
 
     return vec.get();
+}
+
+/// Shares `columns`; callers keep them reachable during construction. The result is unprotected.
+pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFrameError!R.SEXP {
+    if (names.len != columns.len) return error.NameColumnCount;
+    for (names) |name| {
+        if (name.len == 0 or name.len > std.math.maxInt(c_int) or std.mem.indexOfScalar(u8, name, 0) != null) return error.InvalidName;
+    }
+
+    const nrows = if (columns.len == 0) 0 else try columnRowCount(columns[0]);
+    for (columns) |column| {
+        if (try columnRowCount(column) != nrows) return error.ColumnLength;
+    }
+
+    var request = BuildRequest{ .names = names, .columns = columns, .nrows = nrows };
+    return cleanup.protectCallData(buildCall, @ptrCast(&request));
 }
 
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {

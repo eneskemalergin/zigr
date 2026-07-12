@@ -5,10 +5,18 @@
 const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
+const err = @import("error");
 
-fn releaseRng(_: ?*anyopaque) void {
-    R.PutRNGstate();
-}
+threadlocal var active = false;
+
+const RngCleanup = struct {
+    acquired: bool = false,
+
+    fn fire(self: *@This()) void {
+        if (self.acquired) R.PutRNGstate();
+        active = false;
+    }
+};
 
 pub fn acquire() void {
     R.GetRNGstate();
@@ -22,11 +30,16 @@ pub fn release() void {
 pub fn withRng(comptime func: *const fn () R.SEXP) R.SEXP {
     return cleanup.protectCall(struct {
         fn call() R.SEXP {
+            if (active) err.signal("nested withRng calls are not supported");
+            const state = cleanup.pushFrameInline(RngCleanup, .{}, RngCleanup.fire);
+            active = true;
             acquire();
-            cleanup.pushFrame(releaseRng, null);
+            state.acquired = true;
             const result = func();
-            cleanup.popFrame();
             release();
+            state.acquired = false;
+            active = false;
+            cleanup.popFrame();
             return result;
         }
     }.call);

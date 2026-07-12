@@ -107,14 +107,18 @@ tests <- list(
   "zigr_test_df_build",
   "zigr_test_df_column",
   "zigr_test_df_contract",
+  "zigr_test_df_cleanup_capacity",
   "zigr_test_factor_contract",
+  "zigr_test_factor_longjmp",
   "zigr_test_s4_contract",
   "zigr_test_s4_longjmp",
+  "zigr_test_advanced_altrep_retention",
 
   "zigr_test_attrib_class",
   "zigr_test_attrib_names",
   "zigr_test_attrib_contract",
   "zigr_test_attrib_allocation_longjmp",
+  "zigr_test_attrib_cleanup_capacity",
   "zigr_test_df_names_longjmp",
 
   "zigr_test_altrep_create",
@@ -267,6 +271,7 @@ tests <- list(
   "zigr_test_externalptr_finalizer",
   "zigr_test_externalptr_finalizer_idempotent",
   "zigr_test_externalptr_typed_protected",
+  "zigr_test_externalptr_lazy_tag_gc",
   "zigr_test_weakref_reachable_contract",
   "zigr_test_weakref_checked_errors",
   "zigr_test_weakref_gc_finalizer",
@@ -290,6 +295,7 @@ tests <- list(
   "zigr_test_nested_unwind_state",
   "zigr_test_cleanup_capacity_recovers",
   "zigr_test_with_rng_longjmp",
+  "zigr_test_with_rng_nested",
 
   "zigr_test_fib_recursive",
 

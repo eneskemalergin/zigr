@@ -1,7 +1,8 @@
 //! R evaluation and lookup.
 //!
 //! R can longjmp through these calls. Callers holding native state must
-//! establish their own cleanup boundary first.
+//! establish their own cleanup boundary first. Call construction retains
+//! ALTREP arguments, but evaluated R code may inspect or materialize them.
 
 const R = @import("R");
 const lang = @import("lang.zig");

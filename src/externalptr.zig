@@ -1,7 +1,9 @@
 //! R external-pointer ownership and generated-method receiver checks.
 //!
 //! Typed pointers keep a per-type tag and protected metadata. Generated
-//! methods verify both before they cast the receiver.
+//! methods verify both before they cast the receiver. Constructors return
+//! unprotected SEXPs; callers keep R inputs reachable across allocating calls.
+//! Typed backing is retained as an R object without inspecting ALTREP payload data.
 
 const std = @import("std");
 const R = @import("R");
@@ -11,6 +13,7 @@ const protect = @import("protect.zig");
 
 /// Separates rejected receivers from native pointer casts.
 pub const PointerError = error{
+    NullBacking,
     ExpectedExternalPointer,
     WrongExternalPointerTag,
     MissingExternalPointerMetadata,
@@ -21,6 +24,7 @@ pub const PointerError = error{
 /// Keeps receiver diagnostics identical for `.Call` and `.External` methods.
 pub fn errorMessage(err_value: PointerError) []const u8 {
     return switch (err_value) {
+        error.NullBacking => "external pointer backing is null",
         error.ExpectedExternalPointer => "expected EXTPTRSXP receiver",
         error.WrongExternalPointerTag => "external pointer tag does not match method type",
         error.MissingExternalPointerMetadata => "external pointer is missing typed metadata",
@@ -66,9 +70,9 @@ pub fn protected(sexp: R.SEXP) R.SEXP {
     return R.R_ExternalPtrProtected(sexp);
 }
 
-fn makeTypedMetadata(comptime T: type, backing: R.SEXP) R.SEXP {
+fn makeTypedMetadata(type_tag: R.SEXP, backing: R.SEXP) R.SEXP {
     const metadata = R.Rf_allocVector(R.VECSXP, 2);
-    _ = R.SET_VECTOR_ELT(metadata, 0, typeTag(T));
+    _ = R.SET_VECTOR_ELT(metadata, 0, type_tag);
     _ = R.SET_VECTOR_ELT(metadata, 1, backing);
     return metadata;
 }
@@ -81,12 +85,29 @@ fn typedMetadata(comptime T: type, sexp: R.SEXP) ?R.SEXP {
 }
 
 /// Caller assumes every non-null address refers to a live `T`.
+pub fn makeTypedRawChecked(comptime T: type, ptr: ?*anyopaque, backing: R.SEXP) PointerError!R.SEXP {
+    if (backing == null) return error.NullBacking;
+    const Request = struct {
+        ptr: ?*anyopaque,
+        backing: R.SEXP,
+    };
+    var request = Request{ .ptr = ptr, .backing = backing };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            const type_tag = typeTag(T);
+            var held_backing = protect.scoped(req.backing);
+            defer held_backing.deinit();
+            var metadata = protect.scoped(makeTypedMetadata(type_tag, held_backing.get()));
+            defer metadata.deinit();
+            return make(req.ptr, type_tag, metadata.get());
+        }
+    }.call, @ptrCast(&request));
+}
+
 pub fn makeTypedRaw(comptime T: type, ptr: ?*anyopaque, backing: R.SEXP) R.SEXP {
-    const held_backing = protect.protect(backing);
-    defer protect.unprotect();
-    const metadata = protect.protect(makeTypedMetadata(T, held_backing));
-    defer protect.unprotect();
-    return make(ptr, typeTag(T), metadata);
+    return makeTypedRawChecked(T, ptr, backing) catch |pointer_error|
+        signalPointerError(pointer_error);
 }
 
 /// The external pointer retains `backing`; callers own the native lifetime.
@@ -125,29 +146,37 @@ pub fn finalizeOwned(comptime T: type, comptime deinitFn: *const fn (*T) void, s
     std.heap.c_allocator.destroy(value);
 }
 
-fn createWithMetadata(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void, tag_sxp: R.SEXP, prot: R.SEXP) R.SEXP {
-    // Finalizers run after the originating R call, outside R's checked heap.
-    const heap_val = std.heap.c_allocator.create(T) catch err.signal("out of memory during external pointer creation");
-    heap_val.* = init_val;
+fn PendingOwned(comptime T: type, comptime deinitFn: *const fn (*T) void) type {
+    return struct {
+        value: ?*T = null,
 
+        fn fire(self: *@This()) void {
+            if (self.value) |value| {
+                deinitFn(value);
+                std.heap.c_allocator.destroy(value);
+            }
+        }
+    };
+}
+
+fn createOwnedInner(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void, tag_sxp: R.SEXP, prot: R.SEXP) R.SEXP {
     const Owner = struct {
-        fn destroy(p: *T) void {
-            deinitFn(p);
-            std.heap.c_allocator.destroy(p);
-        }
-
-        fn fire(raw: ?*anyopaque) void {
-            const p: *T = @ptrCast(@alignCast(raw.?));
-            destroy(p);
-        }
-
         fn finalizer(s: R.SEXP) callconv(.c) void {
             // Clear first so re-entry cannot free the allocation twice.
             finalizeOwned(T, deinitFn, s);
         }
     };
 
-    cleanup.pushFrame(Owner.fire, @as(?*anyopaque, @ptrCast(heap_val)));
+    var source = init_val;
+    const Pending = PendingOwned(T, deinitFn);
+    const pending = cleanup.pushFrameInline(Pending, .{}, Pending.fire);
+    // Finalizers run after the originating R call, outside R's checked heap.
+    const heap_val = std.heap.c_allocator.create(T) catch {
+        deinitFn(&source);
+        err.signal("out of memory during external pointer creation");
+    };
+    heap_val.* = source;
+    pending.value = heap_val;
     const sexp = protect.protect(make(@as(?*anyopaque, @ptrCast(heap_val)), tag_sxp, prot));
     defer protect.unprotect();
     registerFinalizer(sexp, Owner.finalizer);
@@ -157,13 +186,30 @@ fn createWithMetadata(comptime T: type, init_val: T, comptime deinitFn: *const f
 }
 
 /// Keeps the raw, untagged constructor for callers that do not expose methods.
+/// Ownership of `init_val` transfers on entry, including when construction raises an R error.
 pub fn create(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void) R.SEXP {
-    return createWithMetadata(T, init_val, deinitFn, R.R_NilValue, R.R_NilValue);
+    const Request = struct { value: T };
+    var request = Request{ .value = init_val };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            return createOwnedInner(T, req.value, deinitFn, R.R_NilValue, R.R_NilValue);
+        }
+    }.call, @ptrCast(&request));
 }
 
-/// R owns the allocation after registration; `deinitFn` must not call R.
+/// Ownership transfers on entry. R owns the allocation after registration;
+/// `deinitFn` must not call R.
 pub fn createTyped(comptime T: type, init_val: T, comptime deinitFn: *const fn (*T) void) R.SEXP {
-    const metadata = protect.protect(makeTypedMetadata(T, R.R_NilValue));
-    defer protect.unprotect();
-    return createWithMetadata(T, init_val, deinitFn, typeTag(T), metadata);
+    const Request = struct { value: T };
+    var request = Request{ .value = init_val };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            const type_tag = typeTag(T);
+            var metadata = protect.scoped(makeTypedMetadata(type_tag, R.R_NilValue));
+            defer metadata.deinit();
+            return createOwnedInner(T, req.value, deinitFn, type_tag, metadata.get());
+        }
+    }.call, @ptrCast(&request));
 }

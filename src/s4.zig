@@ -1,10 +1,13 @@
 //! Registered S4 class construction and slot access.
 //!
 //! New objects use the class prototype but do not run `initialize` or validity methods.
-//! Returned objects and slot values are unprotected.
+//! Returned objects and slot values are unprotected. Construction and assignment
+//! can allocate and longjmp; callers keep their SEXP inputs reachable across calls.
+//! Slot access and assignment do not request ALTREP payload storage from slot values.
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 
@@ -67,11 +70,18 @@ pub fn newObjectChecked(class_name: []const u8) S4Error!R.SEXP {
     @memcpy(name[0..class_name.len], class_name);
     name[class_name.len] = 0;
 
-    const definition = R.R_getClassDef(@ptrCast(&name));
-    if (definition == R.R_NilValue) return error.MissingClass;
-    var protected_definition = protect.scoped(definition);
-    defer protected_definition.deinit();
-    return R.R_do_new_object(protected_definition.get());
+    const result = cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const class_name_ptr: [*c]const u8 = @ptrCast(data.?);
+            const definition = R.R_getClassDef(class_name_ptr);
+            if (definition == R.R_NilValue) return R.R_NilValue;
+            var protected_definition = protect.scoped(definition);
+            defer protected_definition.deinit();
+            return R.R_do_new_object(protected_definition.get());
+        }
+    }.call, @ptrCast(&name));
+    if (result == R.R_NilValue) return error.MissingClass;
+    return result;
 }
 
 pub fn newObject(class_name: []const u8) R.SEXP {

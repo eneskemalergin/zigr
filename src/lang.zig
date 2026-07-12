@@ -2,10 +2,12 @@
 //!
 //! `car` and related helpers are unchecked C API access. Constructors may
 //! allocate and longjmp. Inputs remain caller-rooted during construction and
-//! built calls are returned unprotected.
+//! built calls are returned unprotected. Construction stores ALTREP arguments
+//! without inspecting payload data; later evaluation follows the callee's R semantics.
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 
@@ -106,7 +108,7 @@ pub fn lcons(car_val: R.SEXP, cdr_val: R.SEXP) R.SEXP {
     return R.Rf_lcons(car_val, cdr_val);
 }
 
-pub fn consList(items: []const R.SEXP) R.SEXP {
+fn consListInner(items: []const R.SEXP) R.SEXP {
     var list = R.R_NilValue;
     var index: R.PROTECT_INDEX = 0;
     protect.protectWithIndex(list, &index);
@@ -120,13 +122,36 @@ pub fn consList(items: []const R.SEXP) R.SEXP {
     return list;
 }
 
+pub fn consList(items: []const R.SEXP) R.SEXP {
+    const Request = struct { values: []const R.SEXP };
+    var request = Request{ .values = items };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            return consListInner(req.values);
+        }
+    }.call, @ptrCast(&request));
+}
+
+fn buildCallInner(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
+    var arg_list = protect.scoped(consListInner(args));
+    defer arg_list.deinit();
+    return R.Rf_lcons(fun, arg_list.get());
+}
+
 /// The returned call is unprotected after construction.
 pub fn buildCall(fun: R.SEXP, args: []const R.SEXP) R.SEXP {
-    var arg_list = protect.scoped(consList(args));
-    defer arg_list.deinit();
-    var call_expr = protect.scoped(R.Rf_lcons(fun, arg_list.get()));
-    defer call_expr.deinit();
-    return call_expr.get();
+    const Request = struct {
+        fun: R.SEXP,
+        args: []const R.SEXP,
+    };
+    var request = Request{ .fun = fun, .args = args };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            return buildCallInner(req.fun, req.args);
+        }
+    }.call, @ptrCast(&request));
 }
 
 pub fn buildCallChecked(fun: R.SEXP, args: []const R.SEXP) CallError!R.SEXP {
@@ -147,20 +172,29 @@ pub fn buildTaggedCall(fun: R.SEXP, args: []const Argument) CallError!R.SEXP {
         }
     }
 
-    var list = R.R_NilValue;
-    var index: R.PROTECT_INDEX = 0;
-    protect.protectWithIndex(list, &index);
-    defer protect.unprotect();
-    var i = args.len;
-    while (i > 0) {
-        i -= 1;
-        const name = if (args[i].name) |name| symbols.install(name) else R.R_NilValue;
-        list = R.Rf_cons(args[i].value, list);
-        protect.reprotect(list, index);
-        if (name != R.R_NilValue) R.SET_TAG(list, name);
-    }
-
-    return R.Rf_lcons(fun, list);
+    const Request = struct {
+        fun: R.SEXP,
+        args: []const Argument,
+    };
+    var request = Request{ .fun = fun, .args = args };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            var list = R.R_NilValue;
+            var index: R.PROTECT_INDEX = 0;
+            protect.protectWithIndex(list, &index);
+            defer protect.unprotect();
+            var i = req.args.len;
+            while (i > 0) {
+                i -= 1;
+                const arg_name = if (req.args[i].name) |name| symbols.install(name) else R.R_NilValue;
+                list = R.Rf_cons(req.args[i].value, list);
+                protect.reprotect(list, index);
+                if (arg_name != R.R_NilValue) R.SET_TAG(list, arg_name);
+            }
+            return R.Rf_lcons(req.fun, list);
+        }
+    }.call, @ptrCast(&request));
 }
 
 pub fn buildNamedCall(comptime name: []const u8, args: anytype) R.SEXP {

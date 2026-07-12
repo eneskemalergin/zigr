@@ -3,6 +3,12 @@
 //! `toVector` writes portable XDR bytes with format version 3. The returned
 //! RAWSXP and values returned by `fromVector` are unprotected. Both operations
 //! can allocate in R and longjmp; their native stream state is unwind-safe.
+//! Callers keep input SEXPs reachable across each operation. Serialization may
+//! invoke an input ALTREP class's serialization or element callbacks. Decoding
+//! an ALTREP RAWSXP reads regions without requesting a contiguous data pointer.
+//!
+//! R describes the custom persistent-stream API as highly experimental. The
+//! implementation is pinned to the installed `Rinternals.h` declarations.
 
 const std = @import("std");
 const R = @import("R");
@@ -10,6 +16,7 @@ const cleanup = @import("cleanup");
 const err = @import("error");
 const memory = @import("memory.zig");
 const protect = @import("protect.zig");
+const sexp_mod = @import("sexp.zig");
 
 /// R serialization versions supported by the public stream API.
 pub const Version = enum(c_int) {
@@ -85,8 +92,8 @@ fn serializeCall(data: ?*anyopaque) R.SEXP {
     );
     R.R_Serialize(input.get(), &stream);
 
-    if (context.bytes.items.len > std.math.maxInt(R.R_xlen_t)) {
-        err.signal("serialized output exceeds R_xlen_t");
+    if (!sexp_mod.fitsVectorLength(context.bytes.items.len)) {
+        err.signal("serialized output exceeds R_XLEN_T_MAX");
     }
     var result = protect.scoped(R.Rf_allocVector(R.RAWSXP, @intCast(context.bytes.items.len)));
     defer result.deinit();
@@ -107,8 +114,9 @@ pub fn toVector(value: R.SEXP) R.SEXP {
 }
 
 const InputContext = struct {
-    bytes: []const u8,
-    offset: usize = 0,
+    serialized: R.SEXP,
+    len: R.R_xlen_t,
+    offset: R.R_xlen_t = 0,
 };
 
 fn inputContext(stream: R.R_inpstream_t) *InputContext {
@@ -123,14 +131,25 @@ fn readBytes(stream: R.R_inpstream_t, destination: ?*anyopaque, len: c_int) void
     if (count == 0) return;
     const output = destination orelse err.signal("serialization requested a null destination");
     const context = inputContext(stream);
-    if (context.offset > context.bytes.len or count > context.bytes.len - context.offset) {
+    const requested: R.R_xlen_t = @intCast(count);
+    if (context.offset < 0 or context.offset > context.len or requested > context.len - context.offset) {
         err.signal("unexpected end of serialized input");
     }
-    @memcpy(
-        @as([*]u8, @ptrCast(output))[0..count],
-        context.bytes[context.offset..][0..count],
-    );
-    context.offset += count;
+    const bytes: [*]u8 = @ptrCast(output);
+    var copied: R.R_xlen_t = 0;
+    while (copied < requested) {
+        const got = R.RAW_GET_REGION(
+            context.serialized,
+            context.offset + copied,
+            requested - copied,
+            bytes + @as(usize, @intCast(copied)),
+        );
+        if (got <= 0 or got > requested - copied) {
+            err.signal("serialized ALTREP input returned an invalid region length");
+        }
+        copied += got;
+    }
+    context.offset += requested;
 }
 
 fn inChar(stream: R.R_inpstream_t) callconv(.c) c_int {
@@ -152,7 +171,8 @@ fn unserializeCall(data: ?*anyopaque) R.SEXP {
     const raw_len = R.XLENGTH(input.get());
     if (raw_len < 0) err.signal("serialized input has negative length");
     var context = InputContext{
-        .bytes = R.RAW(input.get())[0..@as(usize, @intCast(raw_len))],
+        .serialized = input.get(),
+        .len = raw_len,
     };
     var stream: R.struct_R_inpstream_st = .{};
     R.R_InitInPStream(

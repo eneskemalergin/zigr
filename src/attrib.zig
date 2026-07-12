@@ -1,7 +1,9 @@
 //! Checked names, class, and dimension helpers plus raw attribute access.
 //!
 //! Allocating setters may longjmp. Call them inside a generated entry point or
-//! another unwind boundary.
+//! another unwind boundary. Raw attribute get/set retains values without
+//! requesting ALTREP payload storage. String readers intentionally iterate an
+//! ALTSTRING attribute through `STRING_ELT`.
 
 const std = @import("std");
 const R = @import("R");
@@ -13,19 +15,19 @@ pub const AttributeError = error{ExpectedStringAttribute};
 
 const HeaderCleanup = struct {
     allocator: std.mem.Allocator,
-    values: [][]const u8,
+    values: ?[][]const u8 = null,
 
     fn fire(self: *@This()) void {
-        self.allocator.free(self.values);
+        if (self.values) |values| self.allocator.free(values);
     }
 };
 
 const OptionalHeaderCleanup = struct {
     allocator: std.mem.Allocator,
-    values: []?[]const u8,
+    values: ?[]?[]const u8 = null,
 
     fn fire(self: *@This()) void {
-        self.allocator.free(self.values);
+        if (self.values) |values| self.allocator.free(values);
     }
 };
 
@@ -35,13 +37,15 @@ pub fn getString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.SEXP) (At
     if (value == R.R_NilValue) return allocator.alloc([]const u8, 0);
     if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
     const n: usize = @intCast(R.XLENGTH(value));
+    const state = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
+    errdefer cleanup.popFrame();
     const result = try allocator.alloc([]const u8, n);
-    _ = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator, .values = result }, HeaderCleanup.fire);
-    defer cleanup.popFrame();
+    state.values = result;
     for (0..n) |i| {
         const elt = R.STRING_ELT(value, @intCast(i));
         result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
     }
+    cleanup.popFrame();
     return result;
 }
 
@@ -51,13 +55,15 @@ pub fn getOptionalString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.S
     if (value == R.R_NilValue) return allocator.alloc(?[]const u8, 0);
     if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
     const n: usize = @intCast(R.XLENGTH(value));
+    const state = cleanup.pushFrameInline(OptionalHeaderCleanup, .{ .allocator = allocator }, OptionalHeaderCleanup.fire);
+    errdefer cleanup.popFrame();
     const result = try allocator.alloc(?[]const u8, n);
-    _ = cleanup.pushFrameInline(OptionalHeaderCleanup, .{ .allocator = allocator, .values = result }, OptionalHeaderCleanup.fire);
-    defer cleanup.popFrame();
+    state.values = result;
     for (0..n) |i| {
         const elt = R.STRING_ELT(value, @intCast(i));
         result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
     }
+    cleanup.popFrame();
     return result;
 }
 

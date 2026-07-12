@@ -1,4 +1,7 @@
 //! Comptime ALTREP classes backed by Zig-owned data.
+//!
+//! R declares `R_ext/Altrep.h` experimental. Keep class registration and
+//! callback signatures pinned to the installed headers used for each build.
 
 const std = @import("std");
 const R = @import("R");
@@ -6,6 +9,7 @@ const simd = @import("simd");
 const cleanup = @import("cleanup");
 const err = @import("error");
 const protect = @import("protect.zig");
+const sexp_mod = @import("sexp.zig");
 
 pub const ComplexElem = extern struct {
     r: f64,
@@ -19,6 +23,14 @@ const AltKind = enum {
     raw,
     complex,
 };
+
+fn cString(comptime value: []const u8, comptime label: []const u8) []const u8 {
+    if (value.len == 0) @compileError(label ++ " must not be empty");
+    if (std.mem.indexOfScalar(u8, value, 0) != null) {
+        @compileError(label ++ " must not contain a NUL byte");
+    }
+    return value ++ "\x00";
+}
 
 fn ElemType(comptime kind: AltKind) type {
     return switch (kind) {
@@ -51,21 +63,32 @@ fn Wrap(comptime kind: AltKind) type {
     };
 }
 
-fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind)) *Wrap(kind) {
+fn PendingWrap(comptime kind: AltKind) type {
+    return struct {
+        values: ?[]ElemType(kind) = null,
+        wrap: ?*Wrap(kind) = null,
+        data1: ?R.SEXP = null,
+
+        fn fire(self: *@This()) void {
+            if (self.data1) |data1| R.R_ClearExternalPtr(data1);
+            if (self.wrap) |wrap| {
+                destroyWrap(kind, wrap);
+            } else if (self.values) |values| {
+                std.heap.c_allocator.free(values);
+            }
+        }
+    };
+}
+
+fn makeWrap(comptime kind: AltKind, slice: []const ElemType(kind), pending: *PendingWrap(kind)) *Wrap(kind) {
     const W = Wrap(kind);
     const values = std.heap.c_allocator.dupe(ElemType(kind), slice) catch
         err.signal("out of memory during ALTREP creation");
-    const PendingValues = struct {
-        values: []ElemType(kind),
-
-        fn fire(self: *@This()) void {
-            std.heap.c_allocator.free(self.values);
-        }
-    };
-    _ = cleanup.pushFrameInline(PendingValues, .{ .values = values }, PendingValues.fire);
+    pending.values = values;
     const w = std.heap.c_allocator.create(W) catch err.signal("out of memory during ALTREP creation");
     w.* = .{ .ptr = values.ptr, .len = values.len };
-    cleanup.popFrame();
+    pending.wrap = w;
+    pending.values = null;
     return w;
 }
 
@@ -396,12 +419,14 @@ fn integerMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
 }
 
 fn buildClass(comptime kind: AltKind, comptime pkg: []const u8, comptime name: []const u8, info: anytype) R.R_altrep_class_t {
+    const package_name = comptime cString(pkg, "ALTREP package name");
+    const class_name = comptime cString(name, "ALTREP class name");
     const cls = switch (kind) {
-        .real => R.R_make_altreal_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info),
-        .integer => R.R_make_altinteger_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info),
-        .logical => R.R_make_altlogical_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info),
-        .raw => R.R_make_altraw_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info),
-        .complex => R.R_make_altcomplex_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info),
+        .real => R.R_make_altreal_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info),
+        .integer => R.R_make_altinteger_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info),
+        .logical => R.R_make_altlogical_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info),
+        .raw => R.R_make_altraw_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info),
+        .complex => R.R_make_altcomplex_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info),
     };
     R.R_set_altrep_Length_method(cls, struct {
         fn f(x: R.SEXP) callconv(.c) R.R_xlen_t {
@@ -519,34 +544,34 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
 
         /// Copies `slice`; the returned SEXP is unprotected and owns the copy through its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
-            if (!registered) {
-                class = buildClass(kind, pkg, name, null);
-                registered = true;
-            }
+            if (!sexp_mod.fitsVectorLength(slice.len)) err.signal("ALTREP input exceeds R_XLEN_T_MAX");
+            const Request = struct { values: []const ElemType(kind) };
+            var request = Request{ .values = slice };
+            return cleanup.protectCallData(struct {
+                fn call(data: ?*anyopaque) R.SEXP {
+                    const req: *Request = @ptrCast(@alignCast(data.?));
+                    if (!registered) {
+                        class = buildClass(kind, pkg, name, null);
+                        registered = true;
+                    }
 
-            const w = makeWrap(kind, slice);
-            const Pending = struct {
-                wrap: *Wrap(kind),
-                data1: ?R.SEXP = null,
-
-                fn fire(self: *@This()) void {
-                    if (self.data1) |d1| R.R_ClearExternalPtr(d1);
-                    destroyWrap(kind, self.wrap);
+                    const Pending = PendingWrap(kind);
+                    const pending = cleanup.pushFrameInline(Pending, .{}, Pending.fire);
+                    const w = makeWrap(kind, req.values, pending);
+                    const tag = tagSymbol(kind);
+                    var d1 = protect.scoped(R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(w)), tag, R.R_NilValue));
+                    defer d1.deinit();
+                    pending.data1 = d1.get();
+                    R.R_RegisterCFinalizerEx(d1.get(), struct {
+                        fn f(sexp: R.SEXP) callconv(.c) void {
+                            freeWrapImpl(kind, sexp);
+                        }
+                    }.f, 1);
+                    const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
+                    cleanup.popFrame();
+                    return result;
                 }
-            };
-            const pending = cleanup.pushFrameInline(Pending, .{ .wrap = w }, Pending.fire);
-            const tag = tagSymbol(kind);
-            var d1 = protect.scoped(R.R_MakeExternalPtr(@as(?*anyopaque, @ptrCast(w)), tag, R.R_NilValue));
-            defer d1.deinit();
-            pending.data1 = d1.get();
-            R.R_RegisterCFinalizerEx(d1.get(), struct {
-                fn f(sexp: R.SEXP) callconv(.c) void {
-                    freeWrapImpl(kind, sexp);
-                }
-            }.f, 1);
-            const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
-            cleanup.popFrame();
-            return result;
+            }.call, @ptrCast(&request));
         }
     };
 }
@@ -605,7 +630,9 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
         var registered: bool = false;
 
         fn buildStringClass(info: anytype) R.R_altrep_class_t {
-            const cls = R.R_make_altstring_class(@ptrCast(name.ptr), @ptrCast(pkg.ptr), info);
+            const package_name = comptime cString(pkg, "ALTREP package name");
+            const class_name = comptime cString(name, "ALTREP class name");
+            const cls = R.R_make_altstring_class(@ptrCast(class_name.ptr), @ptrCast(package_name.ptr), info);
             R.R_set_altrep_Length_method(cls, struct {
                 fn f(x: R.SEXP) callconv(.c) R.R_xlen_t {
                     return R.XLENGTH(stringValues(x));
@@ -625,18 +652,37 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
 
         /// Copies UTF-8 bytes into R strings; the returned SEXP is unprotected.
         pub fn init(slice: []const []const u8) R.SEXP {
-            if (!registered) {
-                class = buildStringClass(null);
-                registered = true;
+            if (!sexp_mod.fitsVectorLength(slice.len)) err.signal("ALTSTRING input exceeds R_XLEN_T_MAX");
+            for (slice) |item| {
+                if (item.len > std.math.maxInt(c_int)) err.signal("ALTSTRING element exceeds C int length");
             }
+            const Request = struct { values: []const []const u8 };
+            var request = Request{ .values = slice };
+            return cleanup.protectCallData(struct {
+                fn call(data: ?*anyopaque) R.SEXP {
+                    const req: *Request = @ptrCast(@alignCast(data.?));
+                    if (!registered) {
+                        class = buildStringClass(null);
+                        registered = true;
+                    }
 
-            var values = protect.scoped(R.Rf_allocVector(R.STRSXP, @intCast(slice.len)));
-            defer values.deinit();
-            for (slice, 0..) |item, index| {
-                const charsxp = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
-                R.SET_STRING_ELT(values.get(), @intCast(index), charsxp);
-            }
-            return R.R_new_altrep(class, values.get(), R.R_NilValue);
+                    var values = protect.scoped(R.Rf_allocVector(R.STRSXP, @intCast(req.values.len)));
+                    defer values.deinit();
+                    for (req.values, 0..) |item, index| {
+                        const charsxp = R.Rf_mkCharLenCE(@ptrCast(item.ptr), @intCast(item.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
+                        R.SET_STRING_ELT(values.get(), @intCast(index), charsxp);
+                    }
+                    return R.R_new_altrep(class, values.get(), R.R_NilValue);
+                }
+            }.call, @ptrCast(&request));
         }
     };
+}
+
+test "ALTREP class identities are explicit C strings" {
+    const package_name = comptime cString("zigr"[0..2], "ALTREP package name");
+    const class_name = comptime cString("owned", "ALTREP class name");
+
+    try std.testing.expectEqual(@as(u8, 0), package_name[2]);
+    try std.testing.expectEqual(@as(u8, 0), class_name[5]);
 }
