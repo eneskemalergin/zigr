@@ -16,6 +16,8 @@ const attrib = zigr.attrib;
 const altrep_create = zigr.altrep_create;
 const test_lang = zigr.lang;
 const embed = zigr.embed;
+const serialize_mod = zigr.serialize;
+const weakref_mod = zigr.weakref;
 const trycatch_mod = zigr.trycatch;
 const protect = zigr.protect;
 
@@ -2422,6 +2424,113 @@ export fn zigr_test_embed_paste() SEXP {
     return R.Rf_ScalarReal(0.0);
 }
 
+export fn zigr_test_serialize_roundtrip_contract() SEXP {
+    const original = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.REAL(original)[0] = 1.25;
+    R.REAL(original)[1] = R.NA_REAL();
+    R.REAL(original)[2] = -0.0;
+
+    const names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(names, 0, R.Rf_mkChar("first"));
+    R.SET_STRING_ELT(names, 1, R.Rf_mkChar("missing"));
+    R.SET_STRING_ELT(names, 2, R.Rf_mkChar("negative_zero"));
+    _ = R.Rf_namesgets(original, names);
+
+    const serialized = R.Rf_protect(serialize_mod.toVectorVersion(original, .v3));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(serialized) != R.RAWSXP or R.XLENGTH(serialized) < 6) return R.Rf_ScalarReal(0.0);
+    const bytes = R.RAW(serialized);
+    if (bytes[0] != 'X' or bytes[1] != '\n') return R.Rf_ScalarReal(0.0);
+    if (bytes[2] != 0 or bytes[3] != 0 or bytes[4] != 0 or bytes[5] != 3) return R.Rf_ScalarReal(0.0);
+
+    const serialized_v2 = R.Rf_protect(serialize_mod.toVectorVersion(original, .v2));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(serialized_v2) != R.RAWSXP or R.XLENGTH(serialized_v2) < 6) return R.Rf_ScalarReal(0.0);
+    const bytes_v2 = R.RAW(serialized_v2);
+    if (bytes_v2[0] != 'X' or bytes_v2[1] != '\n') return R.Rf_ScalarReal(0.0);
+    if (bytes_v2[2] != 0 or bytes_v2[3] != 0 or bytes_v2[4] != 0 or bytes_v2[5] != 2) return R.Rf_ScalarReal(0.0);
+
+    R.R_gc();
+    const restored = R.Rf_protect(serialize_mod.fromVectorChecked(serialized) catch return R.Rf_ScalarReal(0.0));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(restored) != R.REALSXP or R.XLENGTH(restored) != 3) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(restored)[0] != 1.25 or R.ISNA(R.REAL(restored)[1]) == 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(restored)[2] != 0.0 or !std.math.signbit(R.REAL(restored)[2])) return R.Rf_ScalarReal(0.0);
+
+    const restored_names = R.Rf_getAttrib(restored, R.R_NamesSymbol);
+    if (R.TYPEOF(restored_names) != R.STRSXP or R.XLENGTH(restored_names) != 3) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(restored_names, 2)), 0), "negative_zero")) return R.Rf_ScalarReal(0.0);
+
+    const restored_v2 = R.Rf_protect(serialize_mod.fromVector(serialized_v2));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(restored_v2) != R.REALSXP or R.XLENGTH(restored_v2) != 3) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(restored_v2)[0] != 1.25 or R.ISNA(R.REAL(restored_v2)[1]) == 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(restored_v2)[2] != 0.0 or !std.math.signbit(R.REAL(restored_v2)[2])) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_serialize_checked_input() SEXP {
+    const integer = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    defer R.Rf_unprotect(1);
+    if (serialize_mod.fromVectorChecked(integer)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |serialize_error| {
+        if (serialize_error != error.ExpectedRaw) return R.Rf_ScalarReal(0.0);
+    }
+    if (serialize_mod.fromVectorChecked(null)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |serialize_error| {
+        if (serialize_error != error.NullInput) return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var malformed_serialized_input: SEXP = null;
+
+fn unserializeMalformedInput() SEXP {
+    return serialize_mod.fromVector(malformed_serialized_input);
+}
+
+fn serializeNullInput() SEXP {
+    return serialize_mod.toVector(null);
+}
+
+export fn zigr_test_serialize_malformed_unwind() SEXP {
+    const initial_depth = protect.getDepth();
+    const malformed = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 6));
+    defer R.Rf_unprotect(1);
+    const bytes = R.RAW(malformed);
+    bytes[0] = 'X';
+    bytes[1] = '\n';
+    bytes[2] = 0;
+    bytes[3] = 0;
+    bytes[4] = 0;
+    bytes[5] = 3;
+    malformed_serialized_input = malformed;
+    defer malformed_serialized_input = null;
+
+    if (trycatch_mod.tryCatch(unserializeMalformedInput)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+    if (trycatch_mod.tryCatch(serializeNullInput)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+
+    const original = R.Rf_protect(R.Rf_ScalarInteger(42));
+    defer R.Rf_unprotect(1);
+    const serialized = R.Rf_protect(serialize_mod.toVector(original));
+    defer R.Rf_unprotect(1);
+    const restored = R.Rf_protect(serialize_mod.fromVector(serialized));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(restored) != R.INTSXP or R.INTEGER(restored)[0] != 42) return R.Rf_ScalarReal(0.0);
+    if (protect.getDepth() != initial_depth) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_raw_eval() SEXP {
     const result = embed.rRawEval("1 + 1", null);
     const val = R.REAL(result)[0];
@@ -3742,6 +3851,127 @@ export fn zigr_test_externalptr_typed_protected() SEXP {
     defer R.Rf_unprotect(1);
     const method_fun: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
     if (R.INTEGER(method_fun(ext, amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue))[0] != 1 or counter.val != 1) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_weakref_reachable_contract() SEXP {
+    const key_sxp = R.Rf_protect(R.R_NewEnv(R.R_EmptyEnv, 0, 29));
+    const value_sxp = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    R.INTEGER(value_sxp)[0] = 42;
+    const weak_ref = R.Rf_protect(weakref_mod.makeChecked(key_sxp, value_sxp, null, false) catch {
+        R.Rf_unprotect(2);
+        return R.Rf_ScalarReal(0.0);
+    });
+
+    // Only the live key and weak reference may retain the value across GC.
+    R.Rf_unprotect(3);
+    _ = R.Rf_protect(key_sxp);
+    _ = R.Rf_protect(weak_ref);
+    defer R.Rf_unprotect(2);
+    R.R_gc();
+    R.R_gc();
+
+    const retained_key = weakref_mod.keyChecked(weak_ref) catch return R.Rf_ScalarReal(0.0);
+    if (retained_key != key_sxp) return R.Rf_ScalarReal(0.0);
+    const retained_value = weakref_mod.valueChecked(weak_ref) catch return R.Rf_ScalarReal(0.0);
+    if (R.TYPEOF(retained_value) != R.INTSXP or R.INTEGER(retained_value)[0] != 42) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const external_key = R.Rf_protect(R.R_MakeExternalPtr(null, R.R_NilValue, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    const external_ref = R.Rf_protect(weakref_mod.makeChecked(external_key, R.R_NilValue, null, false) catch
+        return R.Rf_ScalarReal(0.0));
+    defer R.Rf_unprotect(1);
+    if (weakref_mod.key(external_ref) != external_key or weakref_mod.value(external_ref) != R.R_NilValue) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_weakref_checked_errors() SEXP {
+    const key_sxp = R.Rf_protect(R.R_NewEnv(R.R_EmptyEnv, 0, 29));
+    defer R.Rf_unprotect(1);
+    const integer = R.Rf_protect(R.Rf_ScalarInteger(1));
+    defer R.Rf_unprotect(1);
+
+    if (weakref_mod.makeChecked(null, R.R_NilValue, null, false)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |weakref_error| {
+        if (weakref_error != error.NullKey) return R.Rf_ScalarReal(0.0);
+    }
+    for ([_]SEXP{integer}) |invalid_key| {
+        if (weakref_mod.makeChecked(invalid_key, R.R_NilValue, null, false)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |weakref_error| {
+            if (weakref_error != error.ExpectedReferenceKey) return R.Rf_ScalarReal(0.0);
+        }
+    }
+    if (weakref_mod.makeChecked(key_sxp, null, null, false)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |weakref_error| {
+        if (weakref_error != error.NullValue) return R.Rf_ScalarReal(0.0);
+    }
+
+    const inert = R.Rf_protect(weakref_mod.makeChecked(R.R_NilValue, integer, null, false) catch
+        return R.Rf_ScalarReal(0.0));
+    defer R.Rf_unprotect(1);
+    if (weakref_mod.key(inert) != R.R_NilValue or weakref_mod.value(inert) != R.R_NilValue) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    weakref_mod.runFinalizer(inert);
+    for ([_]SEXP{ null, R.R_NilValue, integer }) |invalid_ref| {
+        if (weakref_mod.keyChecked(invalid_ref)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |weakref_error| {
+            if (weakref_error != error.ExpectedWeakReference) return R.Rf_ScalarReal(0.0);
+        }
+        if (weakref_mod.valueChecked(invalid_ref)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |weakref_error| {
+            if (weakref_error != error.ExpectedWeakReference) return R.Rf_ScalarReal(0.0);
+        }
+        if (weakref_mod.runFinalizerChecked(invalid_ref)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |weakref_error| {
+            if (weakref_error != error.ExpectedWeakReference) return R.Rf_ScalarReal(0.0);
+        }
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+var weakref_finalizer_count: u8 = 0;
+var weakref_finalizer_saw_key = false;
+
+fn weakRefFinalizer(key_sxp: SEXP) callconv(.c) void {
+    weakref_finalizer_count += 1;
+    if (key_sxp != null and R.TYPEOF(key_sxp) == R.ENVSXP) weakref_finalizer_saw_key = true;
+}
+
+export fn zigr_test_weakref_gc_finalizer() SEXP {
+    weakref_finalizer_count = 0;
+    weakref_finalizer_saw_key = false;
+    const key_sxp = R.Rf_protect(R.R_NewEnv(R.R_EmptyEnv, 0, 29));
+    const value_sxp = R.Rf_protect(R.Rf_ScalarInteger(17));
+    const weak_ref = R.Rf_protect(weakref_mod.make(key_sxp, value_sxp, weakRefFinalizer, false));
+
+    R.Rf_unprotect(3);
+    _ = R.Rf_protect(weak_ref);
+    defer R.Rf_unprotect(1);
+    R.R_gc();
+    R.R_gc();
+    if (weakref_finalizer_count != 1 or !weakref_finalizer_saw_key) return R.Rf_ScalarReal(0.0);
+    if (weakref_mod.key(weak_ref) != R.R_NilValue or weakref_mod.value(weak_ref) != R.R_NilValue) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const explicit_key = R.Rf_protect(R.R_NewEnv(R.R_EmptyEnv, 0, 29));
+    defer R.Rf_unprotect(1);
+    const explicit_ref = R.Rf_protect(weakref_mod.make(explicit_key, R.R_NilValue, weakRefFinalizer, false));
+    defer R.Rf_unprotect(1);
+    weakref_mod.runFinalizer(explicit_ref);
+    weakref_mod.runFinalizer(explicit_ref);
+    if (weakref_finalizer_count != 2) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

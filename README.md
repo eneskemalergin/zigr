@@ -88,6 +88,14 @@ Rscript tests/run_r_tests.R  # build and run the live R runtime suite
 
 `asSEXP` emits a `VECSXP` with declaration-order names and no other list attributes. `tryFromSEXP` accepts only that shape: the field count and every name must match, and the names vector itself must have no attributes. Optional fields must still be present; `NULL` and typed `NA` use the existing optional-scalar rules.
 
+### Serialization
+
+`serialize.toVector` writes portable XDR using R serialization version 3; `toVectorVersion` also permits version 2 explicitly. Serialization rejects null input with an R error. `serialize.fromVectorChecked` returns a Zig error for null or non-raw input before decoding, while malformed raw data raises an R error. Serialized and restored values are returned unprotected, and both directions can allocate and longjmp.
+
+### Weak references
+
+`weakref.makeChecked` accepts `R_NilValue`, environment, external-pointer, and bytecode keys. A null finalizer creates an R weak reference without a callable C finalizer. A live key keeps the value reachable; collection clears both borrowed fields to `R_NilValue`. C finalizers receive the original key after the fields are cleared, run at most once, and must not signal an R error, longjmp, or retain the key. Constructors return an unprotected value and can allocate and longjmp.
+
 Use `tryFromSEXP` when Zig code needs a conversion error. Use `fromSEXP` inside an R entry point when that error should become an R error. Generated exports deliberately keep a struct boundary explicit: accept or return `R.SEXP`, then call the conversion helper in the package adapter. Protect an `asSEXP` result before any later R allocation.
 
 Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R errors, and call-scoped native storage is released when R longjmps. Handle Zig error unions inside your function or an explicit adapter before returning to the generated boundary. A Zig panic cannot be caught there, so exported functions must not panic. Returned slices are converted to R objects before call-scoped storage is released; do not retain borrowed R slices after the call.
@@ -213,7 +221,7 @@ Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
 
 The exporter validates the complete artifact again and rejects a stale budget policy or a failed budget. A full six-runner release baseline still uses an unfiltered `run_benchmarks.R` invocation. Every path keeps the unchanged adaptive policy. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
 
-This bare core does not close the later work. Cross-target ABI fallback and compatibility belong to portability work; advanced ALTREP classes belong to integrations; reflective schemas, coercion, and higher-level objects belong to ergonomics; package workloads and end-to-end memory belong to application benchmarks; all-platform release and CRAN readiness belong to release engineering.
+This bare core does not close the later work. The primary direct-layout gate and checked fallback are implemented, while cross-target runtime ABI parity remains portability work. Advanced ALTREP callback and lifecycle completion belongs to integrations; reflective schemas, coercion, and higher-level objects belong to ergonomics; package workloads and end-to-end memory belong to application benchmarks; all-platform release and CRAN readiness belong to release engineering.
 
 ## CI
 
@@ -262,8 +270,8 @@ src/
 ├── altrep_create.zig  Comptime ALTREP class generator
 ├── externalptr.zig    R_MakeExternalPtr wrappers with finalizers
 ├── trycatch.zig       R_tryCatch wrapper
-├── serialize.zig      R_SerializeToVector / R_UnserializeFromVector
-├── weakref.zig        R_MakeWeakRefC, R_WeakRefKey/Value
+├── serialize.zig      Public R persistent-stream serialization
+├── weakref.zig        Checked weak-reference lifecycle helpers
 ├── embed.zig          rCodeEval / rRawEval
 ├── export.zig         Comptime export generator
 ├── lang.zig           CAR, CDR, CONS, symbols, calls

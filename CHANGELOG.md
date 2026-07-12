@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Safety-guarantees document covering type, NA, memory, and longjmp safety per module.
 - `tests/r_runtime.zig`: 41 fuzz probes added (200 total runtime tests).
+- Public XDR serialization with explicit R format versions, checked raw input, and live GC/unwind coverage.
+- Checked weak-reference construction, access, explicit finalization, and live GC lifecycle coverage.
 
 ### Changed
 
@@ -25,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `serialize.zig`: replace nonexistent convenience symbols with R's public persistent-stream API and unwind-safe native buffering.
+- `weakref.zig`: use R's non-C constructor when no C finalizer is supplied, validate every public input, and document the original-key finalizer contract.
 - `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error for missing variables.
 - `convert.zig`: 11 stat functions (`sum`, `norm2`, `min`, `max`, `argmin`, `argmax`, `sum_narm`, `mean_narm`, `scaleAdd`, `cumsum`, `argminmax`) now validate SEXP type before access (was missing type guards).
 - **`.Call` wrapper longjmp gap**: `makeWrapper` and `makeMethodWrapper` now use `protectCallData` (R_UnwindProtect), matching the `.External` wrappers. Arena and cleanup frames fire on longjmp instead of leaking.
@@ -193,7 +197,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Language node module (`lang`): `car`, `cdr`, `setCar`, `setCdr`, `tag`, `setTag`, `cons`, `consList`, `symbol`, `call1`-`call6`, `allocSExp`, `dataCons`, `list1`-`list6`.
 - R evaluation module (`eval`): `rEval`, `findVar`, `findVarName`, `findFunction`, `call`, `setVar`. All wrapped in `R_UnwindProtect` for longjmp safety.
 - R condition handling module (`trycatch`): `tryCatch`, `tryCatchError`, `extractMessage` via `R_tryCatch`.
-- Serialization helpers (`serialize`): `toVector` and `fromVector` via `R_SerializeToVector` / `R_UnserializeFromVector`.
+- Serialization helpers (`serialize`): `toVector` and `fromVector`.
 - Weak reference module (`weakref`): `make`, `key`, `value` via `R_MakeWeakRefC`, `R_WeakRefKey`, `R_WeakRefValue`.
 - Export generator: `.External` interface support via second `external_exports` array.
 - Export generator: optional type support (`?f64`, `?i32`, `?bool`) R NULL maps to `null`.

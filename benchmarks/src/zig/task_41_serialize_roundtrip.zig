@@ -1,13 +1,11 @@
 const R = @import("R");
+const zigr = @import("zigr");
 
 export fn zigr_bench_serialize_roundtrip(vec: R.SEXP) R.SEXP {
-    const ser_call = R.Rf_protect(R.Rf_lang3(R.Rf_install("serialize"), vec, R.R_NilValue));
+    const serialized = R.Rf_protect(zigr.serialize.toVector(vec));
     defer R.Rf_unprotect(1);
-    const conn = R.Rf_eval(ser_call, R.R_GlobalEnv);
-
-    const unser_call = R.Rf_protect(R.Rf_lang2(R.Rf_install("unserialize"), conn));
+    const result = R.Rf_protect(zigr.serialize.fromVector(serialized));
     defer R.Rf_unprotect(1);
-    const result = R.Rf_eval(unser_call, R.R_GlobalEnv);
 
     const n = R.XLENGTH(result);
     const xp: [*]const f64 = @ptrCast(R.REAL(result));
