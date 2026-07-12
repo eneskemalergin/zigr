@@ -49,7 +49,10 @@ comptime {
     _ = @import("task_41_serialize_roundtrip.zig");
     _ = @import("task_42_external_ptr.zig");
     _ = @import("task_43_rng_stress.zig");
+    _ = @import("task_48_weakref_lifecycle.zig");
 }
+
+const task_49_owned_altrep_create = @import("task_49_owned_altrep_create.zig");
 
 extern fn zigr_bench_vectorsum(R.SEXP) R.SEXP;
 extern fn zigr_bench_elem_ops(R.SEXP) R.SEXP;
@@ -95,6 +98,8 @@ extern fn zigr_bench_r_tryeval(R.SEXP) R.SEXP;
 extern fn zigr_bench_serialize_roundtrip(R.SEXP) R.SEXP;
 extern fn zigr_bench_external_ptr(R.SEXP) R.SEXP;
 extern fn zigr_bench_rng_stress(R.SEXP) R.SEXP;
+extern fn zigr_bench_weakref_lifecycle(R.SEXP) R.SEXP;
+extern fn zigr_bench_owned_altrep_create(R.SEXP) R.SEXP;
 
 const FixtureState = struct { value: i32 };
 var fixture_state = FixtureState{ .value = 0 };
@@ -542,15 +547,17 @@ fn directExternalMethodDef(comptime name: []const u8, comptime func: anytype) R.
     };
 }
 
+const advanced_task_count = 46;
 const direct_boundary_call_count = 10;
 const generated_fixture_call_count = FixtureExports.call_defs.len - 1;
 const generated_method_call_count = FixtureMethods.call_defs.len - 1;
-var package_call_defs: [44 + direct_boundary_call_count + generated_fixture_call_count + generated_method_call_count + 1]R.R_CallMethodDef = undefined;
+var package_call_defs: [advanced_task_count + direct_boundary_call_count + generated_fixture_call_count + generated_method_call_count + 1]R.R_CallMethodDef = undefined;
 var package_external_defs: [FixtureExports.ext_defs.len + 1]R.R_ExternalMethodDef = undefined;
 var package_initialized = false;
 
 fn initPackage(info: *R.DllInfo) callconv(.c) void {
     if (package_initialized) return;
+    task_49_owned_altrep_create.register(info);
     package_initialized = true;
 
     FixtureExports.init(info);
@@ -599,21 +606,23 @@ fn initPackage(info: *R.DllInfo) callconv(.c) void {
     package_call_defs[41] = directMethodDef("zigr_bench_serialize_roundtrip", zigr_bench_serialize_roundtrip);
     package_call_defs[42] = directMethodDef("zigr_bench_external_ptr", zigr_bench_external_ptr);
     package_call_defs[43] = directMethodDef("zigr_bench_rng_stress", zigr_bench_rng_stress);
-    package_call_defs[44] = directMethodDef("zigr_direct_zero", directZero);
-    package_call_defs[45] = directMethodDef("zigr_direct_scalar", directScalar);
-    package_call_defs[46] = directMethodDef("zigr_direct_optional", directOptional);
-    package_call_defs[47] = directMethodDef("zigr_direct_numeric", directNumeric);
-    package_call_defs[48] = directMethodDef("zigr_direct_int_vector", directIntVector);
-    package_call_defs[49] = directMethodDef("zigr_direct_string", directString);
-    package_call_defs[50] = directMethodDef("zigr_direct_raw", directRaw);
-    package_call_defs[51] = directMethodDef("zigr_direct_complex", directComplex);
-    package_call_defs[52] = directMethodDef("zigr_direct_schema", directSchema);
-    package_call_defs[53] = directMethodDef("zigr_direct_method", directMethod);
+    package_call_defs[44] = directMethodDef("zigr_bench_weakref_lifecycle", zigr_bench_weakref_lifecycle);
+    package_call_defs[45] = directMethodDef("zigr_bench_owned_altrep_create", zigr_bench_owned_altrep_create);
+    package_call_defs[46] = directMethodDef("zigr_direct_zero", directZero);
+    package_call_defs[47] = directMethodDef("zigr_direct_scalar", directScalar);
+    package_call_defs[48] = directMethodDef("zigr_direct_optional", directOptional);
+    package_call_defs[49] = directMethodDef("zigr_direct_numeric", directNumeric);
+    package_call_defs[50] = directMethodDef("zigr_direct_int_vector", directIntVector);
+    package_call_defs[51] = directMethodDef("zigr_direct_string", directString);
+    package_call_defs[52] = directMethodDef("zigr_direct_raw", directRaw);
+    package_call_defs[53] = directMethodDef("zigr_direct_complex", directComplex);
+    package_call_defs[54] = directMethodDef("zigr_direct_schema", directSchema);
+    package_call_defs[55] = directMethodDef("zigr_direct_method", directMethod);
     inline for (0..generated_fixture_call_count) |i| {
-        package_call_defs[44 + direct_boundary_call_count + i] = FixtureExports.call_defs[i];
+        package_call_defs[advanced_task_count + direct_boundary_call_count + i] = FixtureExports.call_defs[i];
     }
     inline for (0..generated_method_call_count) |i| {
-        package_call_defs[44 + direct_boundary_call_count + generated_fixture_call_count + i] = FixtureMethods.call_defs[i];
+        package_call_defs[advanced_task_count + direct_boundary_call_count + generated_fixture_call_count + i] = FixtureMethods.call_defs[i];
     }
     package_call_defs[package_call_defs.len - 1] = .{ .name = null, .fun = null, .numArgs = 0 };
     inline for (0..FixtureExports.ext_defs.len - 1) |i| {

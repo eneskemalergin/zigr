@@ -7,6 +7,8 @@
   "registered_symbols": true,
   "package_name": "bench",
   "optional_tasks": [
+    "48_weakref_lifecycle",
+    "49_owned_altrep_create",
     "76_string_view_one", "77_string_cache_build",
     "78_string_cache_one", "79_string_headers_one",
     "80_string_view_repeated", "81_string_cache_repeated",

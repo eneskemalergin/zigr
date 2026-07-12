@@ -86,7 +86,7 @@ validate_task_manifest <- function(manifest) {
   if (length(missing) > 0L) {
     stop(sprintf("task manifest missing columns: %s", paste(missing, collapse = ", ")))
   }
-  if (nrow(manifest) != 81L) stop(sprintf("task manifest must contain 81 rows, got %d", nrow(manifest)))
+  if (nrow(manifest) != 83L) stop(sprintf("task manifest must contain 83 rows, got %d", nrow(manifest)))
   if (anyDuplicated(manifest$task)) stop("task manifest contains duplicate task IDs")
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
   if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
@@ -102,7 +102,7 @@ validate_task_manifest <- function(manifest) {
   if (any(manifest$aggregate != (manifest$comparison_policy == "comparable"))) stop("aggregate policy must match comparison policy")
   if (any(manifest$comparison_policy == "comparable" & nzchar(manifest$comparison_note))) stop("comparable tasks must not have exclusion notes")
   if (any(manifest$comparison_policy == "non_comparable" & !nzchar(manifest$comparison_note))) stop("non-comparable tasks need exclusion notes")
-  required_special <- c("07a_protect_shallow", "07b_protect_scaling", "42_external_ptr", "43_rng_stress")
+  required_special <- c("07a_protect_shallow", "07b_protect_scaling", "42_external_ptr", "43_rng_stress", "48_weakref_lifecycle", "49_owned_altrep_create")
   if (!all(required_special %in% manifest$task)) stop("task manifest is missing required special tasks")
   boundary_tasks <- manifest$task[grepl("^[0-9]{2}_boundary_.*_(generated|handwritten)$", manifest$task)]
   boundary_classes <- boundary_budget_class(task_matrix_group(boundary_tasks))

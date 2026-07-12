@@ -5,7 +5,7 @@
 Six runner backends. The published report below records canonical run `p0-7-20260710-full`; a local promotion writes `results/CANONICAL_RUN.json`, but `results/` is intentionally ignored because raw samples are large and regenerated. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
 
 - **r** (R baseline): 81 manifest task references in `src/r/run_all.R`
-- **zigr** (Zig): 44 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
+- **zigr** (Zig): 46 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
 - **c_call** (C): 44 task files plus boundary fixtures in `register.c` under `src/c_call/`
 - **rcpp** (C++): Single `main.cpp` under `src/cpp/`
 - **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`; most canonical tasks use handwritten raw R FFI behind Savvy-style C result handling, so they compare runner implementations rather than the cost of Savvy's typed wrappers
@@ -13,24 +13,26 @@ Six runner backends. The published report below records canonical run `p0-7-2026
 
 ## Task matrix
 
-81 manifest rows: 44 core tasks (`01` through `43`, with `07a`/`07b` splitting task 07), 26 boundary rows (`50` through `75`), and 11 representation rows (`76` through `86`).
+83 manifest rows: 44 core tasks (`01` through `43`, with `07a`/`07b` splitting task 07), two P3 integration diagnostics (`48` and `49`), 26 boundary rows (`50` through `75`), and 11 representation rows (`76` through `86`).
 
 - **Core compute** (tasks 01-06): vector sum, element-wise ops, memory bandwidth, sort, recursion, broadcast
 - **R API mechanics** (tasks 07a, 07b, 08-11): PROTECT shallow/scaling, type dispatch, longjmp, SEXP create/inspect
 - **Objects and strings** (tasks 12-24): matrix ops, data frame filter, list access, string ops, factor ops, attributes, S4 slots, NA propagation, long vector indexing
 - **Numerical routines** (tasks 25-29): L1 arithmetic, matmul, crossprod, Cholesky, linear model
-- **ALTREP behavior** (tasks 30-37): create, materialize, element walk, region read, sum (R and native), min/max, no-NA query
-- **Runtime services** (tasks 38-41, 43): struct convert, R eval, try eval, serialize roundtrip, RNG stress
-- **External pointer** (task 42): non-deterministic structural validation
+- **ALTREP behavior** (tasks 30-37, 49): comparative compact creation, materialization, element walk, region read, sum (R and native), min/max, no-NA query, zigr-owned construction
+- **Runtime services** (tasks 38-41, 43, 48): struct convert, R eval, try eval, serialize roundtrip, RNG stress, weak-reference create/access
+- **External pointer** (task 42): structural validation across runner-specific ownership strategies
 - **Diagnostics** (tasks 44-47): build time, binary size, cross-compile time, and memory allocation counts (zigr only)
 - **Boundary pairs** (tasks 50-75): generated and handwritten zero-arg, scalar, optional, numeric, ALTREP, string, raw, complex, fixed-schema, external-pointer, and `.External` calls. The generated schema row uses an explicit `SEXP` adapter and the handwritten row validates the same fixed contract. They are `api_overhead` and `non_comparable`; `analysis_summary.csv` keeps each variant separate.
 - **Representation rows** (tasks 76-86): one and four passes through strings as views, cached metadata, or headers; raw views and copies; complex views and returns. The string input is ordinary ASCII so the timing stays about representation rather than translation. These rows are `api_overhead` and `non_comparable` because the ownership models differ.
 
-The boundary fixtures run in `r`, `c_call`, and `zigr`. The representation rows run in `r` and `zigr`; other runners report them as `N/A` instead of timing a substitute with different ownership.
+The boundary fixtures run in `r`, `c_call`, and `zigr`. The weak-reference and owned-ALTREP diagnostics run only in `zigr`. The representation rows run in `r` and `zigr`; other runners report unsupported rows as `N/A` instead of timing a substitute with different ownership.
 
 The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows compare zigr's contiguous copy with a handwritten region stream, so they describe a conversion choice rather than wrapper overhead. The generated schema row parses a declared fixed schema through `SEXP`; the handwritten and R rows validate the same plain names and scalar-field contract. The generated method row times a valid typed `.Call` receiver with the same small state update as its handwritten pair. Missing or tampered metadata, wrong tags, foreign pointers, cleared pointers, GC retention, and finalizers are preflight and runtime safety cases, not timing claims.
 
-Core task 42 constructs raw untagged external pointers. It does not measure Savvy's owned wrapper or zigr's typed metadata, receiver validation, or finalizer contract.
+Task 30 retains its original cross-runner compact-sequence contract and aggregate eligibility. For zigr, task 42 constructs and validates an owned typed external pointer, task 43 enters through `rng.withRng`, task 48 constructs and reads checked weak references, and task 49 constructs copied ALTREP storage through a class registered by `R_init_zigr_benchmarks`. The P3 diagnostics are non-comparable and have no optimization budgets.
+
+Focused ReleaseFast run `20260712T221715Z-pid2` passes the corrected zigr workloads for attributes, comparative ALTREP creation, typed external state, guarded RNG, weak references, and owned ALTREP construction. It is a filtered diagnostic run and does not replace or alter the published canonical aggregate.
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, task groups, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 
@@ -44,7 +46,7 @@ Before timing, every native task is validated against the R baseline or its mani
 
 Each summary and raw timing file records `correctness_status`, `correctness_policy`, `correctness_message`, and the effective `call_type`; `.Call` and `.External` rows are therefore not conflated. `PASS` permits timing, `REFERENCE` identifies the R baseline runner, and `NOT_VALIDATED` is never eligible for comparative aggregation. A correctness or timing `FAIL` causes the runner subprocess and parent run to fail; it cannot become a complete, exportable, or promotable run. `N/A` is rejected unless explicitly allowed by the run manifest. Native-only and nondeterministic tasks use structural result contracts from `task_manifest.csv`.
 
-Eight tasks use structural validation instead of an R reference. Tasks 07a through 11 use C API idioms that R cannot express. PROTECT, longjmp, SEXP create/inspect use R stubs returning `0L`. Non-deterministic tasks (42 external pointer, 43 RNG stress) differ on every call.
+Ten tasks use structural validation instead of an R reference. Tasks 07a through 11 use C API idioms that R cannot express. PROTECT, longjmp, SEXP create/inspect use R stubs returning `0L`. Tasks 42, 48, and 49 use runner-specific native invariants. Task 43 is nondeterministic.
 
 ## Pipeline
 

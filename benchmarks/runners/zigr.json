@@ -75,6 +75,8 @@
     "41_serialize_roundtrip": "zigr_bench_serialize_roundtrip",
     "42_external_ptr": "zigr_bench_external_ptr",
     "43_rng_stress": "zigr_bench_rng_stress",
+    "48_weakref_lifecycle": "zigr_bench_weakref_lifecycle",
+    "49_owned_altrep_create": "zigr_bench_owned_altrep_create",
     "50_boundary_zero_generated": "zigr_fixture_zero",
     "51_boundary_zero_handwritten": "zigr_direct_zero",
     "52_boundary_scalar_generated": "zigr_fixture_scalar",

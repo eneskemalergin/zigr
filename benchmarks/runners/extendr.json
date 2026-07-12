@@ -4,6 +4,8 @@
     "call_type": ".Call",
     "so_path": "src/extendr/extendr_benchmarks.so",
     "optional_tasks": [
+        "48_weakref_lifecycle",
+        "49_owned_altrep_create",
         "50_boundary_zero_generated", "51_boundary_zero_handwritten",
         "52_boundary_scalar_generated", "53_boundary_scalar_handwritten",
         "54_boundary_optional_null_generated", "55_boundary_optional_null_handwritten",

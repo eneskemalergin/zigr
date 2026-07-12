@@ -13,6 +13,7 @@ const df = zigr.dataframe;
 const factor = zigr.factor;
 const s4 = zigr.s4;
 const attrib = zigr.attrib;
+const altrep_mod = zigr.altrep;
 const altrep_create = zigr.altrep_create;
 const test_lang = zigr.lang;
 const embed = zigr.embed;
@@ -1173,7 +1174,12 @@ const zigr_altlogical_slice_tag_name = "zigr_altlogical_slice_wrap";
 export fn zigr_test_altrep_create() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
+    if (altrep_mod.isAltRep(null) or altrep_mod.className(null).len != 0 or altrep_mod.classPackage(null).len != 0) {
+        return R.Rf_ScalarReal(0.0);
+    }
     if (R.XLENGTH(vec) != 5) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, altrep_mod.className(vec), "test_real")) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, altrep_mod.classPackage(vec), "zigr")) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

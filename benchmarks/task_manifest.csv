@@ -43,6 +43,8 @@ task,workload_group,display_name,category,input_factory,expected_return,correctn
 41_serialize_roundtrip,runtime_services,Serialization round trip,integration,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
 42_external_ptr,runtime_services,External pointer,integration,task_spec.args,external_pointer,native_invariant,non_comparable,FALSE,Pointer identity and finalization are not shared R values,1
 43_rng_stress,runtime_services,RNG stress,integration,task_spec.args,nondeterministic_vector,nondeterministic,non_comparable,FALSE,Random output is not compared by value,1
+48_weakref_lifecycle,runtime_services,Weak-reference create/access,integration,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,zigr-only checked weak-reference construction and access workload,1
+49_owned_altrep_create,altrep,Owned ALTREP construction,altrep,task_spec.args,r_object,native_invariant,non_comparable,FALSE,zigr-only package-registered copied ALTREP construction workload,1
 50_boundary_zero_generated,api_boundary,Generated zero-argument call,api_overhead,task_spec.args,real_scalar,r_reference,non_comparable,FALSE,Boundary pair; excluded from the primary aggregate,0
 51_boundary_zero_handwritten,api_boundary,Handwritten zero-argument call,api_overhead,task_spec.args,real_scalar,r_reference,non_comparable,FALSE,Boundary pair; excluded from the primary aggregate,0
 52_boundary_scalar_generated,api_boundary,Generated scalar call,api_overhead,task_spec.args,real_scalar,r_reference,non_comparable,FALSE,Boundary pair; excluded from the primary aggregate,1
