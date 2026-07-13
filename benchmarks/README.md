@@ -2,14 +2,15 @@
 
 # zigr Benchmark Harness
 
-Six runner backends. The published report below records canonical run `p0-7-20260710-full`; a local promotion writes `results/CANONICAL_RUN.json`, but `results/` is intentionally ignored because raw samples are large and regenerated. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
+Seven active runner backends. The published report below records the earlier six-runner canonical run `p0-7-20260710-full`; a local promotion writes `results/CANONICAL_RUN.json`, but `results/` is intentionally ignored because raw samples are large and regenerated. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
 
-This is a runner-implementation and kernel report, not a full-tool comparison. R is the semantic reference, and handwritten C is a lower-bound control. cpp11 is absent, most Savvy tasks use handwritten raw R FFI, extendr has four raw-FFI substitutions, and the Rcpp runner is not a complete generated package workflow. The aggregate cannot establish that zigr is better than Rcpp, cpp11, extendr, or Savvy.
+This is a runner-implementation and kernel report, not a full-tool comparison. R is the semantic reference, and handwritten C is a lower-bound control. cpp11 now has a partial package-shaped fixture mapped to 11 existing tasks, but it has not been promoted into the historical aggregate. Most Savvy tasks use handwritten raw R FFI, extendr has four raw-FFI substitutions, and the Rcpp runner is not a complete generated package workflow. The aggregate cannot establish that zigr is better than Rcpp, cpp11, extendr, or Savvy.
 
 - **r** (R baseline): 81 manifest task references in `src/r/run_all.R`
 - **zigr** (Zig): 46 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
 - **c_call** (C): 44 task files plus boundary fixtures in `register.c` under `src/c_call/`
 - **rcpp** (C++): Single `main.cpp` under `src/cpp/`
+- **cpp11** (C++): Installable `zigrCpp11` fixture under `src/cpp11/`, with typed annotated source and committed cpp11-generated R/C++ registration glue
 - **savvy** (Rust): `rust/src/lib.rs` + `init.c` under `src/savvy/`; most canonical tasks use handwritten raw R FFI behind Savvy-style C result handling, so they compare runner implementations rather than the cost of Savvy's typed wrappers
 - **extendr** (Rust): `rust/src/lib.rs` + `entrypoint.c` under `src/extendr/`, with raw FFI entrypoints for 4 tasks
 
@@ -28,7 +29,7 @@ This is a runner-implementation and kernel report, not a full-tool comparison. R
 - **Boundary pairs** (tasks 50-75): generated and handwritten zero-arg, scalar, optional, numeric, ALTREP, string, raw, complex, fixed-schema, external-pointer, and `.External` calls. The generated schema row uses an explicit `SEXP` adapter and the handwritten row validates the same fixed contract. They are `api_overhead` and `non_comparable`; `analysis_summary.csv` keeps each variant separate.
 - **Representation rows** (tasks 76-86): one and four passes through strings as views, cached metadata, or headers; raw views and copies; complex views and returns. The string input is ordinary ASCII so the timing stays about representation rather than translation. These rows are `api_overhead` and `non_comparable` because the ownership models differ.
 
-The boundary fixtures run in `r`, `c_call`, and `zigr`. The weak-reference and owned-ALTREP diagnostics run only in `zigr`. The representation rows run in `r` and `zigr`; other runners report unsupported rows as `N/A` instead of timing a substitute with different ownership.
+The boundary fixtures run in `r`, `c_call`, and `zigr`; cpp11 also runs the applicable generated zero, scalar, optional, numeric, string, raw, schema, and external-state rows plus task 42. Its F04 semantic check stays outside task 62 because that historical row declares zigr's contiguous-copy strategy; P4 will add strategy-aware ALTREP evidence later. Its complex and `.External` rows remain unsupported instead of using raw substitutes. The weak-reference and owned-ALTREP diagnostics run only in `zigr`. The representation rows run in `r` and `zigr`; other runners report unsupported rows as `N/A` instead of timing a substitute with different ownership.
 
 The materialized numeric rows use ordinary REALSXPs. The integer ALTREP rows compare zigr's contiguous copy with a handwritten region stream, so they describe a conversion choice rather than wrapper overhead. The generated schema row parses a declared fixed schema through `SEXP`; the handwritten and R rows validate the same plain names and scalar-field contract. The generated method row times a valid typed `.Call` receiver with the same small state update as its handwritten pair. Missing or tampered metadata, wrong tags, foreign pointers, cleared pointers, GC retention, and finalizers are preflight and runtime safety cases, not timing claims.
 
@@ -55,6 +56,9 @@ Ten tasks use structural validation instead of an R reference. Tasks 07a through
 ```sh
 # Build all native runners
 bash build_all.sh
+
+# Re-run the existing harness registration and task-coverage preflight for cpp11
+Rscript runner_subprocess.R --runner=cpp11 --check-only
 
 # Run all configured runners into a unique results/runs/<run_id> directory
 Rscript run_benchmarks.R

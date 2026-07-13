@@ -59,6 +59,12 @@ echo "=== Rcpp (C++) ==="
 PKG_CPPFLAGS=$(Rscript -e 'cat(paste0("-I", system.file("include", package="Rcpp")))') \
   R CMD SHLIB -o src/cpp/rcpp_benchmarks.so src/cpp/main.cpp
 
+echo "=== cpp11 (C++) ==="
+CPP11_LIBRARY="$SCRIPT_DIR/tmp/cpp11-library"
+mkdir -p "$CPP11_LIBRARY"
+R CMD INSTALL --preclean --clean --no-multiarch --library="$CPP11_LIBRARY" src/cpp11
+Rscript runner_subprocess.R --runner=cpp11 --check-only
+
 echo "=== extendr (Rust) ==="
 make -C src/extendr
 
@@ -71,6 +77,7 @@ echo "Built runners:"
 ls -lh zig-out/lib/zigr_benchmarks.so \
       src/c_call/bench.so \
       src/cpp/rcpp_benchmarks.so \
+      tmp/cpp11-library/zigrCpp11/libs/zigrCpp11.so \
       src/extendr/extendr_benchmarks.so \
       src/savvy/savvy_benchmarks.so \
       2>/dev/null

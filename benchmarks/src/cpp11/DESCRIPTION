@@ -1,0 +1,9 @@
+Package: zigrCpp11
+Title: cpp11 Benchmark Fixture for zigr
+Version: 0.0.0.9000
+Authors@R: person("zigr", "benchmark", role = c("aut", "cre"), email = "benchmark@example.invalid")
+Description: Package-shaped cpp11 fixture used by the zigr comparison harness.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LinkingTo: cpp11
+NeedsCompilation: yes

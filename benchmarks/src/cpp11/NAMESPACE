@@ -1,0 +1,2 @@
+useDynLib(zigrCpp11, .registration = TRUE)
+exportPattern("^(bench|boundary|fixture)_")

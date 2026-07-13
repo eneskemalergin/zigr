@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Package-shaped cpp11 benchmark fixture with generated registration and seventh-runner harness integration.
+
 ### Changed
 
 - Correct cross-target, build-option, public-surface, testing, and Zig 0.16 guidance.
