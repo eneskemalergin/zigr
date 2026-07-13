@@ -142,6 +142,7 @@ tests <- list(
   "zigr_test_altrep_max_simd",
   "zigr_test_altrep_argmin_simd",
   "zigr_test_altrep_argmax_simd",
+  "zigr_test_argminmax_missing_contract",
   "zigr_test_altrep_sum_narm_simd",
   "zigr_test_altrep_mean_narm_simd",
   "zigr_test_altraw_create",

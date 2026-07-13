@@ -7,10 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Correct cross-target, build-option, public-surface, testing, and Zig 0.16 guidance.
+- Benchmark list access now uses zigr's ABI-selected vector and data accessors instead of a raw payload offset.
+
+### Fixed
+
+- `argmin` and `argmax` now skip missing and `NaN` values, preserve the first tie, and return `-1` when every value is missing.
+
+## [0.0.11] - 2026-07-12
+
 ### Added
 
-- Safety-guarantees document covering type, NA, memory, and longjmp safety per module.
-- `tests/r_runtime.zig`: 41 fuzz probes added (200 total runtime tests).
+- `tests/r_runtime.zig`: 41 fuzz probes and focused advanced-integration regressions added, bringing the live runtime suite to 267 tests.
+- Owned ALTREP lifecycle coverage with forced GC, exact once-only finalizer and destruction assertions, and independent deep and shallow duplicate behavior.
+- Owned ALTREP callback workloads covering summaries, regions, duplication, sorted and no-NA metadata, and version-3 serialization restoration.
+- Factor longjmp recovery coverage in ReleaseSafe and ReleaseFast, with direct and forced checked R API modes.
 - Public XDR serialization with explicit R format versions, checked raw input, and live GC/unwind coverage.
 - Checked weak-reference construction, access, explicit finalization, and live GC lifecycle coverage.
 
@@ -19,7 +32,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI: pinned R 4.6.1, dropped benchmarks and unsupported R old-release jobs, made macOS and Windows required, collapsed five cross workers into one shared-cache job, bounded every job, and removed unused package installation and invalid `setup-r` cache inputs.
 - CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
 - **Benchmark validation**: compare attributes, recursive structure, character encoding, and NA versus NaN; correctness or timing failures and undeclared `N/A` rows can no longer complete, export, or promote a run.
-- **Safety model**: safety score updated to 10/10 in PLAN.md, all longjmp gaps closed across `.Call`, `.External`, and method wrappers.
 
 ### Removed
 

@@ -7,7 +7,8 @@ export fn zigr_bench_list_access(arg: SEXP) SEXP {
     var total: f64 = 0.0;
     for (0..n) |i| {
         const elt = sexp.fastVectorElt(arg, i);
-        total += @as([*]const f64, @ptrCast(@alignCast(@as([*]u8, @ptrCast(elt)) + 0x30)))[0];
+        const data = sexp.fastDataPtr(elt) orelse return R.R_NilValue;
+        total += @as([*]const f64, @ptrCast(@alignCast(data)))[0];
     }
     return R.Rf_ScalarReal(total);
 }

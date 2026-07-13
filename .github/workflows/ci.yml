@@ -32,7 +32,7 @@ jobs:
       - run: zig build fmt
 
   cross-check:
-    name: cross-compile (5 targets)
+    name: compile-check (5 targets)
     needs: fmt
     runs-on: ubuntu-latest
     timeout-minutes: 20

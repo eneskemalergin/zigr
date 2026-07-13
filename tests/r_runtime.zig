@@ -1261,16 +1261,24 @@ export fn zigr_test_altint_max_direct() SEXP {
 }
 
 export fn zigr_test_altint_argmin_direct() SEXP {
-    const data = [_]i32{ 4, -1, 9, -1, 3 };
+    const data = [_]i32{
+        R.R_NaInt, 4, 3, R.R_NaInt, 2, 1, 5, -1, -1, 8, 7, 8, 6, 5, 4, 3, 2, 1,
+    };
     const vec = MyAltInt.init(data[0..]);
-    if (zigr_convert.argminInt(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminInt(vec) != 7) return R.Rf_ScalarReal(0.0);
+    const missing = [_]i32{ R.R_NaInt, R.R_NaInt };
+    if (zigr_convert.argminInt(MyAltInt.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_altint_argmax_direct() SEXP {
-    const data = [_]i32{ 4, 9, 9, -1, 3 };
+    const data = [_]i32{
+        R.R_NaInt, 4, 3, R.R_NaInt, 2, 1, 5, 9, 9, 8, 7, 8, 6, 5, 4, 3, 2, 1,
+    };
     const vec = MyAltInt.init(data[0..]);
-    if (zigr_convert.argmaxInt(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argmaxInt(vec) != 7) return R.Rf_ScalarReal(0.0);
+    const missing = [_]i32{ R.R_NaInt, R.R_NaInt };
+    if (zigr_convert.argmaxInt(MyAltInt.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -1310,16 +1318,24 @@ export fn zigr_test_altlogical_max_direct() SEXP {
 }
 
 export fn zigr_test_altlogical_argmin_direct() SEXP {
-    const data = [_]i32{ 1, 0, 1, 0 };
+    const data = [_]i32{
+        R.R_NaInt, 1, 1, R.R_NaInt, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    };
     const vec = MyAltLogical.init(data[0..]);
-    if (zigr_convert.argminLogical(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminLogical(vec) != 7) return R.Rf_ScalarReal(0.0);
+    const missing = [_]i32{ R.R_NaInt, R.R_NaInt };
+    if (zigr_convert.argminLogical(MyAltLogical.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_altlogical_argmax_direct() SEXP {
-    const data = [_]i32{ 0, 1, 1, 0 };
+    const data = [_]i32{
+        R.R_NaInt, 0, 0, R.R_NaInt, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
     const vec = MyAltLogical.init(data[0..]);
-    if (zigr_convert.argmaxLogical(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argmaxLogical(vec) != 7) return R.Rf_ScalarReal(0.0);
+    const missing = [_]i32{ R.R_NaInt, R.R_NaInt };
+    if (zigr_convert.argmaxLogical(MyAltLogical.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -1352,16 +1368,59 @@ export fn zigr_test_altrep_max_simd() SEXP {
 }
 
 export fn zigr_test_altrep_argmin_simd() SEXP {
-    const data = [_]f64{ 4.0, -1.0, 9.0, -1.0, 3.0 };
+    var data = [_]f64{
+        0.0, 4.0, 3.0, std.math.nan(f64), 2.0, 1.0, 5.0, -1.0, -1.0,
+        8.0, 7.0, 8.0, 6.0,               5.0, 4.0, 3.0, 2.0,  1.0,
+    };
+    data[0] = R.NA_REAL();
     const vec = MyAlt.init(data[0..]);
-    if (zigr_convert.argmin(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argmin(vec) != 7) return R.Rf_ScalarReal(0.0);
+    var missing = [_]f64{ 0.0, std.math.nan(f64) };
+    missing[0] = R.NA_REAL();
+    if (zigr_convert.argmin(MyAlt.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_altrep_argmax_simd() SEXP {
-    const data = [_]f64{ 4.0, 9.0, 9.0, -1.0, 3.0 };
+    var data = [_]f64{
+        0.0, 4.0, 3.0, std.math.nan(f64), 2.0, 1.0, 5.0, 9.0, 9.0,
+        8.0, 7.0, 8.0, 6.0,               5.0, 4.0, 3.0, 2.0, 1.0,
+    };
+    data[0] = R.NA_REAL();
     const vec = MyAlt.init(data[0..]);
-    if (zigr_convert.argmax(vec) != 1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argmax(vec) != 7) return R.Rf_ScalarReal(0.0);
+    var missing = [_]f64{ 0.0, std.math.nan(f64) };
+    missing[0] = R.NA_REAL();
+    if (zigr_convert.argmax(MyAlt.init(missing[0..])) != -1) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_argminmax_missing_contract() SEXP {
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 5));
+    const integer = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 5));
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 5));
+    defer R.Rf_unprotect(3);
+
+    const real_values = [_]f64{ R.NA_REAL(), 4.0, std.math.nan(f64), -1.0, 9.0 };
+    const int_values = [_]i32{ R.R_NaInt, 4, -1, R.R_NaInt, 9 };
+    const logical_values = [_]i32{ R.R_NaInt, 1, 0, R.R_NaInt, 1 };
+    for (real_values, 0..) |value, i| R.REAL(real)[i] = value;
+    for (int_values, 0..) |value, i| R.INTEGER(integer)[i] = value;
+    for (logical_values, 0..) |value, i| R.LOGICAL(logical)[i] = value;
+
+    if (zigr_convert.argmin(real) != 3 or zigr_convert.argmax(real) != 4) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminInt(integer) != 2 or zigr_convert.argmaxInt(integer) != 4) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminLogical(logical) != 2 or zigr_convert.argmaxLogical(logical) != 1) return R.Rf_ScalarReal(0.0);
+
+    for (0..5) |i| {
+        R.REAL(real)[i] = if (i % 2 == 0) R.NA_REAL() else std.math.nan(f64);
+        R.INTEGER(integer)[i] = R.R_NaInt;
+        R.LOGICAL(logical)[i] = R.R_NaInt;
+    }
+    if (zigr_convert.argmin(real) != -1 or zigr_convert.argmax(real) != -1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminInt(integer) != -1 or zigr_convert.argmaxInt(integer) != -1) return R.Rf_ScalarReal(0.0);
+    if (zigr_convert.argminLogical(logical) != -1 or zigr_convert.argmaxLogical(logical) != -1) return R.Rf_ScalarReal(0.0);
+
     return R.Rf_ScalarReal(1.0);
 }
 

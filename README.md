@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-    <img src="https://img.shields.io/badge/version-0.0.10-0f766e?style=for-the-badge" alt="Version 0.0.10" />
+    <img src="https://img.shields.io/badge/version-0.0.11-0f766e?style=for-the-badge" alt="Version 0.0.11" />
     <img src="https://img.shields.io/badge/zig-0.16.0-0f766e?style=for-the-badge&logo=zig&logoColor=white" alt="Zig 0.16.0" />
     <img src="https://img.shields.io/badge/r-4.6%2B-0f766e?style=for-the-badge&logo=r&logoColor=white" alt="R 4.6+" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7c3aed?style=for-the-badge" alt="License MIT" /></a>
@@ -17,28 +17,28 @@
 <p align="center">
     <img src="https://img.shields.io/badge/build-zig%20build%20test-16a34a?style=for-the-badge&logo=zig&logoColor=white" alt="zig build test" />
     <img src="https://img.shields.io/github/actions/workflow/status/eneskemalergin/zigr/ci.yml?style=for-the-badge&label=CI&logo=github&logoColor=white" alt="CI" />
-    <img src="https://img.shields.io/badge/cross--check-5%2F5-16a34a?style=for-the-badge" alt="Cross-compilation 5/5" />
+    <img src="https://img.shields.io/badge/compile--check-5%2F5-16a34a?style=for-the-badge" alt="Compile-check 5/5" />
 </p>
 
 <p align="center">
     <img src="https://img.shields.io/badge/status-experimental-f59e0b?style=for-the-badge" alt="Experimental" />
 </p>
 
-Cross-compile R extensions to all three CRAN targets from a single binary. No Cargo, no Makevars, no cross-toolchain setup.
+Compile-check R extension source for the declared Linux, macOS, and Windows targets with one Zig toolchain. Producing a loadable foreign extension still requires target-matched R libraries plus link, load, and runtime validation.
 
 ---
 
 R extensions need compiled code. Normally that means three different build systems depending on backend: autotools + configure for C, R CMD SHLIB for Rcpp, Cargo + rustup for extendr. Each requires a different cross-compilation setup.
 
-zigr is a Zig library that wraps R's C API as Zig structs plus a build.zig that links R headers. Write Zig, run `zig build`, get a shared library. That is the whole flow.
+zigr is a Zig library that wraps a focused R C API surface and provides build primitives for package authors. This repository compile-checks the library and builds its runtime-test shared library; a package supplies its own `R_init_<pkg>` entry point and final artifact configuration.
 
 ## Why cross-compilation matters
 
 R packages on CRAN need to ship binaries for x86_64 Linux, aarch64 macOS, and x86_64 Windows. Building for Windows from Linux normally means you install MinGW-w64 or a Windows cross-toolchain. For Rcpp you need a cross-compiled libstdc++. For extendr you need Rust std for the Windows target.
 
-Zig ships its own target libs in the compiler binary. One file, 165 MB. `zig build -Dtarget=x86_64-windows-gnu` produces a working Windows .dll from Linux, no extra tools. macOS aarch64 from Linux works the same way.
+Zig ships compiler support for its target triples. zigr currently uses that support to compile-check five 64-bit targets from Linux. A foreign `.dll` or `.dylib` is not considered supported until it is linked against the matching R runtime, loaded, and exercised on that target.
 
-The Zig 0.16.0 binary is bundled in this repo. No download, no PATH changes.
+Install Zig 0.16.0 or put it on `PATH`. A local `zig-0.16.0/` directory may exist in a development workspace, but it is git-ignored and is not included in a fresh clone.
 
 ## Build
 
@@ -60,16 +60,18 @@ On Debian/Ubuntu, `R_HOME` is typically `/usr/lib/R` but the include directory i
 ```bash
 export R_HOME=/usr/lib/R
 export R_INCLUDE=/usr/share/R/include
-zig build check   # verify setup + formatting
+zig build check   # compile-check the selected target
 zig build test    # run standalone tests
 Rscript tests/run_r_tests.R  # build and run the live R runtime suite
 ```
 
+Run `zig build fmt` separately for formatting. Commands that compile zigr fail with a direct R-header diagnostic when neither `R_INCLUDE`, `R_HOME/include`, nor `-Dr-include` resolves.
+
 ## What you get
 
-22 public modules covering the full R C API surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
+23 public modules covering zigr's declared R extension surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
 
-- SEXP types and 24 classification helpers
+- SEXP types and 22 `is*` classification helpers
 - PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated wrappers release call-scoped scratch on normal return and R errors
 - Type conversion (real, int, string, logical, raw, complex)
 - Explicit borrowed-or-owned export views for numeric and complex inputs, plus a header-free read-only string view via `convert.StringSliceView`
@@ -133,13 +135,13 @@ Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conve
 | Contract | Selection | Evidence |
 | --- | --- | --- |
 | `r4_6_x86_64` | R 4.6 headers, little-endian x86_64 target, and no force-fallback flag | Local R 4.6 parity suite and locked boundary budgets |
-| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Full live R suite when forced; declared five-target Debug compile matrix and 32-bit fallback compile check |
+| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Full live R suite when forced; declared five-target Debug compile matrix |
 
 The direct contract keeps its offsets in one private layout definition. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
 
 Use `zig build abi-info` to print the selected contract and translated R header version. Pass `-Dchecked-sexp=true` to force the checked path for tests or diagnostics. The offsets cannot come from public `offsetof` probes because installed R headers keep `SEXPREC` opaque. zigr therefore keeps the two R 4.x offsets private, gates them by pointer width, byte order, and R major version, and checks them against public accessors in the live runtime suite.
 
-CI runs the live R suite once with the native contract and once with `checked_r_api` forced. A compile-only 32-bit check also selects the fallback branch. These checks prove same-host semantic parity and fallback compilation; they are not a 32-bit R runtime or cross-target link/load claim.
+CI runs the live R suite once with the native contract and once with `checked_r_api` forced. The non-x86_64 compile targets select the fallback branch. These checks prove same-host semantic parity and fallback compilation; they are not cross-target link, load, or runtime claims.
 
 ### Native-state methods
 
@@ -233,18 +235,18 @@ Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
 
 The exporter validates the complete artifact again and rejects a stale budget policy or a failed budget. A full six-runner release baseline still uses an unfiltered `run_benchmarks.R` invocation. Every path keeps the unchanged adaptive policy. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
 
-This bare core does not close the later work. The primary direct-layout gate and checked fallback are implemented, while cross-target runtime ABI parity remains open. Advanced ALTREP callback and lifecycle completion remains integration work. The active core-readiness program must establish the bounded comparison set, close the API inventory, prove R semantics and lifecycle safety, run package-shaped public-path comparisons, and prove portability. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
+This bare core does not close the later work. The primary direct-layout gate, checked fallback, advanced ALTREP callback workloads, and owned ALTREP lifecycle proof are complete, while cross-target runtime ABI parity remains open. The active core-readiness program must establish the bounded comparison set, close the API inventory, prove source-wide R semantics and lifecycle safety, run package-shaped public-path comparisons, and prove portability. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
 
 ## CI
 
 Every push and pull request runs:
 
 - `zig fmt` (format compliance)
-- One shared-cache cross-compilation job (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
+- One shared-cache Debug compile-check job (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
 - `zig build test` (required unit tests on Ubuntu, macOS, and Windows with R 4.6.1)
 - Live R runtime tests on Ubuntu, including generated wrappers, GC, finalizers, and unwind recovery
 
-All three native jobs are required. The cross targets run sequentially in one bounded Ubuntu job so R and Zig are installed once while every target still reports as a separate step. Native cross-compilation from Linux covers all three CRAN targets plus aarch64 variants.
+All three native jobs are required. The cross targets run sequentially in one bounded Ubuntu job so R and Zig are installed once while every target still reports as a separate step. The Linux-hosted job proves source compilation only; native Windows and macOS jobs separately prove their unit suites.
 
 ## Performance
 
@@ -269,7 +271,7 @@ build.zig              Module definition + tests
 build.zig.zon          Package manifest (zero dependencies)
 src/
 ├── root.zig           Library entry, re-exports all submodules
-├── sexp.zig           SEXPTYPE enum, 24 classification helpers
+├── sexp.zig           SEXPTYPE enum, guarded access, 22 is* helpers
 ├── protect.zig        PROTECT/UNPROTECT with depth tracking
 ├── cleanup.zig        R_UnwindProtect bridge + cleanup stack
 ├── convert.zig        Type conversion + fixed struct schemas
@@ -278,6 +280,7 @@ src/
 ├── memory.zig         RAllocator, unwind arena, and opt-in allocation counters
 ├── rng.zig            GetRNGstate / PutRNGstate wrappers
 ├── dataframe.zig      DataFrame wrapper, build
+├── factor.zig         Factor construction and validation
 ├── attrib.zig         getAttrib, setAttrib, setNames, setClass, setDim
 ├── s4.zig             S4 object detection and slot access
 ├── altrep.zig         ALTREP detection, data1/data2, class name
@@ -289,6 +292,7 @@ src/
 ├── embed.zig          rCodeEval / rRawEval
 ├── export.zig         Comptime export generator
 ├── lang.zig           CAR, CDR, CONS, symbols, calls
+├── symbols.zig        Open-addressing symbol cache
 ├── eval.zig           rEval, findVar, findFunction, call, setVar
 ├── raw.zig            Zero-copy vector data access
 ├── rvector.zig        Typed RVector wrapper with arithmetic
@@ -298,12 +302,12 @@ src/
 
 ## To use zigr in your R package
 
-Write a `build.zig` that imports zigr's module and links R. Use the repo's `build.zig` as a reference. Point zig at R_HOME:
+Write a `build.zig` that imports zigr's module and links R. Use the repo's `build.zig` as a reference. Set R paths through the environment or the supported build options:
 
 ```bash
 export R_HOME=/usr/lib/R && zig build
 # or
-zig build -Dr-home=/usr/lib/R
+zig build -Dr-include=/usr/share/R/include -Dr-lib=/usr/lib/R/lib
 ```
 
 For exported read-only character vectors, prefer `zigr.convert.StringSliceView` over `[]const []const u8`. The old slice-of-slices form still works, but it allocates Zig slice headers. `StringSliceView` avoids those headers and lets you iterate element-by-element; encoding translation may still use R-managed storage for the enclosing call.

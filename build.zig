@@ -47,8 +47,17 @@ pub fn build(b: *std.Build) void {
 
     const r = rBuild(b, target, optimize);
     if (!r.has_r) {
-        const check_step = b.step("check", "Cross-compilation check (needs R headers)");
-        _ = check_step;
+        const missing_r = b.addFail(
+            "R headers not found; set R_INCLUDE or R_HOME, or pass -Dr-include=<path>",
+        );
+        const check_step = b.step("check", "Cross-compilation check (requires R headers)");
+        check_step.dependOn(&missing_r.step);
+        const test_step = b.step("test", "Run zigr tests (requires R headers)");
+        test_step.dependOn(&missing_r.step);
+        const rtest_step = b.step("rtest", "Build R runtime test library (requires R headers)");
+        rtest_step.dependOn(&missing_r.step);
+        const abi_info_step = b.step("abi-info", "Report the SEXP ABI contract (requires R headers)");
+        abi_info_step.dependOn(&missing_r.step);
         return;
     }
 

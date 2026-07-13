@@ -955,6 +955,7 @@ fn minmaxIntChunks(comptime find_min: bool, iter: anytype, empty_value: i32) i32
 
 fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
     const lanes = simd.i32_lanes;
+    const na_vec: @Vector(lanes, i32) = @splat(R.R_NaInt);
     const lane_offsets: @Vector(lanes, usize) = comptime blk: {
         var seq: [lanes]usize = undefined;
         for (&seq, 0..) |*s, k| s.* = k;
@@ -966,21 +967,25 @@ fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
     var best_idx: usize = 0;
 
     while (iter.next()) |chunk| {
-        var local_best = chunk.data[0];
-        var local_idx = chunk.offset;
-        var base: usize = 1;
+        var seed: usize = 0;
+        while (seed < chunk.data.len and chunk.data[seed] == R.R_NaInt) : (seed += 1) {}
+        if (seed == chunk.data.len) continue;
+
+        var local_best = chunk.data[seed];
+        var local_idx = chunk.offset + seed;
+        var base: usize = 0;
 
         if (chunk.data.len >= lanes) {
-            var vec_val: @Vector(lanes, i32) = @splat(chunk.data[0]);
-            var vec_idx: @Vector(lanes, usize) = @splat(chunk.offset);
-            base = 0;
+            var vec_val: @Vector(lanes, i32) = @splat(local_best);
+            var vec_idx: @Vector(lanes, usize) = @splat(local_idx);
             const end = chunk.data.len - (chunk.data.len % lanes);
             while (base < end) : (base += lanes) {
                 const values: @Vector(lanes, i32) = chunk.data[base..][0..lanes].*;
-                const cmp = if (find_min) values < vec_val else values > vec_val;
+                const candidates = @select(i32, values == na_vec, vec_val, values);
+                const cmp = if (find_min) candidates < vec_val else candidates > vec_val;
                 const base_offset: @Vector(lanes, usize) = @splat(chunk.offset + base);
                 const idx = base_offset + lane_offsets;
-                vec_val = @select(i32, cmp, values, vec_val);
+                vec_val = @select(i32, cmp, candidates, vec_val);
                 vec_idx = @select(usize, cmp, idx, vec_idx);
             }
 
@@ -989,7 +994,8 @@ fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
             local_best = vals[0];
             local_idx = idxs[0];
             for (1..lanes) |j| {
-                const better = if (find_min) vals[j] < local_best else vals[j] > local_best;
+                const better_value = if (find_min) vals[j] < local_best else vals[j] > local_best;
+                const better = better_value or (vals[j] == local_best and idxs[j] < local_idx);
                 if (better) {
                     local_best = vals[j];
                     local_idx = idxs[j];
@@ -998,9 +1004,11 @@ fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
         }
 
         while (base < chunk.data.len) : (base += 1) {
-            const better = if (find_min) chunk.data[base] < local_best else chunk.data[base] > local_best;
+            const value = chunk.data[base];
+            if (value == R.R_NaInt) continue;
+            const better = if (find_min) value < local_best else value > local_best;
             if (better) {
-                local_best = chunk.data[base];
+                local_best = value;
                 local_idx = chunk.offset + base;
             }
         }
@@ -1012,7 +1020,8 @@ fn argminmaxIntChunks(comptime find_min: bool, iter: anytype) i64 {
             continue;
         }
 
-        const better = if (find_min) local_best < best else local_best > best;
+        const better_value = if (find_min) local_best < best else local_best > best;
+        const better = better_value or (local_best == best and local_idx < best_idx);
         if (better) {
             best = local_best;
             best_idx = local_idx;
@@ -1223,21 +1232,25 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
     var iter = RealChunkIter.init(sexp);
 
     while (iter.next()) |chunk| {
-        var local_best = chunk.data[0];
-        var local_idx = chunk.offset;
-        var base: usize = 1;
+        var seed: usize = 0;
+        while (seed < chunk.data.len and std.math.isNan(chunk.data[seed])) : (seed += 1) {}
+        if (seed == chunk.data.len) continue;
+
+        var local_best = chunk.data[seed];
+        var local_idx = chunk.offset + seed;
+        var base: usize = 0;
 
         if (chunk.data.len >= lanes) {
-            var vec_val: @Vector(lanes, f64) = @splat(chunk.data[0]);
-            var vec_idx: @Vector(lanes, usize) = @splat(chunk.offset);
-            base = 0;
+            var vec_val: @Vector(lanes, f64) = @splat(local_best);
+            var vec_idx: @Vector(lanes, usize) = @splat(local_idx);
             const end = chunk.data.len - (chunk.data.len % lanes);
             while (base < end) : (base += lanes) {
-                const v: @Vector(lanes, f64) = chunk.data[base..][0..lanes].*;
-                const cmp = if (find_min) v < vec_val else v > vec_val;
+                const values: @Vector(lanes, f64) = chunk.data[base..][0..lanes].*;
+                const candidates = @select(f64, values != values, vec_val, values);
+                const cmp = if (find_min) candidates < vec_val else candidates > vec_val;
                 const base_offset: @Vector(lanes, usize) = @splat(chunk.offset + base);
                 const idx = base_offset + lane_offsets;
-                vec_val = @select(f64, cmp, v, vec_val);
+                vec_val = @select(f64, cmp, candidates, vec_val);
                 vec_idx = @select(usize, cmp, idx, vec_idx);
             }
             const vals: [lanes]f64 = vec_val;
@@ -1245,7 +1258,8 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
             local_best = vals[0];
             local_idx = idxs[0];
             for (1..lanes) |j| {
-                const better = if (find_min) vals[j] < local_best else vals[j] > local_best;
+                const better_value = if (find_min) vals[j] < local_best else vals[j] > local_best;
+                const better = better_value or (vals[j] == local_best and idxs[j] < local_idx);
                 if (better) {
                     local_best = vals[j];
                     local_idx = idxs[j];
@@ -1254,9 +1268,11 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
         }
 
         while (base < chunk.data.len) : (base += 1) {
-            const better = if (find_min) chunk.data[base] < local_best else chunk.data[base] > local_best;
+            const value = chunk.data[base];
+            if (std.math.isNan(value)) continue;
+            const better = if (find_min) value < local_best else value > local_best;
             if (better) {
-                local_best = chunk.data[base];
+                local_best = value;
                 local_idx = chunk.offset + base;
             }
         }
@@ -1268,14 +1284,15 @@ fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
             continue;
         }
 
-        const better = if (find_min) local_best < best else local_best > best;
+        const better_value = if (find_min) local_best < best else local_best > best;
+        const better = better_value or (local_best == best and local_idx < best_idx);
         if (better) {
             best = local_best;
             best_idx = local_idx;
         }
     }
 
-    return @intCast(best_idx);
+    return if (initialized) @intCast(best_idx) else -1;
 }
 
 pub fn argmin(sexp: SEXP) i64 {
