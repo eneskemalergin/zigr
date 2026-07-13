@@ -144,7 +144,7 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
   r_extensions <- extSoftVersion()
   environment_names <- c(
     "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_NUM_THREADS",
-    "R_LIBS", "R_LIBS_USER", "R_INCLUDE", "R_LIB", "ZIG", "ZIGR_OPTIMIZE",
+    "R_LIBS", "R_LIBS_USER", "R_INCLUDE", "R_LIB", "ZIG", "ZIGR_OPTIMIZE", "ZIGR_CHECKED_SEXP",
     "ZIGR_TARGET", "ZIGR_CPU_FEATURES", "ZIGR_SEXP_ABI", "CC", "CFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH",
     "LANG", "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES"
   )
@@ -160,7 +160,7 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
     tryCatch(Sys.getlocale(category), error = function(error) "")
   }
   list(
-    schema_version = 1L,
+    schema_version = 2L,
     captured_at = run_manifest_timestamp(),
     source_tree = source_tree_identity(source_root),
     host = list(

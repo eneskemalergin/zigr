@@ -157,6 +157,15 @@ validate_environment_manifest <- function(environment) {
   require_scalar(environment$build, "optimization", "optimization mode")
   require_scalar(environment$build, "target", "target triple")
   require_scalar(environment$build, "cpu_features", "CPU feature settings")
+  environment_schema <- if (is.null(environment$schema_version)) 1L else as.integer(environment$schema_version)
+  if (environment_schema >= 2L) {
+    if (is.null(environment$build$checked_sexp) ||
+        length(environment$build$checked_sexp) != 1L ||
+        !is.logical(environment$build$checked_sexp) ||
+        is.na(environment$build$checked_sexp)) {
+      stop("environment metadata missing checked SEXP mode")
+    }
+  }
   require_scalar(environment$blas, "vendor", "BLAS vendor")
   require_scalar(environment$blas, "version_or_path", "BLAS version or path")
   require_scalar(environment$locale, "LC_ALL", "LC_ALL locale")

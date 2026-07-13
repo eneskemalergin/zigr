@@ -150,6 +150,7 @@ tests <- list(
   "zigr_test_string_representations",
   "zigr_test_altstring_inputs",
   "zigr_test_altrep_owned_storage",
+  "zigr_test_altrep_finalizer_lifecycle",
   "zigr_test_altrep_serialization_contract",
   "zigr_test_altrep_serialized_state_validation",
   "zigr_test_altrep_summary_contract",

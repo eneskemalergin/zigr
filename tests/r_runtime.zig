@@ -1687,6 +1687,53 @@ export fn zigr_test_altrep_owned_storage() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+fn forceGcAndDrainFinalizers() void {
+    R.R_gc();
+    R.R_RunPendingFinalizers();
+}
+
+fn finalizerDiagnosticsEqual(invocations: usize, destructions: usize) bool {
+    const diagnostics = MyAlt.finalizerDiagnostics();
+    return diagnostics.invocations == invocations and diagnostics.destructions == destructions;
+}
+
+export fn zigr_test_altrep_finalizer_lifecycle() SEXP {
+    // Clear native wrappers left unreachable by earlier tests before establishing
+    // this test's baseline.
+    forceGcAndDrainFinalizers();
+    forceGcAndDrainFinalizers();
+    MyAlt.resetFinalizerDiagnostics();
+
+    var duplicates = protect.scoped(R.Rf_allocVector(R.VECSXP, 2));
+    defer duplicates.deinit();
+    const values = [_]f64{ 1.0, 2.0, 3.0 };
+    const owned = protect.protect(MyAlt.init(values[0..]));
+    const deep = protect.protect(R.Rf_duplicate(owned));
+    const shallow = protect.protect(R.Rf_shallow_duplicate(owned));
+    _ = R.SET_VECTOR_ELT(duplicates.get(), 0, deep);
+    _ = R.SET_VECTOR_ELT(duplicates.get(), 1, shallow);
+    if (!finalizerDiagnosticsEqual(0, 0)) return R.Rf_ScalarReal(0.0);
+    protect.unprotectN(3);
+
+    forceGcAndDrainFinalizers();
+    if (!finalizerDiagnosticsEqual(1, 1)) return R.Rf_ScalarReal(0.0);
+    R.R_RunPendingFinalizers();
+    if (!finalizerDiagnosticsEqual(1, 1)) return R.Rf_ScalarReal(0.0);
+    forceGcAndDrainFinalizers();
+    if (!finalizerDiagnosticsEqual(1, 1)) return R.Rf_ScalarReal(0.0);
+    if (R.ALTREP(deep) != 0 or R.ALTREP(shallow) != 0) return R.Rf_ScalarReal(0.0);
+    R.REAL(deep)[0] = 20.0;
+    R.REAL(shallow)[1] = 30.0;
+    if (R.REAL(deep)[0] != 20.0 or R.REAL(deep)[1] != 2.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(shallow)[0] != 1.0 or R.REAL(shallow)[1] != 30.0) return R.Rf_ScalarReal(0.0);
+
+    _ = R.SET_VECTOR_ELT(duplicates.get(), 0, R.R_NilValue);
+    _ = R.SET_VECTOR_ELT(duplicates.get(), 1, R.R_NilValue);
+    forceGcAndDrainFinalizers();
+    forceGcAndDrainFinalizers();
+    return R.Rf_ScalarReal(if (finalizerDiagnosticsEqual(1, 1)) 1.0 else 0.0);
+}
+
 fn ownedAltrepRoundTrip(value: SEXP, version: serialize_mod.Version) SEXP {
     var serialized = protect.scoped(serialize_mod.toVectorVersion(value, version));
     defer serialized.deinit();

@@ -258,11 +258,12 @@ fn wrapFromAltrep(comptime kind: AltKind, x: R.SEXP) *Wrap(kind) {
     return wrapFromData1(kind, R.R_altrep_data1(x));
 }
 
-fn freeWrapImpl(comptime kind: AltKind, sexp: R.SEXP) void {
-    const raw = R.R_ExternalPtrAddr(sexp) orelse return;
+fn freeWrapImpl(comptime kind: AltKind, sexp: R.SEXP) bool {
+    const raw = R.R_ExternalPtrAddr(sexp) orelse return false;
     R.R_ClearExternalPtr(sexp);
     const wrap: *Wrap(kind) = @ptrCast(@alignCast(raw));
     destroyWrap(kind, wrap);
+    return true;
 }
 
 fn lengthImpl(comptime kind: AltKind, x: R.SEXP) R.R_xlen_t {
@@ -706,6 +707,13 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
 
         var class: R.R_altrep_class_t = undefined;
         var registered: bool = false;
+        pub const FinalizerDiagnostics = struct {
+            invocations: usize,
+            destructions: usize,
+        };
+
+        var finalizer_invocations: usize = 0;
+        var finalizer_destructions: usize = 0;
 
         fn makeClass(info: anytype) R.R_altrep_class_t {
             const cls = buildClass(kind, pkg, name, info);
@@ -728,6 +736,21 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         pub fn register(info: anytype) void {
             class = makeClass(info);
             registered = true;
+        }
+
+        /// Returns class-scoped counts of finalizer calls and actual wrapper destructions.
+        pub fn finalizerDiagnostics() FinalizerDiagnostics {
+            return .{
+                .invocations = finalizer_invocations,
+                .destructions = finalizer_destructions,
+            };
+        }
+
+        /// Resets only the diagnostic counters; it does not change ownership or finalizer state.
+        /// Collect older instances first when measuring one bounded lifecycle interval.
+        pub fn resetFinalizerDiagnostics() void {
+            finalizer_invocations = 0;
+            finalizer_destructions = 0;
         }
 
         /// Returns an unprotected version-1 state record with an ordinary vector snapshot.
@@ -782,7 +805,8 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                     pending.data1 = d1.get();
                     R.R_RegisterCFinalizerEx(d1.get(), struct {
                         fn f(sexp: R.SEXP) callconv(.c) void {
-                            freeWrapImpl(kind, sexp);
+                            finalizer_invocations +|= 1;
+                            if (freeWrapImpl(kind, sexp)) finalizer_destructions +|= 1;
                         }
                     }.f, 1);
                     const result = R.R_new_altrep(class, d1.get(), R.R_NilValue);
@@ -1015,4 +1039,14 @@ test "ALTREP region bounds preserve long requests and reject invalid ranges" {
             regionBounds(long_len, start, R.R_XLEN_T_MAX).?,
         );
     }
+}
+
+test "owned ALTREP finalizer diagnostics expose class-scoped counts" {
+    const DiagnosticAltReal = AltReal("zigr_test", "diagnostic_real");
+
+    try std.testing.expectEqual(
+        @TypeOf(DiagnosticAltReal.finalizerDiagnostics),
+        fn () DiagnosticAltReal.FinalizerDiagnostics,
+    );
+    try std.testing.expectEqual(@TypeOf(DiagnosticAltReal.resetFinalizerDiagnostics), fn () void);
 }

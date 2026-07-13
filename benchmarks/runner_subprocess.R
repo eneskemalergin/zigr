@@ -152,7 +152,7 @@ all_tasks <- list(
        args = function() list(1000000L)),
   list(id = "48_weakref_lifecycle", name = "Weak-reference Create/Access (4096)",
        args = function() list(4096L)),
-  list(id = "49_owned_altrep_create", name = "Owned ALTREP Create (n=1e6)",
+  list(id = "49_owned_altrep_create", name = "Owned ALTREP Callbacks (n=1e6)",
        args = function() list(1000000L)),
   list(id = "50_boundary_zero_generated", name = "Generated zero-argument boundary",
        args = function() list()),

@@ -29,6 +29,15 @@ fi
 
 OPTIMIZE=${ZIGR_OPTIMIZE:-ReleaseFast}
 ZIG_ARGS=("-Doptimize=$OPTIMIZE" "-Dr-include=$R_INCLUDE" "-Dr-lib=$R_LIB")
+CHECKED_SEXP=$(printf '%s' "${ZIGR_CHECKED_SEXP:-false}" | tr '[:upper:]' '[:lower:]')
+case "$CHECKED_SEXP" in
+  1|true|yes|on) ZIG_ARGS+=("-Dchecked-sexp=true") ;;
+  0|false|no|off|'') ;;
+  *)
+    echo "ZIGR_CHECKED_SEXP must be a boolean value" >&2
+    exit 1
+    ;;
+esac
 if [ -n "${ZIGR_TARGET:-}" ] && [ "$ZIGR_TARGET" != "native" ]; then
   ZIG_ARGS+=("-Dtarget=$ZIGR_TARGET")
 fi
