@@ -39,9 +39,13 @@ Direct ReleaseFast run `20260713T051441Z-pid2` passes the reviewed task 49 callb
 
 `task_manifest.csv` is the canonical task-policy source. It owns stable task IDs, task groups, display names, workload categories, expected result contracts, correctness policy, comparability, aggregate membership, and exclusion notes. The executable argument closures remain in `runner_subprocess.R` as task specs selected by manifest ID; the `input_factory` value `task_spec.args` names that adapter boundary without duplicating R code in CSV.
 
-The manifest distinguishes `r_reference`, `native_invariant`, and `nondeterministic` correctness policies. It marks API-overhead and nondeterministic tasks as `non_comparable` for the primary aggregate while retaining them in task-level reports. Runner configurations and task specs must match the manifest before timing starts. Run `Rscript check_coverage.R` for the focused preflight; `run_benchmarks.R` runs it automatically before any runner.
+`evidence_manifest.json` is the normalized evidence companion. It expands to one disposition for every combination of 83 tasks and seven runners, plus every combination of F01 through F12 and the same runners. Each cell records the implementation role, evidence use, path kind and public path, representation strategy, kernel and contract identity, fixture version, comparison tier, mutation policy, setup policy, timing eligibility, reason, and owner. The frozen dispositions are `applicable`, `control_only`, `product_gap`, `not_meaningful_for_product`, `fixture_not_implemented`, `fixture_invalid`, and `supported_and_executable`.
 
-Runner JSONs in `runners/` map task IDs to exported symbols. Input generators live in `runner_subprocess.R`. They are shared across all runners.
+Runner JSON files own executable symbols, not applicability. `optional_tasks` is generated in memory from non-executable evidence cells and checked against the export map. The frozen classifications deliberately make no row eligible as accepted comparative timing evidence and no row Tier A. Legacy diagnostic execution can still collect timings, but those timings cannot support a product claim. Remaining harness and fixture work covers deterministic inputs, pure-R provenance, source-to-artifact verification, shared fixture proof, and detailed row repair.
+
+The manifest distinguishes `r_reference`, `native_invariant`, and `nondeterministic` correctness policies. It marks API-overhead and nondeterministic tasks as `non_comparable` for the primary aggregate while retaining them in task-level reports. Runner configurations and task specs must match both manifests before timing starts. Run `Rscript check_coverage.R` for the focused preflight; it runs the evidence schema negative suite and the R task-spec check without native builds. `run_benchmarks.R` runs this preflight before it creates run artifacts or invokes `build_all.sh`, and `build_all.sh` repeats the schema test before native compilation.
+
+Input generators live in `runner_subprocess.R`. They are shared across all runners.
 
 ## Correctness validation
 

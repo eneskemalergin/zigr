@@ -6,16 +6,6 @@
   "call_type": ".Call",
   "registered_symbols": true,
   "package_name": "bench",
-  "optional_tasks": [
-    "48_weakref_lifecycle",
-    "49_owned_altrep_create",
-    "76_string_view_one", "77_string_cache_build",
-    "78_string_cache_one", "79_string_headers_one",
-    "80_string_view_repeated", "81_string_cache_repeated",
-    "82_string_headers_repeated", "83_raw_view",
-    "84_raw_copy", "85_complex_view",
-    "86_complex_return"
-  ],
   "registration_fixture": {
     "scalar": "c_fixture_scalar",
     "integer": "c_fixture_int_scalar",

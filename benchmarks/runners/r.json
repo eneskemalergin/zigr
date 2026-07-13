@@ -2,7 +2,6 @@
     "name": "r",
     "label": "R",
     "call_type": "r",
-    "optional_tasks": ["48_weakref_lifecycle", "49_owned_altrep_create"],
     "exports": {
         "07a_protect_shallow": "r_bench_protect_shallow",
         "07b_protect_scaling": "r_bench_protect_scaling",

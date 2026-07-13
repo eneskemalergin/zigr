@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "vocabulary_version": "p4.0-2026-07-13",
+  "runners": ["c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"],
+  "fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+  "task_sets": {
+    "historical_core": [
+      "01_vectorsum", "02_elem_ops", "03_memcpy_bandwidth", "04_sort", "05_fib_recursive", "06_broadcast",
+      "07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch", "09_longjmp_safety", "10_sexp_create",
+      "11_sexp_inspect", "12_matrix_transpose", "13_matrix_rowsums", "14_matrix_rowcol_means",
+      "15_dataframe_filter", "16_list_access", "17_string_concat", "18_string_nchar", "19_string_encoding",
+      "20_factor_ops", "21_attrib_ops", "22_s4_slot_access", "23_na_propagation", "24_long_vector_idx",
+      "25_l1_arithmetic", "26_matmul", "27_crossprod", "28_cholesky", "29_lm_fit", "30_altrep_create",
+      "31_altrep_materialize", "32_altrep_elt_walk", "33_altrep_region_read", "34_altrep_sum_via_R",
+      "35_altrep_sum_native", "36_altrep_min_max", "37_altrep_no_na_query", "38_struct_convert",
+      "39_r_eval", "40_r_tryeval", "41_serialize_roundtrip", "42_external_ptr", "43_rng_stress"
+    ],
+    "p3_diagnostics": ["48_weakref_lifecycle", "49_owned_altrep_create"],
+    "rcpp_typed_control": ["05_fib_recursive"],
+    "boundary_tasks": [
+      "50_boundary_zero_generated", "51_boundary_zero_handwritten", "52_boundary_scalar_generated",
+      "53_boundary_scalar_handwritten", "54_boundary_optional_null_generated", "55_boundary_optional_null_handwritten",
+      "56_boundary_optional_typed_na_generated", "57_boundary_optional_typed_na_handwritten",
+      "58_boundary_numeric_small_generated", "59_boundary_numeric_small_handwritten",
+      "60_boundary_numeric_large_generated", "61_boundary_numeric_large_handwritten",
+      "62_boundary_altrep_integer_generated", "63_boundary_altrep_integer_handwritten",
+      "64_boundary_string_view_generated", "65_boundary_string_view_handwritten", "66_boundary_raw_generated",
+      "67_boundary_raw_handwritten", "68_boundary_complex_generated", "69_boundary_complex_handwritten",
+      "70_boundary_schema_generated", "71_boundary_schema_handwritten",
+      "72_boundary_external_method_generated", "73_boundary_external_method_handwritten",
+      "74_boundary_external_generated", "75_boundary_external_handwritten"
+    ],
+    "generated_boundary": [
+      "50_boundary_zero_generated", "52_boundary_scalar_generated", "54_boundary_optional_null_generated",
+      "56_boundary_optional_typed_na_generated", "58_boundary_numeric_small_generated",
+      "60_boundary_numeric_large_generated", "62_boundary_altrep_integer_generated",
+      "64_boundary_string_view_generated", "66_boundary_raw_generated", "68_boundary_complex_generated",
+      "70_boundary_schema_generated", "72_boundary_external_method_generated", "74_boundary_external_generated"
+    ],
+    "handwritten_boundary": [
+      "51_boundary_zero_handwritten", "53_boundary_scalar_handwritten", "55_boundary_optional_null_handwritten",
+      "57_boundary_optional_typed_na_handwritten", "59_boundary_numeric_small_handwritten",
+      "61_boundary_numeric_large_handwritten", "63_boundary_altrep_integer_handwritten",
+      "65_boundary_string_view_handwritten", "67_boundary_raw_handwritten", "69_boundary_complex_handwritten",
+      "71_boundary_schema_handwritten", "73_boundary_external_method_handwritten", "75_boundary_external_handwritten"
+    ],
+    "representation_tasks": [
+      "76_string_view_one", "77_string_cache_build", "78_string_cache_one", "79_string_headers_one",
+      "80_string_view_repeated", "81_string_cache_repeated", "82_string_headers_repeated", "83_raw_view",
+      "84_raw_copy", "85_complex_view", "86_complex_return"
+    ],
+    "cpp11_supported_tasks": [
+      "42_external_ptr", "50_boundary_zero_generated", "52_boundary_scalar_generated",
+      "54_boundary_optional_null_generated", "56_boundary_optional_typed_na_generated",
+      "58_boundary_numeric_small_generated", "60_boundary_numeric_large_generated",
+      "64_boundary_string_view_generated", "66_boundary_raw_generated", "70_boundary_schema_generated",
+      "72_boundary_external_method_generated"
+    ],
+    "cpp11_strategy_mismatch": ["62_boundary_altrep_integer_generated"],
+    "cpp11_public_gaps": ["68_boundary_complex_generated", "74_boundary_external_generated"]
+  },
+  "task_defaults": {
+    "public_path": "",
+    "kernel_id": "unverified:{runner}:{task}",
+    "contract_version": "legacy-task-contract-v1",
+    "fixture_version": "current:{runner}",
+    "mutation_policy": "unclassified",
+    "setup_policy": "legacy_shared_instance",
+    "comparison_group": "legacy:{task}",
+    "timing_eligible": false,
+    "reason": "",
+    "owner": ""
+  },
+  "fixture_defaults": {
+    "public_path": "",
+    "kernel_id": "first-wave:{fixture}:v1",
+    "contract_version": "first-wave:{fixture}:v1",
+    "fixture_version": "p4-first-wave-v1",
+    "mutation_policy": "unclassified",
+    "setup_policy": "not_timed",
+    "comparison_group": "first-wave:{fixture}",
+    "timing_eligible": false,
+    "reason": "",
+    "owner": ""
+  },
+  "task_dispositions": [
+    {
+      "runner": "zigr", "include_sets": ["generated_boundary"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "generateExports or generateMethods through registered package entry",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The generated boundary is executable, but P4.4 semantic and lifecycle proof is not complete.", "owner": "P4.4"
+    },
+    {
+      "runner": "zigr", "include_sets": ["all_tasks"], "exclude_sets": ["generated_boundary"],
+      "status": "control_only", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "direct_export", "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "These legacy direct or handwritten rows remain diagnostics until P4.5 classifies or rewrites them.", "owner": "P4.5"
+    },
+    {
+      "runner": "c_call", "include_sets": ["all_tasks"], "exclude_sets": ["p3_diagnostics", "representation_tasks"],
+      "status": "control_only", "executable": true,
+      "implementation_role": "c_control", "evidence_use": "diagnostic_control",
+      "path_kind": "registered_c", "representation_strategy": "mixed", "comparison_tier": "tier_c",
+      "reason": "Registered handwritten C is a control and native oracle, not product evidence.", "owner": "P4.5"
+    },
+    {
+      "runner": "c_call", "include_sets": ["p3_diagnostics", "representation_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "These zigr-owned diagnostics and representation rows have no current C-control contract.", "owner": "P4.5"
+    },
+    {
+      "runner": "r", "include_sets": ["all_tasks"], "exclude_sets": ["p3_diagnostics"],
+      "status": "control_only", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "mixed", "representation_strategy": "mixed", "comparison_tier": "tier_c",
+      "reason": "The current R runner mixes R loops with compiled base-R and runtime backends and is not yet a pure-R oracle.", "owner": "P4.1"
+    },
+    {
+      "runner": "r", "include_sets": ["p3_diagnostics"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The weak-reference and owned-ALTREP diagnostics are zigr-specific and have no honest R substitute.", "owner": "P4.1"
+    },
+    {
+      "runner": "rcpp", "include_sets": ["historical_core"], "exclude_sets": ["rcpp_typed_control"],
+      "status": "fixture_invalid", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "raw_ffi", "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "These 43 rows are raw SEXP implementations rather than an Rcpp generated public path.", "owner": "P4.2"
+    },
+    {
+      "runner": "rcpp", "include_sets": ["rcpp_typed_control"],
+      "status": "fixture_invalid", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "handwritten_typed", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "The recursive scalar row uses Rcpp::as and Rcpp::wrap, but it has no generated Rcpp export or package wrapper path.", "owner": "P4.2"
+    },
+    {
+      "runner": "rcpp", "include_sets": ["boundary_tasks"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The Rcpp first-wave public fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "rcpp", "include_sets": ["p3_diagnostics", "representation_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "These zigr-specific diagnostic and representation rows are not current Rcpp product contracts.", "owner": "P4.5"
+    },
+    {
+      "runner": "extendr", "include_sets": ["historical_core"],
+      "status": "fixture_invalid", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "mixed", "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The runner mixes generated wrappers, raw internal bodies, and four direct raw-FFI substitutions.", "owner": "P4.2"
+    },
+    {
+      "runner": "extendr", "include_sets": ["boundary_tasks"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The extendr first-wave public fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "extendr", "include_sets": ["p3_diagnostics", "representation_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "These zigr-specific diagnostic and representation rows are not current extendr product contracts.", "owner": "P4.5"
+    },
+    {
+      "runner": "savvy", "include_sets": ["historical_core"],
+      "status": "fixture_invalid", "executable": true,
+      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
+      "path_kind": "raw_ffi", "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The active exports predominantly use handwritten raw R FFI behind Savvy-shaped result handling.", "owner": "P4.2"
+    },
+    {
+      "runner": "savvy", "include_sets": ["boundary_tasks"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The Savvy first-wave public fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "savvy", "include_sets": ["p3_diagnostics", "representation_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "These zigr-specific diagnostic and representation rows are not current Savvy product contracts.", "owner": "P4.5"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["cpp11_supported_tasks"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "cpp11 register annotation, generated wrapper, registered symbol, and R package wrapper",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The package path is executable, but shared P4.4 semantic and lifecycle proof is pending.", "owner": "P4.4"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["historical_core"], "exclude_sets": ["cpp11_supported_tasks"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "No cpp11 public fixture currently implements this historical diagnostic task.", "owner": "P4.5"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["handwritten_boundary", "p3_diagnostics", "representation_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "Handwritten controls and zigr-specific diagnostic strategies do not define cpp11 product rows.", "owner": "P4.5"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["cpp11_strategy_mismatch"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "Task 62 declares zigr's contiguous-copy strategy, so the cpp11 F04 path requires a later strategy-aware row.", "owner": "P4.4"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["cpp11_public_gaps"],
+      "status": "product_gap", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "cpp11 0.5.5 lacks the required public complex-vector or .External product path.", "owner": "P4.3"
+    }
+  ],
+  "fixture_dispositions": [
+    {
+      "runner": "zigr", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+      "status": "applicable", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "P1 covers part of this surface, but the normalized first-wave fixture cell is not complete.", "owner": "P4.3"
+    },
+    {
+      "runner": "rcpp", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The Rcpp first-wave package fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "extendr", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The extendr first-wave package fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "savvy", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The Savvy first-wave package fixture has not been implemented.", "owner": "P4.3"
+    },
+    {
+      "runner": "r", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F11", "F12"],
+      "status": "fixture_not_implemented", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "The AST-validated pure-R first-wave oracle has not been implemented.", "owner": "P4.1"
+    },
+    {
+      "runner": "r", "include_fixtures": ["F10"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "Pure R cannot construct typed native state; registered C supplies the native oracle.", "owner": "P4.1"
+    },
+    {
+      "runner": "c_call", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
+      "status": "applicable", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "Current C controls overlap this surface, but exact normalized F01 through F12 controls are not complete.", "owner": "P4.3"
+    },
+    {
+      "runner": "cpp11", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F08", "F09", "F11"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "cpp11 register annotation through generated package wrappers and registered symbols",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The source-backed path exists; the full P4.4 semantic and lifecycle matrix remains pending.", "owner": "P4.4"
+    },
+    {
+      "runner": "cpp11", "include_fixtures": ["F07", "F12"],
+      "status": "product_gap", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "cpp11 0.5.5 has no public complex-vector wrapper, so F07 and the complete F12 output contract are unavailable.", "owner": "P4.3"
+    },
+    {
+      "runner": "cpp11", "include_fixtures": ["F10"],
+      "status": "fixture_invalid", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "diagnostic_control",
+      "path_kind": "generated_typed", "public_path": "cpp11 external_pointer through generated package wrappers and registered symbols",
+      "representation_strategy": "external_state", "comparison_tier": "tier_d",
+      "reason": "The path executes but external_pointer lacks the typed tag identity required by the complete F10 contract.", "owner": "P4.4"
+    }
+  ]
+}

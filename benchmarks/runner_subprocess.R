@@ -235,8 +235,10 @@ all_tasks <- list(
 )
 
 source(file.path(root_dir, "lib", "task_manifest.R"))
+source(file.path(root_dir, "lib", "evidence_schema.R"))
 manifest <- load_task_manifest(root_dir)
-validate_runner_config(manifest, cfg, runner_name)
+evidence <- load_evidence_manifest(root_dir, manifest)
+cfg <- hydrate_runner_config(manifest, cfg, runner_name, evidence)
 validate_task_specs(manifest, all_tasks)
 all_tasks <- order_task_specs(manifest, all_tasks)
 

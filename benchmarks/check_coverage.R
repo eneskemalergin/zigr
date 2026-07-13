@@ -2,9 +2,11 @@
 
 library(jsonlite)
 source("lib/task_manifest.R")
+source("lib/evidence_schema.R")
 
 root_dir <- normalizePath(".")
 manifest <- load_task_manifest(root_dir)
+evidence <- load_evidence_manifest(root_dir, manifest)
 
 args <- commandArgs(trailingOnly = TRUE)
 task_filter <- NULL
@@ -19,11 +21,19 @@ configs <- lapply(config_paths, fromJSON, simplifyVector = FALSE)
 runner_names <- sub("\\.json$", "", basename(config_paths))
 names(configs) <- runner_names
 active <- vapply(configs, function(cfg) is.null(cfg$status) || cfg$status != "broken", logical(1))
-for (runner in runner_names[active]) validate_runner_config(manifest, configs[[runner]], runner)
+for (runner in runner_names[active]) {
+  configs[[runner]] <- hydrate_runner_config(manifest, configs[[runner]], runner, evidence)
+}
+
+schema_test <- system2("Rscript", args = file.path("tests", "test_evidence_schema.R"))
+if (!identical(schema_test, 0L)) stop(sprintf("evidence schema tests failed with exit code %d", schema_test))
 
 runner_args <- c("runner_subprocess.R", "--runner=r", "--check-only")
 if (!is.null(task_filter)) runner_args <- c(runner_args, sprintf("--tasks=%s", paste(task_filter, collapse = ",")))
 status <- system2("Rscript", args = runner_args)
 if (!identical(status, 0L)) stop(sprintf("task-spec preflight failed with exit code %d", status))
 
-cat(sprintf("Runner coverage is valid for %d active runners and %d manifest tasks.\n", sum(active), nrow(manifest)))
+cat(sprintf(
+  "Runner coverage is valid for %d active runners, %d manifest tasks, and %d fixture cells.\n",
+  sum(active), nrow(manifest), nrow(evidence$fixture_rows)
+))

@@ -2,6 +2,7 @@
 
 library(jsonlite)
 source("lib/task_manifest.R")
+source("lib/evidence_schema.R")
 source("lib/run_manifest.R")
 source("lib/environment_manifest.R")
 
@@ -19,6 +20,7 @@ for (a in args) {
 
 root_dir <- normalizePath(".")
 manifest <- load_task_manifest(root_dir)
+evidence <- load_evidence_manifest(root_dir, manifest)
 runner_files <- Sys.glob("runners/*.json")
 if (length(runner_files) == 0) stop("no runner configs found in runners/")
 
@@ -26,6 +28,7 @@ all_runners <- list()
 for (f in runner_files) {
   cfg <- fromJSON(f, simplifyVector = FALSE)
   if (!is.null(cfg$status) && cfg$status == "broken") next
+  cfg <- hydrate_runner_config(manifest, cfg, cfg$name, evidence)
   all_runners[[cfg$name]] <- cfg
 }
 
@@ -44,6 +47,12 @@ if (!is.null(tasks_filter)) {
   selected_tasks <- manifest$task[task_numbers %in% tasks_filter]
   if (length(selected_tasks) == 0L) stop("task filter selected no manifest tasks")
 }
+
+coverage_args <- c("check_coverage.R")
+if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+blas_env <- c("OPENBLAS_NUM_THREADS=1")
+coverage_code <- system2("Rscript", args = coverage_args, env = blas_env, stdout = "", stderr = "")
+if (!identical(coverage_code, 0L)) stop(sprintf("coverage preflight failed with exit code %d", coverage_code))
 
 run_dir <- if (is.null(run_dir_arg)) {
   run_id <- paste0(format(Sys.time(), "%Y%m%dT%H%M%SZ", tz = "UTC"), "-pid", Sys.getpid())
@@ -80,7 +89,6 @@ run_metadata <- list(
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
   command = commandArgs()
 )
-blas_env <- c("OPENBLAS_NUM_THREADS=1")
 write_run_manifest(run_dir, run_metadata)
 run_complete <- FALSE
 run_error <- NULL
@@ -125,11 +133,6 @@ run_metadata$environment <- capture_environment_manifest(
 )
 validate_environment_manifest(run_metadata$environment)
 write_run_manifest(run_dir, run_metadata)
-
-coverage_args <- c("check_coverage.R")
-if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
-coverage_code <- system2("Rscript", args = coverage_args, env = blas_env, stdout = "", stderr = "")
-if (!identical(coverage_code, 0L)) stop(sprintf("coverage preflight failed with exit code %d", coverage_code))
 
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
