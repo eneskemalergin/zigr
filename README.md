@@ -233,7 +233,7 @@ Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
 
 The exporter validates the complete artifact again and rejects a stale budget policy or a failed budget. A full six-runner release baseline still uses an unfiltered `run_benchmarks.R` invocation. Every path keeps the unchanged adaptive policy. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
 
-This bare core does not close the later work. The primary direct-layout gate and checked fallback are implemented, while cross-target runtime ABI parity remains open. Advanced ALTREP callback and lifecycle completion remains integration work. The active core-readiness program must close the API inventory, compare core capabilities with the normal public paths of Rcpp, cpp11, extendr, and Savvy, prove memory and lifecycle safety, and then run package-shaped full-tool comparisons. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
+This bare core does not close the later work. The primary direct-layout gate and checked fallback are implemented, while cross-target runtime ABI parity remains open. Advanced ALTREP callback and lifecycle completion remains integration work. The active core-readiness program must establish the bounded comparison set, close the API inventory, prove R semantics and lifecycle safety, run package-shaped public-path comparisons, and prove portability. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
 
 ## CI
 
@@ -252,7 +252,7 @@ The current reports in `benchmarks/README.md` measure kernel and runner implemen
 
 - The canonical matrix covers 36 comparable handwritten or direct-entry tasks across R, C, Rcpp, extendr, Savvy, and zigr runner implementations. It helps locate kernel and R-boundary costs. It does not compare normal package-shaped public paths, and cpp11 is absent.
 - Generated zigr boundary costs are measured separately against handwritten zigr and C controls. R remains the semantic reference. These rows establish internal overhead budgets, not superiority over another tool.
-- A tool-level performance claim requires equivalent versioned package fixtures for zigr, Rcpp, cpp11, extendr, and Savvy through their normal public typed and generated paths. That evidence does not exist yet.
+- A tool-level performance claim requires equivalent versioned package fixtures for Rcpp, cpp11, extendr, and Savvy through their normal public paths. That evidence does not exist yet.
 - ALTREP summary callbacks read owned native storage without materializing an R vector. They still iterate over the values.
 - String ops are slower because each `CHAR()` call produces a new Zig slice header. The header-free `StringSliceView` avoids those Zig headers but requires adapter code in export functions; R encoding translation may still use call-scoped storage.
 

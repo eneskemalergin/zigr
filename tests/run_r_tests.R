@@ -150,6 +150,8 @@ tests <- list(
   "zigr_test_string_representations",
   "zigr_test_altstring_inputs",
   "zigr_test_altrep_owned_storage",
+  "zigr_test_altrep_serialization_contract",
+  "zigr_test_altrep_serialized_state_validation",
   "zigr_test_altrep_summary_contract",
   "zigr_test_altrep_empty_callback_contract",
   "zigr_test_altrep_real_callback_contract",
@@ -388,6 +390,70 @@ for (t in tests) {
     cat("  SKIP:", name, "-", result, "\n")
     skipped <- skipped + 1
   }
+}
+
+run_altrep_persistence_test <- function() {
+  fixture_root <- tempfile("zigr-altrep-package-")
+  package_source <- file.path(fixture_root, "zigr")
+  package_library <- file.path(fixture_root, "library")
+  dir.create(file.path(package_source, "R"), recursive = TRUE)
+  dir.create(package_library, recursive = TRUE)
+  on.exit(unlink(fixture_root, recursive = TRUE, force = TRUE), add = TRUE)
+
+  writeLines(c(
+    "Package: zigr",
+    "Type: Package",
+    "Title: zigr ALTREP Persistence Fixture",
+    "Version: 0.0.0.9000",
+    "Authors@R: person('zigr', 'tests', email = 'tests@example.invalid', role = c('aut', 'cre'))",
+    "Description: Loads the zigr runtime test library for persistent ALTREP restoration.",
+    "License: MIT",
+    "Encoding: UTF-8"
+  ), file.path(package_source, "DESCRIPTION"))
+  writeLines("", file.path(package_source, "NAMESPACE"))
+  writeLines(c(
+    ".onLoad <- function(libname, pkgname) {",
+    "  dyn.load(Sys.getenv('ZIGR_TEST_SO'))",
+    "}"
+  ), file.path(package_source, "R", "zzz.R"))
+
+  r_binary <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")
+  rscript_binary <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
+  install_output <- system2(
+    r_binary,
+    c("CMD", "INSTALL", "--no-multiarch", "--no-test-load", paste0("--library=", package_library), package_source),
+    stdout = TRUE,
+    stderr = TRUE
+  )
+  if (!is.null(attr(install_output, "status"))) return(list(ok = FALSE, output = install_output))
+
+  persistence_file <- file.path(fixture_root, "owned-altrep.rds")
+  child_script <- file.path(fixture_root, "restore.R")
+  saveRDS(.Call("zigr_test_altrep_persistence_fixture"), persistence_file, version = 3)
+  quote_r_string <- function(value) encodeString(normalizePath(value), quote = '"')
+  writeLines(c(
+    paste0(".libPaths(c(", quote_r_string(package_library), ", .libPaths()))"),
+    paste0("Sys.setenv(ZIGR_TEST_SO = ", quote_r_string(so_path), ")"),
+    "gctorture(TRUE)",
+    paste0("value <- readRDS(", quote_r_string(persistence_file), ")"),
+    "gctorture(FALSE)",
+    "stopifnot(identical(.Call('zigr_test_altrep_persistence_check', value), 1))"
+  ), child_script)
+  child_output <- system2(rscript_binary, child_script, stdout = TRUE, stderr = TRUE)
+  list(ok = is.null(attr(child_output, "status")), output = child_output)
+}
+
+persistence_result <- tryCatch(
+  run_altrep_persistence_test(),
+  error = function(e) list(ok = FALSE, output = conditionMessage(e))
+)
+if (persistence_result$ok) {
+  cat("  PASS: zigr_test_altrep_cross_process_persistence\n")
+  passed <- passed + 1
+} else {
+  cat("  FAIL: zigr_test_altrep_cross_process_persistence\n")
+  cat(paste0("    ", persistence_result$output, collapse = "\n"), "\n")
+  failed <- failed + 1
 }
 
 cat(sprintf("\nResults: %d passed, %d failed, %d skipped\n", passed, failed, skipped))

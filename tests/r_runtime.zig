@@ -26,8 +26,27 @@ const SEXP = R.SEXP;
 
 var test_dll: ?*R.DllInfo = null;
 
-export fn R_init_zigr_r_test(info: *R.DllInfo) callconv(.c) void {
+fn initTestDll(info: *R.DllInfo) void {
     test_dll = info;
+    MyAlt.register(info);
+    MyAltInt.register(info);
+    MyAltLogical.register(info);
+    MyAltRaw.register(info);
+    MyAltComplex.register(info);
+    MyAltString.register(info);
+    ExternalExports.init(info);
+    ArenaExports.init(info);
+    BoundaryExports.init(info);
+    CounterMethods.init(info);
+    _ = R.R_useDynamicSymbols(info, 1);
+}
+
+export fn R_init_zigr_r_test(info: *R.DllInfo) callconv(.c) void {
+    initTestDll(info);
+}
+
+export fn R_init_libzigr_r_test(info: *R.DllInfo) callconv(.c) void {
+    initTestDll(info);
 }
 
 export fn zigr_alloc_real() SEXP {
@@ -1665,6 +1684,343 @@ export fn zigr_test_altrep_owned_storage() SEXP {
     defer string_duplicate.deinit();
     if (R.ALTREP(string_duplicate.get()) != 0 or R.TYPEOF(string_duplicate.get()) != R.STRSXP) return R.Rf_ScalarReal(0.0);
     if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(string_duplicate.get(), 1)), 0), "beta")) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn ownedAltrepRoundTrip(value: SEXP, version: serialize_mod.Version) SEXP {
+    var serialized = protect.scoped(serialize_mod.toVectorVersion(value, version));
+    defer serialized.deinit();
+    return serialize_mod.fromVector(serialized.get());
+}
+
+export fn zigr_test_altrep_persistence_fixture() SEXP {
+    const values = [_]f64{ 1.5, R.NA_REAL(), -0.0 };
+    var result = protect.scoped(MyAlt.init(values[0..]));
+    defer result.deinit();
+    var names = protect.scoped(R.Rf_allocVector(R.STRSXP, values.len));
+    defer names.deinit();
+    for ([_][]const u8{ "one", "missing", "negative_zero" }, 0..) |name, index| {
+        R.SET_STRING_ELT(
+            names.get(),
+            @intCast(index),
+            R.Rf_mkCharLenCE(@ptrCast(name.ptr), @intCast(name.len), @as(R.cetype_t, @intCast(R.CE_UTF8))),
+        );
+    }
+    _ = R.Rf_setAttrib(result.get(), R.R_NamesSymbol, names.get());
+    return result.get();
+}
+
+export fn zigr_test_altrep_persistence_check(value: SEXP) SEXP {
+    if (R.ALTREP(value) == 0 or !std.mem.eql(u8, altrep_mod.className(value), "test_real") or
+        R.XLENGTH(value) != 3 or R.REAL_ELT(value, 0) != 1.5 or R.ISNA(R.REAL_ELT(value, 1)) == 0 or
+        !std.math.isNegativeInf(1.0 / R.REAL_ELT(value, 2)))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    const names = R.Rf_getAttrib(value, R.R_NamesSymbol);
+    if (R.TYPEOF(names) != R.STRSXP or R.XLENGTH(names) != 3 or
+        !std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(names, 2)), 0), "negative_zero"))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_serialization_contract() SEXP {
+    const empty_values = [_]f64{};
+    var empty = protect.scoped(MyAlt.init(empty_values[0..]));
+    defer empty.deinit();
+    var restored_empty = protect.scoped(ownedAltrepRoundTrip(empty.get(), .v3));
+    defer restored_empty.deinit();
+    if (R.ALTREP(restored_empty.get()) == 0 or R.XLENGTH(restored_empty.get()) != 0 or
+        R.REAL_OR_NULL(restored_empty.get()) != null)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const real_values = [_]f64{ 1.5, -0.0, R.NA_REAL(), std.math.nan(f64) };
+    var real = protect.scoped(MyAlt.init(real_values[0..]));
+    defer real.deinit();
+    var names = protect.scoped(R.Rf_allocVector(R.STRSXP, real_values.len));
+    defer names.deinit();
+    for ([_][]const u8{ "one", "negative_zero", "missing", "nan" }, 0..) |name, index| {
+        R.SET_STRING_ELT(
+            names.get(),
+            @intCast(index),
+            R.Rf_mkCharLenCE(@ptrCast(name.ptr), @intCast(name.len), @as(R.cetype_t, @intCast(R.CE_UTF8))),
+        );
+    }
+    _ = R.Rf_setAttrib(real.get(), R.R_NamesSymbol, names.get());
+
+    var restored_real = protect.scoped(ownedAltrepRoundTrip(real.get(), .v3));
+    defer restored_real.deinit();
+    if (R.ALTREP(restored_real.get()) == 0 or
+        !std.mem.eql(u8, altrep_mod.className(restored_real.get()), "test_real") or
+        R.REAL_ELT(restored_real.get(), 0) != 1.5 or
+        !std.math.isNegativeInf(1.0 / R.REAL_ELT(restored_real.get(), 1)) or
+        R.ISNA(R.REAL_ELT(restored_real.get(), 2)) == 0 or
+        !R.ISNAN(R.REAL_ELT(restored_real.get(), 3)) or
+        R.ISNA(R.REAL_ELT(restored_real.get(), 3)) != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    const restored_names = R.Rf_getAttrib(restored_real.get(), R.R_NamesSymbol);
+    if (R.TYPEOF(restored_names) != R.STRSXP or R.XLENGTH(restored_names) != real_values.len or
+        !std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(restored_names, 1)), 0), "negative_zero"))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var restored_v2 = protect.scoped(ownedAltrepRoundTrip(real.get(), .v2));
+    defer restored_v2.deinit();
+    if (R.ALTREP(restored_v2.get()) != 0 or R.TYPEOF(restored_v2.get()) != R.REALSXP or
+        R.REAL(restored_v2.get())[0] != 1.5 or
+        R.Rf_getAttrib(restored_v2.get(), R.R_NamesSymbol) == R.R_NilValue)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const int_values = [_]i32{ 7, R.R_NaInt, -9 };
+    var integer = protect.scoped(MyAltInt.init(int_values[0..]));
+    defer integer.deinit();
+    var restored_integer = protect.scoped(ownedAltrepRoundTrip(integer.get(), .v3));
+    defer restored_integer.deinit();
+    if (R.ALTREP(restored_integer.get()) == 0 or R.INTEGER_ELT(restored_integer.get(), 0) != 7 or
+        R.INTEGER_ELT(restored_integer.get(), 1) != R.R_NaInt or R.INTEGER_ELT(restored_integer.get(), 2) != -9)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const logical_values = [_]i32{ 1, 0, R.R_NaInt };
+    var logical = protect.scoped(MyAltLogical.init(logical_values[0..]));
+    defer logical.deinit();
+    var restored_logical = protect.scoped(ownedAltrepRoundTrip(logical.get(), .v3));
+    defer restored_logical.deinit();
+    if (R.ALTREP(restored_logical.get()) == 0 or R.LOGICAL_ELT(restored_logical.get(), 0) != 1 or
+        R.LOGICAL_ELT(restored_logical.get(), 1) != 0 or R.LOGICAL_ELT(restored_logical.get(), 2) != R.R_NaInt)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const raw_values = [_]u8{ 0, 127, 255 };
+    var raw = protect.scoped(MyAltRaw.init(raw_values[0..]));
+    defer raw.deinit();
+    var restored_raw = protect.scoped(ownedAltrepRoundTrip(raw.get(), .v3));
+    defer restored_raw.deinit();
+    if (R.ALTREP(restored_raw.get()) == 0 or R.RAW_ELT(restored_raw.get(), 0) != 0 or
+        R.RAW_ELT(restored_raw.get(), 1) != 127 or R.RAW_ELT(restored_raw.get(), 2) != 255)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const complex_values = [_]altrep_create.ComplexElem{
+        .{ .r = 1.0, .i = -2.0 },
+        .{ .r = R.NA_REAL(), .i = std.math.nan(f64) },
+    };
+    var complex = protect.scoped(MyAltComplex.init(complex_values[0..]));
+    defer complex.deinit();
+    var restored_complex = protect.scoped(ownedAltrepRoundTrip(complex.get(), .v3));
+    defer restored_complex.deinit();
+    var real_part: f64 = 0;
+    var imaginary_part: f64 = 0;
+    R.zigr_complex_elt_parts(restored_complex.get(), 1, &real_part, &imaginary_part);
+    if (R.ALTREP(restored_complex.get()) == 0 or R.ISNA(real_part) == 0 or
+        !R.ISNAN(imaginary_part) or R.ISNA(imaginary_part) != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const string_values = [_][]const u8{ "alpha", "placeholder", "bytes" };
+    var string = protect.scoped(MyAltString.init(string_values[0..]));
+    defer string.deinit();
+    const latin1 = [_]u8{ 0x63, 0x61, 0x66, 0xe9 };
+    R.SET_STRING_ELT(R.R_altrep_data1(string.get()), 1, R.R_NaString);
+    R.SET_STRING_ELT(
+        R.R_altrep_data1(string.get()),
+        2,
+        R.Rf_mkCharLenCE(@ptrCast(&latin1), latin1.len, @as(R.cetype_t, @intCast(R.CE_LATIN1))),
+    );
+    var restored_string = protect.scoped(ownedAltrepRoundTrip(string.get(), .v3));
+    defer restored_string.deinit();
+    if (R.ALTREP(restored_string.get()) == 0 or
+        !std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(restored_string.get(), 0)), 0), "alpha") or
+        R.STRING_ELT(restored_string.get(), 1) != R.R_NaString or
+        R.Rf_getCharCE(R.STRING_ELT(restored_string.get(), 2)) != @as(R.cetype_t, @intCast(R.CE_LATIN1)))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    R.R_gc();
+    if (R.REAL_ELT(restored_real.get(), 0) != 1.5 or R.INTEGER_ELT(restored_integer.get(), 2) != -9 or
+        R.LOGICAL_ELT(restored_logical.get(), 2) != R.R_NaInt or R.RAW_ELT(restored_raw.get(), 2) != 255 or
+        R.STRING_ELT(restored_string.get(), 1) != R.R_NaString)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+threadlocal var invalid_owned_altrep_state: SEXP = null;
+threadlocal var invalid_owned_altrep_input: SEXP = null;
+
+fn restoreInvalidOwnedAltrepState() SEXP {
+    return MyAlt.restoreSerializedState(invalid_owned_altrep_state);
+}
+
+fn serializeInvalidOwnedAltrepInput() SEXP {
+    return MyAlt.serializedState(invalid_owned_altrep_input);
+}
+
+export fn zigr_test_altrep_serialized_state_validation() SEXP {
+    const values = [_]f64{ 1.0, 2.0, 3.0 };
+    var original = protect.scoped(MyAlt.init(values[0..]));
+    defer original.deinit();
+    var state = protect.scoped(MyAlt.serializedStateChecked(original.get()) catch return R.Rf_ScalarReal(0.0));
+    defer state.deinit();
+
+    if (R.TYPEOF(state.get()) != R.VECSXP or R.XLENGTH(state.get()) != 4 or
+        !std.mem.eql(
+            u8,
+            std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(R.VECTOR_ELT(state.get(), 0), 0)), 0),
+            "zigr-owned-altrep",
+        ) or
+        R.INTEGER_ELT(R.VECTOR_ELT(state.get(), 1), 0) != altrep_create.OWNED_ALTREP_STATE_VERSION or
+        R.INTEGER_ELT(R.VECTOR_ELT(state.get(), 2), 0) != 1)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    const payload = R.VECTOR_ELT(state.get(), 3);
+    if (R.TYPEOF(payload) != R.REALSXP or R.ALTREP(payload) != 0 or R.REAL(payload)[0] != 1.0) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    R.REAL(original.get())[0] = 90.0;
+    if (R.REAL(payload)[0] != 1.0) return R.Rf_ScalarReal(0.0);
+    var restored = protect.scoped(MyAlt.restoreSerializedStateChecked(state.get()) catch return R.Rf_ScalarReal(0.0));
+    defer restored.deinit();
+    R.REAL(payload)[0] = 70.0;
+    if (R.REAL_ELT(restored.get(), 0) != 1.0) return R.Rf_ScalarReal(0.0);
+
+    if (MyAlt.restoreSerializedStateChecked(null)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.NullState) return R.Rf_ScalarReal(0.0);
+    }
+    if (MyAlt.serializedStateChecked(null)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongClass) return R.Rf_ScalarReal(0.0);
+    }
+    const not_record = R.Rf_ScalarInteger(1);
+    if (MyAlt.serializedStateChecked(not_record)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongClass) return R.Rf_ScalarReal(0.0);
+    }
+    if (MyAlt.restoreSerializedStateChecked(not_record)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.ExpectedRecord) return R.Rf_ScalarReal(0.0);
+    }
+
+    const foreign_values = [_]i32{1};
+    var foreign = protect.scoped(MyAltInt.init(foreign_values[0..]));
+    defer foreign.deinit();
+    if (MyAlt.serializedStateChecked(foreign.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongClass) return R.Rf_ScalarReal(0.0);
+    }
+    if (MyAltString.serializedStateChecked(original.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongClass) return R.Rf_ScalarReal(0.0);
+    }
+
+    var short_state = protect.scoped(R.Rf_allocVector(R.VECSXP, 3));
+    defer short_state.deinit();
+    if (MyAlt.restoreSerializedStateChecked(short_state.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongFieldCount) return R.Rf_ScalarReal(0.0);
+    }
+
+    var bad_magic = protect.scoped(R.Rf_duplicate(state.get()));
+    defer bad_magic.deinit();
+    _ = R.SET_VECTOR_ELT(bad_magic.get(), 0, R.Rf_mkString("not-zigr"));
+    if (MyAlt.restoreSerializedStateChecked(bad_magic.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.InvalidMagic) return R.Rf_ScalarReal(0.0);
+    }
+
+    const magic_values = [_][]const u8{"zigr-owned-altrep"};
+    var altrep_magic_value = protect.scoped(MyAltString.init(magic_values[0..]));
+    defer altrep_magic_value.deinit();
+    var altrep_magic = protect.scoped(R.Rf_duplicate(state.get()));
+    defer altrep_magic.deinit();
+    _ = R.SET_VECTOR_ELT(altrep_magic.get(), 0, altrep_magic_value.get());
+    if (MyAlt.restoreSerializedStateChecked(altrep_magic.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.InvalidMagic) return R.Rf_ScalarReal(0.0);
+    }
+
+    var bad_version = protect.scoped(R.Rf_duplicate(state.get()));
+    defer bad_version.deinit();
+    _ = R.SET_VECTOR_ELT(bad_version.get(), 1, R.Rf_ScalarInteger(2));
+    if (MyAlt.restoreSerializedStateChecked(bad_version.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.InvalidVersion) return R.Rf_ScalarReal(0.0);
+    }
+
+    var altrep_version = protect.scoped(R.Rf_duplicate(state.get()));
+    defer altrep_version.deinit();
+    _ = R.SET_VECTOR_ELT(altrep_version.get(), 1, foreign.get());
+    if (MyAlt.restoreSerializedStateChecked(altrep_version.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.InvalidVersion) return R.Rf_ScalarReal(0.0);
+    }
+
+    var altrep_kind = protect.scoped(R.Rf_duplicate(state.get()));
+    defer altrep_kind.deinit();
+    _ = R.SET_VECTOR_ELT(altrep_kind.get(), 2, foreign.get());
+    if (MyAlt.restoreSerializedStateChecked(altrep_kind.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongKind) return R.Rf_ScalarReal(0.0);
+    }
+
+    if (MyAltInt.restoreSerializedStateChecked(state.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongKind) return R.Rf_ScalarReal(0.0);
+    }
+
+    var wrong_payload = protect.scoped(R.Rf_duplicate(state.get()));
+    defer wrong_payload.deinit();
+    _ = R.SET_VECTOR_ELT(wrong_payload.get(), 3, R.Rf_ScalarInteger(1));
+    if (MyAlt.restoreSerializedStateChecked(wrong_payload.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.WrongPayloadType) return R.Rf_ScalarReal(0.0);
+    }
+
+    var nested_payload = protect.scoped(R.Rf_duplicate(state.get()));
+    defer nested_payload.deinit();
+    _ = R.SET_VECTOR_ELT(nested_payload.get(), 3, original.get());
+    if (MyAlt.restoreSerializedStateChecked(nested_payload.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.NestedAltrepPayload) return R.Rf_ScalarReal(0.0);
+    }
+
+    const logical_values = [_]i32{1};
+    var logical = protect.scoped(MyAltLogical.init(logical_values[0..]));
+    defer logical.deinit();
+    var invalid_logical = protect.scoped(MyAltLogical.serializedState(logical.get()));
+    defer invalid_logical.deinit();
+    R.LOGICAL(R.VECTOR_ELT(invalid_logical.get(), 3))[0] = 2;
+    if (MyAltLogical.restoreSerializedStateChecked(invalid_logical.get())) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.InvalidLogicalValue) return R.Rf_ScalarReal(0.0);
+    }
+
+    const strings = [_][]const u8{ "alpha", "beta" };
+    var string = protect.scoped(MyAltString.init(strings[0..]));
+    defer string.deinit();
+    var string_state = protect.scoped(MyAltString.serializedState(string.get()));
+    defer string_state.deinit();
+    var restored_string = protect.scoped(MyAltString.restoreSerializedStateChecked(string_state.get()) catch return R.Rf_ScalarReal(0.0));
+    defer restored_string.deinit();
+    R.SET_STRING_ELT(R.VECTOR_ELT(string_state.get(), 3), 0, R.Rf_mkCharCE("changed", @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(restored_string.get(), 0)), 0), "alpha")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const depth_before = protect.getDepth();
+    invalid_owned_altrep_state = bad_version.get();
+    defer invalid_owned_altrep_state = null;
+    if (trycatch_mod.tryCatch(restoreInvalidOwnedAltrepState)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (protect.getDepth() != depth_before) return R.Rf_ScalarReal(0.0);
+    invalid_owned_altrep_input = foreign.get();
+    defer invalid_owned_altrep_input = null;
+    if (trycatch_mod.tryCatch(serializeInvalidOwnedAltrepInput)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (protect.getDepth() != depth_before) return R.Rf_ScalarReal(0.0);
+    var recovered = protect.scoped(MyAlt.restoreSerializedState(state.get()));
+    defer recovered.deinit();
+    if (R.REAL_ELT(recovered.get(), 1) != 2.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

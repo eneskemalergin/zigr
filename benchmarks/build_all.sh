@@ -35,9 +35,10 @@ fi
 if [ -n "${ZIGR_CPU_FEATURES:-}" ] && [ "$ZIGR_CPU_FEATURES" != "default" ]; then
   ZIG_ARGS+=("-Dcpu=$ZIGR_CPU_FEATURES")
 fi
+ZIG_CACHE_DIR=${ZIG_CACHE_DIR:-$SCRIPT_DIR/.zig-cache}
 ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR:-$SCRIPT_DIR/.zig-global-cache}
-mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
-ZIG_CACHE_ARGS=("--cache-dir" "$SCRIPT_DIR/.zig-cache" "--global-cache-dir" "$ZIG_GLOBAL_CACHE_DIR")
+mkdir -p "$ZIG_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
+ZIG_CACHE_ARGS=("--cache-dir" "$ZIG_CACHE_DIR" "--global-cache-dir" "$ZIG_GLOBAL_CACHE_DIR")
 
 echo "=== Zig (zigR) ==="
 R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB "$ZIG_BIN" build "${ZIG_ARGS[@]}" "${ZIG_CACHE_ARGS[@]}"

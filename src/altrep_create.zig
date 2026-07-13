@@ -19,6 +19,16 @@
 //!   conservative (`UNKNOWN_SORTEDNESS`) in the presence of NA or NaN.
 //! - no-NA methods treat both real NA and NaN as missing. Raw and complex have
 //!   no public sorted/no-NA hooks; logical has no public min/max hooks.
+//! - R serialization version 3 stores a versioned state record containing an
+//!   ordinary vector snapshot. Restoration validates the complete record before
+//!   copying native payloads into new ownership. R serialization version 2 uses
+//!   R's ordinary-vector fallback and does not preserve the ALTREP class. R's
+//!   default `UnserializeEX` path restores attributes and object metadata.
+//!   Version 1 is a four-field `VECSXP`: magic string, integer format version,
+//!   integer family code, and ordinary typed payload. Family codes are real 1,
+//!   integer 2, logical 3, raw 4, complex 5, and string 6.
+//!   State validation is a format and ownership check, not a security boundary
+//!   for untrusted R serialization streams.
 
 const std = @import("std");
 const R = @import("R");
@@ -40,6 +50,131 @@ const AltKind = enum {
     raw,
     complex,
 };
+
+/// Version of the zigr-owned ALTREP state record embedded in R serialization version 3.
+pub const OWNED_ALTREP_STATE_VERSION: c_int = 1;
+
+/// Checked state-generation and restoration failures reported before ownership moves.
+pub const SerializedStateError = error{
+    NullState,
+    ExpectedRecord,
+    WrongFieldCount,
+    InvalidMagic,
+    InvalidVersion,
+    WrongKind,
+    WrongPayloadType,
+    NestedAltrepPayload,
+    InvalidLogicalValue,
+    WrongClass,
+};
+
+const OWNED_ALTREP_STATE_MAGIC = "zigr-owned-altrep";
+const STATE_FIELD_COUNT = 4;
+const STATE_MAGIC_INDEX = 0;
+const STATE_VERSION_INDEX = 1;
+const STATE_KIND_INDEX = 2;
+const STATE_PAYLOAD_INDEX = 3;
+
+fn kindCode(comptime kind: AltKind) c_int {
+    return switch (kind) {
+        .real => 1,
+        .integer => 2,
+        .logical => 3,
+        .raw => 4,
+        .complex => 5,
+    };
+}
+
+const STRING_KIND_CODE: c_int = 6;
+
+fn sexpType(comptime kind: AltKind) R.SEXPTYPE {
+    return switch (kind) {
+        .real => R.REALSXP,
+        .integer => R.INTSXP,
+        .logical => R.LGLSXP,
+        .raw => R.RAWSXP,
+        .complex => R.CPLXSXP,
+    };
+}
+
+fn serializedStateError(error_value: SerializedStateError) noreturn {
+    switch (error_value) {
+        error.NullState => err.signal("owned ALTREP serialized state is null"),
+        error.ExpectedRecord => err.signal("owned ALTREP serialized state must be a VECSXP record"),
+        error.WrongFieldCount => err.signal("owned ALTREP serialized state has the wrong field count"),
+        error.InvalidMagic => err.signal("owned ALTREP serialized state has an invalid magic value"),
+        error.InvalidVersion => err.signal("owned ALTREP serialized state version is unsupported"),
+        error.WrongKind => err.signal("owned ALTREP serialized state belongs to a different family"),
+        error.WrongPayloadType => err.signal("owned ALTREP serialized payload has the wrong type"),
+        error.NestedAltrepPayload => err.signal("owned ALTREP serialized payload must be an ordinary vector"),
+        error.InvalidLogicalValue => err.signal("owned ALTREP serialized logical payload contains an invalid value"),
+        error.WrongClass => err.signal("serialization input is not an instance of this owned ALTREP class"),
+    }
+}
+
+fn matchesStateMagic(charsxp: R.SEXP) bool {
+    if (charsxp == R.R_NaString or R.TYPEOF(charsxp) != R.CHARSXP) return false;
+    const len = R.XLENGTH(charsxp);
+    if (len != OWNED_ALTREP_STATE_MAGIC.len) return false;
+    return std.mem.eql(
+        u8,
+        R.R_CHAR(charsxp)[0..@as(usize, @intCast(len))],
+        OWNED_ALTREP_STATE_MAGIC,
+    );
+}
+
+fn validateSerializedState(
+    state: R.SEXP,
+    expected_kind: c_int,
+    expected_type: R.SEXPTYPE,
+) SerializedStateError!R.SEXP {
+    if (state == null) return error.NullState;
+    if (R.TYPEOF(state) != R.VECSXP) return error.ExpectedRecord;
+    if (R.ALTREP(state) != 0) return error.ExpectedRecord;
+    if (R.XLENGTH(state) != STATE_FIELD_COUNT) return error.WrongFieldCount;
+
+    const magic = R.VECTOR_ELT(state, STATE_MAGIC_INDEX);
+    if (R.TYPEOF(magic) != R.STRSXP or R.ALTREP(magic) != 0 or R.XLENGTH(magic) != 1) {
+        return error.InvalidMagic;
+    }
+    const magic_charsxp = R.STRING_ELT(magic, 0);
+    if (!matchesStateMagic(magic_charsxp)) return error.InvalidMagic;
+
+    const version = R.VECTOR_ELT(state, STATE_VERSION_INDEX);
+    if (R.TYPEOF(version) != R.INTSXP or R.ALTREP(version) != 0 or R.XLENGTH(version) != 1 or
+        R.INTEGER_ELT(version, 0) != OWNED_ALTREP_STATE_VERSION)
+    {
+        return error.InvalidVersion;
+    }
+
+    const kind = R.VECTOR_ELT(state, STATE_KIND_INDEX);
+    if (R.TYPEOF(kind) != R.INTSXP or R.ALTREP(kind) != 0 or R.XLENGTH(kind) != 1 or
+        R.INTEGER_ELT(kind, 0) != expected_kind)
+    {
+        return error.WrongKind;
+    }
+
+    const payload = R.VECTOR_ELT(state, STATE_PAYLOAD_INDEX);
+    if (R.TYPEOF(payload) != expected_type) return error.WrongPayloadType;
+    if (R.ALTREP(payload) != 0) return error.NestedAltrepPayload;
+    if (expected_kind == kindCode(.logical)) {
+        for (0..@as(usize, @intCast(R.XLENGTH(payload)))) |index| {
+            const value = R.LOGICAL(payload)[index];
+            if (value != 0 and value != 1 and value != R.R_NaInt) return error.InvalidLogicalValue;
+        }
+    }
+    return payload;
+}
+
+fn makeSerializedState(kind_code: c_int, payload: R.SEXP) R.SEXP {
+    var state = protect.scoped(R.Rf_allocVector(R.VECSXP, STATE_FIELD_COUNT));
+    defer state.deinit();
+    _ = R.SET_VECTOR_ELT(state.get(), STATE_MAGIC_INDEX, R.Rf_mkString(OWNED_ALTREP_STATE_MAGIC));
+    _ = R.SET_VECTOR_ELT(state.get(), STATE_VERSION_INDEX, R.Rf_ScalarInteger(OWNED_ALTREP_STATE_VERSION));
+    _ = R.SET_VECTOR_ELT(state.get(), STATE_KIND_INDEX, R.Rf_ScalarInteger(kind_code));
+    _ = R.SET_VECTOR_ELT(state.get(), STATE_PAYLOAD_INDEX, payload);
+    return state.get();
+}
 
 fn cString(comptime value: []const u8, comptime label: []const u8) []const u8 {
     if (value.len == 0) @compileError(label ++ " must not be empty");
@@ -148,14 +283,7 @@ fn dataptrOrNullImpl(comptime kind: AltKind, x: R.SEXP) ?*const anyopaque {
 fn duplicateImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) R.SEXP {
     const T = ElemType(kind);
     const w = wrapFromAltrep(kind, x);
-    const sexp_type = switch (kind) {
-        .real => R.REALSXP,
-        .integer => R.INTSXP,
-        .logical => R.LGLSXP,
-        .raw => R.RAWSXP,
-        .complex => R.CPLXSXP,
-    };
-    const dup = R.Rf_protect(R.Rf_allocVector(sexp_type, @intCast(w.len)));
+    const dup = R.Rf_protect(R.Rf_allocVector(sexpType(kind), @intCast(w.len)));
     defer R.Rf_unprotect(1);
 
     switch (kind) {
@@ -170,6 +298,39 @@ fn duplicateImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) R.SEXP {
         },
     }
     return dup;
+}
+
+fn serializedStateImpl(comptime kind: AltKind, x: R.SEXP) R.SEXP {
+    var payload = protect.scoped(duplicateImpl(kind, x, 0));
+    defer payload.deinit();
+    return makeSerializedState(kindCode(kind), payload.get());
+}
+
+fn serializedStateWithBoundary(comptime kind: AltKind, x: R.SEXP) R.SEXP {
+    const Request = struct { value: R.SEXP };
+    var request = Request{ .value = x };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            var input = protect.scoped(req.value);
+            defer input.deinit();
+            return serializedStateImpl(kind, input.get());
+        }
+    }.call, @ptrCast(&request));
+}
+
+fn payloadSlice(comptime kind: AltKind, payload: R.SEXP) []const ElemType(kind) {
+    const len: usize = @intCast(R.XLENGTH(payload));
+    if (len == 0) return &.{};
+    return switch (kind) {
+        .real => R.REAL(payload)[0..len],
+        .integer => R.INTEGER(payload)[0..len],
+        .logical => R.LOGICAL(payload)[0..len],
+        .raw => R.RAW(payload)[0..len],
+        .complex => @as([*]const ComplexElem, @ptrCast(@alignCast(
+            R.COMPLEX(payload) orelse @panic("COMPLEX returned null for non-empty serialized payload"),
+        )))[0..len],
+    };
 }
 
 const Region = struct {
@@ -541,12 +702,62 @@ fn buildClass(comptime kind: AltKind, comptime pkg: []const u8, comptime name: [
 
 fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime name: []const u8) type {
     return struct {
+        const Self = @This();
+
         var class: R.R_altrep_class_t = undefined;
         var registered: bool = false;
 
+        fn makeClass(info: anytype) R.R_altrep_class_t {
+            const cls = buildClass(kind, pkg, name, info);
+            R.R_set_altrep_Serialized_state_method(cls, struct {
+                fn f(x: R.SEXP) callconv(.c) R.SEXP {
+                    return Self.serializedState(x);
+                }
+            }.f);
+            R.R_set_altrep_Unserialize_method(cls, struct {
+                fn f(_: R.SEXP, state: R.SEXP) callconv(.c) R.SEXP {
+                    return Self.restoreSerializedState(state);
+                }
+            }.f);
+            return cls;
+        }
+
+        /// Registers the class from its installed package initializer.
+        ///
+        /// Cross-session restoration requires R to load that package by `pkg` and run this call.
         pub fn register(info: anytype) void {
-            class = buildClass(kind, pkg, name, info);
+            class = makeClass(info);
             registered = true;
+        }
+
+        /// Returns an unprotected version-1 state record with an ordinary vector snapshot.
+        /// Wrong-class input is a Zig error; R allocation failures still signal through R.
+        pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
+            if (!registered or x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
+                return error.WrongClass;
+            }
+            return serializedStateWithBoundary(kind, x);
+        }
+
+        /// Callback-compatible state generation. A foreign object signals an R error.
+        pub fn serializedState(x: R.SEXP) R.SEXP {
+            return serializedStateChecked(x) catch |error_value|
+                serializedStateError(error_value);
+        }
+
+        /// Validates `state`, then returns an unprotected ALTREP with an independent native copy.
+        ///
+        /// Structural failures are Zig errors. Allocation failures still signal through R because
+        /// the ALTREP callback ABI cannot propagate a Zig error union.
+        pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
+            const payload = try validateSerializedState(state, kindCode(kind), sexpType(kind));
+            return init(payloadSlice(kind, payload));
+        }
+
+        /// Callback-compatible restoration. Invalid state signals an R error before ownership moves.
+        pub fn restoreSerializedState(state: R.SEXP) R.SEXP {
+            return restoreSerializedStateChecked(state) catch |error_value|
+                serializedStateError(error_value);
         }
 
         /// Copies `slice`; the returned SEXP is unprotected and owns the copy through its finalizer.
@@ -558,7 +769,7 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                 fn call(data: ?*anyopaque) R.SEXP {
                     const req: *Request = @ptrCast(@alignCast(data.?));
                     if (!registered) {
-                        class = buildClass(kind, pkg, name, null);
+                        class = makeClass(null);
                         registered = true;
                     }
 
@@ -631,8 +842,58 @@ fn duplicateString(x: R.SEXP, _: R.Rboolean) callconv(.c) R.SEXP {
     return R.Rf_duplicate(stringValues(x));
 }
 
+fn copyStringPayload(values: R.SEXP) R.SEXP {
+    const len = R.XLENGTH(values);
+    var payload = protect.scoped(R.Rf_allocVector(R.STRSXP, len));
+    defer payload.deinit();
+    for (0..@as(usize, @intCast(len))) |index| {
+        R.SET_STRING_ELT(payload.get(), @intCast(index), R.STRING_ELT(values, @intCast(index)));
+    }
+    return payload.get();
+}
+
+fn serializedStringState(x: R.SEXP) R.SEXP {
+    var payload = protect.scoped(copyStringPayload(stringValues(x)));
+    defer payload.deinit();
+    return makeSerializedState(STRING_KIND_CODE, payload.get());
+}
+
+fn serializedStringStateWithBoundary(x: R.SEXP) R.SEXP {
+    const Request = struct { value: R.SEXP };
+    var request = Request{ .value = x };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *Request = @ptrCast(@alignCast(data.?));
+            var input = protect.scoped(req.value);
+            defer input.deinit();
+            return serializedStringState(input.get());
+        }
+    }.call, @ptrCast(&request));
+}
+
+const StringRestoreRequest = struct {
+    source: R.SEXP,
+    class: R.R_altrep_class_t,
+};
+
+fn restoreStringWithBoundary(source: R.SEXP, class: R.R_altrep_class_t) R.SEXP {
+    var request = StringRestoreRequest{ .source = source, .class = class };
+    return cleanup.protectCallData(struct {
+        fn call(data: ?*anyopaque) R.SEXP {
+            const req: *StringRestoreRequest = @ptrCast(@alignCast(data.?));
+            var input = protect.scoped(req.source);
+            defer input.deinit();
+            var payload = protect.scoped(copyStringPayload(input.get()));
+            defer payload.deinit();
+            return R.R_new_altrep(req.class, payload.get(), R.R_NilValue);
+        }
+    }.call, @ptrCast(&request));
+}
+
 pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
     return struct {
+        const Self = @This();
+
         var class: R.R_altrep_class_t = undefined;
         var registered: bool = false;
 
@@ -649,12 +910,57 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             R.R_set_altstring_Elt_method(cls, stringElt);
             R.R_set_altstring_Is_sorted_method(cls, stringIsSorted);
             R.R_set_altstring_No_NA_method(cls, stringNoNA);
+            R.R_set_altrep_Serialized_state_method(cls, struct {
+                fn f(x: R.SEXP) callconv(.c) R.SEXP {
+                    return Self.serializedState(x);
+                }
+            }.f);
+            R.R_set_altrep_Unserialize_method(cls, struct {
+                fn f(_: R.SEXP, state: R.SEXP) callconv(.c) R.SEXP {
+                    return Self.restoreSerializedState(state);
+                }
+            }.f);
             return cls;
         }
 
+        /// Registers the class from its installed package initializer.
+        ///
+        /// Cross-session restoration requires R to load that package by `pkg` and run this call.
         pub fn register(info: anytype) void {
             class = buildStringClass(info);
             registered = true;
+        }
+
+        /// Returns an unprotected version-1 state record with an ordinary STRSXP snapshot.
+        /// Wrong-class input is a Zig error; R allocation failures still signal through R.
+        pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
+            if (!registered or x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
+                return error.WrongClass;
+            }
+            return serializedStringStateWithBoundary(x);
+        }
+
+        /// Callback-compatible state generation. A foreign object signals an R error.
+        pub fn serializedState(x: R.SEXP) R.SEXP {
+            return serializedStateChecked(x) catch |error_value|
+                serializedStateError(error_value);
+        }
+
+        /// Validates `state`, then returns an unprotected ALTSTRING with an independent R copy.
+        /// Structural failures are Zig errors; R allocation failures still signal through R.
+        pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
+            const source = try validateSerializedState(state, STRING_KIND_CODE, R.STRSXP);
+            if (!registered) {
+                class = buildStringClass(null);
+                registered = true;
+            }
+            return restoreStringWithBoundary(source, class);
+        }
+
+        /// Callback-compatible restoration. Invalid state signals an R error before ownership moves.
+        pub fn restoreSerializedState(state: R.SEXP) R.SEXP {
+            return restoreSerializedStateChecked(state) catch |error_value|
+                serializedStateError(error_value);
         }
 
         /// Copies UTF-8 bytes into R strings; the returned SEXP is unprotected.
