@@ -2315,22 +2315,45 @@ fn factorErrorCall() SEXP {
 
 export fn zigr_test_factor_longjmp() SEXP {
     const initial_depth = protect.getDepth();
+    string_cleanup_elt_calls = 0;
     var input = protect.scoped(stringErrorAltString());
     defer input.deinit();
     factor_error_input = input.get();
     defer factor_error_input = null;
 
-    if (trycatch_mod.tryCatch(factorErrorCall)) |_| {
-        return R.Rf_ScalarReal(0.0);
-    } else |_| {}
-    if (protect.getDepth() != initial_depth + 1) return R.Rf_ScalarReal(0.0);
-
-    var fresh_input = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
+    // Exceed the unwind-boundary capacity across separate calls. If a caught
+    // longjmp leaks a boundary, a later call fails before reaching ALTSTRING
+    // Elt and the exact per-attempt callback count catches it. The final
+    // attempt follows forced GC to prove that the protected input remains live.
+    for (0..cleanup.MAX_NESTING + 2) |attempt| {
+        if (attempt == cleanup.MAX_NESTING + 1) R.R_gc();
+        if (trycatch_mod.tryCatch(factorErrorCall)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |_| {}
+        if (string_cleanup_elt_calls != attempt + 1) return R.Rf_ScalarReal(0.0);
+        if (cleanup.diagnosticSnapshot().enabled and protect.getDepth() != initial_depth + 1) {
+            return R.Rf_ScalarReal(0.0);
+        }
+    }
+    var fresh_input = protect.scoped(R.Rf_allocVector(R.STRSXP, 3));
     defer fresh_input.deinit();
-    R.SET_STRING_ELT(fresh_input.get(), 0, R.Rf_mkChar("fresh"));
+    R.SET_STRING_ELT(fresh_input.get(), 0, R.Rf_mkChar("b"));
+    R.SET_STRING_ELT(fresh_input.get(), 1, R.Rf_mkChar("a"));
+    R.SET_STRING_ELT(fresh_input.get(), 2, R.Rf_mkChar("b"));
     var fresh = protect.scoped(factor.asFactorChecked(fresh_input.get()) catch return R.Rf_ScalarReal(0.0));
     defer fresh.deinit();
-    if (R.INTEGER(fresh.get())[0] != 1) return R.Rf_ScalarReal(0.0);
+    if (R.TYPEOF(fresh.get()) != R.INTSXP or R.XLENGTH(fresh.get()) != 3) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    const fresh_levels = R.Rf_getAttrib(fresh.get(), R.R_LevelsSymbol);
+    const fresh_codes = R.INTEGER(fresh.get());
+    if (fresh_codes[0] != 2 or fresh_codes[1] != 1 or fresh_codes[2] != 2 or
+        R.Rf_inherits(fresh.get(), "factor") == 0 or R.TYPEOF(fresh_levels) != R.STRSXP or
+        R.XLENGTH(fresh_levels) != 2 or R.STRING_ELT(fresh_levels, 0) != R.Rf_mkChar("a") or
+        R.STRING_ELT(fresh_levels, 1) != R.Rf_mkChar("b"))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 
