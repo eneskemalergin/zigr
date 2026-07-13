@@ -240,11 +240,11 @@ This bare core does not close the later work. The primary direct-layout gate and
 Every push and pull request runs:
 
 - `zig fmt` (format compliance)
-- Cross-compilation check (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
-- `zig build test` (unit tests on ubuntu, macOS experimental, Windows experimental)
+- One shared-cache cross-compilation job (5 targets: x86_64-linux, aarch64-linux, x86_64-windows, aarch64-windows, aarch64-macos)
+- `zig build test` (required unit tests on Ubuntu, macOS, and Windows with R 4.6.1)
 - Live R runtime tests on Ubuntu, including generated wrappers, GC, finalizers, and unwind recovery
 
-macOS and Windows builds use `continue-on-error`. Native cross-compilation from Linux covers all three CRAN targets plus aarch64 variants.
+All three native jobs are required. The cross targets run sequentially in one bounded Ubuntu job so R and Zig are installed once while every target still reports as a separate step. Native cross-compilation from Linux covers all three CRAN targets plus aarch64 variants.
 
 ## Performance
 

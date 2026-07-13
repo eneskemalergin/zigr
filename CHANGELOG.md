@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- CI: dropped benchmarks job, added `cache: true` to all `setup-r` calls, benchmarks removed from v0.0.10 Added entry.
+- CI: pinned R 4.6.1, dropped benchmarks and unsupported R old-release jobs, made macOS and Windows required, collapsed five cross workers into one shared-cache job, bounded every job, and removed unused package installation and invalid `setup-r` cache inputs.
 - CI: set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` for mlugg/setup-zig@v2 Node 20 deprecation.
 - **Benchmark validation**: compare attributes, recursive structure, character encoding, and NA versus NaN; correctness or timing failures and undeclared `N/A` rows can no longer complete, export, or promote a run.
 - **Safety model**: safety score updated to 10/10 in PLAN.md, all longjmp gaps closed across `.Call`, `.External`, and method wrappers.

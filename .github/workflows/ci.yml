@@ -10,75 +10,78 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   ZIG_VERSION: "0.16.0"
+  R_VERSION: "4.6.1"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fmt:
     name: zig fmt
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          use-cache: false
       - run: zig build fmt
 
   cross-check:
-    name: cross-compile (${{ matrix.target }})
+    name: cross-compile (5 targets)
     needs: fmt
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-linux
-          - aarch64-linux
-          - x86_64-windows
-          - aarch64-windows
-          - aarch64-macos
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: Install R headers
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq r-base-dev
-      - name: Set R paths
-        run: |
-          echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
-          echo "R_INCLUDE=/usr/share/R/include" >> $GITHUB_ENV
-      - run: zig build check -Dtarget=${{ matrix.target }}
-
-  build:
-    name: build + test (R ${{ matrix.r_version }})
-    runs-on: ubuntu-latest
-    needs: fmt
-    strategy:
-      fail-fast: false
-      matrix:
-        r_version: [release, oldrel-1]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
+          cache-key: cross-r-${{ env.R_VERSION }}
       - uses: r-lib/actions/setup-r@v2
         with:
-          r-version: ${{ matrix.r_version }}
-          use-public-rspm: true
-          cache: true
+          r-version: ${{ env.R_VERSION }}
+      - name: Set R_HOME
+        shell: bash
+        run: echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
+      - name: Check x86_64 Linux
+        if: ${{ !cancelled() }}
+        run: zig build check -Dtarget=x86_64-linux
+      - name: Check aarch64 Linux
+        if: ${{ !cancelled() }}
+        run: zig build check -Dtarget=aarch64-linux
+      - name: Check x86_64 Windows
+        if: ${{ !cancelled() }}
+        run: zig build check -Dtarget=x86_64-windows
+      - name: Check aarch64 Windows
+        if: ${{ !cancelled() }}
+        run: zig build check -Dtarget=aarch64-windows
+      - name: Check aarch64 macOS
+        if: ${{ !cancelled() }}
+        run: zig build check -Dtarget=aarch64-macos
+
+  build:
+    name: build + test (Linux, R 4.6.1)
+    runs-on: ubuntu-latest
+    needs: fmt
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          cache-key: native-r-${{ env.R_VERSION }}
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ env.R_VERSION }}
 
       - name: Set R_HOME
         shell: bash
         run: echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
-
-      - name: Install R packages
-        run: install.packages(c("microbenchmark", "jsonlite"), repos = "https://cloud.r-project.org")
-        shell: Rscript {0}
 
       - run: zig build test
 
@@ -91,46 +94,40 @@ jobs:
           ZIGR_CHECKED_SEXP: "true"
 
   build-macos:
-    name: build + test (macOS)
+    name: build + test (macOS, R 4.6.1)
     runs-on: macos-latest
     needs: fmt
-    continue-on-error: true
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          cache-key: native-r-${{ env.R_VERSION }}
       - uses: r-lib/actions/setup-r@v2
         with:
-          r-version: release
-          use-public-rspm: true
-          cache: true
+          r-version: ${{ env.R_VERSION }}
 
       - name: Set R_HOME
         shell: bash
         run: echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
 
-      - name: Install R packages
-        run: install.packages(c("microbenchmark", "jsonlite"), repos = "https://cloud.r-project.org")
-        shell: Rscript {0}
-
       - run: zig build test
 
   build-windows:
-    name: build + test (Windows)
+    name: build + test (Windows, R 4.6.1)
     runs-on: windows-latest
     needs: fmt
-    continue-on-error: true
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          cache-key: native-r-${{ env.R_VERSION }}
       - uses: r-lib/actions/setup-r@v2
         with:
-          r-version: release
-          use-public-rspm: true
-          cache: true
+          r-version: ${{ env.R_VERSION }}
 
       - name: Set R paths
         shell: bash
@@ -138,9 +135,5 @@ jobs:
           rhome=$(R RHOME)
           echo "R_HOME=$rhome" >> $GITHUB_ENV
           echo "R_LIB=$rhome/bin/x64" >> $GITHUB_ENV
-
-      - name: Install R packages
-        run: install.packages(c("microbenchmark", "jsonlite"), repos = "https://cloud.r-project.org")
-        shell: Rscript {0}
 
       - run: zig build test
