@@ -4,6 +4,8 @@
 
 Six runner backends. The published report below records canonical run `p0-7-20260710-full`; a local promotion writes `results/CANONICAL_RUN.json`, but `results/` is intentionally ignored because raw samples are large and regenerated. Its 44-task comparison stays separate from the 26 boundary rows and 11 representation rows. extendr uses raw FFI wrappers for four tasks because its R-object wrapper double-panicked there.
 
+This is a runner-implementation and kernel report, not a full-tool comparison. R is the semantic reference, and handwritten C is a lower-bound control. cpp11 is absent, most Savvy tasks use handwritten raw R FFI, extendr has four raw-FFI substitutions, and the Rcpp runner is not a complete generated package workflow. The aggregate cannot establish that zigr is better than Rcpp, cpp11, extendr, or Savvy as a tool.
+
 - **r** (R baseline): 81 manifest task references in `src/r/run_all.R`
 - **zigr** (Zig): 46 direct task files plus registered boundary fixtures under `src/zig/`, built via `build.zig`
 - **c_call** (C): 44 task files plus boundary fixtures in `register.c` under `src/c_call/`

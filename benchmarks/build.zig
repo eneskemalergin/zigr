@@ -56,6 +56,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
+    zigr_mod.addIncludePath(.{ .cwd_relative = r_include });
+    zigr_mod.addCSourceFile(.{ .file = b.path("../src/altrep_complex_shim.c"), .flags = &.{} });
 
     const bench_lib = b.addLibrary(.{
         .linkage = .dynamic,

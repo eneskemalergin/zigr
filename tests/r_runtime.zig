@@ -1698,6 +1698,7 @@ export fn zigr_test_altrep_summary_contract() SEXP {
     if (R.REAL(evalSummary("sum", missing_real.get(), true))[0] != 3.0) return R.Rf_ScalarReal(0.0);
     if (R.ISNA(R.REAL(evalSummary("min", missing_real.get(), false))[0]) == 0) return R.Rf_ScalarReal(0.0);
     if (R.REAL(evalSummary("min", missing_real.get(), true))[0] != 3.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("max", missing_real.get(), true))[0] != 3.0) return R.Rf_ScalarReal(0.0);
     if (R.REAL_IS_SORTED(missing_real.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
 
     var int_data = [_]i32{ 4, R.R_NaInt, 3 };
@@ -1714,6 +1715,13 @@ export fn zigr_test_altrep_summary_contract() SEXP {
     if (R.REAL(evalSummary("sum", empty_real.get(), false))[0] != 0.0) return R.Rf_ScalarReal(0.0);
     if (R.REAL(evalSummary("min", empty_real.get(), false))[0] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
     if (R.REAL(evalSummary("max", empty_real.get(), false))[0] != -std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+
+    const no_ints = [_]i32{};
+    var empty_int = protect.scoped(MyAltInt.init(no_ints[0..]));
+    defer empty_int.deinit();
+    if (R.INTEGER(evalSummary("sum", empty_int.get(), false))[0] != 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", empty_int.get(), false))[0] != std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("max", empty_int.get(), false))[0] != -std.math.inf(f64)) return R.Rf_ScalarReal(0.0);
 
     const large_ints = [_]i32{ std.math.maxInt(i32), 1 };
     var large_int = protect.scoped(MyAltInt.init(large_ints[0..]));
@@ -1739,6 +1747,128 @@ export fn zigr_test_altrep_summary_contract() SEXP {
     defer int_simd.deinit();
     if (R.INTEGER(evalSummary("min", int_simd.get(), false))[0] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
     if (R.INTEGER(evalSummary("max", int_simd.get(), true))[0] != 8) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_empty_callback_contract() SEXP {
+    const empty_values = [_]f64{};
+    var empty = protect.scoped(MyAlt.init(empty_values[0..]));
+    defer empty.deinit();
+    var region_buffer: [4]f64 = undefined;
+    if (R.REAL_OR_NULL(empty.get()) != null or R.REAL_GET_REGION(empty.get(), 0, R.R_XLEN_T_MAX, &region_buffer) != 0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL_IS_SORTED(empty.get()) != R.SORTED_INCR or R.REAL_NO_NA(empty.get()) != 1) return R.Rf_ScalarReal(0.0);
+    var empty_duplicate = protect.scoped(R.Rf_duplicate(empty.get()));
+    defer empty_duplicate.deinit();
+    if (R.ALTREP(empty_duplicate.get()) != 0 or R.XLENGTH(empty_duplicate.get()) != 0) return R.Rf_ScalarReal(0.0);
+
+    const empty_complex_values = [_]altrep_create.ComplexElem{};
+    var empty_complex = protect.scoped(MyAltComplex.init(empty_complex_values[0..]));
+    defer empty_complex.deinit();
+    var complex_buffer: [1]zigr_convert.Rcomplex = undefined;
+    if (R.COMPLEX_OR_NULL(empty_complex.get()) != null or R.COMPLEX_GET_REGION(empty_complex.get(), 0, R.R_XLEN_T_MAX, @ptrCast(&complex_buffer)) != 0) return R.Rf_ScalarReal(0.0);
+    var empty_complex_duplicate = protect.scoped(R.Rf_duplicate(empty_complex.get()));
+    defer empty_complex_duplicate.deinit();
+    if (R.ALTREP(empty_complex_duplicate.get()) != 0 or R.XLENGTH(empty_complex_duplicate.get()) != 0) return R.Rf_ScalarReal(0.0);
+
+    const empty_string_values = [_][]const u8{};
+    var empty_string = protect.scoped(MyAltString.init(empty_string_values[0..]));
+    defer empty_string.deinit();
+    if (R.DATAPTR_OR_NULL(empty_string.get()) != null or R.STRING_IS_SORTED(empty_string.get()) != R.SORTED_INCR or R.STRING_NO_NA(empty_string.get()) != 1) return R.Rf_ScalarReal(0.0);
+    var empty_string_duplicate = protect.scoped(R.Rf_duplicate(empty_string.get()));
+    defer empty_string_duplicate.deinit();
+    if (R.ALTREP(empty_string_duplicate.get()) != 0 or R.XLENGTH(empty_string_duplicate.get()) != 0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_real_callback_contract() SEXP {
+    var real_values = [_]f64{ 1.0, 2.0, 3.0, 4.0 };
+    var real = protect.scoped(MyAlt.init(real_values[0..]));
+    defer real.deinit();
+    var region_buffer: [4]f64 = undefined;
+    if (R.REAL_ELT(real.get(), 3) != 4.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL_GET_REGION(real.get(), 2, R.R_XLEN_T_MAX, &region_buffer) != 2 or region_buffer[0] != 3.0 or region_buffer[1] != 4.0) return R.Rf_ScalarReal(0.0);
+    real_values = .{ std.math.nan(f64), R.NA_REAL(), 3.0, 4.0 };
+    var missing_real = protect.scoped(MyAlt.init(real_values[0..]));
+    defer missing_real.deinit();
+    if (R.REAL_NO_NA(missing_real.get()) != 0 or R.REAL_IS_SORTED(missing_real.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+    for ([_][]const u8{ "sum", "min", "max" }) |name| {
+        const result = evalSummary(name, missing_real.get(), false);
+        if (R.ISNA(R.REAL(result)[0]) == 0) return R.Rf_ScalarReal(0.0);
+    }
+
+    real_values = .{ std.math.nan(f64), 2.0, 3.0, 4.0 };
+    var nan_real = protect.scoped(MyAlt.init(real_values[0..]));
+    defer nan_real.deinit();
+    if (R.REAL_NO_NA(nan_real.get()) != 0 or R.REAL_IS_SORTED(nan_real.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+    for ([_][]const u8{ "sum", "min", "max" }) |name| {
+        const result = evalSummary(name, nan_real.get(), false);
+        if (!R.ISNAN(R.REAL(result)[0]) or R.ISNA(R.REAL(result)[0]) != 0) return R.Rf_ScalarReal(0.0);
+    }
+    if (R.REAL(evalSummary("sum", nan_real.get(), true))[0] != 9.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("min", nan_real.get(), true))[0] != 2.0) return R.Rf_ScalarReal(0.0);
+    if (R.REAL(evalSummary("max", nan_real.get(), true))[0] != 4.0) return R.Rf_ScalarReal(0.0);
+
+    const cancellation_values = [_]f64{ 1e16, 1.0, -1e16 };
+    var cancellation = protect.scoped(MyAlt.init(cancellation_values[0..]));
+    defer cancellation.deinit();
+    if (R.REAL(evalSummary("sum", cancellation.get(), false))[0] != 1.0) return R.Rf_ScalarReal(0.0);
+
+    const signed_zero_values = [_]f64{ -0.0, 0.0 };
+    var signed_zero = protect.scoped(MyAlt.init(signed_zero_values[0..]));
+    defer signed_zero.deinit();
+    if (!std.math.isNegativeInf(1.0 / R.REAL(evalSummary("min", signed_zero.get(), false))[0])) return R.Rf_ScalarReal(0.0);
+    if (!std.math.isNegativeInf(1.0 / R.REAL(evalSummary("max", signed_zero.get(), false))[0])) return R.Rf_ScalarReal(0.0);
+
+    const positive_zero_values = [_]f64{ 0.0, -0.0 };
+    var positive_zero = protect.scoped(MyAlt.init(positive_zero_values[0..]));
+    defer positive_zero.deinit();
+    if (!std.math.isPositiveInf(1.0 / R.REAL(evalSummary("min", positive_zero.get(), false))[0])) return R.Rf_ScalarReal(0.0);
+    if (!std.math.isPositiveInf(1.0 / R.REAL(evalSummary("max", positive_zero.get(), false))[0])) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_typed_callback_contract() SEXP {
+    const int_values = [_]i32{ 7, R.R_NaInt, 9 };
+    var integer = protect.scoped(MyAltInt.init(int_values[0..]));
+    defer integer.deinit();
+    var int_buffer: [3]c_int = undefined;
+    if (R.INTEGER_ELT(integer.get(), 2) != 9 or R.INTEGER_GET_REGION(integer.get(), 0, 3, &int_buffer) != 3) return R.Rf_ScalarReal(0.0);
+    if (int_buffer[1] != R.R_NaInt or R.INTEGER_NO_NA(integer.get()) != 0 or R.INTEGER_IS_SORTED(integer.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
+
+    const logical_values = [_]i32{ 0, 1, R.R_NaInt };
+    var logical = protect.scoped(MyAltLogical.init(logical_values[0..]));
+    defer logical.deinit();
+    if (R.LOGICAL_ELT(logical.get(), 1) != 1 or R.LOGICAL_NO_NA(logical.get()) != 0) return R.Rf_ScalarReal(0.0);
+
+    const raw_values = [_]u8{ 0, 127, 255 };
+    var raw = protect.scoped(MyAltRaw.init(raw_values[0..]));
+    defer raw.deinit();
+    var raw_buffer: [3]R.Rbyte = undefined;
+    if (R.RAW_ELT(raw.get(), 2) != 255 or R.RAW_GET_REGION(raw.get(), 1, 2, &raw_buffer) != 2 or raw_buffer[0] != 127 or raw_buffer[1] != 255) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_complex_string_callback_contract() SEXP {
+    const complex_values = [_]altrep_create.ComplexElem{
+        .{ .r = 1.0, .i = -2.0 },
+        .{ .r = R.NA_REAL(), .i = std.math.nan(f64) },
+    };
+    var complex = protect.scoped(MyAltComplex.init(complex_values[0..]));
+    defer complex.deinit();
+    var real_part: f64 = 0;
+    var imaginary_part: f64 = 0;
+    R.zigr_complex_elt_parts(complex.get(), 1, &real_part, &imaginary_part);
+    if (R.ISNA(real_part) == 0 or !R.ISNAN(imaginary_part) or R.ISNA(imaginary_part) != 0) return R.Rf_ScalarReal(0.0);
+    var complex_duplicate = protect.scoped(R.Rf_duplicate(complex.get()));
+    defer complex_duplicate.deinit();
+    const duplicate_ptr: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(R.COMPLEX(complex_duplicate.get()) orelse return R.Rf_ScalarReal(0.0)));
+    if (R.ALTREP(complex_duplicate.get()) != 0 or R.ISNA(duplicate_ptr[1].r) == 0 or !R.ISNAN(duplicate_ptr[1].i)) return R.Rf_ScalarReal(0.0);
+
+    const string_values = [_][]const u8{ "alpha", "beta" };
+    var string = protect.scoped(MyAltString.init(string_values[0..]));
+    defer string.deinit();
+    R.SET_STRING_ELT(R.R_altrep_data1(string.get()), 1, R.R_NaString);
+    if (R.STRING_ELT(string.get(), 1) != R.R_NaString or R.STRING_NO_NA(string.get()) != 0 or R.STRING_IS_SORTED(string.get()) != R.UNKNOWN_SORTEDNESS) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

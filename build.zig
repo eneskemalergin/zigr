@@ -4,7 +4,7 @@ fn rBuild(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) struct { r_mod: *std.Build.Module, r_lib: []const u8, has_r: bool } {
+) struct { r_mod: *std.Build.Module, r_include: []const u8, r_lib: []const u8, has_r: bool } {
     const r_include = b.option([]const u8, "r-include", "Path to R header directory") orelse
         b.graph.environ_map.get("R_INCLUDE") orelse
         blk: {
@@ -27,10 +27,10 @@ fn rBuild(
         });
         r_headers.addIncludePath(.{ .cwd_relative = ri });
         const r_mod = r_headers.addModule("R");
-        return .{ .r_mod = r_mod, .r_lib = r_lib, .has_r = true };
+        return .{ .r_mod = r_mod, .r_include = ri, .r_lib = r_lib, .has_r = true };
     }
 
-    return .{ .r_mod = undefined, .r_lib = r_lib, .has_r = false };
+    return .{ .r_mod = undefined, .r_include = undefined, .r_lib = r_lib, .has_r = false };
 }
 
 pub fn build(b: *std.Build) void {
@@ -81,6 +81,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
+    zigr.addIncludePath(.{ .cwd_relative = r.r_include });
+    zigr.addCSourceFile(.{ .file = b.path("src/altrep_complex_shim.c"), .flags = &.{} });
 
     const cross_check = b.addObject(.{
         .name = "zigr_check",
@@ -97,9 +99,20 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    const complex_shim_check = b.addObject(.{
+        .name = "zigr_altrep_complex_shim_check",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    complex_shim_check.root_module.link_libc = true;
+    complex_shim_check.root_module.addIncludePath(.{ .cwd_relative = r.r_include });
+    complex_shim_check.root_module.addCSourceFile(.{ .file = b.path("src/altrep_complex_shim.c"), .flags = &.{} });
 
     const check_step = b.step("check", "Cross-compilation check: compile zigr for any target");
     check_step.dependOn(&cross_check.step);
+    check_step.dependOn(&complex_shim_check.step);
 
     const zigr_tests = b.addTest(.{ .root_module = zigr });
     zigr_tests.root_module.addLibraryPath(.{ .cwd_relative = r.r_lib });

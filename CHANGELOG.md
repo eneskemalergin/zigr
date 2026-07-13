@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - R runtime services: restore cleanup state after longjmp and reject nested RNG scopes.
 - `serialize.zig`: add unwind-safe XDR streams and region-based ALTREP raw decoding.
 - `weakref.zig`: use R's non-C constructor when no C finalizer is supplied, validate every public input, and document the original-key finalizer contract.
+- `altrep_create.zig`: complete owned ALTREP callbacks, add complex `Elt`, and fix empty pointers and duplication, long regions, R-order summary precision, warnings, and NA/NaN handling.
 - `eval.zig:findVar`/`findVarInFrame`: now guard against `R_UnboundValue` and signal an R error for missing variables.
 - `convert.zig`: 11 stat functions (`sum`, `norm2`, `min`, `max`, `argmin`, `argmax`, `sum_narm`, `mean_narm`, `scaleAdd`, `cumsum`, `argminmax`) now validate SEXP type before access (was missing type guards).
 - **`.Call` wrapper longjmp gap**: `makeWrapper` and `makeMethodWrapper` now use `protectCallData` (R_UnwindProtect), matching the `.External` wrappers. Arena and cleanup frames fire on longjmp instead of leaking.

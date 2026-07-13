@@ -2,6 +2,23 @@
 //!
 //! R declares `R_ext/Altrep.h` experimental. Keep class registration and
 //! callback signatures pinned to the installed headers used for each build.
+//!
+//! Callback contract for owned vectors:
+//! - `Elt` accepts every valid `R_xlen_t` index. Empty vectors have no valid
+//!   element index, matching R's accessor contract.
+//! - `Get_region` returns zero for non-positive requests and exhausted or
+//!   invalid starts, never narrows a long request before bounding it, and
+//!   otherwise copies the available prefix.
+//! - `Dataptr_or_null` exposes the stable non-empty owned buffer without
+//!   materializing and returns null for empty vectors, which have no data.
+//! - duplicate returns an independent ordinary vector; R's `DuplicateEX`
+//!   wrapper copies attributes according to the requested depth.
+//! - summaries use R's empty identities, NA takes precedence over NaN when
+//!   `na.rm` is false, and both missing forms are removed when it is true.
+//! - sortedness is exact for non-missing real, integer, and logical data and
+//!   conservative (`UNKNOWN_SORTEDNESS`) in the presence of NA or NaN.
+//! - no-NA methods treat both real NA and NaN as missing. Raw and complex have
+//!   no public sorted/no-NA hooks; logical has no public min/max hooks.
 
 const std = @import("std");
 const R = @import("R");
@@ -124,6 +141,7 @@ fn dataptrImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) ?*anyopaque {
 
 fn dataptrOrNullImpl(comptime kind: AltKind, x: R.SEXP) ?*const anyopaque {
     const w = wrapFromAltrep(kind, x);
+    if (w.len == 0) return null;
     return @as(?*const anyopaque, @ptrCast(w.ptr));
 }
 
@@ -146,6 +164,7 @@ fn duplicateImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) R.SEXP {
         .logical => @memcpy(R.LOGICAL(dup)[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]),
         .raw => @memcpy(R.RAW(dup)[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]),
         .complex => {
+            if (w.len == 0) return dup;
             const dst: [*]T = @ptrCast(@alignCast(R.COMPLEX(dup) orelse @panic("COMPLEX returned null on freshly allocated CPLXSXP")));
             @memcpy(dst[0..w.len], @as([*]const T, @ptrCast(w.ptr))[0..w.len]);
         },
@@ -153,13 +172,27 @@ fn duplicateImpl(comptime kind: AltKind, x: R.SEXP, _: R.Rboolean) R.SEXP {
     return dup;
 }
 
+const Region = struct {
+    start: usize,
+    count: usize,
+};
+
+fn regionBounds(len: usize, i: R.R_xlen_t, n: R.R_xlen_t) ?Region {
+    if (i < 0 or n <= 0) return null;
+    const start = std.math.cast(usize, i) orelse return null;
+    if (start >= len) return null;
+
+    const available: R.R_xlen_t = @intCast(len - start);
+    const count: usize = @intCast(@min(n, available));
+    return .{ .start = start, .count = count };
+}
+
 fn getRegionImpl(comptime kind: AltKind, x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t, buf: [*c]ElemType(kind)) R.R_xlen_t {
     const w = wrapFromAltrep(kind, x);
-    const start = @as(usize, @intCast(i));
-    if (start >= w.len) return 0;
-    const count = @min(@as(usize, @intCast(n)), w.len - start);
-    @memcpy(buf[0..count], w.ptr[start..][0..count]);
-    return @intCast(count);
+    const region = regionBounds(w.len, i, n) orelse return 0;
+    if (buf == null) return 0;
+    @memcpy(buf[0..region.count], w.ptr[region.start..][0..region.count]);
+    return @intCast(region.count);
 }
 
 fn isSortedNumeric(comptime T: type, slice: []const T) c_int {
@@ -226,47 +259,34 @@ fn rawElt(x: R.SEXP, i: R.R_xlen_t) callconv(.c) R.Rbyte {
     return wrapFromAltrep(.raw, x).ptr[@as(usize, @intCast(i))];
 }
 
+export fn zigr_altcomplex_elt_parts_impl(x: R.SEXP, i: R.R_xlen_t, real: [*c]f64, imaginary: [*c]f64) callconv(.c) void {
+    const value = wrapFromAltrep(.complex, x).ptr[@as(usize, @intCast(i))];
+    real.* = value.r;
+    imaginary.* = value.i;
+}
+
 fn realSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
-    const n = w.len;
-    if (n == 0) return R.Rf_ScalarReal(0.0);
-    const ptr = w.ptr;
-    const V = simd.f64_lanes;
-    var i: usize = 0;
-    var vec: @Vector(V, f64) = @splat(0.0);
+    var total: c_longdouble = 0.0;
     var nan_seen = false;
-    while (i + V <= n) : (i += V) {
-        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(ptr + i)).*);
-        const valid = chunk == chunk;
-        if (!@reduce(.And, valid) and na_rm == 0) {
-            inline for (0..V) |lane| {
-                if (!valid[lane]) {
-                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
-                    nan_seen = true;
-                }
-            }
-        }
-        vec += @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(0.0)));
-    }
-    var total = @reduce(.Add, vec);
-    for (i..n) |j| {
-        if (R.ISNA(ptr[j]) != 0) {
+    for (w.ptr[0..w.len]) |value| {
+        if (R.ISNA(value) != 0) {
             if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
             continue;
         }
-        if (R.ISNAN(ptr[j])) {
+        if (R.ISNAN(value)) {
             if (na_rm == 0) nan_seen = true;
             continue;
         }
-        total += ptr[j];
+        total += @as(c_longdouble, @floatCast(value));
     }
     if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
-    return R.Rf_ScalarReal(total);
+    return R.Rf_ScalarReal(@floatCast(total));
 }
 
 fn integerSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.integer, x);
-    var total: i64 = 0;
+    var total: i128 = 0;
     for (w.ptr[0..w.len]) |value| {
         if (value == R.R_NaInt) {
             if (na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
@@ -292,28 +312,20 @@ fn logicalSum(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     return R.Rf_ScalarReal(@floatFromInt(total));
 }
 
+fn warnEmptyMin() void {
+    R.Rf_warning("no non-missing arguments to min; returning Inf");
+}
+
+fn warnEmptyMax() void {
+    R.Rf_warning("no non-missing arguments to max; returning -Inf");
+}
+
 fn realMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
-    const V = simd.f64_lanes;
-    var lanes: @Vector(V, f64) = @splat(std.math.inf(f64));
+    var value = std.math.inf(f64);
     var nan_seen = false;
-    var i: usize = 0;
-    while (i + V <= w.len) : (i += V) {
-        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(w.ptr + i)).*);
-        const valid = chunk == chunk;
-        if (!@reduce(.And, valid) and na_rm == 0) {
-            inline for (0..V) |lane| {
-                if (!valid[lane]) {
-                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
-                    nan_seen = true;
-                }
-            }
-        }
-        const clean = @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(std.math.inf(f64))));
-        lanes = @select(f64, clean < lanes, clean, lanes);
-    }
-    var value = @reduce(.Min, lanes);
-    for (w.ptr[i..w.len]) |item| {
+    var found = false;
+    for (w.ptr[0..w.len]) |item| {
         if (R.ISNA(item) != 0) {
             if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
             continue;
@@ -322,34 +334,20 @@ fn realMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
             if (na_rm == 0) nan_seen = true;
             continue;
         }
+        found = true;
         if (item < value) value = item;
     }
     if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
+    if (!found) warnEmptyMin();
     return R.Rf_ScalarReal(value);
 }
 
 fn realMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     const w = wrapFromAltrep(.real, x);
-    const V = simd.f64_lanes;
-    var lanes: @Vector(V, f64) = @splat(-std.math.inf(f64));
+    var value = -std.math.inf(f64);
     var nan_seen = false;
-    var i: usize = 0;
-    while (i + V <= w.len) : (i += V) {
-        const chunk = @as(@Vector(V, f64), @as(*const [V]f64, @ptrCast(w.ptr + i)).*);
-        const valid = chunk == chunk;
-        if (!@reduce(.And, valid) and na_rm == 0) {
-            inline for (0..V) |lane| {
-                if (!valid[lane]) {
-                    if (R.ISNA(chunk[lane]) != 0) return R.Rf_ScalarReal(R.NA_REAL());
-                    nan_seen = true;
-                }
-            }
-        }
-        const clean = @select(f64, valid, chunk, @as(@Vector(V, f64), @splat(-std.math.inf(f64))));
-        lanes = @select(f64, clean > lanes, clean, lanes);
-    }
-    var value = @reduce(.Max, lanes);
-    for (w.ptr[i..w.len]) |item| {
+    var found = false;
+    for (w.ptr[0..w.len]) |item| {
         if (R.ISNA(item) != 0) {
             if (na_rm == 0) return R.Rf_ScalarReal(R.NA_REAL());
             continue;
@@ -358,9 +356,11 @@ fn realMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
             if (na_rm == 0) nan_seen = true;
             continue;
         }
+        found = true;
         if (item > value) value = item;
     }
     if (nan_seen) return R.Rf_ScalarReal(std.math.nan(f64));
+    if (!found) warnEmptyMax();
     return R.Rf_ScalarReal(value);
 }
 
@@ -370,7 +370,7 @@ fn integerMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     var lanes: @Vector(V, i32) = @splat(std.math.maxInt(i32));
     var found = false;
     var i: usize = 0;
-    while (i + V <= w.len) : (i += V) {
+    while (w.len - i >= V) : (i += V) {
         const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(w.ptr + i)).*);
         const valid = chunk != @as(@Vector(V, i32), @splat(R.R_NaInt));
         if (!@reduce(.And, valid) and na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
@@ -387,7 +387,10 @@ fn integerMin(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
         found = true;
         if (item < value) value = item;
     }
-    if (!found) return R.Rf_ScalarReal(std.math.inf(f64));
+    if (!found) {
+        warnEmptyMin();
+        return R.Rf_ScalarReal(std.math.inf(f64));
+    }
     return R.Rf_ScalarInteger(value);
 }
 
@@ -397,7 +400,7 @@ fn integerMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
     var lanes: @Vector(V, i32) = @splat(std.math.minInt(i32) + 1);
     var found = false;
     var i: usize = 0;
-    while (i + V <= w.len) : (i += V) {
+    while (w.len - i >= V) : (i += V) {
         const chunk = @as(@Vector(V, i32), @as(*const [V]i32, @ptrCast(w.ptr + i)).*);
         const valid = chunk != @as(@Vector(V, i32), @splat(R.R_NaInt));
         if (!@reduce(.And, valid) and na_rm == 0) return R.Rf_ScalarInteger(R.R_NaInt);
@@ -414,7 +417,10 @@ fn integerMax(x: R.SEXP, na_rm: R.Rboolean) callconv(.c) R.SEXP {
         found = true;
         if (item > value) value = item;
     }
-    if (!found) return R.Rf_ScalarReal(-std.math.inf(f64));
+    if (!found) {
+        warnEmptyMax();
+        return R.Rf_ScalarReal(-std.math.inf(f64));
+    }
     return R.Rf_ScalarInteger(value);
 }
 
@@ -520,6 +526,7 @@ fn buildClass(comptime kind: AltKind, comptime pkg: []const u8, comptime name: [
             }.f);
         },
         .complex => {
+            R.zigr_set_altcomplex_elt_method(cls);
             R.R_set_altcomplex_Get_region_method(cls, struct {
                 fn f(x: R.SEXP, i: R.R_xlen_t, n: R.R_xlen_t, buf: ?*R.Rcomplex) callconv(.c) R.R_xlen_t {
                     if (buf == null) return 0;
@@ -685,4 +692,21 @@ test "ALTREP class identities are explicit C strings" {
 
     try std.testing.expectEqual(@as(u8, 0), package_name[2]);
     try std.testing.expectEqual(@as(u8, 0), class_name[5]);
+}
+
+test "ALTREP region bounds preserve long requests and reject invalid ranges" {
+    try std.testing.expectEqual(@as(?Region, null), regionBounds(5, -1, 1));
+    try std.testing.expectEqual(@as(?Region, null), regionBounds(5, 0, 0));
+    try std.testing.expectEqual(@as(?Region, null), regionBounds(5, 5, 1));
+    try std.testing.expectEqual(Region{ .start = 2, .count = 3 }, regionBounds(5, 2, 20).?);
+
+    if (comptime @bitSizeOf(usize) >= 64) {
+        const long_len: usize = @as(usize, std.math.maxInt(i32)) + 17;
+        const start: R.R_xlen_t = std.math.maxInt(i32);
+
+        try std.testing.expectEqual(
+            Region{ .start = @intCast(start), .count = 17 },
+            regionBounds(long_len, start, R.R_XLEN_T_MAX).?,
+        );
+    }
 }
