@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
 Rscript tests/test_evidence_schema.R
+Rscript tests/test_harness_trust.R
 
 ZIG_BIN=${ZIG:-}
 if [ -z "$ZIG_BIN" ]; then

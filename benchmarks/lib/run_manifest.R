@@ -8,6 +8,59 @@ run_manifest_values <- function(value) {
   if (is.null(value)) character(0) else as.character(unlist(value, use.names = FALSE))
 }
 
+run_manifest_disposition <- function(metadata, runner, task) {
+  runner_records <- metadata$runner_dispositions[[runner]]
+  if (is.null(runner_records)) stop(sprintf("run manifest has no dispositions for runner %s", runner))
+  matches <- runner_records[vapply(runner_records, function(record) identical(as.character(record$task), task), logical(1))]
+  if (length(matches) != 1L) stop(sprintf("run manifest has no unique disposition for %s/%s", runner, task))
+  matches[[1L]]
+}
+
+run_manifest_task_input <- function(metadata, task) {
+  records <- metadata$task_inputs
+  if (is.null(records)) stop("run manifest has no task input records")
+  matches <- records[vapply(records, function(record) identical(as.character(record$task), task), logical(1))]
+  if (length(matches) != 1L) stop(sprintf("run manifest has no unique task input record for %s", task))
+  matches[[1L]]
+}
+
+run_manifest_artifact_digest <- function(paths) {
+  paths <- sort(unique(normalizePath(as.character(paths), mustWork = FALSE)))
+  if (length(paths) == 0L || any(!file.exists(paths))) stop("run artifact identity contains a missing file")
+  identity_file <- tempfile("run-artifact-identity-")
+  on.exit(unlink(identity_file), add = TRUE)
+  writeLines(paste(paths, unname(as.character(tools::md5sum(paths))), sep = "\t"), identity_file, useBytes = TRUE)
+  unname(as.character(tools::md5sum(identity_file))[[1L]])
+}
+
+run_manifest_r_provenance_records <- function(metadata, field) {
+  provenance <- metadata$r_provenance
+  if (is.null(provenance) || !identical(as.character(provenance$schema_version), "p4.1-r-provenance-v1")) {
+    stop("run manifest has no supported R provenance")
+  }
+  records <- provenance[[field]]
+  if (is.null(records)) return(list())
+  task_ids <- vapply(records, function(record) as.character(record$task), character(1))
+  if (anyDuplicated(task_ids)) stop(sprintf("run R provenance %s contains duplicate tasks", field))
+  names(records) <- task_ids
+  records
+}
+
+validate_summary_disposition <- function(status, correctness_status, disposition, disposition_reason, runner, task) {
+  if (identical(as.character(status), "N/A")) {
+    if (isTRUE(disposition$executable) || !identical(as.character(correctness_status), "NOT_APPLICABLE")) {
+      stop(sprintf("run summary has a runner-specific N/A error for %s/%s", runner, task))
+    }
+    if (!identical(as.character(disposition_reason), as.character(disposition$reason)) ||
+        !nzchar(as.character(disposition_reason))) {
+      stop(sprintf("run summary N/A lacks its normalized disposition reason for %s/%s", runner, task))
+    }
+  } else if (!isTRUE(disposition$executable)) {
+    stop(sprintf("run summary executes a non-executable disposition for %s/%s", runner, task))
+  }
+  invisible(disposition)
+}
+
 benchmark_timing_policy <- function() {
   list(
     warmup_iterations = 10L,
@@ -79,6 +132,9 @@ read_run_manifest <- function(run_dir) {
   metadata <- jsonlite::fromJSON(path, simplifyVector = FALSE)
   if (is.null(metadata$run_id) || !nzchar(as.character(metadata$run_id))) {
     stop(sprintf("run manifest has no run_id: %s", path))
+  }
+  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 2L) {
+    stop(sprintf("unsupported run manifest schema version: %s", path))
   }
   metadata
 }
@@ -174,22 +230,126 @@ validate_environment_manifest <- function(environment) {
   for (config in configs) {
     require_scalar(config, "name", "runner name")
     require_scalar(config, "call_type", "runner call type")
+    require_scalar(config, "tool_identity", "runner tool identity")
+    require_scalar(config, "runner_config_digest", "runner configuration digest")
+    require_scalar(config, "generated_glue_kind", "runner generated-glue kind")
+    require_scalar(config, "generated_glue_digest", "runner generated-glue digest")
+    require_scalar(config, "artifact_path", "runner artifact path")
+    require_scalar(config, "artifact_digest", "runner artifact digest")
+    artifact_paths <- run_manifest_values(config$artifact_paths)
+    if (length(artifact_paths) == 0L || any(!nzchar(artifact_paths))) {
+      stop("environment metadata missing runner artifact paths")
+    }
   }
   invisible(environment)
 }
 
 validate_run_artifacts <- function(run_dir, metadata) {
+  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 2L) {
+    stop("unsupported run manifest schema version")
+  }
   validate_environment_manifest(metadata$environment)
   expected_run_id <- as.character(metadata$run_id)
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
-  allowed_na_tasks <- sort(run_manifest_values(metadata$allowed_na_tasks))
   if (!is.null(metadata$timing_policy)) validate_timing_policy(metadata$timing_policy)
   if (length(expected_runners) == 0L) stop("run manifest has no runners")
   if (length(expected_tasks) == 0L) stop("run manifest has no tasks")
-  unknown_allowed_na <- setdiff(allowed_na_tasks, expected_tasks)
-  if (length(unknown_allowed_na) > 0L) {
-    stop(sprintf("run manifest allows N/A for undeclared tasks: %s", paste(unknown_allowed_na, collapse = ", ")))
+  master_seed <- suppressWarnings(as.integer(metadata$master_seed))
+  if (length(master_seed) != 1L || is.na(master_seed) || master_seed < 1L) stop("run manifest has an invalid master seed")
+  input_relative_path <- if (is.null(metadata$input_manifest)) NULL else metadata$input_manifest$relative_path
+  input_digest <- if (is.null(metadata$input_manifest)) NULL else metadata$input_manifest$digest
+  if (is.null(input_relative_path) || length(input_relative_path) != 1L || !nzchar(as.character(input_relative_path)) ||
+      is.null(input_digest) || length(input_digest) != 1L || !nzchar(as.character(input_digest))) {
+    stop("run manifest has no canonical input identity")
+  }
+  input_path <- file.path(run_dir, as.character(input_relative_path))
+  if (!file.exists(input_path)) stop("run canonical input manifest is missing")
+  actual_input_digest <- unname(as.character(tools::md5sum(input_path))[[1L]])
+  if (!identical(actual_input_digest, as.character(input_digest))) stop("run canonical input manifest digest differs")
+  input_payload <- jsonlite::fromJSON(input_path, simplifyVector = FALSE)
+  input_payload_records <- input_payload$tasks
+  input_payload_tasks <- vapply(input_payload_records, function(record) as.character(record$task), character(1))
+  if (!identical(sort(input_payload_tasks), expected_tasks) || anyDuplicated(input_payload_tasks)) {
+    stop("canonical input manifest task set differs from the run manifest")
+  }
+  input_tasks <- vapply(metadata$task_inputs, function(record) as.character(record$task), character(1))
+  if (!identical(sort(input_tasks), expected_tasks) || anyDuplicated(input_tasks)) {
+    stop("run task input records differ from the declared task set")
+  }
+  for (task in expected_tasks) {
+    metadata_input <- run_manifest_task_input(metadata, task)
+    payload_input <- input_payload_records[[match(task, input_payload_tasks)]]
+    for (field in c(
+      "master_seed", "task_seed", "fixture_version", "contract_version",
+      "mutation_policy", "altrep_intent", "fingerprint"
+    )) {
+      if (!identical(as.character(metadata_input[[field]]), as.character(payload_input[[field]]))) {
+        stop(sprintf("run task input field %s differs from the canonical artifact for %s", field, task))
+      }
+    }
+  }
+  r_runner_provenance <- run_manifest_r_provenance_records(metadata, "runner_rows")
+  r_reference_provenance <- run_manifest_r_provenance_records(metadata, "reference_rows")
+  if (!identical(sort(names(r_runner_provenance)), expected_tasks)) {
+    stop("run R runner provenance differs from the declared task set")
+  }
+  if (length(setdiff(names(r_reference_provenance), expected_tasks)) > 0L) {
+    stop("run R reference provenance contains undeclared tasks")
+  }
+  required_provenance_fields <- c(
+    "schema_version", "task", "function_name", "implementation_class", "source_digest",
+    "ast_allowlist_id", "forbidden_call_result", "compiled_backend"
+  )
+  for (record in c(r_runner_provenance, r_reference_provenance)) {
+    missing <- required_provenance_fields[vapply(required_provenance_fields, function(field) is.null(record[[field]]), logical(1))]
+    if (length(missing) > 0L) stop(sprintf("run R provenance is missing fields for %s: %s", record$task, paste(missing, collapse = ", ")))
+    if (!(as.character(record$implementation_class) %in% c("pure_r", "optimized_base_r", "pure_r_unrepresentable"))) {
+      stop(sprintf("run R provenance has an invalid implementation class for %s", record$task))
+    }
+    if (!nzchar(as.character(record$source_digest))) stop(sprintf("run R provenance lacks a source digest for %s", record$task))
+  }
+  if (is.null(metadata$runner_dispositions) || !identical(sort(names(metadata$runner_dispositions)), expected_runners)) {
+    stop("run manifest disposition runner set differs from the declared runner set")
+  }
+  for (runner in expected_runners) {
+    runner_dispositions <- metadata$runner_dispositions[[runner]]
+    disposition_tasks <- vapply(runner_dispositions, function(record) as.character(record$task), character(1))
+    if (!identical(sort(disposition_tasks), expected_tasks) || anyDuplicated(disposition_tasks)) {
+      stop(sprintf("run dispositions for %s differ from the declared task set", runner))
+    }
+    required_disposition_fields <- c(
+      "task", "status", "executable", "reason", "owner", "implementation_role", "evidence_use",
+      "path_kind", "public_path", "representation_strategy", "kernel_id", "contract_version",
+      "fixture_version", "comparison_tier", "mutation_policy", "setup_policy", "comparison_group",
+      "timing_eligible"
+    )
+    for (record in runner_dispositions) {
+      missing <- required_disposition_fields[vapply(
+        required_disposition_fields,
+        function(field) is.null(record[[field]]),
+        logical(1)
+      )]
+      if (length(missing) > 0L) {
+        stop(sprintf("run disposition is missing fields for %s/%s: %s", runner, record$task, paste(missing, collapse = ", ")))
+      }
+    }
+    environment_records <- metadata$environment$runner_configs
+    environment_matches <- environment_records[vapply(
+      environment_records,
+      function(record) identical(as.character(record$name), runner),
+      logical(1)
+    )]
+    if (length(environment_matches) != 1L) stop(sprintf("environment identity is missing for runner %s", runner))
+    artifact <- environment_matches[[1L]]
+    artifact_paths <- run_manifest_values(artifact$artifact_paths)
+    actual_artifact_digest <- tryCatch(
+      run_manifest_artifact_digest(artifact_paths),
+      error = function(error) ""
+    )
+    if (!identical(actual_artifact_digest, as.character(artifact$artifact_digest))) {
+      stop(sprintf("artifact drift detected while completing runner %s", runner))
+    }
   }
   staging_dir <- file.path(run_dir, ".staging")
   if (dir.exists(staging_dir) && length(list.files(staging_dir, all.files = TRUE, no.. = TRUE, recursive = TRUE)) > 0L) {
@@ -213,7 +373,11 @@ validate_run_artifacts <- function(run_dir, metadata) {
   summaries <- do.call(rbind, lapply(summary_files, read.csv, stringsAsFactors = FALSE))
   required <- c(
     "run_id", "runner", "task", "status",
-    "correctness_status", "correctness_policy", "correctness_message"
+    "correctness_status", "correctness_policy", "correctness_message",
+    "master_seed", "task_seed", "input_fingerprint", "contract_version", "path_kind", "evidence_use",
+    "r_implementation_provenance", "r_source_digest", "kernel_id", "representation_strategy",
+    "mutation_policy", "tool_identity", "generated_glue_kind", "generated_glue_digest", "artifact_digest",
+    "disposition", "disposition_reason"
   )
   if (!is.null(metadata$timing_policy)) {
     required <- c(
@@ -281,16 +445,68 @@ validate_run_artifacts <- function(run_dir, metadata) {
       paste(unique(invalid_pass$task), collapse = ", ")
     ))
   }
-  invalid_na <- summaries[
-    summaries$status == "N/A" &
-      (!(summaries$task %in% allowed_na_tasks) | summaries$correctness_status != "NOT_APPLICABLE"),
-    , drop = FALSE
-  ]
-  if (nrow(invalid_na) > 0L) {
-    stop(sprintf(
-      "run summaries contain undeclared or malformed N/A rows: %s",
-      paste(unique(invalid_na$task), collapse = ", ")
-    ))
+  for (index in seq_len(nrow(summaries))) {
+    row <- summaries[index, , drop = FALSE]
+    runner <- as.character(row$runner)
+    task <- as.character(row$task)
+    disposition <- run_manifest_disposition(metadata, runner, task)
+    input <- run_manifest_task_input(metadata, task)
+    environment_records <- metadata$environment$runner_configs
+    environment_matches <- environment_records[vapply(
+      environment_records,
+      function(record) identical(as.character(record$name), runner),
+      logical(1)
+    )]
+    if (length(environment_matches) != 1L) stop(sprintf("environment identity is missing for runner %s", runner))
+    environment <- environment_matches[[1L]]
+    exact_fields <- list(
+      master_seed = as.character(master_seed),
+      task_seed = as.character(input$task_seed),
+      input_fingerprint = as.character(input$fingerprint),
+      contract_version = as.character(disposition$contract_version),
+      path_kind = as.character(disposition$path_kind),
+      evidence_use = as.character(disposition$evidence_use),
+      kernel_id = as.character(disposition$kernel_id),
+      representation_strategy = as.character(disposition$representation_strategy),
+      mutation_policy = as.character(input$mutation_policy),
+      tool_identity = as.character(environment$tool_identity),
+      generated_glue_kind = as.character(environment$generated_glue_kind),
+      generated_glue_digest = as.character(environment$generated_glue_digest),
+      artifact_digest = as.character(environment$artifact_digest),
+      disposition = as.character(disposition$status),
+      disposition_reason = as.character(disposition$reason)
+    )
+    for (field in names(exact_fields)) {
+      if (!identical(as.character(row[[field]]), exact_fields[[field]])) {
+        stop(sprintf("run summary identity field %s differs for %s/%s", field, runner, task))
+      }
+    }
+    validate_summary_disposition(
+      row$status,
+      row$correctness_status,
+      disposition,
+      row$disposition_reason,
+      runner,
+      task
+    )
+    expected_r_provenance <- if (identical(runner, "r")) {
+      as.character(r_runner_provenance[[task]]$implementation_class)
+    } else if (!is.null(r_reference_provenance[[task]])) {
+      paste0("reference:", as.character(r_reference_provenance[[task]]$implementation_class))
+    } else {
+      "not_applicable"
+    }
+    expected_r_digest <- if (identical(runner, "r")) {
+      as.character(r_runner_provenance[[task]]$source_digest)
+    } else if (!is.null(r_reference_provenance[[task]])) {
+      as.character(r_reference_provenance[[task]]$source_digest)
+    } else {
+      "not_applicable"
+    }
+    if (!identical(as.character(row$r_implementation_provenance), expected_r_provenance) ||
+        !identical(as.character(row$r_source_digest), expected_r_digest)) {
+      stop(sprintf("run summary R provenance differs for %s/%s", runner, task))
+    }
   }
 
   actual_runners <- sort(unique(as.character(summaries$runner)))
@@ -336,6 +552,10 @@ validate_run_artifacts <- function(run_dir, metadata) {
     }
     if (!is.null(metadata$timing_policy)) {
       cold_file <- file.path(runner_dir, "cold_start.csv")
+      if (length(expected_raw_tasks) == 0L) {
+        if (file.exists(cold_file)) stop(sprintf("cold-start results exist without PASS rows for %s", runner))
+        next
+      }
       if (!file.exists(cold_file)) stop(sprintf("cold-start results missing for %s", runner))
       cold <- read.csv(cold_file, stringsAsFactors = FALSE)
       missing_cold <- setdiff(c("runner", "task", "wall_ms", "run_id"), names(cold))

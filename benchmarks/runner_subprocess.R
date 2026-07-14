@@ -8,14 +8,27 @@ cli <- commandArgs(trailingOnly = TRUE)
 runner_name <- NA
 task_filter <- NULL
 check_only <- FALSE
+validation_only <- FALSE
 results_dir_arg <- NULL
+prepare_inputs_arg <- NULL
+input_manifest_arg <- NULL
+expected_input_manifest_digest <- NULL
+master_seed_arg <- NULL
 for (a in cli) {
   if (grepl("^--runner=", a)) runner_name <- sub("^--runner=", "", a)
   if (grepl("^--tasks=", a))  task_filter <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
   if (a == "--check-only") check_only <- TRUE
+  if (a == "--validation-only") validation_only <- TRUE
   if (grepl("^--results-dir=", a)) results_dir_arg <- sub("^--results-dir=", "", a)
+  if (grepl("^--prepare-inputs=", a)) prepare_inputs_arg <- sub("^--prepare-inputs=", "", a)
+  if (grepl("^--input-manifest=", a)) input_manifest_arg <- sub("^--input-manifest=", "", a)
+  if (grepl("^--expected-input-manifest-digest=", a)) {
+    expected_input_manifest_digest <- sub("^--expected-input-manifest-digest=", "", a)
+  }
+  if (grepl("^--master-seed=", a)) master_seed_arg <- sub("^--master-seed=", "", a)
 }
-if (is.na(runner_name)) stop("--runner= required")
+if (is.na(runner_name) && is.null(prepare_inputs_arg)) stop("--runner= required")
+if (is.na(runner_name)) runner_name <- "r"
 
 cfg_dir <- "runners"
 cfg_path <- file.path(cfg_dir, paste0(runner_name, ".json"))
@@ -24,15 +37,20 @@ cfg <- fromJSON(cfg_path, simplifyVector = FALSE)
 
 root_dir <- normalizePath(file.path(cfg_dir, ".."))
 source(file.path(root_dir, "lib", "run_manifest.R"))
-if (!check_only && is.null(results_dir_arg)) stop("--results-dir= is required for benchmark execution")
+source(file.path(root_dir, "lib", "input_contract.R"))
+source(file.path(root_dir, "lib", "r_provenance.R"))
+source(file.path(root_dir, "lib", "environment_manifest.R"))
+if (!check_only && is.null(prepare_inputs_arg) && is.null(results_dir_arg)) {
+  stop("--results-dir= is required for benchmark execution")
+}
+if (!is.null(prepare_inputs_arg)) results_dir_arg <- NULL
 results_dir <- normalizePath(if (is.null(results_dir_arg)) file.path(root_dir, "results") else results_dir_arg, mustWork = FALSE)
 run_id <- NA_character_
-allowed_na_tasks <- character(0)
 timing_policy <- benchmark_timing_policy()
-if (!check_only) {
+run_metadata <- NULL
+if (!check_only && is.null(prepare_inputs_arg)) {
   run_metadata <- read_run_manifest(results_dir)
   run_id <- as.character(run_metadata$run_id)
-  allowed_na_tasks <- sort(run_manifest_values(run_metadata$allowed_na_tasks))
   if (!is.null(run_metadata$timing_policy)) timing_policy <- run_metadata$timing_policy
   validate_timing_policy(timing_policy)
   if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
@@ -42,6 +60,11 @@ if (!check_only) {
   dir.create(file.path(staging_results_dir, runner_name), recursive = TRUE, showWarnings = FALSE)
   unlink(file.path(staging_results_dir, runner_name, "errors.csv"))
 }
+
+# The parent input-recipe process cannot construct registered native state.
+# The fingerprint normalizes this sentinel and real external pointers to the
+# same declared recipe identity.
+method_receiver <- function() structure("runner_registered_fixture_state", class = "benchmark_external_state_recipe")
 
 string_input <- function() {
   rep(c("zigr", "boundary", NA_character_, ""), length.out = 32768L)
@@ -250,6 +273,50 @@ if (!is.null(task_filter)) {
   all_tasks <- all_tasks[task_numbers %in% task_filter]
 }
 
+if (!is.null(prepare_inputs_arg)) {
+  master_seed <- if (is.null(master_seed_arg)) benchmark_master_seed() else input_scalar_integer(master_seed_arg, "master seed")
+  write_input_recipe_manifest(
+    normalizePath(prepare_inputs_arg, mustWork = FALSE),
+    all_tasks,
+    manifest,
+    evidence,
+    master_seed
+  )
+  cat(sprintf("Canonical input recipes written to %s\n", normalizePath(prepare_inputs_arg, mustWork = FALSE)))
+  quit(save = "no", status = 0, runLast = FALSE)
+}
+
+input_recipes <- NULL
+master_seed <- NULL
+runner_environment <- NULL
+if (!check_only) {
+  if (is.null(input_manifest_arg) || is.null(expected_input_manifest_digest) || is.null(master_seed_arg)) {
+    stop("benchmark execution requires --input-manifest, --expected-input-manifest-digest, and --master-seed")
+  }
+  declared_input_path <- normalizePath(file.path(results_dir, as.character(run_metadata$input_manifest$relative_path)), mustWork = FALSE)
+  supplied_input_path <- normalizePath(input_manifest_arg, mustWork = FALSE)
+  if (!identical(declared_input_path, supplied_input_path)) stop("canonical input manifest location differs from the run manifest")
+  if (!identical(as.character(run_metadata$input_manifest$digest), expected_input_manifest_digest)) {
+    stop("expected canonical input manifest digest differs from the run manifest")
+  }
+  validate_input_manifest_digest(supplied_input_path, expected_input_manifest_digest)
+  master_seed <- input_scalar_integer(master_seed_arg, "master seed")
+  if (!identical(master_seed, input_scalar_integer(run_metadata$master_seed, "run manifest master seed"))) {
+    stop("master seed differs from the run manifest")
+  }
+  input_recipes <- read_input_recipe_manifest(supplied_input_path)
+  if (!identical(master_seed, input_scalar_integer(input_recipes$master_seed, "canonical input master seed"))) {
+    stop("master seed differs from the canonical input manifest")
+  }
+  selected_ids <- vapply(all_tasks, function(task) task$id, character(1))
+  if (!identical(sort(names(input_recipes$tasks)), sort(selected_ids))) {
+    stop("canonical input task set differs from the runner task set")
+  }
+  for (task in all_tasks) validate_task_input_recipe(task, input_recipes$tasks[[task$id]], master_seed)
+  runner_environment <- runner_environment_record(run_metadata$environment, runner_name)
+  validate_runner_artifact_identity(root_dir, runner_environment)
+}
+
 cat(sprintf("Runner: %s (%s)\n", runner_name, cfg$label))
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
@@ -310,6 +377,29 @@ source(file.path(root_dir, "src/r/run_all.R"))
 r_cfg_path <- file.path(root_dir, "runners", "r.json")
 r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
 validate_r_reference_map(manifest, r_ref)
+r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
+selected_task_ids <- vapply(all_tasks, function(task) task$id, character(1))
+live_r_provenance <- build_run_r_provenance(selected_task_ids, r_ref, manifest, r_evidence_rows)
+r_runner_provenance <- named_r_provenance_records(live_r_provenance, "runner_rows")
+r_reference_provenance <- named_r_provenance_records(live_r_provenance, "reference_rows")
+if (!check_only) {
+  expected_runner_provenance <- named_r_provenance_records(run_metadata$r_provenance, "runner_rows")
+  expected_reference_provenance <- named_r_provenance_records(run_metadata$r_provenance, "reference_rows")
+  if (!identical(sort(names(expected_runner_provenance)), sort(names(r_runner_provenance))) ||
+      !identical(sort(names(expected_reference_provenance)), sort(names(r_reference_provenance)))) {
+    stop("R provenance task sets differ from the run manifest")
+  }
+  for (task_id in names(r_runner_provenance)) {
+    compare_r_provenance_records(expected_runner_provenance[[task_id]], r_runner_provenance[[task_id]], task_id)
+  }
+  for (task_id in names(r_reference_provenance)) {
+    compare_r_provenance_records(
+      expected_reference_provenance[[task_id]],
+      r_reference_provenance[[task_id]],
+      paste0(task_id, " reference")
+    )
+  }
+}
 
 capture_result <- function(fn) {
   error <- NA_character_
@@ -325,6 +415,7 @@ resolve_registered_exports <- function(export_names, cfg) {
   package_name <- cfg$package_name %||% ""
   if (!nzchar(package_name)) stop(sprintf("runner %s enables registered_symbols but has no package_name", runner_name))
   resolved <- export_names
+  validated_packages <- character(0)
   for (tid in names(export_names)) {
     package_for_task <- package_overrides[[tid]] %||% package_name
     dll <- loaded_dlls[[package_for_task]]
@@ -332,6 +423,10 @@ resolve_registered_exports <- function(export_names, cfg) {
       "registered symbol lookup has no loaded DLL named %s for runner %s task %s",
       package_for_task, runner_name, tid
     ))
+    if (!(package_for_task %in% validated_packages)) {
+      validate_forced_registration(dll[["dynamicLookup"]], sprintf("%s package %s", runner_name, package_for_task))
+      validated_packages <- c(validated_packages, package_for_task)
+    }
     info <- tryCatch(
       getNativeSymbolInfo(export_names[[tid]], PACKAGE = dll, withRegistrationInfo = TRUE),
       error = function(e) stop(sprintf(
@@ -377,9 +472,7 @@ validate_registration_fixture <- function(cfg) {
   if (is.null(dll)) stop(sprintf(
     "registration fixture has no loaded DLL named %s for runner %s", package_name, runner_name
   ))
-  if (!isFALSE(dll[["dynamicLookup"]])) stop(sprintf(
-    "registration fixture has dynamic symbol lookup enabled for %s", runner_name
-  ))
+  validate_forced_registration(dll[["dynamicLookup"]], runner_name)
   symbol <- function(key) {
     info <- tryCatch(
       getNativeSymbolInfo(fixture[[key]], PACKAGE = dll, withRegistrationInfo = TRUE),
@@ -700,10 +793,25 @@ for (task in all_tasks) {
   correctness_policy <- manifest$correctness_policy[[manifest_row]]
   expected_return <- manifest$expected_return[[manifest_row]]
   correctness_status <- if (call_type == "r") "REFERENCE" else "NOT_VALIDATED"
-  correctness_message <- if (call_type == "r") "R reference runner" else ""
+  correctness_message <- ""
   task_call_type <- if (call_type == "r") "r" else (task$call_type %||% call_type)
   task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
   cfun <- exports[[tid]]
+  disposition <- run_manifest_disposition(run_metadata, runner_name, tid)
+  input_record <- input_recipes$tasks[[tid]]
+  mutation_policy <- as.character(input_record$mutation_policy)
+  altrep_intent <- as.character(input_record$altrep_intent)
+  task_seed <- input_scalar_integer(input_record$task_seed, sprintf("task seed for %s", tid))
+  new_phase_arguments <- function() {
+    arguments <- materialize_task_input(task, task_seed)$arguments
+    if (identical(mutation_policy, "rng_reset_required")) {
+      set.seed(task_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+    }
+    arguments
+  }
+  expression_for_arguments <- function(arguments) {
+    if (!is.null(task_expr)) task_expr else make_call_expr(cfun, arguments, task_call_type)
+  }
   if (call_type == ".Call" && is.null(registered_export_names) && !is.null(cfun)) {
     package_overrides <- cfg$package_overrides %||% list()
     package_name <- package_overrides[[tid]]
@@ -713,10 +821,10 @@ for (task in all_tasks) {
   }
   if (is.null(task_expr) && is.null(cfun)) {
     n_na <- n_na + 1
-    na_allowed <- tid %in% allowed_na_tasks
+    na_allowed <- !isTRUE(disposition$executable)
     if (!na_allowed) {
       n_fail <- n_fail + 1
-      correctness_message <- "no executable for this runner and task is not explicitly allowed N/A"
+      correctness_message <- "normalized disposition requires an executable but the runner has none"
     }
     cat(sprintf("  %-14s [N/A]\n", tid))
     results_list[[length(results_list) + 1]] <- data.frame(
@@ -727,19 +835,49 @@ for (task in all_tasks) {
       cold_start_ms = NA, n_iterations = NA, error = NA_character_,
       correctness_status = "NOT_APPLICABLE",
       correctness_policy = correctness_policy,
-      correctness_message = if (na_allowed) "no executable for this runner" else correctness_message,
+      correctness_message = if (na_allowed) as.character(disposition$reason) else correctness_message,
       stringsAsFactors = FALSE,
       timing_summary_fields())
     next
   }
+  if (!isTRUE(disposition$executable)) {
+    stop(sprintf("runner %s exposes %s despite its non-executable disposition", runner_name, tid))
+  }
 
-  args <- task$args()
-
-  if (task_call_type != "r") {
+  if (task_call_type == "r") {
+    r_arguments <- new_phase_arguments()
+    before <- task_arguments_fingerprint(tid, r_arguments, altrep_intent)
+    r_eval <- capture_result(function() do.call(get(cfun, mode = "function"), r_arguments))
+    if (!r_eval$ok) {
+      correctness_status <- "FAIL"
+      correctness_message <- sprintf("R implementation failed: %s", r_eval$error)
+    } else {
+      r_contract <- validate_result_contract(r_eval$value, expected_return)
+      if (!r_contract$ok) {
+        correctness_status <- "FAIL"
+        correctness_message <- paste("R result:", r_contract$message)
+      } else {
+        if (identical(mutation_policy, "immutable")) {
+          mutation <- capture_result(function() assert_immutable_input(tid, r_arguments, before, altrep_intent))
+          if (!mutation$ok) {
+            correctness_status <- "FAIL"
+            correctness_message <- mutation$error
+          }
+        }
+        if (!identical(correctness_status, "FAIL")) {
+          provenance <- r_runner_provenance[[tid]]
+          correctness_status <- if (identical(provenance$implementation_class, "pure_r")) "REFERENCE" else "PASS"
+          correctness_message <- sprintf("validated %s result contract", provenance$implementation_class)
+        }
+      }
+    }
+  } else {
+    native_arguments <- new_phase_arguments()
+    native_before <- task_arguments_fingerprint(tid, native_arguments, altrep_intent)
     invoke_native <- function() {
-      if (task_call_type == ".Call") return(do.call(.Call, c(list(cfun), args)))
-      if (task_call_type == ".C") return(do.call(.C, c(list(cfun), args)))
-      if (task_call_type == ".External") return(do.call(.External, c(list(cfun), args)))
+      if (task_call_type == ".Call") return(do.call(.Call, c(list(cfun), native_arguments)))
+      if (task_call_type == ".C") return(do.call(.C, c(list(cfun), native_arguments)))
+      if (task_call_type == ".External") return(do.call(.External, c(list(cfun), native_arguments)))
       stop(sprintf("unsupported correctness call type: %s", task_call_type))
     }
     native_eval <- capture_result(invoke_native)
@@ -751,13 +889,22 @@ for (task in all_tasks) {
       if (!native_contract$ok) {
         correctness_status <- "FAIL"
         correctness_message <- paste("native result:", native_contract$message)
-      } else if (identical(correctness_policy, "r_reference")) {
+      } else if (identical(mutation_policy, "immutable")) {
+        mutation <- capture_result(function() assert_immutable_input(tid, native_arguments, native_before, altrep_intent))
+        if (!mutation$ok) {
+          correctness_status <- "FAIL"
+          correctness_message <- mutation$error
+        }
+      }
+      if (!identical(correctness_status, "FAIL") && identical(correctness_policy, "r_reference")) {
         ref_name <- r_ref[[tid]]
         if (is.null(ref_name) || !nzchar(ref_name) || !exists(ref_name, mode = "function")) {
           correctness_status <- "NOT_VALIDATED"
           correctness_message <- "R reference function is missing"
         } else {
-          ref_eval <- capture_result(function() do.call(get(ref_name, mode = "function"), args))
+          reference_arguments <- new_phase_arguments()
+          reference_before <- task_arguments_fingerprint(tid, reference_arguments, altrep_intent)
+          ref_eval <- capture_result(function() do.call(get(ref_name, mode = "function"), reference_arguments))
           if (!ref_eval$ok) {
             correctness_status <- "FAIL"
             correctness_message <- sprintf("R reference failed: %s", ref_eval$error)
@@ -766,7 +913,14 @@ for (task in all_tasks) {
             if (!ref_contract$ok) {
               correctness_status <- "FAIL"
               correctness_message <- paste("R reference result:", ref_contract$message)
-            } else {
+            } else if (identical(mutation_policy, "immutable")) {
+              mutation <- capture_result(function() assert_immutable_input(tid, reference_arguments, reference_before, altrep_intent))
+              if (!mutation$ok) {
+                correctness_status <- "FAIL"
+                correctness_message <- mutation$error
+              }
+            }
+            if (!identical(correctness_status, "FAIL")) {
               comparison <- compare_correctness(ref_eval$value, native_eval$value)
               if (!isTRUE(comparison$ok)) {
                 correctness_status <- "FAIL"
@@ -778,11 +932,15 @@ for (task in all_tasks) {
                 )
               } else {
                 correctness_status <- "PASS"
+                correctness_message <- sprintf(
+                  "validated against %s R reference",
+                  r_reference_provenance[[tid]]$implementation_class
+                )
               }
             }
           }
         }
-      } else {
+      } else if (!identical(correctness_status, "FAIL")) {
         correctness_status <- "PASS"
       }
     }
@@ -806,6 +964,12 @@ for (task in all_tasks) {
     next
   }
 
+  if (validation_only) {
+    n_pass <- n_pass + 1L
+    cat(sprintf("  %-14s [VALIDATED] %s\n", tid, correctness_message))
+    next
+  }
+
   # Do not retain large correctness results while timing the same input.
   native_eval <- NULL
   ref_eval <- NULL
@@ -813,7 +977,8 @@ for (task in all_tasks) {
   ref_contract <- NULL
   comparison <- NULL
 
-  cs <- timed_call(cfun, args, task_call_type, expr = task_expr)
+  cold_prepare <- function() expression_for_arguments(new_phase_arguments())
+  cs <- timed_call(cold_prepare)
   log_cold_start(runner_name, tid, cs$wall_ms, run_id = run_id, dir = staging_results_dir)
   if (!is.na(cs$error)) {
     n_fail <- n_fail + 1
@@ -834,18 +999,28 @@ for (task in all_tasks) {
     next
   }
 
+  if (identical(mutation_policy, "immutable")) {
+    warmup_arguments <- new_phase_arguments()
+    timed_arguments <- new_phase_arguments()
+    warmup_before <- task_arguments_fingerprint(tid, warmup_arguments, altrep_intent)
+    timed_before <- task_arguments_fingerprint(tid, timed_arguments, altrep_intent)
+    prepare_warmup <- function() expression_for_arguments(warmup_arguments)
+    prepare_timed <- function() expression_for_arguments(timed_arguments)
+  } else {
+    prepare_warmup <- function() expression_for_arguments(new_phase_arguments())
+    prepare_timed <- function() expression_for_arguments(new_phase_arguments())
+  }
+
   bm <- benchmark_call(
-    cfun,
-    args,
-    task_call_type,
+    prepare_warmup,
+    prepare_timed,
     warmup = as.integer(timing_policy$warmup_iterations),
     block_size = as.integer(timing_policy$block_size),
     max_iter = as.integer(timing_policy$max_iterations),
     cv_threshold = as.numeric(timing_policy$convergence_cv_threshold_pct),
     convergence_blocks = as.integer(timing_policy$convergence_window_blocks),
     timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
-    rss_metric = as.character(timing_policy$rss_metric),
-    expr = task_expr
+    rss_metric = as.character(timing_policy$rss_metric)
   )
   if (!is.na(bm$error)) {
     n_fail <- n_fail + 1
@@ -864,6 +1039,10 @@ for (task in all_tasks) {
       stringsAsFactors = FALSE,
       timing_summary_fields())
     next
+  }
+  if (identical(mutation_policy, "immutable")) {
+    assert_immutable_input(tid, warmup_arguments, warmup_before, altrep_intent)
+    assert_immutable_input(tid, timed_arguments, timed_before, altrep_intent)
   }
 
   n_pass <- n_pass + 1
@@ -909,8 +1088,54 @@ for (task in all_tasks) {
   )
 }
 
+if (validation_only) {
+  if (n_fail > 0L) stop(sprintf("runner %s failed validation for %d task(s)", runner_name, n_fail))
+  cat(sprintf("Validation preflight passed for %s: %d executable and %d N/A task(s).\n", runner_name, n_pass, n_na))
+  quit(save = "no", status = 0, runLast = FALSE)
+}
+
 summary <- do.call(rbind, results_list)
 summary$run_id <- run_id
+summary_dispositions <- lapply(summary$task, function(task_id) {
+  run_manifest_disposition(run_metadata, runner_name, as.character(task_id))
+})
+summary_inputs <- input_recipes$tasks[as.character(summary$task)]
+summary$master_seed <- master_seed
+summary$task_seed <- vapply(summary_inputs, function(record) input_scalar_integer(record$task_seed, "task seed"), integer(1))
+summary$input_fingerprint <- vapply(summary_inputs, function(record) as.character(record$fingerprint), character(1))
+summary$contract_version <- vapply(summary_dispositions, function(record) as.character(record$contract_version), character(1))
+summary$path_kind <- vapply(summary_dispositions, function(record) as.character(record$path_kind), character(1))
+summary$evidence_use <- vapply(summary_dispositions, function(record) as.character(record$evidence_use), character(1))
+summary$kernel_id <- vapply(summary_dispositions, function(record) as.character(record$kernel_id), character(1))
+summary$representation_strategy <- vapply(
+  summary_dispositions,
+  function(record) as.character(record$representation_strategy),
+  character(1)
+)
+summary$mutation_policy <- vapply(summary_inputs, function(record) as.character(record$mutation_policy), character(1))
+summary$tool_identity <- as.character(runner_environment$tool_identity)
+summary$generated_glue_kind <- as.character(runner_environment$generated_glue_kind)
+summary$generated_glue_digest <- as.character(runner_environment$generated_glue_digest)
+summary$artifact_digest <- as.character(runner_environment$artifact_digest)
+summary$disposition <- vapply(summary_dispositions, function(record) as.character(record$status), character(1))
+summary$disposition_reason <- vapply(summary_dispositions, function(record) as.character(record$reason), character(1))
+summary$r_implementation_provenance <- vapply(as.character(summary$task), function(task_id) {
+  if (identical(runner_name, "r")) {
+    if (!is.null(r_runner_provenance[[task_id]])) return(as.character(r_runner_provenance[[task_id]]$implementation_class))
+    return("pure_r_unrepresentable")
+  }
+  if (!is.null(r_reference_provenance[[task_id]])) {
+    return(paste0("reference:", as.character(r_reference_provenance[[task_id]]$implementation_class)))
+  }
+  "not_applicable"
+}, character(1))
+summary$r_source_digest <- vapply(as.character(summary$task), function(task_id) {
+  if (identical(runner_name, "r") && !is.null(r_runner_provenance[[task_id]])) {
+    return(as.character(r_runner_provenance[[task_id]]$source_digest))
+  }
+  if (!is.null(r_reference_provenance[[task_id]])) return(as.character(r_reference_provenance[[task_id]]$source_digest))
+  "not_applicable"
+}, character(1))
 staged_summary <- file.path(staging_results_dir, sprintf("%s_summary.csv", runner_name))
 write_csv(summary, staged_summary)
 if (n_fail > 0L) {

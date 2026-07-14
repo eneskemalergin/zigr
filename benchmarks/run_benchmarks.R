@@ -5,17 +5,21 @@ source("lib/task_manifest.R")
 source("lib/evidence_schema.R")
 source("lib/run_manifest.R")
 source("lib/environment_manifest.R")
+source("lib/input_contract.R")
+source("lib/r_provenance.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 runners_filter <- NULL
 tasks_filter   <- NULL
 do_build       <- FALSE
 run_dir_arg    <- NULL
+master_seed    <- benchmark_master_seed()
 for (a in args) {
   if (grepl("^--runners=", a)) runners_filter <- strsplit(sub("^--runners=", "", a), ",")[[1]]
   if (grepl("^--tasks=", a))  tasks_filter  <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
   if (a == "--build")         do_build      <- TRUE
   if (grepl("^--run-dir=", a)) run_dir_arg <- sub("^--run-dir=", "", a)
+  if (grepl("^--seed=", a)) master_seed <- input_scalar_integer(sub("^--seed=", "", a), "master seed")
 }
 
 root_dir <- normalizePath(".")
@@ -37,16 +41,17 @@ if (!is.null(runners_filter)) {
 }
 if (length(all_runners) == 0L) stop("no active runners selected")
 
-optional_tasks <- unique(unlist(lapply(all_runners, function(cfg) {
-  if (is.null(cfg$optional_tasks)) character(0) else as.character(unlist(cfg$optional_tasks, use.names = FALSE))
-}), use.names = FALSE))
-
 task_numbers <- as.integer(sub("([0-9]+).*", "\\1", manifest$task))
 selected_tasks <- manifest$task
 if (!is.null(tasks_filter)) {
   selected_tasks <- manifest$task[task_numbers %in% tasks_filter]
   if (length(selected_tasks) == 0L) stop("task filter selected no manifest tasks")
 }
+
+source(file.path(root_dir, "src", "r", "run_all.R"))
+r_reference_map <- fromJSON(file.path(root_dir, "runners", "r.json"), simplifyVector = FALSE)$exports
+r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
+r_provenance <- build_run_r_provenance(selected_tasks, r_reference_map, manifest, r_evidence_rows)
 
 coverage_args <- c("check_coverage.R")
 if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
@@ -77,13 +82,16 @@ if (identical(dirname(run_dir), project_runs_root)) {
 }
 
 run_metadata <- list(
-  schema_version = 1L,
+  schema_version = 2L,
   run_id = run_id,
   status = "running",
   started_at = run_manifest_timestamp(),
   runners = sort(names(all_runners)),
   tasks = selected_tasks,
-  allowed_na_tasks = sort(intersect(selected_tasks, optional_tasks)),
+  master_seed = master_seed,
+  input_manifest = list(relative_path = "input_manifest.json", digest = "pending"),
+  runner_dispositions = run_disposition_records(evidence, sort(names(all_runners)), selected_tasks),
+  r_provenance = r_provenance,
   timing_policy = benchmark_timing_policy(),
   boundary_budget_policy_version = boundary_budget_policy_version(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
@@ -98,6 +106,25 @@ on.exit({
     try(update_run_manifest(run_dir, "incomplete", message), silent = TRUE)
   }
 }, add = TRUE)
+
+input_manifest_path <- file.path(run_dir, run_metadata$input_manifest$relative_path)
+prepare_args <- c(
+  "runner_subprocess.R",
+  sprintf("--prepare-inputs=%s", input_manifest_path),
+  sprintf("--master-seed=%d", master_seed)
+)
+if (!is.null(tasks_filter)) {
+  prepare_args <- c(prepare_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+}
+prepare_code <- system2("Rscript", args = prepare_args, env = blas_env, stdout = "", stderr = "")
+if (!identical(prepare_code, 0L)) stop(sprintf("canonical input preparation failed with exit code %d", prepare_code))
+run_metadata$input_manifest$digest <- unname(as.character(tools::md5sum(input_manifest_path))[[1L]])
+prepared_inputs <- read_input_recipe_manifest(input_manifest_path)
+if (!identical(sort(names(prepared_inputs$tasks)), sort(as.character(selected_tasks)))) {
+  stop("canonical input preparation produced the wrong task set")
+}
+run_metadata$task_inputs <- unname(prepared_inputs$tasks)
+write_run_manifest(run_dir, run_metadata)
 
 cat(sprintf("Runners: %s\n\n", paste(names(all_runners), collapse = ", ")))
 cat(sprintf("Run: %s\n\n", run_id))
@@ -134,14 +161,37 @@ run_metadata$environment <- capture_environment_manifest(
 validate_environment_manifest(run_metadata$environment)
 write_run_manifest(run_dir, run_metadata)
 
+runner_process_args <- function(runner_name, validation_only = FALSE) {
+  runner_args <- c(
+    "runner_subprocess.R",
+    sprintf("--runner=%s", runner_name),
+    sprintf("--results-dir=%s", run_dir),
+    sprintf("--input-manifest=%s", input_manifest_path),
+    sprintf("--expected-input-manifest-digest=%s", run_metadata$input_manifest$digest),
+    sprintf("--master-seed=%d", master_seed)
+  )
+  if (validation_only) runner_args <- c(runner_args, "--validation-only")
+  if (!is.null(tasks_filter)) {
+    runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+  }
+  runner_args
+}
+
+cat("Trust and correctness preflight\n")
+for (rn in names(all_runners)) {
+  code <- system2("Rscript", args = runner_process_args(rn, validation_only = TRUE), env = blas_env, stdout = "", stderr = "")
+  if (code != 0L) {
+    run_error <- sprintf("runner validation preflight failed for %s with exit code %d", rn, code)
+    stop(run_error)
+  }
+}
+cat("\n")
+
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
   cat(sprintf("Runner: %s (%s)\n", rn, cfg$label))
 
-  runner_args <- c("runner_subprocess.R", sprintf("--runner=%s", rn), sprintf("--results-dir=%s", run_dir))
-  if (!is.null(tasks_filter)) {
-    runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
-  }
+  runner_args <- runner_process_args(rn)
 
   code <- system2("Rscript", args = runner_args, env = blas_env, stdout = "", stderr = "")
   if (code != 0) cat(sprintf("  [SUB] exited with code %d\n", code))

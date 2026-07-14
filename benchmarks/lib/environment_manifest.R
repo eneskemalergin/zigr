@@ -121,15 +121,94 @@ shared_library_metadata <- function(root_dir, relative_path) {
   )
 }
 
+file_identity_digest <- function(root_dir, relative_paths, label) {
+  relative_paths <- sort(unique(as.character(relative_paths)))
+  paths <- file.path(root_dir, relative_paths)
+  missing <- relative_paths[!file.exists(paths)]
+  if (length(missing) > 0L) stop(sprintf("%s identity files are missing: %s", label, paste(missing, collapse = ", ")))
+  digests <- unname(as.character(tools::md5sum(paths)))
+  identity_file <- tempfile("runner-identity-")
+  on.exit(unlink(identity_file), add = TRUE)
+  writeLines(paste(relative_paths, digests, sep = "\t"), identity_file, useBytes = TRUE)
+  unname(as.character(tools::md5sum(identity_file))[[1L]])
+}
+
+absolute_file_identity_digest <- function(paths, label) {
+  paths <- sort(unique(normalizePath(as.character(paths), mustWork = FALSE)))
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) stop(sprintf("%s identity files are missing: %s", label, paste(missing, collapse = ", ")))
+  digests <- unname(as.character(tools::md5sum(paths)))
+  identity_file <- tempfile("artifact-identity-")
+  on.exit(unlink(identity_file), add = TRUE)
+  writeLines(paste(paths, digests, sep = "\t"), identity_file, useBytes = TRUE)
+  unname(as.character(tools::md5sum(identity_file))[[1L]])
+}
+
+runner_glue_paths <- function(runner_name) {
+  switch(runner_name,
+    c_call = "src/c_call/register.c",
+    cpp11 = c("src/cpp11/src/cpp11.cpp", "src/cpp11/R/cpp11.R", "src/cpp11/NAMESPACE"),
+    extendr = c("src/extendr/entrypoint.c", "src/extendr/rust/Cargo.lock"),
+    r = "src/r/run_all.R",
+    rcpp = "src/cpp/main.cpp",
+    savvy = c("src/savvy/init.c", "src/savvy/rust/Cargo.lock"),
+    zigr = c("src/zig/main.zig", "../src/export.zig"),
+    stop(sprintf("no generated-glue identity rule for runner %s", runner_name))
+  )
+}
+
+runner_glue_kind <- function(runner_name) {
+  switch(runner_name,
+    cpp11 = "committed_generated_output",
+    zigr = "compile_time_generator_source",
+    extendr = "macro_and_registration_source",
+    savvy = "handwritten_registration_source",
+    c_call = "registered_control_source",
+    r = "not_applicable_r_source_identity",
+    rcpp = "handwritten_control_source",
+    stop(sprintf("no generated-glue kind for runner %s", runner_name))
+  )
+}
+
+runner_tool_identity <- function(runner_name, cfg) {
+  package_identity <- function(package) {
+    if (!requireNamespace(package, quietly = TRUE)) return(sprintf("%s unavailable", package))
+    sprintf("%s %s", package, as.character(utils::packageVersion(package)))
+  }
+  switch(runner_name,
+    cpp11 = package_identity("cpp11"),
+    rcpp = package_identity("Rcpp"),
+    r = R.version.string,
+    c_call = "registered C control",
+    extendr = "extendr locked Rust control",
+    savvy = "Savvy locked Rust control",
+    zigr = "zigr Zig public and diagnostic paths",
+    environment_scalar(cfg$label, runner_name)
+  )
+}
+
 runner_environment_metadata <- function(root_dir, runners) {
   lapply(names(runners), function(runner_name) {
     cfg <- runners[[runner_name]]
     so_path <- if (is.null(cfg$so_path)) "" else as.character(cfg$so_path)
     extra_paths <- if (is.null(cfg$extra_so_paths)) character(0) else as.character(unlist(cfg$extra_so_paths, use.names = FALSE))
+    config_path <- file.path("runners", paste0(runner_name, ".json"))
+    artifact_path <- if (identical(runner_name, "r")) "src/r/run_all.R" else so_path
+    artifact_relative_paths <- c(artifact_path, extra_paths)
+    artifact_paths <- normalizePath(file.path(root_dir, artifact_relative_paths), mustWork = FALSE)
+    glue_paths <- runner_glue_paths(runner_name)
     list(
       name = runner_name,
       label = environment_scalar(cfg$label, runner_name),
       call_type = environment_scalar(cfg$call_type, "unknown"),
+      tool_identity = runner_tool_identity(runner_name, cfg),
+      runner_config_digest = file_identity_digest(root_dir, config_path, sprintf("%s runner config", runner_name)),
+      generated_glue_kind = runner_glue_kind(runner_name),
+      generated_glue_paths = glue_paths,
+      generated_glue_digest = file_identity_digest(root_dir, glue_paths, sprintf("%s generated glue", runner_name)),
+      artifact_path = artifact_paths[[1L]],
+      artifact_paths = as.list(artifact_paths),
+      artifact_digest = absolute_file_identity_digest(artifact_paths, sprintf("%s artifacts", runner_name)),
       so_path = so_path,
       extra_so_paths = extra_paths,
       shared_libraries = c(list(main = shared_library_metadata(root_dir, so_path)),
@@ -137,6 +216,40 @@ runner_environment_metadata <- function(root_dir, runners) {
                                     if (length(extra_paths) == 0L) character(0) else paste0("extra_", seq_along(extra_paths))))
     )
   })
+}
+
+runner_environment_record <- function(environment, runner_name) {
+  records <- environment$runner_configs
+  matches <- records[vapply(records, function(record) identical(as.character(record$name), runner_name), logical(1))]
+  if (length(matches) != 1L) stop(sprintf("environment metadata has no unique runner record for %s", runner_name))
+  matches[[1L]]
+}
+
+validate_runner_artifact_identity <- function(root_dir, runner_record) {
+  runner_name <- as.character(runner_record$name)
+  artifact_paths <- as.character(unlist(runner_record$artifact_paths, use.names = FALSE))
+  if (length(artifact_paths) == 0L || any(!nzchar(artifact_paths))) stop(sprintf("runner %s has no artifact paths", runner_name))
+  actual_artifact_digest <- absolute_file_identity_digest(artifact_paths, sprintf("%s artifacts", runner_name))
+  if (!identical(actual_artifact_digest, as.character(runner_record$artifact_digest))) {
+    stop(sprintf("artifact drift detected for runner %s", runner_name))
+  }
+  actual_config <- file_identity_digest(
+    root_dir,
+    file.path("runners", paste0(runner_name, ".json")),
+    sprintf("%s runner config", runner_name)
+  )
+  if (!identical(actual_config, as.character(runner_record$runner_config_digest))) {
+    stop(sprintf("runner config drift detected for %s", runner_name))
+  }
+  actual_glue <- file_identity_digest(
+    root_dir,
+    as.character(unlist(runner_record$generated_glue_paths, use.names = FALSE)),
+    sprintf("%s generated glue", runner_name)
+  )
+  if (!identical(actual_glue, as.character(runner_record$generated_glue_digest))) {
+    stop(sprintf("generated-glue drift detected for %s", runner_name))
+  }
+  invisible(runner_record)
 }
 
 capture_environment_manifest <- function(root_dir, runners, blas_env, build_settings, source_root = root_dir) {

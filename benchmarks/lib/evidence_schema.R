@@ -361,6 +361,9 @@ hydrate_runner_config <- function(manifest, cfg, runner_name, evidence, check_le
   rows <- evidence$tasks[evidence$tasks$runner == runner_name, , drop = FALSE]
   executable_tasks <- as.character(rows$task[rows$executable])
   optional_tasks <- as.character(rows$task[!rows$executable])
+  if (identical(runner_name, "r")) {
+    cfg$exports <- cfg$exports[names(cfg$exports) %in% executable_tasks]
+  }
   exports <- if (is.null(cfg$exports)) character(0) else names(cfg$exports)
   if (!setequal(exports, executable_tasks)) {
     stop(sprintf(
@@ -376,4 +379,41 @@ hydrate_runner_config <- function(manifest, cfg, runner_name, evidence, check_le
   cfg$optional_tasks <- as.list(optional_tasks)
   validate_runner_config(manifest, cfg, runner_name)
   cfg
+}
+
+run_disposition_records <- function(evidence, runners, tasks) {
+  runners <- as.character(runners)
+  tasks <- as.character(tasks)
+  records <- list()
+  for (runner in runners) {
+    runner_rows <- evidence$tasks[evidence$tasks$runner == runner & evidence$tasks$task %in% tasks, , drop = FALSE]
+    runner_rows <- runner_rows[match(tasks, runner_rows$task), , drop = FALSE]
+    if (nrow(runner_rows) != length(tasks) || anyNA(runner_rows$task)) {
+      stop(sprintf("normalized dispositions are incomplete for runner %s", runner))
+    }
+    records[[runner]] <- lapply(seq_len(nrow(runner_rows)), function(index) {
+      row <- runner_rows[index, , drop = FALSE]
+      list(
+        task = as.character(row$task),
+        status = as.character(row$status),
+        executable = isTRUE(row$executable),
+        reason = as.character(row$reason),
+        owner = as.character(row$owner),
+        implementation_role = as.character(row$implementation_role),
+        evidence_use = as.character(row$evidence_use),
+        path_kind = as.character(row$path_kind),
+        public_path = as.character(row$public_path),
+        representation_strategy = as.character(row$representation_strategy),
+        kernel_id = as.character(row$kernel_id),
+        contract_version = as.character(row$contract_version),
+        fixture_version = as.character(row$fixture_version),
+        comparison_tier = as.character(row$comparison_tier),
+        mutation_policy = as.character(row$mutation_policy),
+        setup_policy = as.character(row$setup_policy),
+        comparison_group = as.character(row$comparison_group),
+        timing_eligible = isTRUE(row$timing_eligible)
+      )
+    })
+  }
+  records
 }

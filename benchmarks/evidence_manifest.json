@@ -16,6 +16,19 @@
       "39_r_eval", "40_r_tryeval", "41_serialize_roundtrip", "42_external_ptr", "43_rng_stress"
     ],
     "p3_diagnostics": ["48_weakref_lifecycle", "49_owned_altrep_create"],
+    "r_pure_tasks": [
+      "05_fib_recursive", "24_long_vector_idx", "25_l1_arithmetic", "32_altrep_elt_walk",
+      "33_altrep_region_read", "35_altrep_sum_native", "50_boundary_zero_generated",
+      "51_boundary_zero_handwritten", "52_boundary_scalar_generated", "53_boundary_scalar_handwritten",
+      "54_boundary_optional_null_generated", "55_boundary_optional_null_handwritten",
+      "56_boundary_optional_typed_na_generated", "57_boundary_optional_typed_na_handwritten",
+      "70_boundary_schema_generated", "71_boundary_schema_handwritten"
+    ],
+    "r_unrepresentable_tasks": [
+      "07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch", "09_longjmp_safety",
+      "10_sexp_create", "11_sexp_inspect", "42_external_ptr",
+      "72_boundary_external_method_generated", "73_boundary_external_method_handwritten"
+    ],
     "rcpp_typed_control": ["05_fib_recursive"],
     "boundary_tasks": [
       "50_boundary_zero_generated", "51_boundary_zero_handwritten", "52_boundary_scalar_generated",
@@ -114,11 +127,26 @@
       "reason": "These zigr-owned diagnostics and representation rows have no current C-control contract.", "owner": "P4.5"
     },
     {
-      "runner": "r", "include_sets": ["all_tasks"], "exclude_sets": ["p3_diagnostics"],
+      "runner": "r", "include_sets": ["r_pure_tasks"],
       "status": "control_only", "executable": true,
-      "implementation_role": "language_control", "evidence_use": "diagnostic_control",
-      "path_kind": "mixed", "representation_strategy": "mixed", "comparison_tier": "tier_c",
-      "reason": "The current R runner mixes R loops with compiled base-R and runtime backends and is not yet a pure-R oracle.", "owner": "P4.1"
+      "implementation_role": "pure_r", "evidence_use": "semantic_oracle", "path_kind": "pure_r",
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_c",
+      "reason": "The explicit R body is source-digested and must pass the pure-R AST policy before use.", "owner": "P4.1"
+    },
+    {
+      "runner": "r", "include_sets": ["all_tasks"],
+      "exclude_sets": ["r_pure_tasks", "r_unrepresentable_tasks", "p3_diagnostics"],
+      "status": "control_only", "executable": true,
+      "implementation_role": "optimized_base_r", "evidence_use": "timed_baseline", "path_kind": "optimized_base_r",
+      "representation_strategy": "runtime_service", "comparison_tier": "tier_c",
+      "reason": "The row uses a compiled base-R primitive, numerical library, or R runtime service and is not a pure-R oracle.", "owner": "P4.1"
+    },
+    {
+      "runner": "r", "include_sets": ["r_unrepresentable_tasks"],
+      "status": "not_meaningful_for_product", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "Pure R cannot express the native protection, inspection, external-state, or registered-method contract without inventing a substitute.", "owner": "P4.1"
     },
     {
       "runner": "r", "include_sets": ["p3_diagnostics"],

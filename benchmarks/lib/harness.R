@@ -10,6 +10,11 @@ current_rss_kb <- function() {
   }, error = function(e) NA_integer_)
 }
 
+validate_forced_registration <- function(dynamic_lookup, label) {
+  if (!isFALSE(dynamic_lookup)) stop(sprintf("dynamic symbol lookup is enabled for %s", label))
+  invisible(TRUE)
+}
+
 runner_artifact_metrics <- function(cfg, root_dir) {
   artifact_path <- if (identical(cfg$call_type %||% ".Call", "r")) {
     file.path(root_dir, "src/r/run_all.R")
@@ -42,13 +47,18 @@ make_call_expr <- function(cfun, args, call_type) {
   }
 }
 
-timed_call <- function(cfun, args, call_type = ".Call", expr = NULL) {
+timed_call <- function(prepare_call) {
   gc(full = TRUE)
   rss_before <- current_rss_kb()
-  expr <- expr %||% make_call_expr(cfun, args, call_type)
+  prepared <- tryCatch(list(ok = TRUE, expression = prepare_call()), error = function(error) {
+    list(ok = FALSE, error = conditionMessage(error))
+  })
+  if (!isTRUE(prepared$ok)) {
+    return(list(wall_ms = NA_real_, peak_rss_kb = NA_integer_, error = paste("cold input preparation failed:", prepared$error)))
+  }
   error <- NA_character_
   wall_start <- get_nanotime()
-  tryCatch(eval(expr), error = function(e) { error <<- conditionMessage(e) })
+  tryCatch(eval(prepared$expression), error = function(e) { error <<- conditionMessage(e) })
   wall_end <- get_nanotime()
   gc(full = TRUE)
   rss_after <- current_rss_kb()
@@ -63,34 +73,49 @@ get_nanotime <- function() {
   microbenchmark::get_nanotime()
 }
 
-benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L,
+benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_size = 10L,
                            max_iter = 500L, cv_threshold = 1.0, convergence_blocks = 5L,
                            timer_noise_floor_ms = 0.01,
-                           rss_metric = "post_gc_endpoint_delta_kb", expr = NULL) {
-  expr <- expr %||% make_call_expr(cfun, args, call_type)
+                           rss_metric = "post_gc_endpoint_delta_kb") {
 
   gc(full = TRUE)
   rss_before <- current_rss_kb()
 
   for (i in seq_len(warmup)) {
+    prepared <- tryCatch(list(ok = TRUE, expression = prepare_warmup()), error = function(error) {
+      list(ok = FALSE, error = conditionMessage(error))
+    })
+    if (!isTRUE(prepared$ok)) return(list(error = paste("warmup input preparation failed:", prepared$error)))
+    call_ok <- TRUE
     t0 <- get_nanotime()
-    r <- tryCatch(eval(expr), error = function(e) NULL)
+    tryCatch(eval(prepared$expression), error = function(error) {
+      call_ok <<- FALSE
+    })
     t1 <- get_nanotime()
-    if (is.null(r)) return(list(error = "warmup failed"))
+    if (!call_ok) return(list(error = "warmup failed"))
   }
-  r <- NULL
 
   all_times <- numeric()
   n_blocks <- 0L
   convergence_cv_pct <- NA_real_
   stopping_condition <- "max_iterations"
   repeat {
-    mb <- tryCatch(
-      microbenchmark(eval(expr), times = block_size, unit = "ms"),
-      error = function(e) return(list(error = conditionMessage(e)))
-    )
-    if (is.list(mb) && !is.null(mb$error)) return(mb)
-    all_times <- c(all_times, mb$time / 1e6)
+    block_times <- numeric(block_size)
+    for (sample_index in seq_len(block_size)) {
+      prepared <- tryCatch(list(ok = TRUE, expression = prepare_timed()), error = function(error) {
+        list(ok = FALSE, error = conditionMessage(error))
+      })
+      if (!isTRUE(prepared$ok)) return(list(error = paste("timed input preparation failed:", prepared$error)))
+      call_error <- NULL
+      t0 <- get_nanotime()
+      tryCatch(eval(prepared$expression), error = function(error) {
+        call_error <<- conditionMessage(error)
+      })
+      t1 <- get_nanotime()
+      if (!is.null(call_error)) return(list(error = call_error))
+      block_times[[sample_index]] <- (t1 - t0) / 1e6
+    }
+    all_times <- c(all_times, block_times)
     n_blocks <- n_blocks + 1L
     n <- length(all_times)
 
@@ -150,7 +175,7 @@ benchmark_call <- function(cfun, args, call_type, warmup = 10L, block_size = 10L
 
 write_csv <- function(df, path, append = FALSE) {
   dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
-  write.table(df, path, sep = ",", row.names = FALSE, quote = FALSE, na = "",
+  write.table(df, path, sep = ",", row.names = FALSE, quote = TRUE, na = "",
               append = append, col.names = !append)
 }
 

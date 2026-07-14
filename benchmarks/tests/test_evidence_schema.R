@@ -46,11 +46,25 @@ expect_true(
   "every product public path is generated and typed"
 )
 
-expected_executable <- c(c_call = 70L, cpp11 = 11L, extendr = 44L, r = 81L, rcpp = 44L, savvy = 44L, zigr = 83L)
+expected_executable <- c(c_call = 70L, cpp11 = 11L, extendr = 44L, r = 72L, rcpp = 44L, savvy = 44L, zigr = 83L)
 actual_executable <- vapply(names(expected_executable), function(runner) {
   sum(evidence$tasks$runner == runner & evidence$tasks$executable)
 }, integer(1))
-expect_true(identical(actual_executable, expected_executable), "legacy executable coverage is unchanged")
+expect_true(identical(actual_executable, expected_executable), "executable coverage matches the P4.1 R split")
+
+disposition_snapshot <- run_disposition_records(evidence, "r", "52_boundary_scalar_generated")$r[[1L]]
+expect_true(
+  identical(
+    names(disposition_snapshot),
+    c(
+      "task", "status", "executable", "reason", "owner", "implementation_role", "evidence_use",
+      "path_kind", "public_path", "representation_strategy", "kernel_id", "contract_version",
+      "fixture_version", "comparison_tier", "mutation_policy", "setup_policy", "comparison_group",
+      "timing_eligible"
+    )
+  ),
+  "run disposition snapshots preserve every normalized evidence field"
+)
 
 for (runner in evidence$runners) {
   path <- file.path(root_dir, "runners", paste0(runner, ".json"))
@@ -84,6 +98,24 @@ r_baseline_rows$evidence_use <- c("semantic_oracle", "timed_baseline")
 r_baseline_rows$path_kind <- c("pure_r", "optimized_base_r")
 r_baseline_rows$timing_eligible <- TRUE
 validate_evidence_rows(r_baseline_rows, "R baseline compatibility")
+expect_true(
+  all(evidence$tasks$implementation_role[evidence$tasks$runner == "r" & evidence$tasks$executable] %in% c("pure_r", "optimized_base_r")),
+  "every executable R row has an explicit implementation class"
+)
+expect_true(
+  all(!evidence$tasks$executable[
+    evidence$tasks$runner == "r" & evidence$tasks$task %in% evidence$task_sets$r_unrepresentable_tasks
+  ]),
+  "native-unrepresentable R rows are explicit gaps"
+)
+r_roles <- table(factor(
+  evidence$tasks$implementation_role[evidence$tasks$runner == "r"],
+  levels = c("pure_r", "optimized_base_r", "capability_gap")
+))
+expect_true(
+  identical(unname(as.integer(r_roles)), c(16L, 56L, 11L)),
+  "R rows remain split into 16 pure, 56 optimized, and 11 unrepresentable dispositions"
+)
 
 bad <- clone(evidence$raw)
 bad$task_dispositions[[length(bad$task_dispositions) + 1L]] <- clone(bad$task_dispositions[[1L]])
