@@ -6,6 +6,7 @@ cd "$SCRIPT_DIR"
 
 Rscript tests/test_evidence_schema.R
 Rscript tests/test_harness_trust.R
+Rscript tests/test_source_ledger.R
 
 ZIG_BIN=${ZIG:-}
 if [ -z "$ZIG_BIN" ]; then

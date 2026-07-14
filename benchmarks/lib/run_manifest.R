@@ -35,7 +35,7 @@ run_manifest_artifact_digest <- function(paths) {
 
 run_manifest_r_provenance_records <- function(metadata, field) {
   provenance <- metadata$r_provenance
-  if (is.null(provenance) || !identical(as.character(provenance$schema_version), "p4.1-r-provenance-v1")) {
+  if (is.null(provenance) || !identical(as.character(provenance$schema_version), r_provenance_schema_version())) {
     stop("run manifest has no supported R provenance")
   }
   records <- provenance[[field]]
@@ -214,6 +214,9 @@ validate_environment_manifest <- function(environment) {
   require_scalar(environment$build, "target", "target triple")
   require_scalar(environment$build, "cpu_features", "CPU feature settings")
   environment_schema <- if (is.null(environment$schema_version)) 1L else as.integer(environment$schema_version)
+  if (length(environment_schema) != 1L || is.na(environment_schema) || !(environment_schema %in% 1:3)) {
+    stop("unsupported environment metadata schema version")
+  }
   if (environment_schema >= 2L) {
     if (is.null(environment$build$checked_sexp) ||
         length(environment$build$checked_sexp) != 1L ||
@@ -221,6 +224,12 @@ validate_environment_manifest <- function(environment) {
         is.na(environment$build$checked_sexp)) {
       stop("environment metadata missing checked SEXP mode")
     }
+  }
+  if (environment_schema >= 3L) {
+    require_scalar(environment$tool_source_ledger, "schema_version", "tool source ledger schema")
+    require_scalar(environment$tool_source_ledger, "identity_digest", "tool source ledger identity")
+    require_scalar(environment$tool_source_ledger, "source_verification_digest", "source verification identity")
+    require_scalar(environment$tool_source_ledger, "benchmark_root", "tool source ledger root")
   }
   require_scalar(environment$blas, "vendor", "BLAS vendor")
   require_scalar(environment$blas, "version_or_path", "BLAS version or path")
@@ -234,6 +243,13 @@ validate_environment_manifest <- function(environment) {
     require_scalar(config, "runner_config_digest", "runner configuration digest")
     require_scalar(config, "generated_glue_kind", "runner generated-glue kind")
     require_scalar(config, "generated_glue_digest", "runner generated-glue digest")
+    if (environment_schema >= 3L) {
+      require_scalar(config, "source_digest", "runner source digest")
+      require_scalar(config, "build_digest", "runner build digest")
+      require_scalar(config, "dependency_digest", "runner dependency digest")
+      require_scalar(config, "artifact_dependency_digest", "runner artifact dependency digest")
+      require_scalar(config, "source_ledger_identity_digest", "runner source ledger identity")
+    }
     require_scalar(config, "artifact_path", "runner artifact path")
     require_scalar(config, "artifact_digest", "runner artifact digest")
     artifact_paths <- run_manifest_values(config$artifact_paths)
@@ -249,6 +265,12 @@ validate_run_artifacts <- function(run_dir, metadata) {
     stop("unsupported run manifest schema version")
   }
   validate_environment_manifest(metadata$environment)
+  if (as.integer(metadata$environment$schema_version) >= 3L) {
+    validate_tool_source_ledger(
+      as.character(metadata$environment$tool_source_ledger$benchmark_root),
+      metadata$environment$tool_source_ledger
+    )
+  }
   expected_run_id <- as.character(metadata$run_id)
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
@@ -299,7 +321,8 @@ validate_run_artifacts <- function(run_dir, metadata) {
   }
   required_provenance_fields <- c(
     "schema_version", "task", "function_name", "implementation_class", "source_digest",
-    "ast_allowlist_id", "forbidden_call_result", "compiled_backend"
+    "source_body", "ast_calls", "ast_allowlist_id", "ast_allowlist", "forbidden_call_result",
+    "compiled_backend", "backend_calls", "backend_classes", "backend_identity_keys"
   )
   for (record in c(r_runner_provenance, r_reference_provenance)) {
     missing <- required_provenance_fields[vapply(required_provenance_fields, function(field) is.null(record[[field]]), logical(1))]
@@ -308,6 +331,37 @@ validate_run_artifacts <- function(run_dir, metadata) {
       stop(sprintf("run R provenance has an invalid implementation class for %s", record$task))
     }
     if (!nzchar(as.character(record$source_digest))) stop(sprintf("run R provenance lacks a source digest for %s", record$task))
+    backend_keys <- as.character(unlist(record$backend_identity_keys, use.names = FALSE))
+    allowed_backend_keys <- c(
+      "none", "not_applicable", "r_runtime", "blas", "lapack", "fortran_runtime",
+      "stats_package", "methods_package"
+    )
+    if (length(setdiff(backend_keys, allowed_backend_keys)) > 0L) {
+      stop(sprintf("run R provenance has an unknown backend identity key for %s", record$task))
+    }
+    if (as.integer(metadata$environment$schema_version) >= 3L) {
+      r_build <- metadata$environment$tool_source_ledger$r_build
+      available <- list(
+        r_runtime = r_build$lib_r,
+        blas = r_build$blas,
+        lapack = r_build$lapack,
+        fortran_runtime = r_build$fortran_runtime,
+        stats_package = r_build$stats_package,
+        methods_package = r_build$methods_package
+      )
+      for (key in setdiff(backend_keys, c("none", "not_applicable"))) {
+        identity <- available[[key]]
+        resolved <- if (key %in% c("stats_package", "methods_package")) {
+          !is.null(identity) && dir.exists(as.character(identity$library_path)) &&
+            nzchar(as.character(identity$source_tree$digest))
+        } else {
+          !is.null(identity) && isTRUE(identity$exists) && nzchar(as.character(identity$md5))
+        }
+        if (!resolved) {
+          stop(sprintf("run R provenance cannot resolve backend %s for %s", key, record$task))
+        }
+      }
+    }
   }
   if (is.null(metadata$runner_dispositions) || !identical(sort(names(metadata$runner_dispositions)), expected_runners)) {
     stop("run manifest disposition runner set differs from the declared runner set")
@@ -377,6 +431,8 @@ validate_run_artifacts <- function(run_dir, metadata) {
     "master_seed", "task_seed", "input_fingerprint", "contract_version", "path_kind", "evidence_use",
     "r_implementation_provenance", "r_source_digest", "kernel_id", "representation_strategy",
     "mutation_policy", "tool_identity", "generated_glue_kind", "generated_glue_digest", "artifact_digest",
+    "source_digest", "build_digest", "dependency_digest", "artifact_dependency_digest",
+    "source_ledger_identity_digest", "source_path_class", "source_verification_digest",
     "disposition", "disposition_reason"
   )
   if (!is.null(metadata$timing_policy)) {
@@ -459,6 +515,11 @@ validate_run_artifacts <- function(run_dir, metadata) {
     )]
     if (length(environment_matches) != 1L) stop(sprintf("environment identity is missing for runner %s", runner))
     environment <- environment_matches[[1L]]
+    source_verification <- source_ledger_verification_record(
+      metadata$environment$tool_source_ledger,
+      runner,
+      task
+    )
     exact_fields <- list(
       master_seed = as.character(master_seed),
       task_seed = as.character(input$task_seed),
@@ -473,6 +534,13 @@ validate_run_artifacts <- function(run_dir, metadata) {
       generated_glue_kind = as.character(environment$generated_glue_kind),
       generated_glue_digest = as.character(environment$generated_glue_digest),
       artifact_digest = as.character(environment$artifact_digest),
+      source_digest = as.character(environment$source_digest),
+      build_digest = as.character(environment$build_digest),
+      dependency_digest = as.character(environment$dependency_digest),
+      artifact_dependency_digest = as.character(environment$artifact_dependency_digest),
+      source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
+      source_path_class = as.character(source_verification$source_class),
+      source_verification_digest = as.character(source_verification$verification_digest),
       disposition = as.character(disposition$status),
       disposition_reason = as.character(disposition$reason)
     )

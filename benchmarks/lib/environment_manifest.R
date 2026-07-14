@@ -7,20 +7,6 @@ environment_extension <- function(extensions, name) {
   if (is.null(extensions) || is.null(names(extensions)) || !(name %in% names(extensions))) "" else extensions[[name]]
 }
 
-resolve_zig_executable <- function(root_dir) {
-  configured <- Sys.getenv("ZIG", unset = "")
-  candidates <- c(
-    configured,
-    Sys.which("zig"),
-    file.path(root_dir, "..", "zig-0.16.0", "zig"),
-    file.path(root_dir, "..", "zig-0.16.0", "zig.exe")
-  )
-  candidates <- candidates[nzchar(candidates)]
-  existing <- candidates[file.exists(candidates)]
-  if (length(existing) == 0L) stop("Zig executable not found; set ZIG or install zig")
-  normalizePath(existing[[1L]])
-}
-
 command_version <- function(executable, label, arguments = "version") {
   output <- tryCatch(
     system2(executable, arguments, stdout = TRUE, stderr = TRUE),
@@ -144,68 +130,31 @@ absolute_file_identity_digest <- function(paths, label) {
   unname(as.character(tools::md5sum(identity_file))[[1L]])
 }
 
-runner_glue_paths <- function(runner_name) {
-  switch(runner_name,
-    c_call = "src/c_call/register.c",
-    cpp11 = c("src/cpp11/src/cpp11.cpp", "src/cpp11/R/cpp11.R", "src/cpp11/NAMESPACE"),
-    extendr = c("src/extendr/entrypoint.c", "src/extendr/rust/Cargo.lock"),
-    r = "src/r/run_all.R",
-    rcpp = "src/cpp/main.cpp",
-    savvy = c("src/savvy/init.c", "src/savvy/rust/Cargo.lock"),
-    zigr = c("src/zig/main.zig", "../src/export.zig"),
-    stop(sprintf("no generated-glue identity rule for runner %s", runner_name))
-  )
-}
-
-runner_glue_kind <- function(runner_name) {
-  switch(runner_name,
-    cpp11 = "committed_generated_output",
-    zigr = "compile_time_generator_source",
-    extendr = "macro_and_registration_source",
-    savvy = "handwritten_registration_source",
-    c_call = "registered_control_source",
-    r = "not_applicable_r_source_identity",
-    rcpp = "handwritten_control_source",
-    stop(sprintf("no generated-glue kind for runner %s", runner_name))
-  )
-}
-
-runner_tool_identity <- function(runner_name, cfg) {
-  package_identity <- function(package) {
-    if (!requireNamespace(package, quietly = TRUE)) return(sprintf("%s unavailable", package))
-    sprintf("%s %s", package, as.character(utils::packageVersion(package)))
-  }
-  switch(runner_name,
-    cpp11 = package_identity("cpp11"),
-    rcpp = package_identity("Rcpp"),
-    r = R.version.string,
-    c_call = "registered C control",
-    extendr = "extendr locked Rust control",
-    savvy = "Savvy locked Rust control",
-    zigr = "zigr Zig public and diagnostic paths",
-    environment_scalar(cfg$label, runner_name)
-  )
-}
-
-runner_environment_metadata <- function(root_dir, runners) {
+runner_environment_metadata <- function(root_dir, runners, tool_source_ledger) {
   lapply(names(runners), function(runner_name) {
     cfg <- runners[[runner_name]]
+    ledger_record <- source_ledger_runner_record(tool_source_ledger, runner_name)
     so_path <- if (is.null(cfg$so_path)) "" else as.character(cfg$so_path)
     extra_paths <- if (is.null(cfg$extra_so_paths)) character(0) else as.character(unlist(cfg$extra_so_paths, use.names = FALSE))
     config_path <- file.path("runners", paste0(runner_name, ".json"))
     artifact_path <- if (identical(runner_name, "r")) "src/r/run_all.R" else so_path
     artifact_relative_paths <- c(artifact_path, extra_paths)
     artifact_paths <- normalizePath(file.path(root_dir, artifact_relative_paths), mustWork = FALSE)
-    glue_paths <- runner_glue_paths(runner_name)
+    glue_paths <- as.character(unlist(ledger_record$generated_glue$identity$paths, use.names = FALSE))
     list(
       name = runner_name,
       label = environment_scalar(cfg$label, runner_name),
       call_type = environment_scalar(cfg$call_type, "unknown"),
-      tool_identity = runner_tool_identity(runner_name, cfg),
+      tool_identity = source_ledger_tool_label(ledger_record),
       runner_config_digest = file_identity_digest(root_dir, config_path, sprintf("%s runner config", runner_name)),
-      generated_glue_kind = runner_glue_kind(runner_name),
+      generated_glue_kind = as.character(ledger_record$generated_glue$kind),
       generated_glue_paths = glue_paths,
-      generated_glue_digest = file_identity_digest(root_dir, glue_paths, sprintf("%s generated glue", runner_name)),
+      generated_glue_digest = as.character(ledger_record$generated_glue$identity$digest),
+      source_digest = as.character(ledger_record$source_identity$digest),
+      build_digest = as.character(ledger_record$build_digest),
+      dependency_digest = as.character(ledger_record$dependency_digest),
+      artifact_dependency_digest = as.character(ledger_record$artifact_dependencies$digest),
+      source_ledger_identity_digest = as.character(tool_source_ledger$identity_digest),
       artifact_path = artifact_paths[[1L]],
       artifact_paths = as.list(artifact_paths),
       artifact_digest = absolute_file_identity_digest(artifact_paths, sprintf("%s artifacts", runner_name)),
@@ -252,13 +201,25 @@ validate_runner_artifact_identity <- function(root_dir, runner_record) {
   invisible(runner_record)
 }
 
-capture_environment_manifest <- function(root_dir, runners, blas_env, build_settings, source_root = root_dir) {
-  zig_path <- resolve_zig_executable(root_dir)
+capture_environment_manifest <- function(
+  root_dir,
+  runners,
+  blas_env,
+  build_settings,
+  evidence,
+  r_provenance,
+  source_root = root_dir
+) {
+  zig_path <- source_ledger_resolve_zig_executable(root_dir)
   r_extensions <- extSoftVersion()
   environment_names <- c(
     "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_NUM_THREADS",
     "R_LIBS", "R_LIBS_USER", "R_INCLUDE", "R_LIB", "ZIG", "ZIGR_OPTIMIZE", "ZIGR_CHECKED_SEXP",
-    "ZIGR_TARGET", "ZIGR_CPU_FEATURES", "ZIGR_SEXP_ABI", "CC", "CFLAGS", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH",
+    "ZIGR_TARGET", "ZIGR_CPU_FEATURES", "ZIG_CACHE_DIR", "ZIG_GLOBAL_CACHE_DIR",
+    "CC", "CFLAGS", "R_CFLAGS", "CXX", "CXXFLAGS", "LDFLAGS", "PKG_CONFIG_PATH",
+    "R_MAKEVARS_SITE", "R_MAKEVARS_USER", "CARGO_HOME", "CARGO_BUILD_TARGET",
+    "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN",
+    "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
     "LANG", "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES"
   )
   process_environment <- as.list(Sys.getenv(environment_names, unset = ""))
@@ -272,8 +233,9 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
   safe_locale <- function(category) {
     tryCatch(Sys.getlocale(category), error = function(error) "")
   }
+  tool_source_ledger <- capture_tool_source_ledger(root_dir, runners, evidence, r_provenance, build_settings)
   list(
-    schema_version = 2L,
+    schema_version = 3L,
     captured_at = run_manifest_timestamp(),
     source_tree = source_tree_identity(source_root),
     host = list(
@@ -314,7 +276,8 @@ capture_environment_manifest <- function(root_dir, runners, blas_env, build_sett
       LC_MESSAGES = safe_locale("LC_MESSAGES")
     ),
     process_environment = process_environment,
-    runner_configs = runner_environment_metadata(root_dir, runners),
+    runner_configs = runner_environment_metadata(root_dir, runners, tool_source_ledger),
+    tool_source_ledger = tool_source_ledger,
     build_command = environment_scalar(build_settings$command)
   )
 }

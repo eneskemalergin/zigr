@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "vocabulary_version": "p4.2-source-ledger-2026-07-13",
+  "runners": {
+    "c_call": {
+      "role": "c_control",
+      "tool_kind": "c",
+      "verifier_kind": "registered_c",
+      "source_globs": ["src/c_call/*.c"],
+      "build_files": ["build_all.sh", "src/c_call/Makefile"],
+      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library>",
+      "generated_glue": {
+        "kind": "handwritten_registration_control",
+        "retained_output": true,
+        "paths": ["src/c_call/register.c"]
+      }
+    },
+    "cpp11": {
+      "role": "product",
+      "tool_kind": "r_package",
+      "verifier_kind": "cpp11_generated",
+      "package": "cpp11",
+      "source_globs": [
+        "src/cpp11/DESCRIPTION",
+        "src/cpp11/LICENSE",
+        "src/cpp11/NAMESPACE",
+        "src/cpp11/R/*.R",
+        "src/cpp11/src/*"
+      ],
+      "build_files": ["build_all.sh", "src/cpp11/DESCRIPTION", "src/cpp11/NAMESPACE"],
+      "build_recipe": "R CMD INSTALL --preclean --clean --no-multiarch --library=<fixture library> src/cpp11",
+      "generated_glue": {
+        "kind": "committed_cpp11_generated_output",
+        "retained_output": true,
+        "paths": ["src/cpp11/src/cpp11.cpp", "src/cpp11/R/cpp11.R", "src/cpp11/NAMESPACE"]
+      }
+    },
+    "extendr": {
+      "role": "product",
+      "tool_kind": "cargo",
+      "verifier_kind": "extendr_mixed",
+      "source_globs": ["src/extendr/entrypoint.c", "src/extendr/rust/src/*.rs"],
+      "build_files": [
+        "build_all.sh",
+        "src/extendr/Makefile",
+        "src/extendr/rust/Cargo.toml",
+        "src/extendr/rust/Cargo.lock"
+      ],
+      "build_recipe": "make -C src/extendr",
+      "cargo_manifest": "src/extendr/rust/Cargo.toml",
+      "cargo_lock": "src/extendr/rust/Cargo.lock",
+      "generated_glue": {
+        "kind": "compile_time_extendr_macro_output_not_retained",
+        "retained_output": false,
+        "paths": ["src/extendr/rust/src/lib.rs", "src/extendr/entrypoint.c"]
+      }
+    },
+    "r": {
+      "role": "reference_and_baseline",
+      "tool_kind": "r",
+      "verifier_kind": "r_provenance",
+      "source_globs": ["src/r/run_all.R"],
+      "build_files": ["src/r/run_all.R"],
+      "build_recipe": "not applicable",
+      "generated_glue": {
+        "kind": "not_applicable_r_source",
+        "retained_output": false,
+        "paths": ["src/r/run_all.R"]
+      }
+    },
+    "rcpp": {
+      "role": "product",
+      "tool_kind": "r_package",
+      "verifier_kind": "rcpp_legacy",
+      "package": "Rcpp",
+      "source_globs": ["src/cpp/main.cpp"],
+      "build_files": ["build_all.sh", "src/cpp/main.cpp"],
+      "build_recipe": "PKG_CPPFLAGS=-I<Rcpp include> R CMD SHLIB -o src/cpp/rcpp_benchmarks.so src/cpp/main.cpp",
+      "generated_glue": {
+        "kind": "missing_rcpp_generated_output",
+        "retained_output": false,
+        "paths": ["src/cpp/main.cpp"]
+      }
+    },
+    "savvy": {
+      "role": "product",
+      "tool_kind": "cargo",
+      "verifier_kind": "savvy_legacy",
+      "source_globs": ["src/savvy/api.h", "src/savvy/init.c", "src/savvy/rust/src/*.rs"],
+      "build_files": [
+        "build_all.sh",
+        "src/savvy/Makefile",
+        "src/savvy/rust/Cargo.toml",
+        "src/savvy/rust/Cargo.lock"
+      ],
+      "build_recipe": "make -C src/savvy",
+      "cargo_manifest": "src/savvy/rust/Cargo.toml",
+      "cargo_lock": "src/savvy/rust/Cargo.lock",
+      "generated_glue": {
+        "kind": "handwritten_savvy_shaped_glue_not_generated",
+        "retained_output": true,
+        "paths": ["src/savvy/api.h", "src/savvy/init.c"]
+      }
+    },
+    "zigr": {
+      "role": "product",
+      "tool_kind": "zig",
+      "verifier_kind": "zigr_mixed",
+      "source_globs": ["src/zig/*.zig", "../src/*.zig", "../src/*.c", "../src/*.h"],
+      "build_files": ["build_all.sh", "build.zig", "../build.zig", "../build.zig.zon"],
+      "build_recipe": "zig build -Doptimize=<mode> -Dr-include=<R include> -Dr-lib=<R library> [-Dchecked-sexp=true] [-Dtarget=<target>] [-Dcpu=<features>]",
+      "generated_glue": {
+        "kind": "compile_time_zigr_generator_output_not_retained",
+        "retained_output": false,
+        "paths": ["src/zig/main.zig", "src/zig/task_28_only_main.zig", "../src/export.zig"]
+      }
+    }
+  }
+}

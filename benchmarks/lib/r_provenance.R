@@ -1,4 +1,4 @@
-r_provenance_schema_version <- function() "p4.1-r-provenance-v1"
+r_provenance_schema_version <- function() "p4.2-r-provenance-v2"
 
 r_body_digest <- function(fn) {
   if (!is.function(fn)) stop("R provenance source is not a function")
@@ -6,6 +6,11 @@ r_body_digest <- function(fn) {
     formals = formals(fn),
     body = body(fn)
   ))
+}
+
+r_source_body <- function(fn) {
+  if (!is.function(fn)) stop("R provenance source is not a function")
+  paste(deparse(fn, width.cutoff = 500L, control = c("keepNA", "keepInteger")), collapse = "\n")
 }
 
 r_function_call_names <- function(fn) {
@@ -76,10 +81,53 @@ r_pure_contract_policy <- function(task_id) {
   )
 }
 
+r_backend_policy <- function(task_id, function_name, calls, implementation_class) {
+  if (identical(implementation_class, "pure_r")) {
+    return(list(calls = character(0), classes = "none", identity_keys = "none", description = "none"))
+  }
+  language_calls <- c(
+    "(", ":", "[", "[[", "[<-", "$", "$<-", "{", "!", "!=", "&", "&&", "*", "+", "+<-", "-", "/",
+    "<", "<-", "<<-", "<=", "==", ">", ">=", "||", "~", "for", "if", "return", "switch"
+  )
+  backend_calls <- sort(unique(setdiff(calls, language_calls)))
+  if (length(backend_calls) == 0L && nzchar(function_name)) backend_calls <- function_name
+  classes <- "r_compiled_primitive_or_runtime_service"
+  identity_keys <- "r_runtime"
+  if (task_id %in% c("26_matmul", "27_crossprod")) {
+    classes <- "blas"
+    identity_keys <- c("r_runtime", "blas")
+  } else if (identical(task_id, "28_cholesky")) {
+    classes <- "lapack"
+    identity_keys <- c("r_runtime", "lapack")
+  } else if (identical(task_id, "29_lm_fit")) {
+    classes <- "stats_native_fortran_qr"
+    identity_keys <- c("r_runtime", "stats_package", "fortran_runtime")
+  } else if (any(backend_calls %in% c("serialize", "unserialize"))) {
+    classes <- "r_serialization_runtime"
+  } else if (any(backend_calls %in% c("rnorm", "runif", "sample"))) {
+    classes <- "r_rng_runtime"
+  } else if (identical(task_id, "22_s4_slot_access")) {
+    classes <- "methods_runtime"
+    identity_keys <- c("r_runtime", "methods_package")
+  } else if (any(backend_calls %in% c("aggregate", "data.frame", "factor", "lm.fit"))) {
+    classes <- "base_or_recommended_package_runtime"
+    if (any(backend_calls %in% c("aggregate", "lm.fit"))) {
+      identity_keys <- c("r_runtime", "stats_package")
+    }
+  }
+  list(
+    calls = backend_calls,
+    classes = classes,
+    identity_keys = identity_keys,
+    description = sprintf("%s via %s", classes, paste(backend_calls, collapse = "+"))
+  )
+}
+
 validate_r_provenance_record <- function(record, fn = NULL) {
   required <- c(
     "schema_version", "task", "function_name", "implementation_class", "source_digest",
-    "ast_allowlist_id", "forbidden_call_result", "compiled_backend"
+    "source_body", "ast_calls", "ast_allowlist_id", "ast_allowlist", "forbidden_call_result",
+    "compiled_backend", "backend_calls", "backend_classes", "backend_identity_keys"
   )
   missing <- required[vapply(required, function(field) is.null(record[[field]]), logical(1))]
   if (length(missing) > 0L) stop(sprintf("R provenance record missing fields: %s", paste(missing, collapse = ", ")))
@@ -104,12 +152,21 @@ validate_r_provenance_record <- function(record, fn = NULL) {
   if (!identical(actual_digest, as.character(record$source_digest))) {
     stop(sprintf("R provenance source digest differs for %s", record$task))
   }
+  if (!identical(as.character(record$source_body), r_source_body(fn))) {
+    stop(sprintf("R provenance source body differs for %s", record$task))
+  }
   calls <- r_function_call_names(fn)
+  if (!identical(sort(as.character(unlist(record$ast_calls, use.names = FALSE))), calls)) {
+    stop(sprintf("R provenance AST calls differ for %s", record$task))
+  }
   forbidden <- intersect(calls, r_pure_forbidden_calls())
   if (identical(implementation_class, "pure_r")) {
     policy <- r_pure_contract_policy(record$task)
     if (!identical(as.character(record$ast_allowlist_id), policy$id)) {
       stop(sprintf("pure-R AST allowlist identity differs for %s", record$task))
+    }
+    if (!identical(sort(as.character(unlist(record$ast_allowlist, use.names = FALSE))), policy$allowed_calls)) {
+      stop(sprintf("pure-R AST allowlist differs for %s", record$task))
     }
     if (length(forbidden) > 0L) {
       stop(sprintf("pure-R provenance contains forbidden calls for %s: %s", record$task, paste(forbidden, collapse = ", ")))
@@ -130,6 +187,15 @@ validate_r_provenance_record <- function(record, fn = NULL) {
       (is.null(record$compiled_backend) || !nzchar(as.character(record$compiled_backend)) || identical(record$compiled_backend, "none"))) {
     stop(sprintf("optimized base-R provenance lacks a compiled backend for %s", record$task))
   }
+  backend <- r_backend_policy(record$task, record$function_name, calls, implementation_class)
+  for (field in c("backend_calls", "backend_classes", "backend_identity_keys")) {
+    expected <- sort(as.character(unlist(backend[[sub("^backend_", "", field)]], use.names = FALSE)))
+    actual <- sort(as.character(unlist(record[[field]], use.names = FALSE)))
+    if (!identical(actual, expected)) stop(sprintf("R provenance %s differs for %s", field, record$task))
+  }
+  if (!identical(as.character(record$compiled_backend), backend$description)) {
+    stop(sprintf("R compiled backend description differs for %s", record$task))
+  }
   invisible(record)
 }
 
@@ -149,15 +215,22 @@ build_r_provenance <- function(task_id, function_name, evidence_row) {
   calls <- r_function_call_names(fn)
   forbidden <- intersect(calls, r_pure_forbidden_calls())
   pure_policy <- if (identical(implementation_class, "pure_r")) r_pure_contract_policy(task_id) else NULL
+  backend <- r_backend_policy(task_id, as.character(function_name), calls, implementation_class)
   record <- list(
     schema_version = r_provenance_schema_version(),
     task = task_id,
     function_name = as.character(function_name),
     implementation_class = implementation_class,
     source_digest = r_body_digest(fn),
+    source_body = r_source_body(fn),
+    ast_calls = as.list(calls),
     ast_allowlist_id = if (identical(implementation_class, "pure_r")) pure_policy$id else "optimized-base-r-declared-v1",
+    ast_allowlist = if (identical(implementation_class, "pure_r")) as.list(pure_policy$allowed_calls) else list(),
     forbidden_call_result = if (length(forbidden) == 0L) "pass" else paste0("declared:", paste(sort(forbidden), collapse = "+")),
-    compiled_backend = if (identical(implementation_class, "pure_r")) "none" else "R compiled primitive or declared runtime service"
+    compiled_backend = backend$description,
+    backend_calls = as.list(backend$calls),
+    backend_classes = as.list(backend$classes),
+    backend_identity_keys = as.list(backend$identity_keys)
   )
   validate_r_provenance_record(record, fn)
   record
@@ -170,9 +243,15 @@ r_unrepresentable_provenance <- function(task_id, reason) {
     function_name = "",
     implementation_class = "pure_r_unrepresentable",
     source_digest = "not_applicable",
+    source_body = "not_applicable",
+    ast_calls = list(),
     ast_allowlist_id = "not_applicable",
+    ast_allowlist = list(),
     forbidden_call_result = "not_applicable",
     compiled_backend = "not_applicable",
+    backend_calls = list(),
+    backend_classes = list("not_applicable"),
+    backend_identity_keys = list("not_applicable"),
     reason = as.character(reason)
   )
   validate_r_provenance_record(record)
@@ -224,11 +303,12 @@ named_r_provenance_records <- function(provenance, field) {
 compare_r_provenance_records <- function(expected, actual, label) {
   fields <- c(
     "schema_version", "task", "function_name", "implementation_class", "source_digest",
-    "ast_allowlist_id", "forbidden_call_result", "compiled_backend", "reason"
+    "source_body", "ast_calls", "ast_allowlist_id", "ast_allowlist", "forbidden_call_result",
+    "compiled_backend", "backend_calls", "backend_classes", "backend_identity_keys", "reason"
   )
   for (field in fields) {
-    expected_value <- if (is.null(expected[[field]])) "" else as.character(expected[[field]])
-    actual_value <- if (is.null(actual[[field]])) "" else as.character(actual[[field]])
+    expected_value <- if (is.null(expected[[field]])) "" else as.character(unlist(expected[[field]], use.names = FALSE))
+    actual_value <- if (is.null(actual[[field]])) "" else as.character(unlist(actual[[field]], use.names = FALSE))
     if (!identical(expected_value, actual_value)) stop(sprintf("R provenance field %s differs for %s", field, label))
   }
   invisible(actual)

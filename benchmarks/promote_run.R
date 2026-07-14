@@ -1,6 +1,9 @@
 #!/usr/bin/env Rscript
 
 library(jsonlite)
+source("lib/input_contract.R")
+source("lib/r_provenance.R")
+source("lib/source_ledger.R")
 source("lib/run_manifest.R")
 source("lib/task_manifest.R")
 

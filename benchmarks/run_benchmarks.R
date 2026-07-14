@@ -4,6 +4,7 @@ library(jsonlite)
 source("lib/task_manifest.R")
 source("lib/evidence_schema.R")
 source("lib/run_manifest.R")
+source("lib/source_ledger.R")
 source("lib/environment_manifest.R")
 source("lib/input_contract.R")
 source("lib/r_provenance.R")
@@ -146,8 +147,15 @@ build_settings <- list(
   optimization = Sys.getenv("ZIGR_OPTIMIZE", unset = "ReleaseFast"),
   target = Sys.getenv("ZIGR_TARGET", unset = "native"),
   cpu_features = Sys.getenv("ZIGR_CPU_FEATURES", unset = "default"),
-  sexp_abi = Sys.getenv("ZIGR_SEXP_ABI", unset = "auto"),
   checked_sexp = checked_sexp_value %in% c("1", "true", "yes", "on"),
+  cache_dir = normalizePath(
+    Sys.getenv("ZIG_CACHE_DIR", unset = file.path(root_dir, ".zig-cache")),
+    mustWork = FALSE
+  ),
+  global_cache_dir = normalizePath(
+    Sys.getenv("ZIG_GLOBAL_CACHE_DIR", unset = file.path(root_dir, ".zig-global-cache")),
+    mustWork = FALSE
+  ),
   command = if (do_build) "bash build_all.sh" else "prebuilt runner libraries",
   requested_rebuild = do_build
 )
@@ -156,6 +164,8 @@ run_metadata$environment <- capture_environment_manifest(
   all_runners,
   blas_env,
   build_settings,
+  evidence,
+  r_provenance,
   source_root = normalizePath("..")
 )
 validate_environment_manifest(run_metadata$environment)

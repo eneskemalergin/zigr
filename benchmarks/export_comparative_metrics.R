@@ -6,6 +6,9 @@ low_noise_cv_threshold <- NULL
 meaningful_margin <- NULL
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "task_manifest.R"))
+source(file.path(root_dir, "lib", "input_contract.R"))
+source(file.path(root_dir, "lib", "r_provenance.R"))
+source(file.path(root_dir, "lib", "source_ledger.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 manifest <- load_task_manifest(root_dir)
 

@@ -8,6 +8,7 @@ root_dir <- normalizePath(file.path(dirname(script_path), ".."))
 source(file.path(root_dir, "lib", "task_manifest.R"))
 source(file.path(root_dir, "lib", "input_contract.R"))
 source(file.path(root_dir, "lib", "r_provenance.R"))
+source(file.path(root_dir, "lib", "source_ledger.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "environment_manifest.R"))
 source(file.path(root_dir, "lib", "harness.R"))
@@ -89,15 +90,22 @@ expect_true(
 
 pure_record <- function(task, fn, source_digest = r_body_digest(fn), backend = "none") {
   calls <- intersect(r_function_call_names(fn), r_pure_forbidden_calls())
+  policy <- r_pure_contract_policy(task)
   list(
     schema_version = r_provenance_schema_version(),
     task = task,
     function_name = task,
     implementation_class = "pure_r",
     source_digest = source_digest,
-    ast_allowlist_id = r_pure_contract_policy(task)$id,
+    source_body = r_source_body(fn),
+    ast_calls = as.list(r_function_call_names(fn)),
+    ast_allowlist_id = policy$id,
+    ast_allowlist = as.list(policy$allowed_calls),
     forbidden_call_result = if (length(calls) == 0L) "pass" else paste0("declared:", paste(sort(calls), collapse = "+")),
-    compiled_backend = backend
+    compiled_backend = backend,
+    backend_calls = list(),
+    backend_classes = list("none"),
+    backend_identity_keys = list("none")
   )
 }
 

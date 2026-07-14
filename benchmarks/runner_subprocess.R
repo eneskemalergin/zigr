@@ -39,6 +39,7 @@ root_dir <- normalizePath(file.path(cfg_dir, ".."))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "input_contract.R"))
 source(file.path(root_dir, "lib", "r_provenance.R"))
+source(file.path(root_dir, "lib", "source_ledger.R"))
 source(file.path(root_dir, "lib", "environment_manifest.R"))
 if (!check_only && is.null(prepare_inputs_arg) && is.null(results_dir_arg)) {
   stop("--results-dir= is required for benchmark execution")
@@ -315,6 +316,7 @@ if (!check_only) {
   for (task in all_tasks) validate_task_input_recipe(task, input_recipes$tasks[[task$id]], master_seed)
   runner_environment <- runner_environment_record(run_metadata$environment, runner_name)
   validate_runner_artifact_identity(root_dir, runner_environment)
+  validate_tool_source_ledger(root_dir, run_metadata$environment$tool_source_ledger, runner_name)
 }
 
 cat(sprintf("Runner: %s (%s)\n", runner_name, cfg$label))
@@ -1117,6 +1119,20 @@ summary$tool_identity <- as.character(runner_environment$tool_identity)
 summary$generated_glue_kind <- as.character(runner_environment$generated_glue_kind)
 summary$generated_glue_digest <- as.character(runner_environment$generated_glue_digest)
 summary$artifact_digest <- as.character(runner_environment$artifact_digest)
+summary$source_digest <- as.character(runner_environment$source_digest)
+summary$build_digest <- as.character(runner_environment$build_digest)
+summary$dependency_digest <- as.character(runner_environment$dependency_digest)
+summary$artifact_dependency_digest <- as.character(runner_environment$artifact_dependency_digest)
+summary$source_ledger_identity_digest <- as.character(runner_environment$source_ledger_identity_digest)
+summary_source_records <- lapply(as.character(summary$task), function(task_id) {
+  source_ledger_verification_record(run_metadata$environment$tool_source_ledger, runner_name, task_id)
+})
+summary$source_path_class <- vapply(summary_source_records, function(record) as.character(record$source_class), character(1))
+summary$source_verification_digest <- vapply(
+  summary_source_records,
+  function(record) as.character(record$verification_digest),
+  character(1)
+)
 summary$disposition <- vapply(summary_dispositions, function(record) as.character(record$status), character(1))
 summary$disposition_reason <- vapply(summary_dispositions, function(record) as.character(record$reason), character(1))
 summary$r_implementation_provenance <- vapply(as.character(summary$task), function(task_id) {
