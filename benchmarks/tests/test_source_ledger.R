@@ -264,6 +264,14 @@ expect_error(
   load_source_ledger_spec(spec_test_root),
   "savvy identity differs from the frozen runner map"
 )
+bad_spec <- spec
+bad_spec$fixture_runners$rcpp$verifier_kind <- "raw_fixture"
+write_spec(bad_spec)
+expect_error(
+  "drifted fixture verifier",
+  load_source_ledger_spec(spec_test_root),
+  "fixture runner rcpp verifier differs from the frozen map"
+)
 for (runner in names(spec$runners)) {
   runner_spec <- spec$runners[[runner]]
   expect_true(
@@ -277,6 +285,27 @@ for (runner in names(spec$runners)) {
   expect_true(
     source_ledger_file_identity(root_dir, runner_spec$generated_glue$paths, paste(runner, "glue"))$file_count > 0L,
     paste(runner, "generated glue selection")
+  )
+}
+for (runner in names(spec$fixture_runners)) {
+  runner_spec <- spec$fixture_runners[[runner]]
+  expect_true(
+    source_ledger_file_identity(
+      root_dir, runner_spec$source_globs, paste(runner, "fixture source")
+    )$file_count > 0L,
+    paste(runner, "fixture source selection")
+  )
+  expect_true(
+    source_ledger_file_identity(
+      root_dir, runner_spec$build_files, paste(runner, "fixture build")
+    )$file_count > 0L,
+    paste(runner, "fixture build selection")
+  )
+  expect_true(
+    source_ledger_file_identity(
+      root_dir, runner_spec$generated_glue$paths, paste(runner, "fixture glue")
+    )$file_count > 0L,
+    paste(runner, "fixture generated glue selection")
   )
 }
 build_settings <- list(
@@ -340,4 +369,4 @@ for (runner in c("extendr", "savvy")) {
               paste(runner, "registry package checksums"))
 }
 
-cat("Source ledger passed: 581 cells, exact product paths, four extendr substitutions, mixed R provenance, and required drift rejection.\n")
+cat("Source ledger passed: 581 task cells, seven fixture ledgers, exact paths, mixed R provenance, and required drift rejection.\n")

@@ -1,0 +1,11 @@
+Package: zigrRcpp
+Title: Rcpp Benchmark Fixture for zigr
+Version: 0.0.0.9000
+Authors@R: person("zigr", "benchmark", role = c("aut", "cre"), email = "benchmark@example.invalid")
+Description: Package-shaped Rcpp fixture used by the zigr comparison harness.
+License: MIT
+Encoding: UTF-8
+Imports: Rcpp
+LinkingTo: Rcpp
+NeedsCompilation: yes
+

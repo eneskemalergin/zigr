@@ -31,6 +31,8 @@ trust_test <- system2("Rscript", args = file.path("tests", "test_harness_trust.R
 if (!identical(trust_test, 0L)) stop(sprintf("harness trust tests failed with exit code %d", trust_test))
 source_ledger_test <- system2("Rscript", args = file.path("tests", "test_source_ledger.R"))
 if (!identical(source_ledger_test, 0L)) stop(sprintf("source ledger tests failed with exit code %d", source_ledger_test))
+fixture_test <- system2("Rscript", args = file.path("tests", "test_product_fixtures.R"))
+if (!identical(fixture_test, 0L)) stop(sprintf("product fixture tests failed with exit code %d", fixture_test))
 
 runner_args <- c("runner_subprocess.R", "--runner=r", "--check-only")
 if (!is.null(task_filter)) runner_args <- c(runner_args, sprintf("--tasks=%s", paste(task_filter, collapse = ",")))

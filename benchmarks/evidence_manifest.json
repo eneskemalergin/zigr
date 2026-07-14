@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "vocabulary_version": "p4.0-2026-07-13",
+  "vocabulary_version": "p4.0-2026-07-13-r1",
   "runners": ["c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"],
   "fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
   "task_sets": {
@@ -264,53 +264,73 @@
   ],
   "fixture_dispositions": [
     {
-      "runner": "zigr", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
-      "status": "applicable", "executable": false,
+      "runner": "zigr", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F10", "F11", "F12"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "zigr generateExports and generateMethods through generated package symbol objects",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The normalized package path executes; the exhaustive semantic and lifecycle matrix remains P4.4 work.", "owner": "P4.4"
+    },
+    {
+      "runner": "zigr", "include_fixtures": ["F09"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_public_adapter", "public_path": "zigr generateExports with the P1-approved explicit R.SEXP fixed-schema adapter and convert.fromSEXP",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The explicit fixed-schema adapter executes; it is a public product path but not a typed generated parameter.", "owner": "P4.4"
+    },
+    {
+      "runner": "zigr", "include_fixtures": ["F08"],
+      "status": "product_gap", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "P1 covers part of this surface, but the normalized first-wave fixture cell is not complete.", "owner": "P4.3"
+      "reason": "generateExports has no typed logical-slice parameter; the R.SEXP escape hatch cannot satisfy the typed F08 product cell.", "owner": "P5"
     },
     {
       "runner": "rcpp", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
-      "status": "fixture_not_implemented", "executable": false,
-      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
-      "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The Rcpp first-wave package fixture has not been implemented.", "owner": "P4.3"
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "Rcpp attributes and Modules through retained generated package wrappers",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The normalized package path executes; the exhaustive semantic and lifecycle matrix remains P4.4 work.", "owner": "P4.4"
     },
     {
       "runner": "extendr", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
-      "status": "fixture_not_implemented", "executable": false,
-      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
-      "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The extendr first-wave package fixture has not been implemented.", "owner": "P4.3"
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "extendr attributes and module through retained generated package wrappers",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The normalized package path executes; the exhaustive semantic and lifecycle matrix remains P4.4 work.", "owner": "P4.4"
     },
     {
       "runner": "savvy", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
-      "status": "fixture_not_implemented", "executable": false,
-      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
-      "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The Savvy first-wave package fixture has not been implemented.", "owner": "P4.3"
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "product_comparison",
+      "path_kind": "generated_typed", "public_path": "Savvy attributes through retained generated C and R package wrappers",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The normalized package path executes; the exhaustive semantic and lifecycle matrix remains P4.4 work.", "owner": "P4.4"
     },
     {
       "runner": "r", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F11", "F12"],
-      "status": "fixture_not_implemented", "executable": false,
-      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
-      "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The AST-validated pure-R first-wave oracle has not been implemented.", "owner": "P4.1"
+      "status": "control_only", "executable": true,
+      "implementation_role": "pure_r", "evidence_use": "semantic_oracle", "path_kind": "pure_r",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The explicit-loop implementation passes its fixture-specific pure-R provenance policy.", "owner": "P4.4"
     },
     {
       "runner": "r", "include_fixtures": ["F10"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "Pure R cannot construct typed native state; registered C supplies the native oracle.", "owner": "P4.1"
+      "reason": "Pure R cannot construct typed native state; registered C supplies the native oracle.", "owner": "P4.3"
     },
     {
       "runner": "c_call", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
-      "status": "applicable", "executable": false,
-      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
-      "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "Current C controls overlap this surface, but exact normalized F01 through F12 controls are not complete.", "owner": "P4.3"
+      "status": "control_only", "executable": true,
+      "implementation_role": "c_control", "evidence_use": "semantic_oracle", "path_kind": "registered_c",
+      "public_path": "registered handwritten .Call control with dynamic lookup disabled and forced symbols",
+      "representation_strategy": "mixed", "comparison_tier": "tier_d",
+      "reason": "The exact normalized C control is available as a truth and lower-bound reference, not as a product.", "owner": "P4.4"
     },
     {
       "runner": "cpp11", "include_fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F08", "F09", "F11"],
@@ -329,11 +349,10 @@
     },
     {
       "runner": "cpp11", "include_fixtures": ["F10"],
-      "status": "fixture_invalid", "executable": true,
-      "implementation_role": "product_public_path", "evidence_use": "diagnostic_control",
-      "path_kind": "generated_typed", "public_path": "cpp11 external_pointer through generated package wrappers and registered symbols",
-      "representation_strategy": "external_state", "comparison_tier": "tier_d",
-      "reason": "The path executes but external_pointer lacks the typed tag identity required by the complete F10 contract.", "owner": "P4.4"
+      "status": "product_gap", "executable": false,
+      "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
+      "representation_strategy": "not_applicable", "comparison_tier": "gap",
+      "reason": "cpp11 0.5.5 external_pointer constructs untagged pointers and validates only EXTPTRSXP, so it cannot satisfy F10's tag identity contract.", "owner": "P4.3"
     }
   ]
 }

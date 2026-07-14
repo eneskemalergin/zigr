@@ -41,9 +41,11 @@ expect_true(!any(evidence$fixture_rows$timing_eligible), "fixture evidence is no
 expect_true(!any(evidence$tasks$comparison_tier == "tier_a"), "no legacy task is prematurely Tier A")
 expect_true(!any(evidence$fixture_rows$comparison_tier == "tier_a"), "no fixture is prematurely Tier A")
 expect_true(
-  all(evidence$tasks$path_kind[evidence$tasks$implementation_role == "product_public_path"] == "generated_typed") &&
-    all(evidence$fixture_rows$path_kind[evidence$fixture_rows$implementation_role == "product_public_path"] == "generated_typed"),
-  "every product public path is generated and typed"
+  all(evidence$tasks$path_kind[evidence$tasks$implementation_role == "product_public_path"] %in%
+    c("generated_typed", "generated_public_adapter")) &&
+    all(evidence$fixture_rows$path_kind[evidence$fixture_rows$implementation_role == "product_public_path"] %in%
+      c("generated_typed", "generated_public_adapter")),
+  "every product public path is generated and is typed or an explicit public adapter"
 )
 
 expected_executable <- c(c_call = 70L, cpp11 = 11L, extendr = 44L, r = 72L, rcpp = 44L, savvy = 44L, zigr = 83L)
@@ -51,6 +53,17 @@ actual_executable <- vapply(names(expected_executable), function(runner) {
   sum(evidence$tasks$runner == runner & evidence$tasks$executable)
 }, integer(1))
 expect_true(identical(actual_executable, expected_executable), "executable coverage matches the P4.1 R split")
+
+expected_fixture_executable <- c(
+  c_call = 12L, cpp11 = 9L, extendr = 12L, r = 11L, rcpp = 12L, savvy = 12L, zigr = 11L
+)
+actual_fixture_executable <- vapply(names(expected_fixture_executable), function(runner) {
+  sum(evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable)
+}, integer(1))
+expect_true(
+  identical(actual_fixture_executable, expected_fixture_executable),
+  "fixture execution coverage matches the implemented P4.3 matrix"
+)
 
 disposition_snapshot <- run_disposition_records(evidence, "r", "52_boundary_scalar_generated")$r[[1L]]
 expect_true(
@@ -82,8 +95,21 @@ for (runner in evidence$runners) {
 
 cpp11_f07 <- evidence$fixture_rows[evidence$fixture_rows$runner == "cpp11" & evidence$fixture_rows$fixture == "F07", , drop = FALSE]
 cpp11_f10 <- evidence$fixture_rows[evidence$fixture_rows$runner == "cpp11" & evidence$fixture_rows$fixture == "F10", , drop = FALSE]
+zigr_f08 <- evidence$fixture_rows[evidence$fixture_rows$runner == "zigr" & evidence$fixture_rows$fixture == "F08", , drop = FALSE]
+zigr_f09 <- evidence$fixture_rows[evidence$fixture_rows$runner == "zigr" & evidence$fixture_rows$fixture == "F09", , drop = FALSE]
 expect_true(nrow(cpp11_f07) == 1L && cpp11_f07$status == "product_gap", "cpp11 F07 remains a visible gap")
-expect_true(nrow(cpp11_f10) == 1L && cpp11_f10$status == "fixture_invalid", "cpp11 F10 remains partial")
+expect_true(
+  nrow(cpp11_f10) == 1L && cpp11_f10$status == "product_gap" && !cpp11_f10$executable,
+  "cpp11 F10 is an honest source-backed product gap"
+)
+expect_true(
+  nrow(zigr_f08) == 1L && zigr_f08$status == "product_gap" && zigr_f08$owner == "P5",
+  "zigr F08 does not disguise the untyped escape hatch as a product path"
+)
+expect_true(
+  nrow(zigr_f09) == 1L && zigr_f09$path_kind == "generated_public_adapter",
+  "zigr F09 retains the P1-approved explicit fixed-schema adapter label"
+)
 
 rcpp_executable <- evidence$tasks[evidence$tasks$runner == "rcpp" & evidence$tasks$executable, , drop = FALSE]
 expect_true(

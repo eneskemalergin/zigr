@@ -1,4 +1,4 @@
-source_ledger_schema_version <- function() "p4.2-tool-source-ledger-v1"
+source_ledger_schema_version <- function() "p4.3-tool-source-ledger-v2"
 
 source_ledger_scalar <- function(value, fallback = "") {
   value <- as.character(value)
@@ -91,11 +91,11 @@ load_source_ledger_spec <- function(root_dir) {
   if (is.null(names(spec)) || any(!nzchar(names(spec))) || anyDuplicated(names(spec))) {
     stop("source ledger specification must be a uniquely named object")
   }
-  if (!setequal(names(spec), c("schema_version", "vocabulary_version", "runners"))) {
+  if (!setequal(names(spec), c("schema_version", "vocabulary_version", "runners", "fixture_runners"))) {
     stop("source ledger specification fields differ from the schema")
   }
-  if (!identical(as.integer(spec$schema_version), 1L)) stop("unsupported source ledger schema version")
-  if (!identical(as.character(spec$vocabulary_version), "p4.2-source-ledger-2026-07-13")) {
+  if (!identical(as.integer(spec$schema_version), 2L)) stop("unsupported source ledger schema version")
+  if (!identical(as.character(spec$vocabulary_version), "p4.3-source-ledger-2026-07-13")) {
     stop("unsupported source ledger vocabulary version")
   }
   expected_runners <- c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr")
@@ -164,6 +164,55 @@ load_source_ledger_spec <- function(root_dir) {
         length(glue$retained_output) != 1L || !is.logical(glue$retained_output) || is.na(glue$retained_output) ||
         length(glue_paths) == 0L || anyNA(glue_paths) || any(!nzchar(glue_paths)) || anyDuplicated(glue_paths)) {
       stop(sprintf("source ledger runner %s has invalid generated-glue identity", runner))
+    }
+  }
+  expected_fixture_verifiers <- c(
+    c_call = "registered_c_fixture", cpp11 = "cpp11_package_fixture",
+    extendr = "extendr_package_fixture", r = "r_fixture_provenance",
+    rcpp = "rcpp_package_fixture", savvy = "savvy_package_fixture",
+    zigr = "zigr_package_fixture"
+  )
+  if (is.null(spec$fixture_runners) ||
+      !identical(sort(names(spec$fixture_runners)), expected_runners)) {
+    stop("source ledger fixture runner set differs from the seven-runner comparison set")
+  }
+  fixture_required <- c(
+    "verifier_kind", "source_globs", "build_files", "build_recipe", "generated_glue"
+  )
+  for (runner in expected_runners) {
+    record <- spec$fixture_runners[[runner]]
+    if (!is.list(record) || is.null(names(record)) || any(!nzchar(names(record))) ||
+        anyDuplicated(names(record)) || !setequal(names(record), fixture_required)) {
+      stop(sprintf("source ledger fixture runner %s fields differ from the schema", runner))
+    }
+    if (length(record$verifier_kind) != 1L || is.na(record$verifier_kind) ||
+        !identical(as.character(record$verifier_kind), unname(expected_fixture_verifiers[[runner]]))) {
+      stop(sprintf("source ledger fixture runner %s verifier differs from the frozen map", runner))
+    }
+    if (length(record$build_recipe) != 1L || is.na(record$build_recipe) ||
+        !nzchar(as.character(record$build_recipe))) {
+      stop(sprintf("source ledger fixture runner %s build recipe must be one nonblank string", runner))
+    }
+    for (field in c("source_globs", "build_files")) {
+      values <- as.character(unlist(record[[field]], use.names = FALSE))
+      if (length(values) == 0L || anyNA(values) || any(!nzchar(values)) || anyDuplicated(values)) {
+        stop(sprintf(
+          "source ledger fixture runner %s field %s must be a unique nonblank list",
+          runner, field
+        ))
+      }
+    }
+    glue <- record$generated_glue
+    if (!is.list(glue) || is.null(names(glue)) || any(!nzchar(names(glue))) ||
+        anyDuplicated(names(glue)) || !setequal(names(glue), c("kind", "retained_output", "paths"))) {
+      stop(sprintf("source ledger fixture runner %s has incomplete generated-glue identity", runner))
+    }
+    glue_paths <- as.character(unlist(glue$paths, use.names = FALSE))
+    if (length(glue$kind) != 1L || is.na(glue$kind) || !nzchar(as.character(glue$kind)) ||
+        length(glue$retained_output) != 1L || !is.logical(glue$retained_output) ||
+        is.na(glue$retained_output) || length(glue_paths) == 0L || anyNA(glue_paths) ||
+        any(!nzchar(glue_paths)) || anyDuplicated(glue_paths)) {
+      stop(sprintf("source ledger fixture runner %s has invalid generated-glue identity", runner))
     }
   }
   attr(spec, "path") <- normalizePath(path)
@@ -1105,6 +1154,7 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
   verification <- verify_source_paths(root_dir, configs, evidence, r_provenance, enforce_current_gate = FALSE)
   runner_records <- lapply(sort(names(configs)), function(runner) {
     runner_spec <- spec$runners[[runner]]
+    fixture_spec <- spec$fixture_runners[[runner]]
     cfg <- configs[[runner]]
     source_identity <- source_ledger_file_identity(root_dir, runner_spec$source_globs, sprintf("%s source", runner))
     build_identity <- source_ledger_file_identity(root_dir, runner_spec$build_files, sprintf("%s build", runner))
@@ -1113,6 +1163,15 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
       root_dir,
       runner_spec$generated_glue$paths,
       sprintf("%s generated glue", runner)
+    )
+    fixture_source_identity <- source_ledger_file_identity(
+      root_dir, fixture_spec$source_globs, sprintf("%s fixture source", runner)
+    )
+    fixture_build_identity <- source_ledger_file_identity(
+      root_dir, fixture_spec$build_files, sprintf("%s fixture build", runner)
+    )
+    fixture_glue_identity <- source_ledger_file_identity(
+      root_dir, fixture_spec$generated_glue$paths, sprintf("%s fixture generated glue", runner)
     )
     toolchain <- switch(as.character(runner_spec$tool_kind),
       r_package = capture_r_package_identity(as.character(runner_spec$package)),
@@ -1146,6 +1205,17 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
         kind = as.character(runner_spec$generated_glue$kind),
         retained_output = isTRUE(runner_spec$generated_glue$retained_output),
         identity = glue_identity
+      ),
+      fixture = list(
+        verifier_kind = as.character(fixture_spec$verifier_kind),
+        build_recipe = as.character(fixture_spec$build_recipe),
+        source_identity = fixture_source_identity,
+        build_identity = fixture_build_identity,
+        generated_glue = list(
+          kind = as.character(fixture_spec$generated_glue$kind),
+          retained_output = isTRUE(fixture_spec$generated_glue$retained_output),
+          identity = fixture_glue_identity
+        )
       ),
       toolchain = toolchain,
       artifact_dependencies = artifact_dependencies
@@ -1187,9 +1257,19 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
     runner_name <- as.character(record$name)
     if (!is.null(runner) && !identical(runner_name, runner)) next
     runner_spec <- spec$runners[[runner_name]]
+    fixture_spec <- spec$fixture_runners[[runner_name]]
     actual_source <- source_ledger_file_identity(root_dir, runner_spec$source_globs, sprintf("%s source", runner_name))
     actual_build <- source_ledger_file_identity(root_dir, runner_spec$build_files, sprintf("%s build", runner_name))
     actual_glue <- source_ledger_file_identity(root_dir, runner_spec$generated_glue$paths, sprintf("%s generated glue", runner_name))
+    actual_fixture_source <- source_ledger_file_identity(
+      root_dir, fixture_spec$source_globs, sprintf("%s fixture source", runner_name)
+    )
+    actual_fixture_build <- source_ledger_file_identity(
+      root_dir, fixture_spec$build_files, sprintf("%s fixture build", runner_name)
+    )
+    actual_fixture_glue <- source_ledger_file_identity(
+      root_dir, fixture_spec$generated_glue$paths, sprintf("%s fixture generated glue", runner_name)
+    )
     source_ledger_require_digest(actual_source$digest, record$source_identity$digest, sprintf("source for runner %s", runner_name))
     source_ledger_require_digest(actual_build$digest, record$build_identity$digest, sprintf("build recipe for runner %s", runner_name))
     source_ledger_require_digest(
@@ -1201,6 +1281,21 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
       actual_glue$digest,
       record$generated_glue$identity$digest,
       sprintf("generated glue for runner %s", runner_name)
+    )
+    source_ledger_require_digest(
+      actual_fixture_source$digest,
+      record$fixture$source_identity$digest,
+      sprintf("fixture source for runner %s", runner_name)
+    )
+    source_ledger_require_digest(
+      actual_fixture_build$digest,
+      record$fixture$build_identity$digest,
+      sprintf("fixture build recipe for runner %s", runner_name)
+    )
+    source_ledger_require_digest(
+      actual_fixture_glue$digest,
+      record$fixture$generated_glue$identity$digest,
+      sprintf("fixture generated glue for runner %s", runner_name)
     )
     actual_toolchain <- switch(as.character(record$tool_kind),
       r_package = capture_r_package_identity(as.character(runner_spec$package)),

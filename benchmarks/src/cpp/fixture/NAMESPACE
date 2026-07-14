@@ -1,0 +1,4 @@
+useDynLib(zigrRcpp, .registration = TRUE)
+importFrom(Rcpp, loadModule)
+exportPattern("^fixture_")
+

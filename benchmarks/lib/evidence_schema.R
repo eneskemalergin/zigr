@@ -1,6 +1,6 @@
 evidence_schema_vocabulary <- function() {
   list(
-    version = "p4.0-2026-07-13",
+    version = "p4.0-2026-07-13-r1",
     runners = c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"),
     fixtures = sprintf("F%02d", seq_len(12L)),
     dispositions = c(
@@ -16,7 +16,7 @@ evidence_schema_vocabulary <- function() {
       "strategy_comparison", "diagnostic_control", "gap"
     ),
     path_kinds = c(
-      "pure_r", "optimized_base_r", "registered_c", "generated_typed",
+      "pure_r", "optimized_base_r", "registered_c", "generated_typed", "generated_public_adapter",
       "handwritten_typed", "direct_export", "raw_ffi", "mixed", "unclassified", "none"
     ),
     representation_strategies = c(
@@ -226,7 +226,7 @@ validate_evidence_rows <- function(rows, label = "evidence") {
   }
   product_rows <- rows$implementation_role == "product_public_path"
   if (any(product_rows & rows$path_kind == "raw_ffi")) stop(sprintf("%s labels a raw path as a product public path", label))
-  if (any(product_rows & rows$path_kind != "generated_typed")) {
+  if (any(product_rows & !(rows$path_kind %in% c("generated_typed", "generated_public_adapter")))) {
     stop(sprintf("%s has a product public path with an invalid path kind", label))
   }
   if (any(product_rows & (is.na(rows$public_path) | !nzchar(trimws(as.character(rows$public_path)))))) {

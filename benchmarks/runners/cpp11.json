@@ -10,8 +10,8 @@
     "scalar": "_zigrCpp11_fixture_scalar",
     "optional": "_zigrCpp11_fixture_optional",
     "vector": "_zigrCpp11_boundary_numeric",
-    "new": "_zigrCpp11_fixture_new",
-    "method": "_zigrCpp11_fixture_method",
+    "new": "_zigrCpp11_diagnostic_state_new",
+    "method": "_zigrCpp11_diagnostic_state_method",
     "error": "_zigrCpp11_fixture_error"
   },
   "exports": {
@@ -25,6 +25,6 @@
     "64_boundary_string_view_generated": "_zigrCpp11_boundary_string",
     "66_boundary_raw_generated": "_zigrCpp11_boundary_raw",
     "70_boundary_schema_generated": "_zigrCpp11_fixture_schema",
-    "72_boundary_external_method_generated": "_zigrCpp11_fixture_method"
+    "72_boundary_external_method_generated": "_zigrCpp11_diagnostic_state_method"
   }
 }

@@ -52,7 +52,18 @@ r_pure_contract_policy <- function(task_id) {
     "70_boundary_schema_generated" = "fixed_schema_boundary",
     "71_boundary_schema_handwritten" = "fixed_schema_boundary",
     "72_boundary_external_method_generated" = "external_method_value_invariant",
-    "73_boundary_external_method_handwritten" = "external_method_value_invariant"
+    "73_boundary_external_method_handwritten" = "external_method_value_invariant",
+    "F01" = "fixture_zero",
+    "F02" = "fixture_scalar",
+    "F03" = "fixture_numeric",
+    "F04" = "fixture_altrep_integer",
+    "F05" = "fixture_strings",
+    "F06" = "fixture_raw",
+    "F07" = "fixture_complex",
+    "F08" = "fixture_logical_counts",
+    "F09" = "fixture_schema",
+    "F11" = "fixture_error",
+    "F12" = "fixture_outputs"
   )
   policy_name <- unname(policy_by_task[as.character(task_id)])
   if (length(policy_name) != 1L || is.na(policy_name)) {
@@ -73,7 +84,27 @@ r_pure_contract_policy <- function(task_id) {
       "!", "!=", "(", "[[", "{", "&&", "<-", "||", "attributes", "c", "identical", "if",
       "is.double", "is.integer", "is.logical", "is.na", "is.nan", "length", "list", "stop", "typeof"
     ),
-    external_method_value_invariant = "as.integer"
+    external_method_value_invariant = "as.integer",
+    fixture_zero = character(0),
+    fixture_scalar = c("!", "!=", "{", "&&", "||", "if", "is.na", "is.nan", "length", "stop", "typeof"),
+    fixture_numeric = c("*", "!=", "[[", "[[<-", "{", "<-", "for", "if", "length", "numeric", "seq_len", "stop", "typeof"),
+    fixture_altrep_integer = c("+", "!=", "[[", "{", "<-", "for", "if", "length", "seq_len", "stop", "typeof"),
+    fixture_strings = c("!", "+", "!=", "[[", "{", "<-", "for", "if", "is.na", "length", "seq_len", "stop", "typeof"),
+    fixture_raw = c("!=", "[[", "[[<-", "{", "<-", "for", "if", "length", "raw", "seq_len", "stop", "typeof"),
+    fixture_complex = c("!=", "[[", "[[<-", "{", "<-", "complex", "for", "if", "length", "seq_len", "stop", "typeof"),
+    fixture_logical_counts = c(
+      "+", "!=", "[[", "[[<-", "{", "<-", "c", "for", "if", "integer", "is.na",
+      "length", "names<-", "seq_len", "stop", "typeof"
+    ),
+    fixture_schema = c(
+      "!", "!=", "(", "[[", "{", "&&", "<-", "||", "attributes", "c", "identical", "if",
+      "is.double", "is.integer", "is.logical", "is.na", "is.nan", "length", "list", "stop", "typeof"
+    ),
+    fixture_error = c("!=", "{", "||", "if", "length", "stop", "typeof"),
+    fixture_outputs = c(
+      "+", "[[<-", "{", "<-", "as.raw", "c", "character", "complex", "logical", "names<-",
+      "numeric", "raw", "vector"
+    )
   )
   list(
     id = paste0("pure-r-contract-", policy_name, "-v1"),

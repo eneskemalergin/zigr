@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "vocabulary_version": "p4.2-source-ledger-2026-07-13",
+  "schema_version": 2,
+  "vocabulary_version": "p4.3-source-ledger-2026-07-13",
   "runners": {
     "c_call": {
       "role": "c_control",
@@ -113,6 +113,113 @@
         "kind": "compile_time_zigr_generator_output_not_retained",
         "retained_output": false,
         "paths": ["src/zig/main.zig", "src/zig/task_28_only_main.zig", "../src/export.zig"]
+      }
+    }
+  },
+  "fixture_runners": {
+    "c_call": {
+      "verifier_kind": "registered_c_fixture",
+      "source_globs": ["src/c_call/register.c"],
+      "build_files": ["build_all.sh", "src/c_call/Makefile"],
+      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library>",
+      "generated_glue": {
+        "kind": "handwritten_registration_control",
+        "retained_output": true,
+        "paths": ["src/c_call/register.c"]
+      }
+    },
+    "cpp11": {
+      "verifier_kind": "cpp11_package_fixture",
+      "source_globs": [
+        "src/cpp11/DESCRIPTION", "src/cpp11/NAMESPACE", "src/cpp11/R/*.R", "src/cpp11/src/*"
+      ],
+      "build_files": ["build_all.sh", "src/cpp11/DESCRIPTION", "src/cpp11/NAMESPACE"],
+      "build_recipe": "R CMD INSTALL --preclean --clean --no-multiarch --library=<cpp11 library> src/cpp11",
+      "generated_glue": {
+        "kind": "retained_cpp11_generated_output",
+        "retained_output": true,
+        "paths": ["src/cpp11/src/cpp11.cpp", "src/cpp11/R/cpp11.R"]
+      }
+    },
+    "extendr": {
+      "verifier_kind": "extendr_package_fixture",
+      "source_globs": [
+        "src/extendr/fixture/DESCRIPTION", "src/extendr/fixture/NAMESPACE",
+        "src/extendr/fixture/R/*.R", "src/extendr/fixture/src/Makevars",
+        "src/extendr/fixture/src/entrypoint.c", "src/extendr/fixture/src/rust/Cargo.toml",
+        "src/extendr/fixture/src/rust/Cargo.lock", "src/extendr/fixture/src/rust/src/*.rs"
+      ],
+      "build_files": [
+        "build_all.sh", "src/extendr/fixture/src/Makevars",
+        "src/extendr/fixture/src/rust/Cargo.toml", "src/extendr/fixture/src/rust/Cargo.lock"
+      ],
+      "build_recipe": "R CMD INSTALL --preclean --clean --no-multiarch --library=<fixture library> src/extendr/fixture",
+      "generated_glue": {
+        "kind": "retained_extendr_r_wrappers_and_compile_time_native_wrappers",
+        "retained_output": true,
+        "paths": ["src/extendr/fixture/R/extendr-wrappers.R"]
+      }
+    },
+    "r": {
+      "verifier_kind": "r_fixture_provenance",
+      "source_globs": ["src/r/run_all.R"],
+      "build_files": ["src/r/run_all.R"],
+      "build_recipe": "not applicable",
+      "generated_glue": {
+        "kind": "not_applicable_r_source",
+        "retained_output": false,
+        "paths": ["src/r/run_all.R"]
+      }
+    },
+    "rcpp": {
+      "verifier_kind": "rcpp_package_fixture",
+      "source_globs": [
+        "src/cpp/fixture/DESCRIPTION", "src/cpp/fixture/NAMESPACE",
+        "src/cpp/fixture/R/*.R", "src/cpp/fixture/src/*.cpp"
+      ],
+      "build_files": ["build_all.sh", "src/cpp/fixture/DESCRIPTION", "src/cpp/fixture/NAMESPACE"],
+      "build_recipe": "R CMD INSTALL --preclean --clean --no-multiarch --library=<fixture library> src/cpp/fixture",
+      "generated_glue": {
+        "kind": "retained_rcpp_compile_attributes_output",
+        "retained_output": true,
+        "paths": ["src/cpp/fixture/R/RcppExports.R", "src/cpp/fixture/src/RcppExports.cpp"]
+      }
+    },
+    "savvy": {
+      "verifier_kind": "savvy_package_fixture",
+      "source_globs": [
+        "src/savvy/fixture/DESCRIPTION", "src/savvy/fixture/NAMESPACE",
+        "src/savvy/fixture/R/*.R", "src/savvy/fixture/src/Makevars",
+        "src/savvy/fixture/src/init.c", "src/savvy/fixture/src/rust/api.h",
+        "src/savvy/fixture/src/rust/Cargo.toml", "src/savvy/fixture/src/rust/Cargo.lock",
+        "src/savvy/fixture/src/rust/src/*.rs"
+      ],
+      "build_files": [
+        "build_all.sh", "src/savvy/fixture/src/Makevars",
+        "src/savvy/fixture/src/rust/Cargo.toml", "src/savvy/fixture/src/rust/Cargo.lock"
+      ],
+      "build_recipe": "R CMD INSTALL --preclean --clean --no-multiarch --library=<fixture library> src/savvy/fixture",
+      "generated_glue": {
+        "kind": "retained_savvy_bindgen_c_and_r_output",
+        "retained_output": true,
+        "paths": [
+          "src/savvy/fixture/R/000-wrappers.R", "src/savvy/fixture/src/init.c",
+          "src/savvy/fixture/src/rust/api.h"
+        ]
+      }
+    },
+    "zigr": {
+      "verifier_kind": "zigr_package_fixture",
+      "source_globs": [
+        "src/zig/fixture/DESCRIPTION", "src/zig/fixture/NAMESPACE", "src/zig/fixture/R/*.R",
+        "src/zig/fixture/src/*", "src/zig/fixture.zig", "../src/export.zig"
+      ],
+      "build_files": ["build_all.sh", "build.zig", "src/zig/fixture/src/Makevars"],
+      "build_recipe": "zig build followed by R CMD INSTALL --preclean --clean --no-multiarch --library=<fixture library> src/zig/fixture",
+      "generated_glue": {
+        "kind": "compile_time_zigr_generated_native_wrappers",
+        "retained_output": false,
+        "paths": ["src/zig/fixture.zig", "../src/export.zig"]
       }
     }
   }

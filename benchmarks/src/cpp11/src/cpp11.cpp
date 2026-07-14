@@ -48,7 +48,7 @@ extern "C" SEXP _zigrCpp11_fixture_altrep_integer(SEXP value) {
   END_CPP11
 }
 // fixture.cpp
-cpp11::strings fixture_strings(cpp11::strings value);
+int fixture_strings(cpp11::strings value);
 extern "C" SEXP _zigrCpp11_fixture_strings(SEXP value) {
   BEGIN_CPP11
     return cpp11::as_sexp(fixture_strings(cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(value)));
@@ -69,24 +69,17 @@ extern "C" SEXP _zigrCpp11_fixture_schema(SEXP value) {
   END_CPP11
 }
 // fixture.cpp
-cpp11::external_pointer<FixtureState> fixture_new();
-extern "C" SEXP _zigrCpp11_fixture_new() {
+cpp11::external_pointer<FixtureState> diagnostic_state_new();
+extern "C" SEXP _zigrCpp11_diagnostic_state_new() {
   BEGIN_CPP11
-    return cpp11::as_sexp(fixture_new());
+    return cpp11::as_sexp(diagnostic_state_new());
   END_CPP11
 }
 // fixture.cpp
-int fixture_method(cpp11::external_pointer<FixtureState> state, int amount);
-extern "C" SEXP _zigrCpp11_fixture_method(SEXP state, SEXP amount) {
+int diagnostic_state_method(cpp11::external_pointer<FixtureState> state, int amount);
+extern "C" SEXP _zigrCpp11_diagnostic_state_method(SEXP state, SEXP amount) {
   BEGIN_CPP11
-    return cpp11::as_sexp(fixture_method(cpp11::as_cpp<cpp11::decay_t<cpp11::external_pointer<FixtureState>>>(state), cpp11::as_cpp<cpp11::decay_t<int>>(amount)));
-  END_CPP11
-}
-// fixture.cpp
-int fixture_read(cpp11::external_pointer<FixtureState> state);
-extern "C" SEXP _zigrCpp11_fixture_read(SEXP state) {
-  BEGIN_CPP11
-    return cpp11::as_sexp(fixture_read(cpp11::as_cpp<cpp11::decay_t<cpp11::external_pointer<FixtureState>>>(state)));
+    return cpp11::as_sexp(diagnostic_state_method(cpp11::as_cpp<cpp11::decay_t<cpp11::external_pointer<FixtureState>>>(state), cpp11::as_cpp<cpp11::decay_t<int>>(amount)));
   END_CPP11
 }
 // fixture.cpp
@@ -95,13 +88,6 @@ extern "C" SEXP _zigrCpp11_fixture_error(SEXP trigger) {
   BEGIN_CPP11
     fixture_error(cpp11::as_cpp<cpp11::decay_t<double>>(trigger));
     return R_NilValue;
-  END_CPP11
-}
-// fixture.cpp
-cpp11::list fixture_outputs();
-extern "C" SEXP _zigrCpp11_fixture_outputs() {
-  BEGIN_CPP11
-    return cpp11::as_sexp(fixture_outputs());
   END_CPP11
 }
 // fixture.cpp
@@ -142,25 +128,23 @@ extern "C" SEXP _zigrCpp11_bench_external_ptr(SEXP value) {
 
 extern "C" {
 static const R_CallMethodDef CallEntries[] = {
-    {"_zigrCpp11_bench_external_ptr",     (DL_FUNC) &_zigrCpp11_bench_external_ptr,     1},
-    {"_zigrCpp11_boundary_numeric",       (DL_FUNC) &_zigrCpp11_boundary_numeric,       1},
-    {"_zigrCpp11_boundary_raw",           (DL_FUNC) &_zigrCpp11_boundary_raw,           1},
-    {"_zigrCpp11_boundary_string",        (DL_FUNC) &_zigrCpp11_boundary_string,        1},
-    {"_zigrCpp11_boundary_zero",          (DL_FUNC) &_zigrCpp11_boundary_zero,          0},
-    {"_zigrCpp11_fixture_altrep_integer", (DL_FUNC) &_zigrCpp11_fixture_altrep_integer, 1},
-    {"_zigrCpp11_fixture_error",          (DL_FUNC) &_zigrCpp11_fixture_error,          1},
-    {"_zigrCpp11_fixture_logical_counts", (DL_FUNC) &_zigrCpp11_fixture_logical_counts, 1},
-    {"_zigrCpp11_fixture_method",         (DL_FUNC) &_zigrCpp11_fixture_method,         2},
-    {"_zigrCpp11_fixture_new",            (DL_FUNC) &_zigrCpp11_fixture_new,            0},
-    {"_zigrCpp11_fixture_numeric",        (DL_FUNC) &_zigrCpp11_fixture_numeric,        1},
-    {"_zigrCpp11_fixture_optional",       (DL_FUNC) &_zigrCpp11_fixture_optional,       1},
-    {"_zigrCpp11_fixture_outputs",        (DL_FUNC) &_zigrCpp11_fixture_outputs,        0},
-    {"_zigrCpp11_fixture_raw",            (DL_FUNC) &_zigrCpp11_fixture_raw,            1},
-    {"_zigrCpp11_fixture_read",           (DL_FUNC) &_zigrCpp11_fixture_read,           1},
-    {"_zigrCpp11_fixture_scalar",         (DL_FUNC) &_zigrCpp11_fixture_scalar,         1},
-    {"_zigrCpp11_fixture_schema",         (DL_FUNC) &_zigrCpp11_fixture_schema,         1},
-    {"_zigrCpp11_fixture_strings",        (DL_FUNC) &_zigrCpp11_fixture_strings,        1},
-    {"_zigrCpp11_fixture_zero",           (DL_FUNC) &_zigrCpp11_fixture_zero,           0},
+    {"_zigrCpp11_bench_external_ptr",      (DL_FUNC) &_zigrCpp11_bench_external_ptr,      1},
+    {"_zigrCpp11_boundary_numeric",        (DL_FUNC) &_zigrCpp11_boundary_numeric,        1},
+    {"_zigrCpp11_boundary_raw",            (DL_FUNC) &_zigrCpp11_boundary_raw,            1},
+    {"_zigrCpp11_boundary_string",         (DL_FUNC) &_zigrCpp11_boundary_string,         1},
+    {"_zigrCpp11_boundary_zero",           (DL_FUNC) &_zigrCpp11_boundary_zero,           0},
+    {"_zigrCpp11_diagnostic_state_method", (DL_FUNC) &_zigrCpp11_diagnostic_state_method, 2},
+    {"_zigrCpp11_diagnostic_state_new",    (DL_FUNC) &_zigrCpp11_diagnostic_state_new,    0},
+    {"_zigrCpp11_fixture_altrep_integer",  (DL_FUNC) &_zigrCpp11_fixture_altrep_integer,  1},
+    {"_zigrCpp11_fixture_error",           (DL_FUNC) &_zigrCpp11_fixture_error,           1},
+    {"_zigrCpp11_fixture_logical_counts",  (DL_FUNC) &_zigrCpp11_fixture_logical_counts,  1},
+    {"_zigrCpp11_fixture_numeric",         (DL_FUNC) &_zigrCpp11_fixture_numeric,         1},
+    {"_zigrCpp11_fixture_optional",        (DL_FUNC) &_zigrCpp11_fixture_optional,        1},
+    {"_zigrCpp11_fixture_raw",             (DL_FUNC) &_zigrCpp11_fixture_raw,             1},
+    {"_zigrCpp11_fixture_scalar",          (DL_FUNC) &_zigrCpp11_fixture_scalar,          1},
+    {"_zigrCpp11_fixture_schema",          (DL_FUNC) &_zigrCpp11_fixture_schema,          1},
+    {"_zigrCpp11_fixture_strings",         (DL_FUNC) &_zigrCpp11_fixture_strings,         1},
+    {"_zigrCpp11_fixture_zero",            (DL_FUNC) &_zigrCpp11_fixture_zero,            0},
     {NULL, NULL, 0}
 };
 }

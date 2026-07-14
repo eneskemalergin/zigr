@@ -134,12 +134,14 @@ double integer_sum(const cpp11::integers& value) {
   return integer_sum(value);
 }
 
-[[cpp11::register]] cpp11::strings fixture_strings(cpp11::strings value) {
-  cpp11::writable::strings result(value.size());
-  for (R_xlen_t index = 0; index < value.size(); ++index) {
-    result[index] = value[index];
+[[cpp11::register]] int fixture_strings(cpp11::strings value) {
+  int count = 0;
+  for (cpp11::r_string element : value) {
+    if (!is_na_string(element)) {
+      ++count;
+    }
   }
-  return result;
+  return count;
 }
 
 [[cpp11::register]] cpp11::raws fixture_raw(cpp11::raws value) {
@@ -155,11 +157,11 @@ double integer_sum(const cpp11::integers& value) {
   return value;
 }
 
-[[cpp11::register]] cpp11::external_pointer<FixtureState> fixture_new() {
+[[cpp11::register]] cpp11::external_pointer<FixtureState> diagnostic_state_new() {
   return cpp11::external_pointer<FixtureState>(new FixtureState(0));
 }
 
-[[cpp11::register]] int fixture_method(
+[[cpp11::register]] int diagnostic_state_method(
     cpp11::external_pointer<FixtureState> state, int amount) {
   if (state.get() == nullptr) {
     cpp11::stop("fixture state pointer is cleared");
@@ -168,40 +170,9 @@ double integer_sum(const cpp11::integers& value) {
   return state->value;
 }
 
-[[cpp11::register]] int fixture_read(
-    cpp11::external_pointer<FixtureState> state) {
-  if (state.get() == nullptr) {
-    cpp11::stop("fixture state pointer is cleared");
-  }
-  return state->value;
-}
-
 [[cpp11::register]] void fixture_error(double trigger) {
   (void)trigger;
   cpp11::stop("fixture error");
-}
-
-[[cpp11::register]] cpp11::list fixture_outputs() {
-  cpp11::writable::doubles numeric({1.5, cpp11::na<double>()});
-  cpp11::writable::strings string(2);
-  string[0] = cpp11::r_string("cpp11");
-  string[1] = cpp11::na<cpp11::r_string>();
-  cpp11::writable::raws raw(3);
-  raw[0] = static_cast<Rbyte>(1);
-  raw[1] = static_cast<Rbyte>(2);
-  raw[2] = static_cast<Rbyte>(3);
-  cpp11::writable::logicals logical(3);
-  logical[0] = cpp11::r_bool(false);
-  logical[1] = cpp11::r_bool(true);
-  logical[2] = cpp11::na<cpp11::r_bool>();
-  cpp11::writable::list nested({"value"_nm = cpp11::as_sexp(7)});
-  return cpp11::writable::list({
-      "numeric"_nm = numeric,
-      "string"_nm = string,
-      "raw"_nm = raw,
-      "logical"_nm = logical,
-      "list"_nm = nested,
-  });
 }
 
 [[cpp11::register]] double boundary_zero() { return 1.0; }

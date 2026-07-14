@@ -1,0 +1,3 @@
+useDynLib(zigrSavvy, .registration = TRUE)
+exportPattern("^fixture_")
+

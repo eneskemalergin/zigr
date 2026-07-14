@@ -1,6 +1,7 @@
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern SEXP c_call_bench_vectorsum(SEXP);
@@ -272,6 +273,200 @@ static SEXP c_boundary_schema(SEXP value) {
     return value;
 }
 
+typedef struct {
+    int value;
+} c_p4_fixture_state;
+
+static SEXP c_p4_fixture_tag_symbol = NULL;
+
+static SEXP c_p4_fixture_tag(void) {
+    if (c_p4_fixture_tag_symbol == NULL) c_p4_fixture_tag_symbol = Rf_install("zigr.p4.c.fixture.state");
+    return c_p4_fixture_tag_symbol;
+}
+
+static void c_p4_set_names(SEXP value, const char *const *names, R_xlen_t length) {
+    SEXP name_vector = PROTECT(Rf_allocVector(STRSXP, length));
+    for (R_xlen_t index = 0; index < length; ++index) {
+        SET_STRING_ELT(name_vector, index, Rf_mkCharCE(names[index], CE_UTF8));
+    }
+    Rf_setAttrib(value, R_NamesSymbol, name_vector);
+    UNPROTECT(1);
+}
+
+static SEXP c_p4_fixture_zero(void) {
+    return Rf_ScalarInteger(1);
+}
+
+static SEXP c_p4_fixture_scalar(SEXP value) {
+    return c_fixture_scalar(value);
+}
+
+static SEXP c_p4_fixture_numeric(SEXP value) {
+    if (TYPEOF(value) != REALSXP) Rf_error("numeric fixture expected a double vector");
+    const R_xlen_t length = XLENGTH(value);
+    SEXP result = PROTECT(Rf_allocVector(REALSXP, length));
+    const double *source = REAL(value);
+    double *destination = REAL(result);
+    for (R_xlen_t index = 0; index < length; ++index) destination[index] = source[index] * 2.0;
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_fixture_altrep_integer(SEXP value) {
+    if (TYPEOF(value) != INTSXP) Rf_error("ALTREP fixture expected an integer vector");
+    const R_xlen_t length = XLENGTH(value);
+    int buffer[4096];
+    R_xlen_t offset = 0;
+    double total = 0.0;
+    while (offset < length) {
+        const R_xlen_t requested = (length - offset) < 4096 ? length - offset : 4096;
+        const R_xlen_t received = INTEGER_GET_REGION(value, offset, requested, buffer);
+        if (received == 0) Rf_error("ALTREP fixture could not read an integer region");
+        for (R_xlen_t index = 0; index < received; ++index) total += buffer[index];
+        offset += received;
+    }
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_p4_fixture_strings(SEXP value) {
+    if (TYPEOF(value) != STRSXP) Rf_error("string fixture expected a character vector");
+    int count = 0;
+    for (R_xlen_t index = 0; index < XLENGTH(value); ++index) {
+        if (STRING_ELT(value, index) != R_NaString) ++count;
+    }
+    return Rf_ScalarInteger(count);
+}
+
+static SEXP c_p4_fixture_raw(SEXP value) {
+    if (TYPEOF(value) != RAWSXP) Rf_error("raw fixture expected a raw vector");
+    const R_xlen_t length = XLENGTH(value);
+    SEXP result = PROTECT(Rf_allocVector(RAWSXP, length));
+    memcpy(RAW(result), RAW(value), (size_t) length);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_fixture_complex(SEXP value) {
+    if (TYPEOF(value) != CPLXSXP) Rf_error("complex fixture expected a complex vector");
+    const R_xlen_t length = XLENGTH(value);
+    SEXP result = PROTECT(Rf_allocVector(CPLXSXP, length));
+    memcpy(COMPLEX(result), COMPLEX(value), (size_t) length * sizeof(Rcomplex));
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_fixture_logical_counts(SEXP value) {
+    static const char *const names[] = {"false", "true", "missing"};
+    if (TYPEOF(value) != LGLSXP) Rf_error("logical fixture expected a logical vector");
+    int counts[3] = {0, 0, 0};
+    for (R_xlen_t index = 0; index < XLENGTH(value); ++index) {
+        const int element = LOGICAL_ELT(value, index);
+        if (element == NA_LOGICAL) {
+            ++counts[2];
+        } else if (element) {
+            ++counts[1];
+        } else {
+            ++counts[0];
+        }
+    }
+    SEXP result = PROTECT(Rf_allocVector(INTSXP, 3));
+    memcpy(INTEGER(result), counts, sizeof(counts));
+    c_p4_set_names(result, names, 3);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_fixture_schema(SEXP value) {
+    return c_boundary_schema(value);
+}
+
+static void c_p4_fixture_state_finalizer(SEXP pointer) {
+    c_p4_fixture_state *state = (c_p4_fixture_state *) R_ExternalPtrAddr(pointer);
+    if (state == NULL) return;
+    R_ClearExternalPtr(pointer);
+    free(state);
+}
+
+static SEXP c_p4_fixture_new(void) {
+    SEXP result = PROTECT(R_MakeExternalPtr(NULL, c_p4_fixture_tag(), R_NilValue));
+    c_p4_fixture_state *state = (c_p4_fixture_state *) malloc(sizeof(c_p4_fixture_state));
+    if (state == NULL) Rf_error("native state allocation failed");
+    state->value = 0;
+    R_SetExternalPtrAddr(result, state);
+    R_RegisterCFinalizerEx(result, c_p4_fixture_state_finalizer, TRUE);
+    UNPROTECT(1);
+    return result;
+}
+
+static c_p4_fixture_state *c_p4_fixture_state_pointer(SEXP receiver) {
+    if (TYPEOF(receiver) != EXTPTRSXP || R_ExternalPtrAddr(receiver) == NULL) {
+        Rf_error("fixture state expected a live external pointer");
+    }
+    if (R_ExternalPtrTag(receiver) != c_p4_fixture_tag()) {
+        Rf_error("fixture state external pointer has the wrong tag");
+    }
+    return (c_p4_fixture_state *) R_ExternalPtrAddr(receiver);
+}
+
+static SEXP c_p4_fixture_method(SEXP receiver, SEXP amount) {
+    if (TYPEOF(amount) != INTSXP || XLENGTH(amount) != 1 || INTEGER(amount)[0] == NA_INTEGER) {
+        Rf_error("fixture method expected one non-missing integer");
+    }
+    c_p4_fixture_state *state = c_p4_fixture_state_pointer(receiver);
+    state->value += INTEGER(amount)[0];
+    return Rf_ScalarInteger(state->value);
+}
+
+static SEXP c_p4_fixture_read(SEXP receiver) {
+    return Rf_ScalarInteger(c_p4_fixture_state_pointer(receiver)->value);
+}
+
+static SEXP c_p4_fixture_error(SEXP trigger) {
+    if (TYPEOF(trigger) != REALSXP || XLENGTH(trigger) != 1) {
+        Rf_error("error trigger expected one REAL value");
+    }
+    Rf_error("fixture error");
+    return R_NilValue;
+}
+
+static SEXP c_p4_fixture_outputs(void) {
+    static const char *const output_names[] = {"numeric", "string", "raw", "complex", "logical", "list"};
+    static const char *const nested_names[] = {"value"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 6));
+    SEXP numeric = PROTECT(Rf_allocVector(REALSXP, 2));
+    SEXP string = PROTECT(Rf_allocVector(STRSXP, 1));
+    SEXP raw = PROTECT(Rf_allocVector(RAWSXP, 3));
+    SEXP complex = PROTECT(Rf_allocVector(CPLXSXP, 2));
+    SEXP logical = PROTECT(Rf_allocVector(LGLSXP, 3));
+    SEXP nested = PROTECT(Rf_allocVector(VECSXP, 1));
+
+    REAL(numeric)[0] = 1.5;
+    REAL(numeric)[1] = NA_REAL;
+    SET_STRING_ELT(string, 0, Rf_mkCharCE("fixture", CE_UTF8));
+    RAW(raw)[0] = 1;
+    RAW(raw)[1] = 2;
+    RAW(raw)[2] = 3;
+    COMPLEX(complex)[0].r = 1.0;
+    COMPLEX(complex)[0].i = 2.0;
+    COMPLEX(complex)[1].r = NA_REAL;
+    COMPLEX(complex)[1].i = NA_REAL;
+    LOGICAL(logical)[0] = FALSE;
+    LOGICAL(logical)[1] = TRUE;
+    LOGICAL(logical)[2] = NA_LOGICAL;
+    SET_VECTOR_ELT(nested, 0, Rf_ScalarInteger(7));
+    c_p4_set_names(nested, nested_names, 1);
+
+    SET_VECTOR_ELT(result, 0, numeric);
+    SET_VECTOR_ELT(result, 1, string);
+    SET_VECTOR_ELT(result, 2, raw);
+    SET_VECTOR_ELT(result, 3, complex);
+    SET_VECTOR_ELT(result, 4, logical);
+    SET_VECTOR_ELT(result, 5, nested);
+    c_p4_set_names(result, output_names, 6);
+    UNPROTECT(7);
+    return result;
+}
+
 static const R_CallMethodDef CallEntries[] = {
   {"c_call_bench_vectorsum",        (DL_FUNC) &c_call_bench_vectorsum,        1},
   {"c_call_bench_elem_ops",         (DL_FUNC) &c_call_bench_elem_ops,         1},
@@ -339,6 +534,20 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_boundary_raw",                  (DL_FUNC) &c_boundary_raw,                  1},
   {"c_boundary_complex",              (DL_FUNC) &c_boundary_complex,              1},
   {"c_boundary_schema",               (DL_FUNC) &c_boundary_schema,               1},
+  {"c_p4_fixture_zero",               (DL_FUNC) &c_p4_fixture_zero,               0},
+  {"c_p4_fixture_scalar",             (DL_FUNC) &c_p4_fixture_scalar,             1},
+  {"c_p4_fixture_numeric",            (DL_FUNC) &c_p4_fixture_numeric,            1},
+  {"c_p4_fixture_altrep_integer",     (DL_FUNC) &c_p4_fixture_altrep_integer,     1},
+  {"c_p4_fixture_strings",            (DL_FUNC) &c_p4_fixture_strings,            1},
+  {"c_p4_fixture_raw",                (DL_FUNC) &c_p4_fixture_raw,                1},
+  {"c_p4_fixture_complex",            (DL_FUNC) &c_p4_fixture_complex,            1},
+  {"c_p4_fixture_logical_counts",     (DL_FUNC) &c_p4_fixture_logical_counts,     1},
+  {"c_p4_fixture_schema",             (DL_FUNC) &c_p4_fixture_schema,             1},
+  {"c_p4_fixture_new",                (DL_FUNC) &c_p4_fixture_new,                0},
+  {"c_p4_fixture_method",             (DL_FUNC) &c_p4_fixture_method,             2},
+  {"c_p4_fixture_read",               (DL_FUNC) &c_p4_fixture_read,               1},
+  {"c_p4_fixture_error",              (DL_FUNC) &c_p4_fixture_error,              1},
+  {"c_p4_fixture_outputs",            (DL_FUNC) &c_p4_fixture_outputs,            0},
   {NULL, NULL, 0}
 };
 

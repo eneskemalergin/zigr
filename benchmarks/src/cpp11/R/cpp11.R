@@ -36,24 +36,16 @@ fixture_schema <- function(value) {
   .Call(`_zigrCpp11_fixture_schema`, value)
 }
 
-fixture_new <- function() {
-  .Call(`_zigrCpp11_fixture_new`)
+diagnostic_state_new <- function() {
+  .Call(`_zigrCpp11_diagnostic_state_new`)
 }
 
-fixture_method <- function(state, amount) {
-  .Call(`_zigrCpp11_fixture_method`, state, amount)
-}
-
-fixture_read <- function(state) {
-  .Call(`_zigrCpp11_fixture_read`, state)
+diagnostic_state_method <- function(state, amount) {
+  .Call(`_zigrCpp11_diagnostic_state_method`, state, amount)
 }
 
 fixture_error <- function(trigger) {
   invisible(.Call(`_zigrCpp11_fixture_error`, trigger))
-}
-
-fixture_outputs <- function() {
-  .Call(`_zigrCpp11_fixture_outputs`)
 }
 
 boundary_zero <- function() {

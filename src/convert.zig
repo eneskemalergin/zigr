@@ -569,7 +569,7 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
     var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, len));
     defer vec.deinit();
     for (0..@as(usize, @intCast(len))) |i| {
-        R.SET_VECTOR_ELT(vec.get(), @intCast(i), slice[i]);
+        _ = R.SET_VECTOR_ELT(vec.get(), @intCast(i), slice[i]);
     }
     return vec.get();
 }

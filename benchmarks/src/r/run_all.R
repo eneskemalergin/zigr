@@ -255,6 +255,119 @@ r_boundary_schema <- function(x) {
 r_boundary_external_method <- function(receiver, amount) as.integer(amount)
 r_boundary_external <- function(x) as.double(x + 1.0)
 
+# P4 first-wave fixtures. These functions are authored R implementations of
+# the declared kernels. Vectorized alternatives are kept under separate names.
+r_fixture_zero <- function() 1L
+
+r_fixture_scalar <- function(x) {
+  if (typeof(x) != "double" || length(x) != 1L) stop("scalar expected one REAL value")
+  if (is.na(x) && !is.nan(x)) stop("scalar expected a non-missing REAL value")
+  x
+}
+
+r_fixture_numeric <- function(x) {
+  if (typeof(x) != "double") stop("numeric fixture expected a double vector")
+  result <- numeric(length(x))
+  for (index in seq_len(length(x))) result[[index]] <- x[[index]] * 2.0
+  result
+}
+
+r_fixture_altrep_integer <- function(x) {
+  if (typeof(x) != "integer") stop("ALTREP fixture expected an integer vector")
+  total <- 0.0
+  for (index in seq_len(length(x))) total <- total + x[[index]]
+  total
+}
+
+r_fixture_strings <- function(x) {
+  if (typeof(x) != "character") stop("string fixture expected a character vector")
+  count <- 0L
+  for (index in seq_len(length(x))) {
+    if (!is.na(x[[index]])) count <- count + 1L
+  }
+  count
+}
+
+r_fixture_raw <- function(x) {
+  if (typeof(x) != "raw") stop("raw fixture expected a raw vector")
+  result <- raw(length(x))
+  for (index in seq_len(length(x))) result[[index]] <- x[[index]]
+  result
+}
+
+r_fixture_complex <- function(x) {
+  if (typeof(x) != "complex") stop("complex fixture expected a complex vector")
+  result <- complex(length(x))
+  for (index in seq_len(length(x))) result[[index]] <- x[[index]]
+  result
+}
+
+r_fixture_logical_counts <- function(x) {
+  if (typeof(x) != "logical") stop("logical fixture expected a logical vector")
+  result <- integer(3L)
+  for (index in seq_len(length(x))) {
+    value <- x[[index]]
+    if (is.na(value)) {
+      result[[3L]] <- result[[3L]] + 1L
+    } else if (value) {
+      result[[2L]] <- result[[2L]] + 1L
+    } else {
+      result[[1L]] <- result[[1L]] + 1L
+    }
+  }
+  names(result) <- c("false", "true", "missing")
+  result
+}
+
+r_fixture_schema <- function(x) {
+  fields <- c("id", "count", "ratio", "enabled")
+  if (typeof(x) != "list" || length(x) != 4L || !identical(attributes(x), list(names = fields))) stop("fixed schema expected names only")
+  if (!is.integer(x[[1L]]) || length(x[[1L]]) != 1L || is.na(x[[1L]])) stop("fixed schema expected a non-missing integer id")
+  if (!is.integer(x[[2L]]) || length(x[[2L]]) != 1L || is.na(x[[2L]])) stop("fixed schema expected a non-missing integer count")
+  if (!is.double(x[[3L]]) || length(x[[3L]]) != 1L || (is.na(x[[3L]]) && !is.nan(x[[3L]]))) stop("fixed schema expected a non-missing real ratio")
+  if (!is.logical(x[[4L]]) || length(x[[4L]]) != 1L || is.na(x[[4L]])) stop("fixed schema expected a non-missing logical enabled")
+  x
+}
+
+r_fixture_error <- function(trigger) {
+  if (typeof(trigger) != "double" || length(trigger) != 1L) stop("error trigger expected one REAL value")
+  stop("fixture error")
+}
+
+r_fixture_outputs <- function() {
+  numeric_output <- numeric(2L)
+  numeric_output[[1L]] <- 1.5
+  numeric_output[[2L]] <- NA_real_
+  string_output <- character(1L)
+  string_output[[1L]] <- "fixture"
+  raw_output <- raw(3L)
+  raw_output[[1L]] <- as.raw(1L)
+  raw_output[[2L]] <- as.raw(2L)
+  raw_output[[3L]] <- as.raw(3L)
+  complex_output <- complex(2L)
+  complex_output[[1L]] <- 1.0 + 2.0i
+  complex_output[[2L]] <- NA_complex_
+  logical_output <- logical(3L)
+  logical_output[[1L]] <- FALSE
+  logical_output[[2L]] <- TRUE
+  logical_output[[3L]] <- NA
+  nested_output <- vector("list", 1L)
+  nested_output[[1L]] <- 7L
+  names(nested_output) <- "value"
+  result <- vector("list", 6L)
+  result[[1L]] <- numeric_output
+  result[[2L]] <- string_output
+  result[[3L]] <- raw_output
+  result[[4L]] <- complex_output
+  result[[5L]] <- logical_output
+  result[[6L]] <- nested_output
+  names(result) <- c("numeric", "string", "raw", "complex", "logical", "list")
+  result
+}
+
+r_optimized_fixture_numeric <- function(x) x * 2.0
+r_optimized_fixture_altrep_integer <- function(x) as.double(sum(x))
+
 # Four passes keep cache setup visible instead of hiding it in repetition.
 r_string_total <- function(x) as.integer(sum(nchar(x, type = "bytes"), na.rm = TRUE))
 r_string_cache_build <- function(x) as.integer(length(x))

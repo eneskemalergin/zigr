@@ -1,0 +1,16 @@
+[package]
+name = "zigr_extendr"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+extendr-api = "=0.9.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+

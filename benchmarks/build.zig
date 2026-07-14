@@ -94,6 +94,23 @@ pub fn build(b: *std.Build) void {
         .dest_sub_path = b.fmt("zigr_benchmarks{s}", .{shared_lib_ext}),
     }).step);
 
+    const fixture_static_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "zigrFixture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/zig/fixture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "R", .module = r_mod },
+                .{ .name = "zigr", .module = zigr_mod },
+            },
+        }),
+    });
+    fixture_static_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
+    fixture_static_lib.root_module.linkSystemLibrary("R", .{});
+    b.getInstallStep().dependOn(&b.addInstallArtifact(fixture_static_lib, .{}).step);
+
     const task12_lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zigr_benchmarks_task28",

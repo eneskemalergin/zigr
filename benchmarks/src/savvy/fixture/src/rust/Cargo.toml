@@ -1,0 +1,26 @@
+[package]
+name = "zigr_savvy"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[[bin]]
+name = "generate"
+path = "src/generate.rs"
+required-features = ["generator"]
+
+[features]
+generator = ["dep:savvy-bindgen"]
+
+[dependencies]
+savvy = { version = "=0.10.2", features = ["altrep", "complex"] }
+savvy-bindgen = { version = "=0.10.2", optional = true }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+

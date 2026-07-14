@@ -1,0 +1,6 @@
+OBJECTS = fixture.o
+ZIGR_FIXTURE = ../../../../zig-out/lib/libzigrFixture.a
+PKG_LIBS = -Wl,--whole-archive $(ZIGR_FIXTURE) -Wl,--no-whole-archive -ldl -lm
+
+$(SHLIB): $(ZIGR_FIXTURE)
+

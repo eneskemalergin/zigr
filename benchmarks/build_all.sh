@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 Rscript tests/test_evidence_schema.R
 Rscript tests/test_harness_trust.R
 Rscript tests/test_source_ledger.R
+Rscript tests/test_product_fixtures.R
 
 ZIG_BIN=${ZIG:-}
 if [ -z "$ZIG_BIN" ]; then
@@ -75,6 +76,15 @@ make -C src/extendr
 echo "=== Savvy (Rust) ==="
 make -C src/savvy
 
+echo "=== Normalized product fixtures ==="
+FIXTURE_LIBRARY="$SCRIPT_DIR/tmp/fixture-library"
+mkdir -p "$FIXTURE_LIBRARY"
+for FIXTURE_PATH in src/zig/fixture src/cpp/fixture src/extendr/fixture src/savvy/fixture; do
+  R CMD INSTALL --preclean --clean --no-multiarch \
+    --library="$FIXTURE_LIBRARY" "$FIXTURE_PATH"
+done
+Rscript tests/test_product_fixtures.R --live
+
 echo "=== Done ==="
 echo ""
 echo "Built runners:"
@@ -84,4 +94,8 @@ ls -lh zig-out/lib/zigr_benchmarks.so \
       tmp/cpp11-library/zigrCpp11/libs/zigrCpp11.so \
       src/extendr/extendr_benchmarks.so \
       src/savvy/savvy_benchmarks.so \
+      tmp/fixture-library/zigrFixture/libs/zigrFixture.so \
+      tmp/fixture-library/zigrRcpp/libs/zigrRcpp.so \
+      tmp/fixture-library/zigrExtendr/libs/zigrExtendr.so \
+      tmp/fixture-library/zigrSavvy/libs/zigrSavvy.so \
       2>/dev/null
