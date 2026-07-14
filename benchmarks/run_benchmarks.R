@@ -8,17 +8,21 @@ source("lib/source_ledger.R")
 source("lib/environment_manifest.R")
 source("lib/input_contract.R")
 source("lib/r_provenance.R")
+source("lib/product_fixtures.R")
+source("lib/fixture_measurement.R")
 
 args <- commandArgs(trailingOnly = TRUE)
 runners_filter <- NULL
 tasks_filter   <- NULL
 do_build       <- FALSE
+correctness_only <- FALSE
 run_dir_arg    <- NULL
 master_seed    <- benchmark_master_seed()
 for (a in args) {
   if (grepl("^--runners=", a)) runners_filter <- strsplit(sub("^--runners=", "", a), ",")[[1]]
   if (grepl("^--tasks=", a))  tasks_filter  <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
   if (a == "--build")         do_build      <- TRUE
+  if (a == "--correctness-only") correctness_only <- TRUE
   if (grepl("^--run-dir=", a)) run_dir_arg <- sub("^--run-dir=", "", a)
   if (grepl("^--seed=", a)) master_seed <- input_scalar_integer(sub("^--seed=", "", a), "master seed")
 }
@@ -100,17 +104,25 @@ run_metadata <- list(
   timing_policy = benchmark_timing_policy(),
   boundary_budget_policy_version = boundary_budget_policy_version(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
+  measurement_mode = if (correctness_only) "correctness_only" else "timed",
   command = commandArgs()
 )
 write_run_manifest(run_dir, run_metadata)
 run_complete <- FALSE
 run_error <- NULL
-on.exit({
+previous_error_handler <- getOption("error")
+mark_run_incomplete <- function() {
   if (!run_complete) {
     message <- if (is.null(run_error)) geterrmessage() else run_error
     try(update_run_manifest(run_dir, "incomplete", message), silent = TRUE)
   }
-}, add = TRUE)
+}
+options(error = function() {
+  mark_run_incomplete()
+  options(error = previous_error_handler)
+  if (is.function(previous_error_handler)) previous_error_handler()
+  quit(save = "no", status = 1L, runLast = FALSE)
+})
 
 input_manifest_path <- file.path(run_dir, run_metadata$input_manifest$relative_path)
 prepare_args <- c(
@@ -175,7 +187,7 @@ run_metadata$environment <- capture_environment_manifest(
 validate_environment_manifest(run_metadata$environment)
 write_run_manifest(run_dir, run_metadata)
 
-runner_process_args <- function(runner_name, validation_only = FALSE) {
+runner_process_args <- function(runner_name, validation_only = FALSE, validation_output = NULL) {
   runner_args <- c(
     "runner_subprocess.R",
     sprintf("--runner=%s", runner_name),
@@ -184,22 +196,94 @@ runner_process_args <- function(runner_name, validation_only = FALSE) {
     sprintf("--expected-input-manifest-digest=%s", run_metadata$input_manifest$digest),
     sprintf("--master-seed=%d", master_seed)
   )
-  if (validation_only) runner_args <- c(runner_args, "--validation-only")
+  if (validation_only) {
+    runner_args <- c(runner_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
+  }
   if (!is.null(tasks_filter)) {
     runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
   }
   runner_args
 }
 
+fixture_process_args <- function(runner_name, validation_only = FALSE, validation_output = NULL) {
+  fixture_args <- c(
+    "fixture_subprocess.R",
+    sprintf("--runner=%s", runner_name),
+    sprintf("--run-dir=%s", run_dir)
+  )
+  if (validation_only) {
+    fixture_args <- c(fixture_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
+  }
+  fixture_args
+}
+
 cat("Trust and correctness preflight\n")
+correctness_root <- file.path(run_dir, "correctness")
+task_correctness_root <- file.path(correctness_root, "tasks")
+fixture_correctness_root <- file.path(correctness_root, "fixtures")
 for (rn in names(all_runners)) {
-  code <- system2("Rscript", args = runner_process_args(rn, validation_only = TRUE), env = blas_env, stdout = "", stderr = "")
+  code <- system2(
+    "Rscript",
+    args = fixture_process_args(
+      rn, validation_only = TRUE, validation_output = file.path(fixture_correctness_root, paste0(rn, ".csv"))
+    ),
+    env = blas_env, stdout = "", stderr = ""
+  )
+  if (code != 0L) {
+    run_error <- sprintf("fixture validation preflight failed for %s with exit code %d", rn, code)
+    stop(run_error)
+  }
+}
+for (rn in names(all_runners)) {
+  code <- system2(
+    "Rscript",
+    args = runner_process_args(
+      rn, validation_only = TRUE, validation_output = file.path(task_correctness_root, paste0(rn, ".csv"))
+    ),
+    env = blas_env, stdout = "", stderr = ""
+  )
   if (code != 0L) {
     run_error <- sprintf("runner validation preflight failed for %s with exit code %d", rn, code)
     stop(run_error)
   }
 }
 cat("\n")
+
+correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
+validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
+
+run_metadata$correctness_stage <- c(list(
+  completed_at = run_manifest_timestamp(),
+  fixture_runners = sort(names(all_runners)),
+  task_runners = sort(names(all_runners)),
+  tasks = as.list(selected_tasks),
+  source_tree_digest = as.character(run_metadata$environment$source_tree$digest),
+  source_ledger_identity_digest = as.character(run_metadata$environment$tool_source_ledger$identity_digest)
+), correctness_evidence)
+write_run_manifest(run_dir, run_metadata)
+
+if (correctness_only) {
+  validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
+  run_metadata$status <- "correctness_complete"
+  write_run_manifest(run_dir, run_metadata)
+  run_complete <- TRUE
+  options(error = previous_error_handler)
+  cat("Correctness-only stage completed without timing artifacts.\n")
+  quit(save = "no", status = 0L, runLast = FALSE)
+}
+
+cat("Normalized fixture measurement\n")
+for (rn in names(all_runners)) {
+  code <- system2("Rscript", args = fixture_process_args(rn), env = blas_env, stdout = "", stderr = "")
+  if (code != 0L) {
+    runner_failures <- c(runner_failures, sprintf("fixture-%s:%d", rn, code))
+  }
+}
+cat("\n")
+if (length(runner_failures) > 0L) {
+  run_error <- sprintf("fixture measurement subprocesses failed: %s", paste(runner_failures, collapse = ", "))
+  stop(run_error)
+}
 
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
@@ -218,27 +302,12 @@ if (length(runner_failures) > 0L) {
   stop(run_error)
 }
 
+validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
 validate_run_artifacts(run_dir, run_metadata)
+validate_fixture_measurement_artifacts(run_dir, run_metadata, evidence)
+validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
 update_run_manifest(run_dir, "complete")
-
-if (is.null(runners_filter) && is.null(tasks_filter)) {
-  cat("Comparative metrics\n")
-  code <- system2("Rscript", args = c("export_comparative_metrics.R", sprintf("--run-dir=%s", run_dir)),
-                  stdout = "", stderr = "")
-  if (code != 0) {
-    run_error <- sprintf("comparative metrics export failed with exit code %d", code)
-    stop(run_error)
-  }
-  code <- system2("Rscript", args = c("export_boundary_metrics.R", sprintf("--run-dir=%s", run_dir)),
-                  stdout = "", stderr = "")
-  if (code != 0) {
-    run_error <- sprintf("boundary metrics export failed with exit code %d", code)
-    stop(run_error)
-  }
-  cat("\n")
-} else {
-  cat("Skipping comparative export for filtered benchmark runs.\n\n")
-}
-
 run_complete <- TRUE
+options(error = previous_error_handler)
+cat("Report generation is deferred to the separate P4.7 stage.\n")
 cat("Done.\n")

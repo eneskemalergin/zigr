@@ -12,6 +12,7 @@ source(file.path(root_dir, "lib", "task_manifest.R"))
 source(file.path(root_dir, "lib", "input_contract.R"))
 source(file.path(root_dir, "lib", "r_provenance.R"))
 source(file.path(root_dir, "lib", "source_ledger.R"))
+source(file.path(root_dir, "lib", "environment_manifest.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 
 run_dir <- normalizePath(run_dir, mustWork = FALSE)

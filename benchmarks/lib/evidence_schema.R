@@ -1,6 +1,6 @@
 evidence_schema_vocabulary <- function() {
   list(
-    version = "p4.5-2026-07-13-r2",
+    version = "p4.6-2026-07-14-r1",
     runners = c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"),
     fixtures = sprintf("F%02d", seq_len(12L)),
     dispositions = c(
@@ -397,7 +397,17 @@ hydrate_detailed_task_evidence <- function(rows) {
     rows$contract_version[[index]] <- evidence_task_contract_version(task_id)
     rows$fixture_version[[index]] <- "p4.5-task-input-v2"
     rows$comparison_group[[index]] <- paste0("task:", task_id)
-    rows$timing_eligible[[index]] <- FALSE
+    rows$timing_eligible[[index]] <- isTRUE(rows$executable[[index]])
+  }
+  rows
+}
+
+hydrate_fixture_measurement_evidence <- function(rows) {
+  for (index in seq_len(nrow(rows))) {
+    admitted <- isTRUE(rows$executable[[index]]) &&
+      !identical(as.character(rows$fixture[[index]]), "F11")
+    rows$timing_eligible[[index]] <- admitted
+    rows$setup_policy[[index]] <- if (admitted) "setup_outside_timer" else "not_timed"
   }
   rows
 }
@@ -617,7 +627,13 @@ validate_evidence_rows <- function(rows, label = "evidence") {
       rows$path_kind != "none" | rows$comparison_tier != "gap" | rows$timing_eligible
   )
   if (any(gap_shape)) stop(sprintf("%s has a non-executable cell that is not a complete gap record", label))
-  if (any(rows$timing_eligible & (!rows$executable | rows$status == "fixture_invalid" | rows$evidence_use == "gap"))) {
+  invalid_diagnostic_timing <- rows$timing_eligible & rows$status == "fixture_invalid" & !(
+    rows$implementation_role == "language_control" &
+      rows$evidence_use == "diagnostic_control" &
+      rows$comparison_tier == "tier_d"
+  )
+  if (any(rows$timing_eligible & (!rows$executable | rows$evidence_use == "gap")) ||
+      any(invalid_diagnostic_timing)) {
     stop(sprintf("%s has timing eligibility without valid executable evidence", label))
   }
   if (any(rows$comparison_tier %in% c("tier_a", "tier_b") & !product_rows)) {
@@ -702,6 +718,7 @@ validate_and_expand_evidence_manifest <- function(raw, task_manifest) {
   task_rows <- evidence_expand_groups(raw$task_dispositions, raw$task_defaults, "task", task_sets)
   task_rows <- hydrate_detailed_task_evidence(task_rows)
   fixture_rows <- evidence_expand_groups(raw$fixture_dispositions, raw$fixture_defaults, "fixture")
+  fixture_rows <- hydrate_fixture_measurement_evidence(fixture_rows)
   validate_evidence_rows(task_rows, "task evidence")
   validate_evidence_rows(fixture_rows, "fixture evidence")
   validate_evidence_coverage(task_rows, runners, task_sets$all_tasks, "task")

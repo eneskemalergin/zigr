@@ -90,6 +90,16 @@ source_tree_identity <- function(root_dir) {
   )
 }
 
+validate_source_tree_identity <- function(root_dir, recorded) {
+  actual <- source_tree_identity(root_dir)
+  for (field in c("method", "digest", "file_count")) {
+    if (!identical(as.character(actual[[field]]), as.character(recorded[[field]]))) {
+      stop(sprintf("source tree identity field %s differs from the recorded run", field))
+    }
+  }
+  invisible(actual)
+}
+
 shared_library_metadata <- function(root_dir, relative_path) {
   relative_path <- environment_scalar(relative_path)
   if (!nzchar(relative_path)) return(list(configured = FALSE))
@@ -155,6 +165,14 @@ runner_environment_metadata <- function(root_dir, runners, tool_source_ledger) {
       dependency_digest = as.character(ledger_record$dependency_digest),
       artifact_dependency_digest = as.character(ledger_record$artifact_dependencies$digest),
       source_ledger_identity_digest = as.character(tool_source_ledger$identity_digest),
+      fixture_source_digest = as.character(ledger_record$fixture$source_identity$digest),
+      fixture_build_digest = as.character(ledger_record$fixture$build_digest),
+      fixture_generated_glue_kind = as.character(ledger_record$fixture$generated_glue$kind),
+      fixture_generated_glue_digest = as.character(ledger_record$fixture$generated_glue$identity$digest),
+      fixture_artifact_paths = ledger_record$fixture$artifact_identity$paths,
+      fixture_artifact_digest = as.character(ledger_record$fixture$artifact_identity$digest),
+      fixture_dependency_digest = as.character(ledger_record$fixture$dependency_digest),
+      fixture_artifact_dependency_digest = as.character(ledger_record$fixture$artifact_dependencies$digest),
       artifact_path = artifact_paths[[1L]],
       artifact_paths = as.list(artifact_paths),
       artifact_digest = absolute_file_identity_digest(artifact_paths, sprintf("%s artifacts", runner_name)),
@@ -197,6 +215,19 @@ validate_runner_artifact_identity <- function(root_dir, runner_record) {
   )
   if (!identical(actual_glue, as.character(runner_record$generated_glue_digest))) {
     stop(sprintf("generated-glue drift detected for %s", runner_name))
+  }
+  invisible(runner_record)
+}
+
+validate_fixture_artifact_identity <- function(runner_record) {
+  runner_name <- as.character(runner_record$name)
+  paths <- as.character(unlist(runner_record$fixture_artifact_paths, use.names = FALSE))
+  if (length(paths) == 0L || any(!nzchar(paths))) {
+    stop(sprintf("runner %s has no normalized fixture artifact paths", runner_name))
+  }
+  actual <- source_ledger_artifact_identity(paths)
+  if (!identical(as.character(actual$digest), as.character(runner_record$fixture_artifact_digest))) {
+    stop(sprintf("fixture artifact drift detected for runner %s", runner_name))
   }
   invisible(runner_record)
 }

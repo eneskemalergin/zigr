@@ -230,6 +230,16 @@ expect_error(
 
 gap <- list(executable = FALSE, reason = "source-backed product gap")
 validate_summary_disposition("N/A", "NOT_APPLICABLE", gap, gap$reason, "cpp11", "fixture_task")
+validate_timing_admission(
+  list(executable = TRUE, timing_eligible = TRUE), "zigr", "fixture_task"
+)
+expect_error(
+  "timing without normalized admission",
+  validate_timing_admission(
+    list(executable = TRUE, timing_eligible = FALSE), "zigr", "fixture_task"
+  ),
+  "not admitted for timing"
+)
 expect_error(
   "runner-specific N/A on executable row",
   validate_summary_disposition("N/A", "NOT_APPLICABLE", list(executable = TRUE, reason = ""), "", "zigr", "fixture_task"),
@@ -286,10 +296,29 @@ expect_error(
 )
 
 validate_forced_registration(FALSE, "registered fixture")
+expect_true(
+  identical(evaluate_prepared_call(function() 42L), 42L) &&
+    identical(evaluate_prepared_call(quote(40L + 2L)), 42L),
+  "timing harness accepts prepared closures and legacy expressions"
+)
 expect_error(
   "wrong registration mode",
   validate_forced_registration(TRUE, "dynamic fixture"),
   "dynamic symbol lookup is enabled"
 )
+
+source_root <- normalizePath(file.path(root_dir, ".."))
+source_probe <- tempfile("source-identity-probe-", tmpdir = root_dir, fileext = ".R")
+on.exit(unlink(source_probe), add = TRUE)
+writeLines("probe <- 1L", source_probe)
+recorded_source <- source_tree_identity(source_root)
+validate_source_tree_identity(source_root, recorded_source)
+writeLines("probe <- 2L", source_probe)
+expect_error(
+  "source tree changed after run capture",
+  validate_source_tree_identity(source_root, recorded_source),
+  "source tree identity field digest differs"
+)
+unlink(source_probe)
 
 cat("Harness trust passed: deterministic inputs, phase isolation, R provenance, dispositions, registration, and identity drift.\n")

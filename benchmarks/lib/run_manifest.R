@@ -61,6 +61,13 @@ validate_summary_disposition <- function(status, correctness_status, disposition
   invisible(disposition)
 }
 
+validate_timing_admission <- function(disposition, runner, task) {
+  if (!isTRUE(disposition$executable) || !isTRUE(disposition$timing_eligible)) {
+    stop(sprintf("runner %s task %s is not admitted for timing", runner, task))
+  }
+  invisible(disposition)
+}
+
 benchmark_timing_policy <- function() {
   list(
     warmup_iterations = 10L,
@@ -249,6 +256,17 @@ validate_environment_manifest <- function(environment) {
       require_scalar(config, "dependency_digest", "runner dependency digest")
       require_scalar(config, "artifact_dependency_digest", "runner artifact dependency digest")
       require_scalar(config, "source_ledger_identity_digest", "runner source ledger identity")
+      require_scalar(config, "fixture_source_digest", "fixture source digest")
+      require_scalar(config, "fixture_build_digest", "fixture build digest")
+      require_scalar(config, "fixture_generated_glue_kind", "fixture generated-glue kind")
+      require_scalar(config, "fixture_generated_glue_digest", "fixture generated-glue digest")
+      require_scalar(config, "fixture_artifact_digest", "fixture artifact digest")
+      require_scalar(config, "fixture_dependency_digest", "fixture dependency digest")
+      require_scalar(config, "fixture_artifact_dependency_digest", "fixture artifact dependency digest")
+      fixture_artifact_paths <- run_manifest_values(config$fixture_artifact_paths)
+      if (length(fixture_artifact_paths) == 0L || any(!nzchar(fixture_artifact_paths))) {
+        stop("environment metadata missing fixture artifact paths")
+      }
     }
     require_scalar(config, "artifact_path", "runner artifact path")
     require_scalar(config, "artifact_digest", "runner artifact digest")
@@ -404,6 +422,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
     if (!identical(actual_artifact_digest, as.character(artifact$artifact_digest))) {
       stop(sprintf("artifact drift detected while completing runner %s", runner))
     }
+    validate_fixture_artifact_identity(artifact)
   }
   staging_dir <- file.path(run_dir, ".staging")
   if (dir.exists(staging_dir) && length(list.files(staging_dir, all.files = TRUE, no.. = TRUE, recursive = TRUE)) > 0L) {
@@ -412,7 +431,10 @@ validate_run_artifacts <- function(run_dir, metadata) {
 
   all_summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
   expected_files <- file.path(run_dir, paste0(expected_runners, "_summary.csv"))
-  allowed_derived_files <- file.path(run_dir, "analysis_summary.csv")
+  allowed_derived_files <- c(
+    file.path(run_dir, "analysis_summary.csv"),
+    file.path(run_dir, paste0("fixture_", expected_runners, "_summary.csv"))
+  )
   missing_files <- expected_files[!file.exists(expected_files)]
   unexpected_files <- setdiff(all_summary_files, c(expected_files, allowed_derived_files))
   if (length(missing_files) > 0L || length(unexpected_files) > 0L) {

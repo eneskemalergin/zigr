@@ -9,6 +9,7 @@ runner_name <- NA
 task_filter <- NULL
 check_only <- FALSE
 validation_only <- FALSE
+validation_output_arg <- NULL
 results_dir_arg <- NULL
 prepare_inputs_arg <- NULL
 input_manifest_arg <- NULL
@@ -19,6 +20,7 @@ for (a in cli) {
   if (grepl("^--tasks=", a))  task_filter <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
   if (a == "--check-only") check_only <- TRUE
   if (a == "--validation-only") validation_only <- TRUE
+  if (grepl("^--validation-output=", a)) validation_output_arg <- sub("^--validation-output=", "", a)
   if (grepl("^--results-dir=", a)) results_dir_arg <- sub("^--results-dir=", "", a)
   if (grepl("^--prepare-inputs=", a)) prepare_inputs_arg <- sub("^--prepare-inputs=", "", a)
   if (grepl("^--input-manifest=", a)) input_manifest_arg <- sub("^--input-manifest=", "", a)
@@ -29,6 +31,7 @@ for (a in cli) {
 }
 if (is.na(runner_name) && is.null(prepare_inputs_arg)) stop("--runner= required")
 if (is.na(runner_name)) runner_name <- "r"
+if (validation_only && is.null(validation_output_arg)) stop("--validation-output= is required with --validation-only")
 
 cfg_dir <- "runners"
 cfg_path <- file.path(cfg_dir, paste0(runner_name, ".json"))
@@ -990,6 +993,7 @@ for (task in all_tasks) {
         }
       } else if (!identical(correctness_status, "FAIL")) {
         correctness_status <- "PASS"
+        correctness_message <- "validated declared result contract"
       }
     }
   }
@@ -1015,8 +1019,21 @@ for (task in all_tasks) {
   if (validation_only) {
     n_pass <- n_pass + 1L
     cat(sprintf("  %-14s [VALIDATED] %s\n", tid, correctness_message))
+    results_list[[length(results_list) + 1L]] <- data.frame(
+      runner = runner_name, task = tid, status = "PASS",
+      call_type = task_call_type,
+      mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
+      sd_ms = NA, cv_pct = NA, rss_kb = NA,
+      cold_start_ms = NA, n_iterations = NA, error = NA_character_,
+      correctness_status = correctness_status,
+      correctness_policy = correctness_policy,
+      correctness_message = correctness_message,
+      stringsAsFactors = FALSE,
+      timing_summary_fields())
     next
   }
+
+  validate_timing_admission(disposition, runner_name, tid)
 
   # Do not retain large correctness results while timing the same input.
   native_eval <- NULL
@@ -1137,6 +1154,25 @@ for (task in all_tasks) {
 }
 
 if (validation_only) {
+  correctness <- do.call(rbind, results_list)
+  correctness$run_id <- run_id
+  correctness$source_tree_digest <- as.character(run_metadata$environment$source_tree$digest)
+  correctness$source_ledger_identity_digest <- as.character(
+    run_metadata$environment$tool_source_ledger$identity_digest
+  )
+  correctness$artifact_digest <- as.character(runner_environment$artifact_digest)
+  correctness$input_manifest_digest <- as.character(run_metadata$input_manifest$digest)
+  correctness <- correctness[, c(
+    "run_id", "runner", "task", "status", "correctness_status", "correctness_policy",
+    "correctness_message", "source_tree_digest", "source_ledger_identity_digest",
+    "artifact_digest", "input_manifest_digest"
+  )]
+  output_path <- normalizePath(validation_output_arg, mustWork = FALSE)
+  if (file.exists(output_path)) stop(sprintf("validation output already exists: %s", output_path))
+  staged_output <- paste0(output_path, ".tmp-", Sys.getpid())
+  on.exit(unlink(staged_output), add = TRUE)
+  write_csv(correctness, staged_output)
+  if (!file.rename(staged_output, output_path)) stop(sprintf("cannot promote validation output: %s", output_path))
   if (n_fail > 0L) stop(sprintf("runner %s failed validation for %d task(s)", runner_name, n_fail))
   cat(sprintf("Validation preflight passed for %s: %d executable and %d N/A task(s).\n", runner_name, n_pass, n_na))
   quit(save = "no", status = 0, runLast = FALSE)

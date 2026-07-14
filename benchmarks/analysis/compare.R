@@ -5,6 +5,7 @@ out_dir <- "analysis"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 summary_files <- Sys.glob(file.path(results_dir, "*_summary.csv"))
+summary_files <- summary_files[!grepl("^fixture_", basename(summary_files))]
 if (length(summary_files) == 0) stop("no summary CSVs found in ", results_dir)
 
 runners <- list()

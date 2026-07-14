@@ -47,6 +47,10 @@ make_call_expr <- function(cfun, args, call_type) {
   }
 }
 
+evaluate_prepared_call <- function(prepared) {
+  if (is.function(prepared)) prepared() else eval(prepared, envir = parent.frame())
+}
+
 timed_call <- function(prepare_call) {
   gc(full = TRUE)
   rss_before <- current_rss_kb()
@@ -58,7 +62,7 @@ timed_call <- function(prepare_call) {
   }
   error <- NA_character_
   wall_start <- get_nanotime()
-  tryCatch(eval(prepared$expression), error = function(e) { error <<- conditionMessage(e) })
+  tryCatch(evaluate_prepared_call(prepared$expression), error = function(e) { error <<- conditionMessage(e) })
   wall_end <- get_nanotime()
   gc(full = TRUE)
   rss_after <- current_rss_kb()
@@ -88,7 +92,7 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
     if (!isTRUE(prepared$ok)) return(list(error = paste("warmup input preparation failed:", prepared$error)))
     call_ok <- TRUE
     t0 <- get_nanotime()
-    tryCatch(eval(prepared$expression), error = function(error) {
+    tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
       call_ok <<- FALSE
     })
     t1 <- get_nanotime()
@@ -108,7 +112,7 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
       if (!isTRUE(prepared$ok)) return(list(error = paste("timed input preparation failed:", prepared$error)))
       call_error <- NULL
       t0 <- get_nanotime()
-      tryCatch(eval(prepared$expression), error = function(error) {
+      tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
         call_error <<- conditionMessage(error)
       })
       t1 <- get_nanotime()

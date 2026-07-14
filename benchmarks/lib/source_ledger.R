@@ -1,4 +1,29 @@
-source_ledger_schema_version <- function() "p4.3-tool-source-ledger-v2"
+source_ledger_schema_version <- function() "p4.6-tool-source-ledger-v3"
+
+source_ledger_fixture_artifact_paths <- function(root_dir, runner, must_work = TRUE) {
+  extension <- .Platform$dynlib.ext
+  relative <- switch(as.character(runner),
+    r = file.path("src", "r", "run_all.R"),
+    c_call = file.path("src", "c_call", paste0("bench", extension)),
+    cpp11 = file.path("tmp", "cpp11-library", "zigrCpp11", "libs", paste0("zigrCpp11", extension)),
+    zigr = file.path("tmp", "fixture-library", "zigrFixture", "libs", paste0("zigrFixture", extension)),
+    rcpp = file.path("tmp", "fixture-library", "zigrRcpp", "libs", paste0("zigrRcpp", extension)),
+    extendr = file.path("tmp", "fixture-library", "zigrExtendr", "libs", paste0("zigrExtendr", extension)),
+    savvy = file.path("tmp", "fixture-library", "zigrSavvy", "libs", paste0("zigrSavvy", extension)),
+    stop(sprintf("no normalized fixture artifact path for runner %s", runner))
+  )
+  normalizePath(file.path(root_dir, relative), mustWork = must_work)
+}
+
+source_ledger_artifact_identity <- function(paths) {
+  paths <- sort(unique(normalizePath(as.character(paths), mustWork = TRUE)))
+  records <- lapply(paths, function(path) list(
+    path = path,
+    size = unname(file.info(path)$size),
+    md5 = unname(as.character(tools::md5sum(path))[[1L]])
+  ))
+  list(paths = as.list(paths), records = records, digest = source_ledger_object_digest(records))
+}
 
 source_ledger_scalar <- function(value, fallback = "") {
   value <- as.character(value)
@@ -1107,6 +1132,57 @@ source_ledger_build_invocation <- function(root_dir, runner, build_settings) {
   invocation
 }
 
+source_ledger_fixture_build_invocations <- function(root_dir, runner, build_settings) {
+  r_executable <- normalizePath(file.path(R.home("bin"), "R"))
+  fixture_library <- normalizePath(file.path(root_dir, "tmp", "fixture-library"), mustWork = FALSE)
+  inherited_environment <- function(names) as.list(Sys.getenv(names, unset = ""))
+  package_install <- function(path, environment) list(
+    executable = r_executable,
+    arguments = as.list(c(
+      "CMD", "INSTALL", "--preclean", "--clean", "--no-multiarch",
+      paste0("--library=", fixture_library), path
+    )),
+    working_directory = normalizePath(root_dir),
+    environment = environment,
+    executed_in_run = isTRUE(build_settings$requested_rebuild)
+  )
+  switch(runner,
+    c_call = list(source_ledger_build_invocation(root_dir, runner, build_settings)),
+    cpp11 = list(source_ledger_build_invocation(root_dir, runner, build_settings)),
+    extendr = list(package_install(
+      "src/extendr/fixture",
+      inherited_environment(c(
+        "R_HOME", "R_INCLUDE", "CARGO_HOME", "RUSTC", "RUSTC_WRAPPER", "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "R_MAKEVARS_SITE", "R_MAKEVARS_USER"
+      ))
+    )),
+    r = list(source_ledger_build_invocation(root_dir, runner, build_settings)),
+    rcpp = list(package_install(
+      "src/cpp/fixture",
+      inherited_environment(c(
+        "R_MAKEVARS_SITE", "R_MAKEVARS_USER", "CXX", "CXXFLAGS", "LDFLAGS"
+      ))
+    )),
+    savvy = list(package_install(
+      "src/savvy/fixture",
+      inherited_environment(c(
+        "R_INCLUDE", "CARGO_HOME", "RUSTC", "RUSTC_WRAPPER", "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "R_MAKEVARS_SITE", "R_MAKEVARS_USER"
+      ))
+    )),
+    zigr = list(
+      source_ledger_build_invocation(root_dir, runner, build_settings),
+      package_install(
+        "src/zig/fixture",
+        inherited_environment(c(
+          "R_MAKEVARS_SITE", "R_MAKEVARS_USER", "CC", "CFLAGS", "LDFLAGS"
+        ))
+      )
+    ),
+    stop(sprintf("no configured fixture build invocation for runner %s", runner))
+  )
+}
+
 source_ledger_runner_record <- function(ledger, runner) {
   matches <- ledger$runners[vapply(ledger$runners, function(record) identical(as.character(record$name), runner), logical(1))]
   if (length(matches) != 1L) stop(sprintf("tool source ledger has no unique runner record for %s", runner))
@@ -1159,6 +1235,7 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
     source_identity <- source_ledger_file_identity(root_dir, runner_spec$source_globs, sprintf("%s source", runner))
     build_identity <- source_ledger_file_identity(root_dir, runner_spec$build_files, sprintf("%s build", runner))
     build_invocation <- source_ledger_build_invocation(root_dir, runner, build_settings)
+    fixture_build_invocations <- source_ledger_fixture_build_invocations(root_dir, runner, build_settings)
     glue_identity <- source_ledger_file_identity(
       root_dir,
       runner_spec$generated_glue$paths,
@@ -1191,6 +1268,13 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
     } else {
       capture_artifact_dependency_closure(artifact_paths)
     }
+    fixture_artifact_paths <- source_ledger_fixture_artifact_paths(root_dir, runner)
+    fixture_artifact_identity <- source_ledger_artifact_identity(fixture_artifact_paths)
+    fixture_artifact_dependencies <- if (identical(runner, "r")) {
+      list(artifacts = list(), digest = "not_applicable")
+    } else {
+      capture_artifact_dependency_closure(fixture_artifact_paths)
+    }
     record <- list(
       name = runner,
       role = as.character(runner_spec$role),
@@ -1211,11 +1295,16 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
         build_recipe = as.character(fixture_spec$build_recipe),
         source_identity = fixture_source_identity,
         build_identity = fixture_build_identity,
+        build_invocations = fixture_build_invocations,
+        build_digest = source_ledger_object_digest(list(fixture_build_identity, fixture_build_invocations)),
         generated_glue = list(
           kind = as.character(fixture_spec$generated_glue$kind),
           retained_output = isTRUE(fixture_spec$generated_glue$retained_output),
           identity = fixture_glue_identity
-        )
+        ),
+        artifact_identity = fixture_artifact_identity,
+        artifact_dependencies = fixture_artifact_dependencies,
+        dependency_digest = source_ledger_object_digest(list(toolchain, fixture_artifact_dependencies))
       ),
       toolchain = toolchain,
       artifact_dependencies = artifact_dependencies
@@ -1293,9 +1382,22 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
       sprintf("fixture build recipe for runner %s", runner_name)
     )
     source_ledger_require_digest(
+      source_ledger_object_digest(list(record$fixture$build_identity, record$fixture$build_invocations)),
+      record$fixture$build_digest,
+      sprintf("resolved fixture build invocation for runner %s", runner_name)
+    )
+    source_ledger_require_digest(
       actual_fixture_glue$digest,
       record$fixture$generated_glue$identity$digest,
       sprintf("fixture generated glue for runner %s", runner_name)
+    )
+    actual_fixture_artifacts <- source_ledger_artifact_identity(
+      source_ledger_fixture_artifact_paths(root_dir, runner_name)
+    )
+    source_ledger_require_digest(
+      actual_fixture_artifacts$digest,
+      record$fixture$artifact_identity$digest,
+      sprintf("fixture artifact for runner %s", runner_name)
     )
     actual_toolchain <- switch(as.character(record$tool_kind),
       r_package = capture_r_package_identity(as.character(runner_spec$package)),
@@ -1323,13 +1425,27 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
         record$artifact_dependencies$digest,
         sprintf("artifact dependencies for runner %s", runner_name)
       )
+      actual_fixture_dependencies <- capture_artifact_dependency_closure(
+        source_ledger_fixture_artifact_paths(root_dir, runner_name)
+      )
+      source_ledger_require_digest(
+        actual_fixture_dependencies$digest,
+        record$fixture$artifact_dependencies$digest,
+        sprintf("fixture artifact dependencies for runner %s", runner_name)
+      )
     } else {
       actual_dependencies <- list(artifacts = list(), digest = "not_applicable")
+      actual_fixture_dependencies <- list(artifacts = list(), digest = "not_applicable")
     }
     source_ledger_require_digest(
       source_ledger_object_digest(list(actual_toolchain, actual_dependencies)),
       record$dependency_digest,
       sprintf("dependency closure for runner %s", runner_name)
+    )
+    source_ledger_require_digest(
+      source_ledger_object_digest(list(actual_toolchain, actual_fixture_dependencies)),
+      record$fixture$dependency_digest,
+      sprintf("fixture dependency closure for runner %s", runner_name)
     )
   }
   actual_identity <- source_ledger_object_digest(ledger[names(ledger) != "captured_at" & names(ledger) != "identity_digest"])

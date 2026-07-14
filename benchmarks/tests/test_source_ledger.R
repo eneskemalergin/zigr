@@ -406,6 +406,21 @@ expect_error(
 )
 
 spec <- load_source_ledger_spec(root_dir)
+fixture_artifacts <- lapply(
+  evidence_schema_vocabulary()$runners,
+  function(runner) source_ledger_fixture_artifact_paths(root_dir, runner, must_work = FALSE)
+)
+names(fixture_artifacts) <- evidence_schema_vocabulary()$runners
+expect_true(
+  identical(basename(fixture_artifacts$r), "run_all.R") &&
+    identical(basename(fixture_artifacts$c_call), paste0("bench", .Platform$dynlib.ext)) &&
+    identical(basename(fixture_artifacts$zigr), paste0("zigrFixture", .Platform$dynlib.ext)) &&
+    identical(basename(fixture_artifacts$rcpp), paste0("zigrRcpp", .Platform$dynlib.ext)) &&
+    identical(basename(fixture_artifacts$cpp11), paste0("zigrCpp11", .Platform$dynlib.ext)) &&
+    identical(basename(fixture_artifacts$extendr), paste0("zigrExtendr", .Platform$dynlib.ext)) &&
+    identical(basename(fixture_artifacts$savvy), paste0("zigrSavvy", .Platform$dynlib.ext)),
+  "every runner has one explicit normalized fixture artifact path"
+)
 spec_test_root <- tempfile("source-ledger-spec-")
 dir.create(spec_test_root)
 on.exit(unlink(spec_test_root, recursive = TRUE), add = TRUE)
@@ -499,6 +514,14 @@ for (runner in names(spec$runners)) {
   expect_true(nzchar(invocation$executable), paste(runner, "resolved build executable"))
   expect_true(dir.exists(invocation$working_directory), paste(runner, "resolved build working directory"))
   expect_true(!isTRUE(invocation$executed_in_run), paste(runner, "prebuilt invocation is not called rebuilt"))
+  fixture_invocations <- source_ledger_fixture_build_invocations(root_dir, runner, build_settings)
+  expect_true(length(fixture_invocations) >= 1L, paste(runner, "resolved fixture build invocation"))
+  expect_true(
+    all(vapply(fixture_invocations, function(record) {
+      nzchar(record$executable) && dir.exists(record$working_directory) && !isTRUE(record$executed_in_run)
+    }, logical(1))),
+    paste(runner, "prebuilt fixture invocations are resolved but not called rebuilt")
+  )
 }
 zigr_invocation <- source_ledger_build_invocation(root_dir, "zigr", build_settings)
 expect_true(
@@ -513,6 +536,20 @@ expect_true(
     )
   ),
   "resolved zigr invocation matches build_all.sh defaults"
+)
+zigr_fixture_invocations <- source_ledger_fixture_build_invocations(root_dir, "zigr", build_settings)
+expect_true(
+  length(zigr_fixture_invocations) == 2L &&
+    identical(zigr_fixture_invocations[[1L]], zigr_invocation) &&
+    identical(
+      as.character(unlist(zigr_fixture_invocations[[2L]]$arguments, use.names = FALSE)),
+      c(
+        "CMD", "INSTALL", "--preclean", "--clean", "--no-multiarch",
+        paste0("--library=", normalizePath(file.path(root_dir, "tmp", "fixture-library"), mustWork = FALSE)),
+        "src/zig/fixture"
+      )
+    ),
+  "zigr fixture identity records both the Zig build and package installation"
 )
 expect_error(
   "one missing required path",

@@ -41,8 +41,17 @@ expect_true(
     identical(evidence$raw$task_defaults$contract_version, "catalog:evidence_task_contract_version"),
   "raw task defaults identify the exact catalogs that replace their derivation markers"
 )
-expect_true(!any(evidence$tasks$timing_eligible), "legacy task evidence is not timing eligible")
-expect_true(!any(evidence$fixture_rows$timing_eligible), "fixture evidence is not timing eligible")
+expect_true(
+  identical(evidence$tasks$timing_eligible, evidence$tasks$executable) &&
+    sum(evidence$tasks$timing_eligible) == 368L,
+  "every executable historical task is admitted for source-matched timing"
+)
+expected_fixture_timing <- evidence$fixture_rows$executable & evidence$fixture_rows$fixture != "F11"
+expect_true(
+  identical(evidence$fixture_rows$timing_eligible, expected_fixture_timing) &&
+    sum(evidence$fixture_rows$timing_eligible) == 72L,
+  "every executable fixture except correctness-only F11 is admitted for timing"
+)
 task_tiers <- table(factor(
   evidence$tasks$comparison_tier,
   levels = c("tier_a", "tier_b", "tier_c", "tier_d", "gap")
@@ -207,6 +216,11 @@ expect_true(
     all(evidence$tasks$fixture_version == "p4.5-task-input-v2") &&
     identical(as.character(evidence$tasks$comparison_group), paste0("task:", evidence$tasks$task)),
   "task input, setup, and comparison identities are exact for all 581 cells"
+)
+expect_true(
+  all(evidence$fixture_rows$setup_policy[evidence$fixture_rows$timing_eligible] == "setup_outside_timer") &&
+    all(evidence$fixture_rows$setup_policy[!evidence$fixture_rows$timing_eligible] == "not_timed"),
+  "fixture setup policy agrees with P4.6 timing admission"
 )
 revised_contract_tasks <- c(
   "17_string_concat", "18_string_nchar", "19_string_encoding",
