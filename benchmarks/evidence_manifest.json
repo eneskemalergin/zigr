@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "vocabulary_version": "p4.0-2026-07-13-r1",
+  "vocabulary_version": "p4.5-2026-07-13-r2",
   "runners": ["c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"],
   "fixtures": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12"],
   "task_sets": {
@@ -16,8 +16,13 @@
       "39_r_eval", "40_r_tryeval", "41_serialize_roundtrip", "42_external_ptr", "43_rng_stress"
     ],
     "p3_diagnostics": ["48_weakref_lifecycle", "49_owned_altrep_create"],
+    "native_invariant_tasks": [
+      "07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch", "09_longjmp_safety",
+      "10_sexp_create", "11_sexp_inspect", "42_external_ptr",
+      "48_weakref_lifecycle", "49_owned_altrep_create"
+    ],
     "r_pure_tasks": [
-      "05_fib_recursive", "24_long_vector_idx", "25_l1_arithmetic", "32_altrep_elt_walk",
+      "05_fib_recursive", "16_list_access", "24_long_vector_idx", "25_l1_arithmetic", "32_altrep_elt_walk",
       "33_altrep_region_read", "35_altrep_sum_native", "50_boundary_zero_generated",
       "51_boundary_zero_handwritten", "52_boundary_scalar_generated", "53_boundary_scalar_handwritten",
       "54_boundary_optional_null_generated", "55_boundary_optional_null_handwritten",
@@ -69,20 +74,36 @@
       "64_boundary_string_view_generated", "66_boundary_raw_generated", "70_boundary_schema_generated",
       "72_boundary_external_method_generated"
     ],
+    "exact_generated_product_tasks": [
+      "50_boundary_zero_generated", "52_boundary_scalar_generated",
+      "54_boundary_optional_null_generated", "56_boundary_optional_typed_na_generated",
+      "58_boundary_numeric_small_generated", "60_boundary_numeric_large_generated",
+      "64_boundary_string_view_generated"
+    ],
+    "zigr_strategy_product_tasks": [
+      "62_boundary_altrep_integer_generated", "66_boundary_raw_generated",
+      "68_boundary_complex_generated", "72_boundary_external_method_generated",
+      "74_boundary_external_generated"
+    ],
+    "zigr_adapter_product_tasks": ["70_boundary_schema_generated"],
+    "cpp11_strategy_product_tasks": [
+      "42_external_ptr", "66_boundary_raw_generated", "70_boundary_schema_generated"
+    ],
+    "cpp11_diagnostic_product_tasks": ["72_boundary_external_method_generated"],
     "cpp11_strategy_mismatch": ["62_boundary_altrep_integer_generated"],
     "cpp11_public_gaps": ["68_boundary_complex_generated", "74_boundary_external_generated"]
   },
   "task_defaults": {
     "public_path": "",
-    "kernel_id": "unverified:{runner}:{task}",
-    "contract_version": "legacy-task-contract-v1",
-    "fixture_version": "current:{runner}",
-    "mutation_policy": "unclassified",
-    "setup_policy": "legacy_shared_instance",
-    "comparison_group": "legacy:{task}",
+    "kernel_id": "catalog:evidence_task_kernel_id",
+    "contract_version": "catalog:evidence_task_contract_version",
+    "fixture_version": "p4.5-task-input-v2",
+    "mutation_policy": "immutable",
+    "setup_policy": "setup_outside_timer",
+    "comparison_group": "task:{task}",
     "timing_eligible": false,
     "reason": "",
-    "owner": ""
+    "owner": "P4.6"
   },
   "fixture_defaults": {
     "public_path": "",
@@ -98,40 +119,63 @@
   },
   "task_dispositions": [
     {
-      "runner": "zigr", "include_sets": ["generated_boundary"],
+      "runner": "zigr", "include_sets": ["exact_generated_product_tasks"],
       "status": "supported_and_executable", "executable": true,
       "implementation_role": "product_public_path", "evidence_use": "product_comparison",
       "path_kind": "generated_typed", "public_path": "generateExports or generateMethods through registered package entry",
-      "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "The normalized fixture contract passes P4.4, but these historical generated rows remain Tier D until P4.5 verifies their exact kernels and strategies.", "owner": "P4.5"
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_a",
+      "reason": "The historical row uses the registered generated typed product path and matches cpp11 in contract, declared kernel, representation, and setup; P4.6 must rebuild and re-prove it before timing.", "owner": "P4.6"
+    },
+    {
+      "runner": "zigr", "include_sets": ["zigr_strategy_product_tasks"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "strategy_comparison",
+      "path_kind": "generated_typed", "public_path": "generateExports or generateMethods through registered package entry",
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_b",
+      "reason": "The historical row uses the registered generated typed product path, but its representation or boundary strategy is product-specific; P4.6 must rebuild and re-prove it before timing.", "owner": "P4.6"
+    },
+    {
+      "runner": "zigr", "include_sets": ["zigr_adapter_product_tasks"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "strategy_comparison",
+      "path_kind": "generated_public_adapter", "public_path": "zigr generateExports with the P1-approved explicit R.SEXP fixed-schema adapter and convert.fromSEXP",
+      "representation_strategy": "mixed", "comparison_tier": "tier_b",
+      "reason": "The historical fixed-schema row uses the accepted generated public adapter rather than a typed generated parameter, so it remains a disclosed Tier B product strategy; P4.6 must rebuild and re-prove it before timing.", "owner": "P4.6"
     },
     {
       "runner": "zigr", "include_sets": ["all_tasks"], "exclude_sets": ["generated_boundary"],
       "status": "control_only", "executable": true,
       "implementation_role": "language_control", "evidence_use": "diagnostic_control",
-      "path_kind": "direct_export", "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "These legacy direct or handwritten rows remain diagnostics until P4.5 classifies or rewrites them.", "owner": "P4.5"
+      "path_kind": "direct_export", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "The row is a source-valid direct or handwritten Zig export, not a generated public product path; it remains diagnostic evidence only.", "owner": "P4.6"
     },
     {
-      "runner": "c_call", "include_sets": ["all_tasks"], "exclude_sets": ["p3_diagnostics", "representation_tasks"],
+      "runner": "c_call", "include_sets": ["native_invariant_tasks"], "exclude_sets": ["p3_diagnostics"],
       "status": "control_only", "executable": true,
       "implementation_role": "c_control", "evidence_use": "diagnostic_control",
-      "path_kind": "registered_c", "representation_strategy": "mixed", "comparison_tier": "tier_c",
-      "reason": "Registered handwritten C is a control and native oracle, not product evidence.", "owner": "P4.5"
+      "path_kind": "registered_c", "representation_strategy": "kernel_specific", "comparison_tier": "tier_c",
+      "reason": "The row is a registered handwritten C native-invariant control with no shared ordinary R value contract; it remains diagnostic control evidence, never a competing product path.", "owner": "P4.6"
+    },
+    {
+      "runner": "c_call", "include_sets": ["all_tasks"], "exclude_sets": ["p3_diagnostics", "representation_tasks", "native_invariant_tasks"],
+      "status": "control_only", "executable": true,
+      "implementation_role": "c_control", "evidence_use": "kernel_comparison",
+      "path_kind": "registered_c", "representation_strategy": "kernel_specific", "comparison_tier": "tier_c",
+      "reason": "The row is a registered handwritten C control for kernel and native-boundary cross-checking, never a competing product path.", "owner": "P4.6"
     },
     {
       "runner": "c_call", "include_sets": ["p3_diagnostics", "representation_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "These zigr-owned diagnostics and representation rows have no current C-control contract.", "owner": "P4.5"
+      "reason": "These zigr-owned diagnostics and representation rows have no declared registered C-control contract.", "owner": "P4.9"
     },
     {
       "runner": "r", "include_sets": ["r_pure_tasks"],
       "status": "control_only", "executable": true,
       "implementation_role": "pure_r", "evidence_use": "semantic_oracle", "path_kind": "pure_r",
       "representation_strategy": "kernel_specific", "comparison_tier": "tier_c",
-      "reason": "The explicit R body is source-digested and must pass the pure-R AST policy before use.", "owner": "P4.1"
+      "reason": "The explicit R body is source-digested and passes the pure-R AST policy before it can serve as semantic truth.", "owner": "P4.6"
     },
     {
       "runner": "r", "include_sets": ["all_tasks"],
@@ -139,127 +183,143 @@
       "status": "control_only", "executable": true,
       "implementation_role": "optimized_base_r", "evidence_use": "timed_baseline", "path_kind": "optimized_base_r",
       "representation_strategy": "runtime_service", "comparison_tier": "tier_c",
-      "reason": "The row uses a compiled base-R primitive, numerical library, or R runtime service and is not a pure-R oracle.", "owner": "P4.1"
+      "reason": "The row uses a compiled base-R primitive, numerical library, or R runtime service and is labeled as an optimized baseline rather than pure-R truth.", "owner": "P4.6"
     },
     {
       "runner": "r", "include_sets": ["r_unrepresentable_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "Pure R cannot express the native protection, inspection, external-state, or registered-method contract without inventing a substitute.", "owner": "P4.1"
+      "reason": "Pure R cannot express the native protection, inspection, external-state, or registered-method contract without inventing a substitute.", "owner": "P4.9"
     },
     {
       "runner": "r", "include_sets": ["p3_diagnostics"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The weak-reference and owned-ALTREP diagnostics are zigr-specific and have no honest R substitute.", "owner": "P4.1"
+      "reason": "The weak-reference and owned-ALTREP diagnostics are zigr-specific and have no honest R substitute.", "owner": "P4.9"
     },
     {
       "runner": "rcpp", "include_sets": ["historical_core"], "exclude_sets": ["rcpp_typed_control"],
       "status": "fixture_invalid", "executable": true,
       "implementation_role": "language_control", "evidence_use": "diagnostic_control",
-      "path_kind": "raw_ffi", "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "These 43 rows are raw SEXP implementations rather than an Rcpp generated public path.", "owner": "P4.2"
+      "path_kind": "raw_ffi", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "These 43 source-valid rows call raw SEXP implementations and therefore remain language diagnostics, not Rcpp product evidence.", "owner": "P4.6"
     },
     {
       "runner": "rcpp", "include_sets": ["rcpp_typed_control"],
       "status": "fixture_invalid", "executable": true,
       "implementation_role": "language_control", "evidence_use": "diagnostic_control",
       "path_kind": "handwritten_typed", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
-      "reason": "The recursive scalar row uses Rcpp::as and Rcpp::wrap, but it has no generated Rcpp export or package wrapper path.", "owner": "P4.2"
+      "reason": "The recursive scalar row uses Rcpp::as and Rcpp::wrap but has no generated Rcpp export or package wrapper path, so it remains a typed language control.", "owner": "P4.6"
     },
     {
       "runner": "rcpp", "include_sets": ["boundary_tasks"],
       "status": "fixture_not_implemented", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The Rcpp first-wave public fixture has not been implemented.", "owner": "P4.3"
+      "reason": "The 83-task historical runner has no Rcpp public entry for this task; the separate normalized Fxx package fixture is not substituted silently.", "owner": "P4.9"
     },
     {
       "runner": "rcpp", "include_sets": ["p3_diagnostics", "representation_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "These zigr-specific diagnostic and representation rows are not current Rcpp product contracts.", "owner": "P4.5"
+      "reason": "These zigr-specific diagnostic and representation rows have no declared Rcpp historical-task contract.", "owner": "P4.9"
     },
     {
       "runner": "extendr", "include_sets": ["historical_core"],
       "status": "fixture_invalid", "executable": true,
       "implementation_role": "language_control", "evidence_use": "diagnostic_control",
-      "path_kind": "mixed", "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "The runner mixes generated wrappers, raw internal bodies, and four direct raw-FFI substitutions.", "owner": "P4.2"
+      "path_kind": "mixed", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "The source-valid runner mixes generated wrappers around raw internal bodies with four direct raw-FFI substitutions, so every historical row remains diagnostic-only.", "owner": "P4.6"
     },
     {
       "runner": "extendr", "include_sets": ["boundary_tasks"],
       "status": "fixture_not_implemented", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The extendr first-wave public fixture has not been implemented.", "owner": "P4.3"
+      "reason": "The 83-task historical runner has no extendr public entry for this task; the separate normalized Fxx package fixture is not substituted silently.", "owner": "P4.9"
     },
     {
       "runner": "extendr", "include_sets": ["p3_diagnostics", "representation_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "These zigr-specific diagnostic and representation rows are not current extendr product contracts.", "owner": "P4.5"
+      "reason": "These zigr-specific diagnostic and representation rows have no declared extendr historical-task contract.", "owner": "P4.9"
     },
     {
       "runner": "savvy", "include_sets": ["historical_core"],
       "status": "fixture_invalid", "executable": true,
       "implementation_role": "language_control", "evidence_use": "diagnostic_control",
-      "path_kind": "raw_ffi", "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "The active exports predominantly use handwritten raw R FFI behind Savvy-shaped result handling.", "owner": "P4.2"
+      "path_kind": "raw_ffi", "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "The source-valid exports use handwritten raw R FFI behind Savvy-shaped result handling, so every historical row remains diagnostic-only.", "owner": "P4.6"
     },
     {
       "runner": "savvy", "include_sets": ["boundary_tasks"],
       "status": "fixture_not_implemented", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "The Savvy first-wave public fixture has not been implemented.", "owner": "P4.3"
+      "reason": "The 83-task historical runner has no Savvy public entry for this task; the separate normalized Fxx package fixture is not substituted silently.", "owner": "P4.9"
     },
     {
       "runner": "savvy", "include_sets": ["p3_diagnostics", "representation_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "These zigr-specific diagnostic and representation rows are not current Savvy product contracts.", "owner": "P4.5"
+      "reason": "These zigr-specific diagnostic and representation rows have no declared Savvy historical-task contract.", "owner": "P4.9"
     },
     {
-      "runner": "cpp11", "include_sets": ["cpp11_supported_tasks"],
+      "runner": "cpp11", "include_sets": ["exact_generated_product_tasks"],
       "status": "supported_and_executable", "executable": true,
       "implementation_role": "product_public_path", "evidence_use": "product_comparison",
       "path_kind": "generated_typed", "public_path": "cpp11 register annotation, generated wrapper, registered symbol, and R package wrapper",
-      "representation_strategy": "mixed", "comparison_tier": "tier_d",
-      "reason": "The normalized fixture contract passes P4.4, but these historical package rows remain Tier D until P4.5 verifies their exact kernels and strategies.", "owner": "P4.5"
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_a",
+      "reason": "The historical row uses the registered generated typed package path and matches zigr in contract, declared kernel, representation, and setup; P4.6 must rebuild and re-prove it before timing.", "owner": "P4.6"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["cpp11_strategy_product_tasks"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "strategy_comparison",
+      "path_kind": "generated_typed", "public_path": "cpp11 register annotation, generated wrapper, registered symbol, and R package wrapper",
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_b",
+      "reason": "The historical row uses the registered generated typed package path but has a distinct representation or boundary strategy, so it is strategy evidence rather than an exact product comparison.", "owner": "P4.6"
+    },
+    {
+      "runner": "cpp11", "include_sets": ["cpp11_diagnostic_product_tasks"],
+      "status": "supported_and_executable", "executable": true,
+      "implementation_role": "product_public_path", "evidence_use": "diagnostic_control",
+      "path_kind": "generated_typed", "public_path": "cpp11 register annotation, generated wrapper, registered symbol, and R package wrapper",
+      "representation_strategy": "kernel_specific", "comparison_tier": "tier_d",
+      "reason": "The generated package path is real, but this historical untagged state method does not meet the normalized F10 type-identity and lifecycle contract, so it remains diagnostic-only.", "owner": "P4.6"
     },
     {
       "runner": "cpp11", "include_sets": ["historical_core"], "exclude_sets": ["cpp11_supported_tasks"],
       "status": "fixture_not_implemented", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "No cpp11 public fixture currently implements this historical diagnostic task.", "owner": "P4.5"
+      "reason": "No cpp11 generated package entry implements this historical task.", "owner": "P4.9"
     },
     {
       "runner": "cpp11", "include_sets": ["handwritten_boundary", "p3_diagnostics", "representation_tasks"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "Handwritten controls and zigr-specific diagnostic strategies do not define cpp11 product rows.", "owner": "P4.5"
+      "reason": "Handwritten controls and zigr-specific diagnostic strategies do not define cpp11 generated product rows.", "owner": "P4.9"
     },
     {
       "runner": "cpp11", "include_sets": ["cpp11_strategy_mismatch"],
       "status": "not_meaningful_for_product", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "Task 62 declares zigr's contiguous-copy strategy, while P4.4 proved cpp11's distinct seven-region F04 path; P4.5 owns the historical row repair.", "owner": "P4.5"
+      "reason": "Task 62 declares a contiguous-copy kernel, while cpp11's proved public ALTREP path is a distinct seven-region strategy; substituting it would falsify the historical contract.", "owner": "P4.9"
     },
     {
       "runner": "cpp11", "include_sets": ["cpp11_public_gaps"],
       "status": "product_gap", "executable": false,
       "implementation_role": "capability_gap", "evidence_use": "gap", "path_kind": "none",
       "representation_strategy": "not_applicable", "comparison_tier": "gap",
-      "reason": "cpp11 0.5.5 lacks the required public complex-vector or .External product path.", "owner": "P4.3"
+      "reason": "cpp11 0.5.5 lacks the required public complex-vector or .External product path.", "owner": "P4.9"
     }
   ],
   "fixture_dispositions": [

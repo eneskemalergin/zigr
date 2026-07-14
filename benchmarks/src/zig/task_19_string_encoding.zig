@@ -6,7 +6,7 @@ export fn zigr_bench_string_encoding(vec: R.SEXP) R.SEXP {
     var total: i32 = 0;
     for (0..n) |i| {
         const elt = sexp.fastVectorElt(vec, i);
-        total += sexp.fastGetCharCE(elt);
+        total += @intFromBool(sexp.fastGetCharCE(elt) == R.CE_UTF8);
     }
     return R.Rf_ScalarInteger(total);
 }

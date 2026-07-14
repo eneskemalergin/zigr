@@ -104,6 +104,8 @@ extern fn zigr_bench_owned_altrep_create(R.SEXP) R.SEXP;
 const FixtureState = struct { value: i32 };
 var fixture_state = FixtureState{ .value = 0 };
 
+fn deinitFixtureState(_: *FixtureState) void {}
+
 fn fixtureTag() R.SEXP {
     return zigr.externalptr.typeTag(FixtureState);
 }
@@ -132,8 +134,7 @@ fn fixtureVector(values: []const f64) f64 {
 }
 
 fn fixtureNew() R.SEXP {
-    fixture_state.value = 0;
-    return zigr.externalptr.makeTyped(FixtureState, &fixture_state, R.R_NilValue);
+    return zigr.externalptr.createTyped(FixtureState, .{ .value = 0 }, deinitFixtureState);
 }
 
 fn generatedFixtureMethod(state: *FixtureState, amount: i32) i32 {

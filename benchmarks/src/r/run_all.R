@@ -55,7 +55,7 @@ r_bench_cumsum <- function(x) cumsum(x)
 
 r_bench_rnorm <- function(n) rnorm(n)
 
-r_bench_string_nchar <- function(x) sum(nchar(x), na.rm = TRUE)
+r_bench_string_nchar <- function(x) sum(nchar(x, type = "bytes"), na.rm = TRUE)
 
 r_bench_string_encoding <- function(x) {
   sum(Encoding(x) == "UTF-8")
@@ -224,6 +224,98 @@ r_bench_external_ptr <- function(x) {
 
 r_bench_rng_stress <- function(n) {
   rnorm(n)
+}
+
+# Authored semantic oracles used for correctness where the task can be
+# expressed without delegating its kernel to a compiled base primitive. The
+# timed R runner remains independently classified in the evidence manifest.
+r_oracle_vectorsum <- function(x) {
+  total <- 0.0
+  for (value in x) total <- total + value
+  total
+}
+
+r_oracle_broadcast <- function(x, scalar) {
+  total <- 0.0
+  for (value in x) {
+    increment <- value + scalar
+    total <- total + increment
+  }
+  total
+}
+
+r_oracle_transpose <- function(x) {
+  dimensions <- dim(x)
+  result <- matrix(0.0, dimensions[[2L]], dimensions[[1L]])
+  for (column in seq_len(dimensions[[2L]])) {
+    for (row in seq_len(dimensions[[1L]])) result[[column, row]] <- x[[row, column]]
+  }
+  result
+}
+
+r_oracle_rowsums <- function(x) {
+  dimensions <- dim(x)
+  result <- numeric(dimensions[[1L]])
+  for (column in seq_len(dimensions[[2L]])) {
+    for (row in seq_len(dimensions[[1L]])) result[[row]] <- result[[row]] + x[[row, column]]
+  }
+  result
+}
+
+r_oracle_rowcol_means <- function(x) {
+  dimensions <- dim(x)
+  row_means <- numeric(dimensions[[1L]])
+  column_sums <- numeric(dimensions[[2L]])
+  for (column in seq_len(dimensions[[2L]])) {
+    for (row in seq_len(dimensions[[1L]])) {
+      value <- x[[row, column]]
+      row_means[[row]] <- row_means[[row]] + value
+      column_sums[[column]] <- column_sums[[column]] + value
+    }
+  }
+  for (row in seq_len(dimensions[[1L]])) row_means[[row]] <- row_means[[row]] / dimensions[[2L]]
+  list(row_means, column_sums)
+}
+
+r_oracle_na_mean <- function(x) {
+  total <- 0.0
+  count <- 0L
+  for (value in x) {
+    if (!is.na(value)) {
+      total <- total + value
+      count <- count + 1L
+    }
+  }
+  if (count == 0L) return(NaN)
+  total / count
+}
+
+r_oracle_altrep_min_max <- function(n) {
+  x <- seq_len(n)
+  minimum <- x[[1L]]
+  maximum <- minimum
+  for (index in seq_len(n)) {
+    value <- x[[index]]
+    if (value < minimum) minimum <- value
+    if (value > maximum) maximum <- value
+  }
+  maximum - minimum
+}
+
+r_oracle_altrep_no_na <- function(n) {
+  x <- seq_len(n)
+  for (index in seq_len(n)) {
+    if (is.na(x[[index]])) return(1L)
+  }
+  0L
+}
+
+r_oracle_struct_convert <- function(x) {
+  list(
+    id = x[[1L]], count = x[[2L]], level = x[[3L]], flag = x[[4L]],
+    enabled = x[[5L]], ratio = x[[6L]], offset = x[[7L]], scale = x[[8L]],
+    weights = x[[9L]], indices = x[[10L]]
+  )
 }
 
 # These do the smallest useful work so fixture cost stays visible.
@@ -397,11 +489,9 @@ r_bench_sexp_create <- function(n) {
   0L
 }
 
-r_bench_list_access <- function(lst) {
+r_bench_list_access <- function(x) {
   total <- 0.0
-  for (i in seq_along(lst)) {
-    total <- total + lst[[i]][1]
-  }
+  for (index in seq_len(length(x))) total <- total + x[[index]][[1L]]
   total
 }
 

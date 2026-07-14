@@ -3,6 +3,7 @@ use savvy_ffi::SEXP;
 
 unsafe extern "C" {
     fn Rf_getCharCE(x: SEXP) -> i32;
+    fn Rf_translateCharUTF8(x: SEXP) -> *const std::os::raw::c_char;
     fn Rf_install(name: *const std::os::raw::c_char) -> SEXP;
     fn Rf_lang2(fun: SEXP, arg: SEXP) -> SEXP;
     fn Rf_lang3(fun: SEXP, arg1: SEXP, arg2: SEXP) -> SEXP;
@@ -16,6 +17,14 @@ unsafe extern "C" {
     fn Rf_asReal(x: SEXP) -> f64;
     fn VECTOR_ELT(x: SEXP, i: isize) -> SEXP;
     fn R_MakeExternalPtr(data: *mut std::os::raw::c_void, tag: SEXP, prot: SEXP) -> SEXP;
+    fn R_ExternalPtrAddr(pointer: SEXP) -> *mut std::os::raw::c_void;
+    fn R_SetExternalPtrAddr(pointer: SEXP, address: *mut std::os::raw::c_void);
+    fn R_ClearExternalPtr(pointer: SEXP);
+    fn R_RegisterCFinalizerEx(
+        pointer: SEXP,
+        finalizer: unsafe extern "C" fn(SEXP),
+        on_exit: i32,
+    );
     fn GetRNGstate();
     fn PutRNGstate();
     fn norm_rand() -> f64;
@@ -52,6 +61,26 @@ unsafe extern "C" {
 }
 
 const SAVVY_REPEATS: isize = 512;
+
+unsafe extern "C" fn savvy_benchmark_state_finalizer(pointer: SEXP) {
+    let address = R_ExternalPtrAddr(pointer) as *mut i32;
+    if address.is_null() { return; }
+    drop(Box::from_raw(address));
+    R_ClearExternalPtr(pointer);
+}
+
+unsafe fn savvy_owned_external_pointer(value: i32) -> SEXP {
+    let pointer = savvy_ffi::Rf_protect(R_MakeExternalPtr(
+        std::ptr::null_mut(),
+        Rf_install("zigr.p4.savvy.task42.state\0".as_ptr() as _),
+        savvy_ffi::R_NilValue,
+    ));
+    let address = Box::into_raw(Box::new(value)) as *mut std::os::raw::c_void;
+    R_SetExternalPtrAddr(pointer, address);
+    R_RegisterCFinalizerEx(pointer, savvy_benchmark_state_finalizer, 1);
+    savvy_ffi::Rf_unprotect(1);
+    pointer
+}
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn savvy_unwind_callback(data: *mut std::os::raw::c_void) -> SEXP {
@@ -723,10 +752,22 @@ fn savvy_bench_string_concat(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 pub unsafe extern "C" fn savvy_bench_string_concat__ffi(x: SEXP) -> SEXP {
     let n = savvy_ffi::Rf_xlength(x) as usize;
     let mut total: usize = 0;
+    let mut output_encoding = savvy_ffi::cetype_t_CE_UTF8;
     for i in 0..n {
         let elt = savvy_ffi::STRING_ELT(x, i as _);
         if elt == savvy_ffi::R_NaString { total += 2; }
-        else { total += savvy_ffi::Rf_xlength(elt) as usize; }
+        else {
+            let encoding = Rf_getCharCE(elt);
+            let pointer = if encoding == savvy_ffi::cetype_t_CE_BYTES {
+                savvy_ffi::R_CHAR(elt)
+            } else {
+                Rf_translateCharUTF8(elt)
+            };
+            if encoding == savvy_ffi::cetype_t_CE_BYTES {
+                output_encoding = savvy_ffi::cetype_t_CE_BYTES;
+            }
+            total += std::ffi::CStr::from_ptr(pointer).to_bytes().len();
+        }
     }
     if n > 1 { total += (n - 1) * 2; }
 
@@ -735,15 +776,19 @@ pub unsafe extern "C" fn savvy_bench_string_concat__ffi(x: SEXP) -> SEXP {
         let elt = savvy_ffi::STRING_ELT(x, i as _);
         if elt == savvy_ffi::R_NaString { buf.extend_from_slice(b"NA"); }
         else {
-            let len = savvy_ffi::Rf_xlength(elt) as usize;
-            let src = std::slice::from_raw_parts(savvy_ffi::R_CHAR(elt) as *const u8, len);
-            buf.extend_from_slice(src);
+            let encoding = Rf_getCharCE(elt);
+            let pointer = if encoding == savvy_ffi::cetype_t_CE_BYTES {
+                savvy_ffi::R_CHAR(elt)
+            } else {
+                Rf_translateCharUTF8(elt)
+            };
+            buf.extend_from_slice(std::ffi::CStr::from_ptr(pointer).to_bytes());
         }
         if i + 1 < n { buf.extend_from_slice(b", "); }
     }
 
     let out = savvy_ffi::Rf_allocVector(savvy_ffi::STRSXP, 1);
-    let cs = savvy_ffi::Rf_mkCharLenCE(buf.as_ptr() as _, buf.len() as _, savvy_ffi::cetype_t_CE_UTF8);
+    let cs = savvy_ffi::Rf_mkCharLenCE(buf.as_ptr() as _, buf.len() as _, output_encoding);
     savvy_ffi::SET_STRING_ELT(out, 0, cs);
     out
 }
@@ -754,7 +799,7 @@ pub unsafe extern "C" fn savvy_bench_string_encoding__impl(x: SEXP) -> SEXP {
     let mut total: i32 = 0;
     for i in 0..n {
         let elt = savvy_ffi::STRING_ELT(x, i);
-        total += Rf_getCharCE(elt);
+        total += (Rf_getCharCE(elt) == savvy_ffi::cetype_t_CE_UTF8) as i32;
     }
     let out = savvy_ffi::Rf_allocVector(savvy_ffi::INTSXP, 1);
     *(savvy_ffi::INTEGER(out)) = total;
@@ -1039,13 +1084,11 @@ pub unsafe extern "C" fn savvy_bench_r_tryeval__impl(x: SEXP) -> SEXP {
 pub unsafe extern "C" fn savvy_bench_serialize_roundtrip__impl(x: SEXP) -> SEXP {
     let ser_call = savvy_ffi::Rf_protect(Rf_lang3(Rf_install("serialize\0".as_ptr() as _), x, savvy_ffi::R_NilValue));
     let mut err: i32 = 0;
-    let conn = R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err);
-    savvy_ffi::Rf_unprotect(1);
+    let conn = savvy_ffi::Rf_protect(R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err));
 
     let unser_call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("unserialize\0".as_ptr() as _), conn));
     err = 0;
-    let result = R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err);
-    savvy_ffi::Rf_unprotect(1);
+    let result = savvy_ffi::Rf_protect(R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err));
 
     let n = savvy_ffi::Rf_xlength(result);
     let xp = savvy_ffi::REAL(result);
@@ -1053,16 +1096,13 @@ pub unsafe extern "C" fn savvy_bench_serialize_roundtrip__impl(x: SEXP) -> SEXP 
     for i in 0..n { total += *xp.offset(i as _); }
     let out = savvy_ffi::Rf_allocVector(savvy_ffi::REALSXP, 1);
     *(savvy_ffi::REAL(out)) = total;
+    savvy_ffi::Rf_unprotect(4);
     out
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_external_ptr__impl(x: SEXP) -> SEXP {
-    let _ = x;
-    let mut dummy: u8 = 0;
-    let ptr = savvy_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, savvy_ffi::R_NilValue, savvy_ffi::R_NilValue));
-    savvy_ffi::Rf_unprotect(1);
-    ptr
+    savvy_owned_external_pointer(Rf_asInteger(x))
 }
 
 #[unsafe(no_mangle)]

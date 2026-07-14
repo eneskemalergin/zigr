@@ -128,9 +128,25 @@ static SEXP c_fixture_vector(SEXP value) {
     return Rf_ScalarReal(total);
 }
 
+static void c_fixture_state_finalizer(SEXP pointer) {
+    int *state = (int *) R_ExternalPtrAddr(pointer);
+    if (state == NULL) return;
+    free(state);
+    R_ClearExternalPtr(pointer);
+}
+
 static SEXP c_fixture_new(void) {
-    fixture_state = 0;
-    return R_MakeExternalPtr(&fixture_state, fixture_tag(), R_NilValue);
+    SEXP result = PROTECT(R_MakeExternalPtr(NULL, fixture_tag(), R_NilValue));
+    int *state = (int *) malloc(sizeof(int));
+    if (state == NULL) {
+        UNPROTECT(1);
+        Rf_error("c fixture could not allocate state");
+    }
+    *state = 0;
+    R_SetExternalPtrAddr(result, state);
+    R_RegisterCFinalizerEx(result, c_fixture_state_finalizer, TRUE);
+    UNPROTECT(1);
+    return result;
 }
 
 static SEXP c_fixture_method(SEXP receiver, SEXP amount) {

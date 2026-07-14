@@ -2,6 +2,7 @@ use extendr_api::prelude::*;
 
 extern "C" {
     fn Rf_getCharCE(x: extendr_ffi::SEXP) -> i32;
+    fn Rf_translateCharUTF8(x: extendr_ffi::SEXP) -> *const std::os::raw::c_char;
     fn Rf_install(name: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
     fn Rf_lang2(fun: extendr_ffi::SEXP, arg: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
     fn Rf_lang3(fun: extendr_ffi::SEXP, arg1: extendr_ffi::SEXP, arg2: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
@@ -17,6 +18,14 @@ extern "C" {
     fn Rf_asLogical(x: extendr_ffi::SEXP) -> i32;
     fn Rf_asReal(x: extendr_ffi::SEXP) -> f64;
     fn R_MakeExternalPtr(data: *mut std::os::raw::c_void, tag: extendr_ffi::SEXP, prot: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
+    fn R_ExternalPtrAddr(pointer: extendr_ffi::SEXP) -> *mut std::os::raw::c_void;
+    fn R_SetExternalPtrAddr(pointer: extendr_ffi::SEXP, address: *mut std::os::raw::c_void);
+    fn R_ClearExternalPtr(pointer: extendr_ffi::SEXP);
+    fn R_RegisterCFinalizerEx(
+        pointer: extendr_ffi::SEXP,
+        finalizer: unsafe extern "C" fn(extendr_ffi::SEXP),
+        on_exit: i32,
+    );
     fn GetRNGstate();
     fn PutRNGstate();
     fn norm_rand() -> f64;
@@ -46,6 +55,26 @@ extern "C" {
 }
 
 fn stub() -> Robj { ().into() }
+
+unsafe extern "C" fn extendr_benchmark_state_finalizer(pointer: extendr_ffi::SEXP) {
+    let address = R_ExternalPtrAddr(pointer) as *mut i32;
+    if address.is_null() { return; }
+    drop(Box::from_raw(address));
+    R_ClearExternalPtr(pointer);
+}
+
+unsafe fn extendr_owned_external_pointer(value: i32) -> extendr_ffi::SEXP {
+    let pointer = extendr_ffi::Rf_protect(R_MakeExternalPtr(
+        std::ptr::null_mut(),
+        Rf_install("zigr.p4.extendr.task42.state\0".as_ptr() as _),
+        extendr_ffi::R_NilValue,
+    ));
+    let address = Box::into_raw(Box::new(value)) as *mut std::os::raw::c_void;
+    R_SetExternalPtrAddr(pointer, address);
+    R_RegisterCFinalizerEx(pointer, extendr_benchmark_state_finalizer, 1);
+    extendr_ffi::Rf_unprotect(1);
+    pointer
+}
 
 fn fib_rs(n: i64) -> i64 {
     if n <= 1 { return n; }
@@ -463,10 +492,22 @@ fn extendr_bench_string_concat(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
     let n = unsafe { extendr_ffi::Rf_xlength(s) } as usize;
     let mut total: usize = 0;
+    let mut output_encoding = extendr_ffi::cetype_t::CE_UTF8;
     for i in 0..n {
         let elt = unsafe { extendr_ffi::STRING_ELT(s, i as _) };
         if elt == unsafe { extendr_ffi::R_NaString } { total += 2; }
-        else { total += unsafe { extendr_ffi::Rf_xlength(elt) } as usize; }
+        else {
+            let encoding = unsafe { Rf_getCharCE(elt) };
+            let pointer = if encoding == extendr_ffi::cetype_t::CE_BYTES as i32 {
+                unsafe { extendr_ffi::R_CHAR(elt) }
+            } else {
+                unsafe { Rf_translateCharUTF8(elt) }
+            };
+            if encoding == extendr_ffi::cetype_t::CE_BYTES as i32 {
+                output_encoding = extendr_ffi::cetype_t::CE_BYTES;
+            }
+            total += unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes().len();
+        }
     }
     if n > 1 { total += (n - 1) * 2; }
 
@@ -476,15 +517,19 @@ fn extendr_bench_string_concat(x: Robj) -> Robj {
         if elt == unsafe { extendr_ffi::R_NaString } {
             buf.extend_from_slice(b"NA");
         } else {
-            let len = unsafe { extendr_ffi::Rf_xlength(elt) } as usize;
-            let src = unsafe { std::slice::from_raw_parts(extendr_ffi::R_CHAR(elt) as *const u8, len) };
-            buf.extend_from_slice(src);
+            let encoding = unsafe { Rf_getCharCE(elt) };
+            let pointer = if encoding == extendr_ffi::cetype_t::CE_BYTES as i32 {
+                unsafe { extendr_ffi::R_CHAR(elt) }
+            } else {
+                unsafe { Rf_translateCharUTF8(elt) }
+            };
+            buf.extend_from_slice(unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes());
         }
         if i + 1 < n { buf.extend_from_slice(b", "); }
     }
 
     let out = unsafe { extendr_ffi::Rf_allocVector(extendr_ffi::SEXPTYPE::STRSXP, 1) };
-    let cs = unsafe { extendr_ffi::Rf_mkCharLenCE(buf.as_ptr() as _, buf.len() as _, extendr_ffi::cetype_t::CE_UTF8) };
+    let cs = unsafe { extendr_ffi::Rf_mkCharLenCE(buf.as_ptr() as _, buf.len() as _, output_encoding) };
     unsafe { extendr_ffi::SET_STRING_ELT(out, 0, cs); }
     unsafe { Robj::from_sexp(out) }
 }
@@ -509,7 +554,7 @@ fn extendr_bench_string_encoding(x: Robj) -> Robj {
     let mut total: i32 = 0;
     for i in 0..n {
         let elt = unsafe { extendr_ffi::STRING_ELT(s, i as _) };
-        total += unsafe { Rf_getCharCE(elt) };
+        total += (unsafe { Rf_getCharCE(elt) } == extendr_ffi::cetype_t::CE_UTF8 as i32) as i32;
     }
     r!(total)
 }
@@ -932,26 +977,23 @@ fn extendr_bench_serialize_roundtrip(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
     let ser_call = unsafe { extendr_ffi::Rf_protect(Rf_lang3(Rf_install("serialize\0".as_ptr() as _), s, extendr_ffi::R_NilValue)) };
     let mut err: i32 = 0;
-    let conn = unsafe { R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err) };
-    unsafe { extendr_ffi::Rf_unprotect(1) };
+    let conn = unsafe { extendr_ffi::Rf_protect(R_tryEvalSilent(ser_call, R_GlobalEnv, &mut err)) };
 
     let unser_call = unsafe { extendr_ffi::Rf_protect(Rf_lang2(Rf_install("unserialize\0".as_ptr() as _), conn)) };
     err = 0;
-    let result = unsafe { R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err) };
-    unsafe { extendr_ffi::Rf_unprotect(1) };
+    let result = unsafe { extendr_ffi::Rf_protect(R_tryEvalSilent(unser_call, R_GlobalEnv, &mut err)) };
 
     let n = unsafe { extendr_ffi::Rf_xlength(result) };
     let xp = unsafe { extendr_ffi::REAL(result) };
     let mut total = 0.0f64;
     for i in 0..n { total += unsafe { *xp.offset(i) }; }
+    unsafe { extendr_ffi::Rf_unprotect(4) };
     r!(total)
 }
 #[extendr]
 fn extendr_bench_external_ptr(x: Robj) -> Robj {
-    let _ = x;
-    let mut dummy: u8 = 0;
-    let ptr = unsafe { extendr_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, extendr_ffi::R_NilValue, extendr_ffi::R_NilValue)) };
-    unsafe { extendr_ffi::Rf_unprotect(1) };
+    let value = x.as_integer().unwrap_or(0);
+    let ptr = unsafe { extendr_owned_external_pointer(value) };
     unsafe { std::mem::transmute::<extendr_ffi::SEXP, Robj>(ptr) }
 }
 #[extendr]
@@ -992,11 +1034,7 @@ pub unsafe extern "C" fn extendr_ffi_matmul(a: extendr_ffi::SEXP, b: extendr_ffi
 
 #[no_mangle]
 pub unsafe extern "C" fn extendr_ffi_external_ptr(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP {
-    let _ = x;
-    let mut dummy: u8 = 0;
-    let ptr = extendr_ffi::Rf_protect(R_MakeExternalPtr(&mut dummy as *mut u8 as *mut _, extendr_ffi::R_NilValue, extendr_ffi::R_NilValue));
-    extendr_ffi::Rf_unprotect(1);
-    ptr
+    extendr_owned_external_pointer(Rf_asInteger(x))
 }
 
 #[no_mangle]

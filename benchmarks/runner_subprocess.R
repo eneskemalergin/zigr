@@ -116,21 +116,21 @@ all_tasks <- list(
                                          stringsAsFactors = FALSE))),
   list(id = "16_list_access", name = "List Access (1000 elements)",
        args = function() list(replicate(1000, runif(100), simplify = FALSE))),
-  list(id = "17_string_concat", name = "String Concatenation (10k x 24 chars)",
-       args = function() list(replicate(10000, paste0(sample(letters, 24, T), collapse = "")))),
-  list(id = "18_string_nchar", name = "String Nchar (10k, 5% NA)",
-       args = function() { x <- replicate(10000, paste0(sample(letters, 50, TRUE), collapse = "")); x[sample(10000, 500)] <- NA_character_; list(x) }),
-  list(id = "19_string_encoding", name = "String Encoding (10k ASCII)",
-       args = function() list(replicate(10000, paste0(sample(letters, 24, TRUE), collapse = "")))),
-  list(id = "20_factor_ops", name = "Factor Ops (10k / 100 levels)",
-       args = function() list(sample(letters[1:100], 10000, replace = TRUE))),
+  list(id = "17_string_concat", name = "Encoding-aware concatenation (10k mixed strings)",
+       args = function() list(benchmark_string_input("17_string_concat"))),
+  list(id = "18_string_nchar", name = "String byte length (10k mixed strings, 5% NA)",
+       args = function() list(benchmark_string_input("18_string_nchar"))),
+  list(id = "19_string_encoding", name = "UTF-8 encoding marks (10k mixed strings)",
+       args = function() list(benchmark_string_input("19_string_encoding"))),
+  list(id = "20_factor_ops", name = "Factor conversion (10k / 100 levels / 1 NA)",
+       args = function() list(benchmark_factor_input())),
   list(id = "21_attrib_ops", name = "Attribute Ops (1M vector)",
        args = function() list(runif(1e6))),
   list(id = "22_s4_slot_access", name = "S4 Slot Access",
        args = function() list(1.0)),
   list(id = "23_na_propagation", name = "NA Propagation (1e6, 5% NA)",
        args = function() { x <- runif(1e6); x[sample(1e6, 5e4)] <- NA; list(x) }),
-  list(id = "24_long_vector_idx", name = "Long Vector Index (2^31+1 ALTREP)",
+  list(id = "24_long_vector_idx", name = "Compact ALTREP sampled indexing (1e7)",
        args = function() list(1:1e7)),
   list(id = "25_l1_arithmetic", name = "L1 Arithmetic (4000 x 2500 passes)",
        args = function() list(runif(4000))),
@@ -377,11 +377,15 @@ if (call_type != "r") {
 
 source(file.path(root_dir, "src/r/run_all.R"))
 r_cfg_path <- file.path(root_dir, "runners", "r.json")
-r_ref <- fromJSON(r_cfg_path, simplifyVector = FALSE)$exports
+r_config <- fromJSON(r_cfg_path, simplifyVector = FALSE)
+r_runner_map <- r_config$exports
+r_ref <- r_reference_map(r_config)
 validate_r_reference_map(manifest, r_ref)
 r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
 selected_task_ids <- vapply(all_tasks, function(task) task$id, character(1))
-live_r_provenance <- build_run_r_provenance(selected_task_ids, r_ref, manifest, r_evidence_rows)
+live_r_provenance <- build_run_r_provenance(
+  selected_task_ids, r_runner_map, r_ref, manifest, r_evidence_rows
+)
 r_runner_provenance <- named_r_provenance_records(live_r_provenance, "runner_rows")
 r_reference_provenance <- named_r_provenance_records(live_r_provenance, "reference_rows")
 if (!check_only) {
@@ -850,6 +854,7 @@ for (task in all_tasks) {
     r_arguments <- new_phase_arguments()
     before <- task_arguments_fingerprint(tid, r_arguments, altrep_intent)
     r_eval <- capture_result(function() do.call(get(cfun, mode = "function"), r_arguments))
+    r_rng_state <- if (r_eval$ok && identical(mutation_policy, "rng_reset_required")) rng_state_snapshot() else NULL
     if (!r_eval$ok) {
       correctness_status <- "FAIL"
       correctness_message <- sprintf("R implementation failed: %s", r_eval$error)
@@ -870,6 +875,31 @@ for (task in all_tasks) {
           provenance <- r_runner_provenance[[tid]]
           correctness_status <- if (identical(provenance$implementation_class, "pure_r")) "REFERENCE" else "PASS"
           correctness_message <- sprintf("validated %s result contract", provenance$implementation_class)
+          if (identical(mutation_policy, "rng_reset_required")) {
+            reference_arguments <- new_phase_arguments()
+            r_repeat <- capture_result(function() do.call(get(r_ref[[tid]], mode = "function"), reference_arguments))
+            r_repeat_state <- if (r_repeat$ok) rng_state_snapshot() else NULL
+            if (!r_repeat$ok) {
+              correctness_status <- "FAIL"
+              correctness_message <- sprintf("R RNG repeat failed: %s", r_repeat$error)
+            } else {
+              repeated_values <- compare_correctness(r_eval$value, r_repeat$value)
+              repeated_state <- capture_result(function() assert_rng_state_equivalent(r_rng_state, r_repeat_state, tid))
+              if (!isTRUE(repeated_values$ok) || !repeated_state$ok) {
+                correctness_status <- "FAIL"
+                correctness_message <- if (!isTRUE(repeated_values$ok)) {
+                  sprintf("deterministic RNG value mismatch: %s", repeated_values$message)
+                } else {
+                  repeated_state$error
+                }
+              } else {
+                correctness_message <- sprintf(
+                  "validated deterministic values and post-call RNG state for %s",
+                  provenance$implementation_class
+                )
+              }
+            }
+          }
         }
       }
     }
@@ -883,6 +913,7 @@ for (task in all_tasks) {
       stop(sprintf("unsupported correctness call type: %s", task_call_type))
     }
     native_eval <- capture_result(invoke_native)
+    native_rng_state <- if (native_eval$ok && identical(mutation_policy, "rng_reset_required")) rng_state_snapshot() else NULL
     if (!native_eval$ok) {
       correctness_status <- "FAIL"
       correctness_message <- sprintf("native call failed: %s", native_eval$error)
@@ -907,6 +938,7 @@ for (task in all_tasks) {
           reference_arguments <- new_phase_arguments()
           reference_before <- task_arguments_fingerprint(tid, reference_arguments, altrep_intent)
           ref_eval <- capture_result(function() do.call(get(ref_name, mode = "function"), reference_arguments))
+          reference_rng_state <- if (ref_eval$ok && identical(mutation_policy, "rng_reset_required")) rng_state_snapshot() else NULL
           if (!ref_eval$ok) {
             correctness_status <- "FAIL"
             correctness_message <- sprintf("R reference failed: %s", ref_eval$error)
@@ -932,6 +964,20 @@ for (task in all_tasks) {
                   result_preview(ref_eval$value),
                   result_preview(native_eval$value)
                 )
+              } else if (identical(mutation_policy, "rng_reset_required")) {
+                rng_comparison <- capture_result(function() {
+                  assert_rng_state_equivalent(reference_rng_state, native_rng_state, tid)
+                })
+                if (!rng_comparison$ok) {
+                  correctness_status <- "FAIL"
+                  correctness_message <- rng_comparison$error
+                } else {
+                  correctness_status <- "PASS"
+                  correctness_message <- sprintf(
+                    "validated deterministic values and post-call RNG state against %s R reference",
+                    r_reference_provenance[[tid]]$implementation_class
+                  )
+                }
               } else {
                 correctness_status <- "PASS"
                 correctness_message <- sprintf(

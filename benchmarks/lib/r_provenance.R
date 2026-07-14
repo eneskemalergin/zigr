@@ -1,4 +1,27 @@
-r_provenance_schema_version <- function() "p4.2-r-provenance-v2"
+r_provenance_schema_version <- function() "p4.5-r-provenance-v3"
+
+r_reference_map <- function(config) {
+  exports <- config$exports
+  overrides <- config$reference_overrides
+  if (is.null(exports) || is.null(names(exports)) || any(!nzchar(names(exports)))) {
+    stop("R runner exports are missing or unnamed")
+  }
+  if (is.null(overrides)) return(exports)
+  unknown <- setdiff(names(overrides), names(exports))
+  if (length(unknown) > 0L) {
+    stop(sprintf("R reference overrides contain unknown tasks: %s", paste(unknown, collapse = ", ")))
+  }
+  exports[names(overrides)] <- overrides
+  exports
+}
+
+r_pure_reference_tasks <- function() {
+  c(
+    "01_vectorsum", "06_broadcast", "12_matrix_transpose", "13_matrix_rowsums",
+    "14_matrix_rowcol_means", "23_na_propagation",
+    "36_altrep_min_max", "37_altrep_no_na_query", "38_struct_convert"
+  )
+}
 
 r_body_digest <- function(fn) {
   if (!is.function(fn)) stop("R provenance source is not a function")
@@ -35,12 +58,22 @@ r_pure_forbidden_calls <- function() {
 
 r_pure_contract_policy <- function(task_id) {
   policy_by_task <- c(
+    "01_vectorsum" = "scalar_sum_loop",
     "05_fib_recursive" = "fibonacci",
+    "06_broadcast" = "scalar_broadcast_loop",
+    "12_matrix_transpose" = "matrix_transpose_loop",
+    "13_matrix_rowsums" = "matrix_rowsum_loop",
+    "14_matrix_rowcol_means" = "matrix_rowcol_loop",
+    "16_list_access" = "nested_list_loop",
+    "23_na_propagation" = "na_mean_loop",
     "24_long_vector_idx" = "sampled_index_loop",
     "25_l1_arithmetic" = "l1_scalar_loops",
     "32_altrep_elt_walk" = "altrep_index_loop",
     "33_altrep_region_read" = "altrep_value_loop",
     "35_altrep_sum_native" = "altrep_index_loop",
+    "36_altrep_min_max" = "altrep_minmax_loop",
+    "37_altrep_no_na_query" = "altrep_no_na_loop",
+    "38_struct_convert" = "fixed_record_copy",
     "50_boundary_zero_generated" = "zero_boundary",
     "51_boundary_zero_handwritten" = "zero_boundary",
     "52_boundary_scalar_generated" = "scalar_boundary",
@@ -70,11 +103,21 @@ r_pure_contract_policy <- function(task_id) {
     stop(sprintf("pure-R contract has no authored AST allowlist for %s", task_id))
   }
   calls <- switch(policy_name,
+    scalar_sum_loop = c("{", "+", "<-", "for"),
     fibonacci = c("-", "{", "+", "<=", "as.numeric", "if", "Recall", "return"),
+    scalar_broadcast_loop = c("{", "+", "<-", "for"),
+    matrix_transpose_loop = c("[[", "[[<-", "{", "<-", "dim", "for", "matrix", "seq_len"),
+    matrix_rowsum_loop = c("[[", "[[<-", "{", "+", "<-", "dim", "for", "numeric", "seq_len"),
+    matrix_rowcol_loop = c("/", "[[", "[[<-", "{", "+", "<-", "dim", "for", "list", "numeric", "seq_len"),
+    nested_list_loop = c("[[", "{", "+", "<-", "for", "length", "seq_len"),
+    na_mean_loop = c("!", "==", "{", "+", "/", "<-", "for", "if", "is.na", "return"),
     sampled_index_loop = c("[", "{", "+", "<-", "for", "length", "seq"),
     l1_scalar_loops = c(":", "{", "*", "+", "<-", "for"),
     altrep_index_loop = c("[", "{", "+", "<-", "for", "seq_len"),
     altrep_value_loop = c("{", "+", "<-", "for", "seq_len"),
+    altrep_minmax_loop = c("-", "<", ">", "[[", "{", "<-", "for", "if", "seq_len"),
+    altrep_no_na_loop = c("[[", "{", "<-", "for", "if", "is.na", "return", "seq_len"),
+    fixed_record_copy = c("[[", "{", "list"),
     zero_boundary = character(0),
     scalar_boundary = c("!", "!=", "{", "&&", "||", "if", "is.na", "is.nan", "length", "stop", "typeof"),
     optional_boundary = c(
@@ -292,12 +335,12 @@ r_unrepresentable_provenance <- function(task_id, reason) {
   record
 }
 
-build_run_r_provenance <- function(task_ids, reference_map, task_manifest, evidence_rows) {
+build_run_r_provenance <- function(task_ids, runner_map, reference_map, task_manifest, evidence_rows) {
   runner_records <- lapply(task_ids, function(task_id) {
     row <- evidence_rows[evidence_rows$task == task_id, , drop = FALSE]
     if (nrow(row) != 1L) stop(sprintf("normalized R evidence is missing for %s", task_id))
     if (isTRUE(row$executable)) {
-      build_r_provenance(task_id, reference_map[[task_id]], row)
+      build_r_provenance(task_id, runner_map[[task_id]], row)
     } else {
       r_unrepresentable_provenance(task_id, as.character(row$reason))
     }
@@ -314,6 +357,10 @@ build_run_r_provenance <- function(task_ids, reference_map, task_manifest, evide
         stop(sprintf("R reference is unrepresentable without a declared native invariant for %s", task_id))
       }
       row$implementation_role <- "pure_r"
+    } else if (task_id %in% r_pure_reference_tasks()) {
+      row$implementation_role <- "pure_r"
+    } else if (!identical(as.character(row$implementation_role), "pure_r")) {
+      row$implementation_role <- "optimized_base_r"
     }
     build_r_provenance(task_id, reference_map[[task_id]], row)
   })

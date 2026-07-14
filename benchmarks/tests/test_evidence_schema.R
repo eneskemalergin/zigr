@@ -36,9 +36,200 @@ expect_true(nrow(evidence$tasks) == 83L * 7L, "complete task disposition matrix"
 expect_true(nrow(evidence$fixture_rows) == 12L * 7L, "complete fixture disposition matrix")
 expect_true(identical(evidence$task_sets$all_tasks, as.character(manifest$task)), "canonical task order")
 expect_true(is.null(evidence$raw$task_sets$all_tasks), "evidence manifest does not copy the canonical task universe")
+expect_true(
+  identical(evidence$raw$task_defaults$kernel_id, "catalog:evidence_task_kernel_id") &&
+    identical(evidence$raw$task_defaults$contract_version, "catalog:evidence_task_contract_version"),
+  "raw task defaults identify the exact catalogs that replace their derivation markers"
+)
 expect_true(!any(evidence$tasks$timing_eligible), "legacy task evidence is not timing eligible")
 expect_true(!any(evidence$fixture_rows$timing_eligible), "fixture evidence is not timing eligible")
-expect_true(!any(evidence$tasks$comparison_tier == "tier_a"), "no legacy task is prematurely Tier A")
+task_tiers <- table(factor(
+  evidence$tasks$comparison_tier,
+  levels = c("tier_a", "tier_b", "tier_c", "tier_d", "gap")
+))
+expect_true(
+  identical(unname(as.integer(task_tiers)), c(14L, 9L, 142L, 203L, 213L)),
+  "P4.5 task tiers contain exact products, strategy products, controls, diagnostics, and gaps"
+)
+exact_product_tasks <- sort(unlist(evidence$raw$task_sets$exact_generated_product_tasks, use.names = FALSE))
+tier_a_tasks <- evidence$tasks[evidence$tasks$comparison_tier == "tier_a", c("runner", "task"), drop = FALSE]
+expect_true(
+  nrow(tier_a_tasks) == 2L * length(exact_product_tasks) &&
+    identical(sort(unique(tier_a_tasks$runner)), c("cpp11", "zigr")) &&
+    identical(sort(unique(tier_a_tasks$task)), exact_product_tasks) &&
+    all(table(tier_a_tasks$task) == 2L),
+  "Tier A is limited to source-verified matching zigr and cpp11 generated task paths"
+)
+placeholder_fields <- c(
+  "kernel_id", "contract_version", "fixture_version", "representation_strategy",
+  "mutation_policy", "setup_policy"
+)
+expect_true(
+  !any(grepl(
+    "unverified|unclassified|legacy|declared-kernel|verified-source-catalog|verified-task-contract|^catalog:",
+    unlist(evidence$tasks[placeholder_fields], use.names = FALSE)
+  )),
+  "no normalized task evidence retains a P4.0 or generic kernel placeholder"
+)
+expected_contracts <- unname(vapply(as.character(evidence$tasks$task), evidence_task_contract_version, character(1)))
+expected_mutation <- unname(vapply(as.character(evidence$tasks$task), evidence_task_mutation_policy, character(1)))
+expect_true(
+  identical(as.character(evidence$tasks$contract_version), expected_contracts),
+  "every task cell uses the exact stable or revised contract version"
+)
+executable_task_rows <- evidence$tasks[evidence$tasks$executable, , drop = FALSE]
+expected_kernels <- mapply(
+  evidence_task_kernel_id,
+  as.character(executable_task_rows$runner),
+  as.character(executable_task_rows$task),
+  as.character(executable_task_rows$implementation_role),
+  USE.NAMES = FALSE
+)
+expected_strategies <- mapply(
+  evidence_task_representation_strategy,
+  as.character(executable_task_rows$runner),
+  as.character(executable_task_rows$task),
+  as.character(executable_task_rows$implementation_role),
+  USE.NAMES = FALSE
+)
+expected_uses <- mapply(
+  evidence_task_evidence_use,
+  as.character(evidence$tasks$runner),
+  as.character(evidence$tasks$task),
+  as.character(evidence$tasks$implementation_role),
+  as.character(evidence$tasks$comparison_tier),
+  USE.NAMES = FALSE
+)
+expect_true(
+  identical(as.character(executable_task_rows$kernel_id), expected_kernels) &&
+    identical(as.character(executable_task_rows$representation_strategy), expected_strategies),
+  "every executable task cell matches the exact source-backed kernel and representation catalogs"
+)
+expect_true(
+  identical(as.character(evidence$tasks$evidence_use), expected_uses),
+  "every task cell matches the role- and tier-specific evidence-use catalog"
+)
+native_invariant_tasks <- sort(as.character(manifest$task[manifest$correctness_policy == "native_invariant"]))
+expect_true(
+  identical(sort(evidence_native_invariant_tasks()), native_invariant_tasks),
+  "the evidence catalog and task manifest agree on every native-invariant task"
+)
+c_diagnostics <- sort(as.character(evidence$tasks$task[
+  evidence$tasks$runner == "c_call" & evidence$tasks$evidence_use == "diagnostic_control"
+]))
+expect_true(
+  identical(c_diagnostics, intersect(native_invariant_tasks, as.character(evidence$tasks$task[
+    evidence$tasks$runner == "c_call" & evidence$tasks$executable
+  ]))),
+  "registered C native invariants are diagnostic controls rather than false kernel comparisons"
+)
+kernel_by_runner <- function(task_id) {
+  rows <- executable_task_rows[executable_task_rows$task == task_id, c("runner", "kernel_id"), drop = FALSE]
+  setNames(as.character(rows$kernel_id), as.character(rows$runner))
+}
+expect_true(
+  identical(
+    unname(kernel_by_runner("11_sexp_inspect")[c("c_call", "rcpp", "extendr")]),
+    rep("five-cached-object-type-vector-real-query-10000-passes-v1", 3L)
+  ) &&
+    identical(
+      unname(kernel_by_runner("11_sexp_inspect")[["zigr"]]),
+      "five-object-type-vector-real-query-once-plus-10000-accumulation-passes-v1"
+    ) &&
+    identical(
+      unname(kernel_by_runner("11_sexp_inspect")[["savvy"]]),
+      "five-list-element-type-vector-real-query-10000-passes-v1"
+    ),
+  "task 11 records cached, hoisted, and repeated list-element query algorithms separately"
+)
+expect_true(
+  grepl("hoisted-error-call", kernel_by_runner("09_longjmp_safety")[["zigr"]], fixed = TRUE) &&
+    all(!grepl(
+      "hoisted-error-call",
+      kernel_by_runner("09_longjmp_safety")[c("c_call", "rcpp", "extendr", "savvy")],
+      fixed = TRUE
+    )),
+  "task 09 records zigr's hoisted error call separately from per-pass construction"
+)
+expect_true(
+  grepl("positional-column-iteration", kernel_by_runner("15_dataframe_filter")[["extendr"]], fixed = TRUE) &&
+    all(grepl(
+      "named-column-lookup",
+      kernel_by_runner("15_dataframe_filter")[c("c_call", "rcpp", "savvy", "zigr")],
+      fixed = TRUE
+    )),
+  "task 15 separates extendr's positional access from the named-column implementations"
+)
+expect_true(
+  all(grepl(
+    "direct-eval",
+    kernel_by_runner("39_r_eval")[c("c_call", "rcpp", "zigr")],
+    fixed = TRUE
+  )) &&
+    all(grepl(
+      "silent-try-eval",
+      kernel_by_runner("39_r_eval")[c("extendr", "savvy")],
+      fixed = TRUE
+    )),
+  "task 39 separates direct evaluation from silent try-evaluation"
+)
+expect_true(
+  grepl("persistent-stream-xdr-v3", kernel_by_runner("41_serialize_roundtrip")[["zigr"]], fixed = TRUE) &&
+    all(grepl(
+      "direct-eval",
+      kernel_by_runner("41_serialize_roundtrip")[c("c_call", "rcpp")],
+      fixed = TRUE
+    )) &&
+    all(grepl(
+      "silent-try-eval",
+      kernel_by_runner("41_serialize_roundtrip")[c("extendr", "savvy")],
+      fixed = TRUE
+    )),
+  "task 41 separates persistent-stream, direct-eval, and silent-try-eval serialization paths"
+)
+expect_true(
+  all(executable_task_rows$representation_strategy[
+    executable_task_rows$task == "15_dataframe_filter" &
+      executable_task_rows$implementation_role != "optimized_base_r"
+  ] == "mixed") &&
+    all(executable_task_rows$representation_strategy[executable_task_rows$task == "16_list_access"] == "element_access") &&
+    all(executable_task_rows$representation_strategy[executable_task_rows$task %in% c("20_factor_ops", "21_attrib_ops")] == "runtime_service"),
+  "data-frame, nested-list, factor, and attribute rows disclose their actual representation services"
+)
+expect_true(
+  all(evidence$tasks$mutation_policy[evidence$tasks$executable] == expected_mutation[evidence$tasks$executable]) &&
+    all(evidence$tasks$mutation_policy[!evidence$tasks$executable] == "not_applicable"),
+  "every executable task has its exact mutation policy and every gap is not applicable"
+)
+expect_true(
+  all(evidence$tasks$setup_policy[evidence$tasks$executable] == "setup_outside_timer") &&
+    all(evidence$tasks$setup_policy[!evidence$tasks$executable] == "not_timed") &&
+    all(evidence$tasks$fixture_version == "p4.5-task-input-v2") &&
+    identical(as.character(evidence$tasks$comparison_group), paste0("task:", evidence$tasks$task)),
+  "task input, setup, and comparison identities are exact for all 581 cells"
+)
+revised_contract_tasks <- c(
+  "17_string_concat", "18_string_nchar", "19_string_encoding",
+  "20_factor_ops", "41_serialize_roundtrip", "42_external_ptr", "43_rng_stress",
+  "72_boundary_external_method_generated", "73_boundary_external_method_handwritten"
+)
+expect_true(
+  all(grepl(":v2$", evidence$tasks$contract_version[evidence$tasks$task %in% revised_contract_tasks])) &&
+    all(grepl(":v1$", evidence$tasks$contract_version[!evidence$tasks$task %in% revised_contract_tasks])),
+  "only semantic or lifecycle repairs bump the historical task contract"
+)
+expect_true(
+  all(evidence$tasks$owner[evidence$tasks$executable] == "P4.6") &&
+    all(nzchar(evidence$tasks$owner[!evidence$tasks$executable])),
+  "every executable row routes to source-matched correctness and every gap has an owner"
+)
+task_names <- setNames(manifest$display_name, manifest$task)
+expect_true(
+  identical(task_names[["17_string_concat"]], "Encoding-aware string concatenation") &&
+    identical(task_names[["20_factor_ops"]], "Factor conversion with 100-level vocabulary") &&
+    identical(task_names[["24_long_vector_idx"]], "Compact ALTREP sampled indexing"),
+  "task 17, task 20, and task 24 names match their repaired contracts"
+)
 fixture_tiers <- table(factor(
   evidence$fixture_rows$comparison_tier,
   levels = c("tier_a", "tier_b", "tier_c", "tier_d", "gap")
@@ -99,12 +290,38 @@ expect_true(
       c("generated_typed", "generated_public_adapter")),
   "every product public path is generated and is typed or an explicit public adapter"
 )
+zigr_task70 <- evidence$tasks[
+  evidence$tasks$runner == "zigr" & evidence$tasks$task == "70_boundary_schema_generated",
+  , drop = FALSE
+]
+expect_true(
+  nrow(zigr_task70) == 1L && zigr_task70$path_kind == "generated_public_adapter" &&
+    zigr_task70$comparison_tier == "tier_b",
+  "zigr task 70 retains the accepted explicit fixed-schema adapter label"
+)
 
 expected_executable <- c(c_call = 70L, cpp11 = 11L, extendr = 44L, r = 72L, rcpp = 44L, savvy = 44L, zigr = 83L)
 actual_executable <- vapply(names(expected_executable), function(runner) {
   sum(evidence$tasks$runner == runner & evidence$tasks$executable)
 }, integer(1))
 expect_true(identical(actual_executable, expected_executable), "executable coverage matches the P4.1 R split")
+expected_task_tiers_by_runner <- rbind(
+  c_call = c(gap = 13L, tier_a = 0L, tier_b = 0L, tier_c = 70L, tier_d = 0L),
+  cpp11 = c(gap = 72L, tier_a = 7L, tier_b = 3L, tier_c = 0L, tier_d = 1L),
+  extendr = c(gap = 39L, tier_a = 0L, tier_b = 0L, tier_c = 0L, tier_d = 44L),
+  r = c(gap = 11L, tier_a = 0L, tier_b = 0L, tier_c = 72L, tier_d = 0L),
+  rcpp = c(gap = 39L, tier_a = 0L, tier_b = 0L, tier_c = 0L, tier_d = 44L),
+  savvy = c(gap = 39L, tier_a = 0L, tier_b = 0L, tier_c = 0L, tier_d = 44L),
+  zigr = c(gap = 0L, tier_a = 7L, tier_b = 6L, tier_c = 0L, tier_d = 70L)
+)
+actual_task_tiers_by_runner <- with(evidence$tasks, table(
+  factor(runner, levels = rownames(expected_task_tiers_by_runner)),
+  factor(comparison_tier, levels = colnames(expected_task_tiers_by_runner))
+))
+expect_true(
+  identical(as.integer(actual_task_tiers_by_runner), as.integer(expected_task_tiers_by_runner)),
+  "each runner has the exact source-backed product, control, diagnostic, and gap split"
+)
 
 expected_fixture_executable <- c(
   c_call = 12L, cpp11 = 9L, extendr = 12L, r = 11L, rcpp = 12L, savvy = 12L, zigr = 11L
@@ -203,8 +420,8 @@ r_roles <- table(factor(
   levels = c("pure_r", "optimized_base_r", "capability_gap")
 ))
 expect_true(
-  identical(unname(as.integer(r_roles)), c(16L, 56L, 11L)),
-  "R rows remain split into 16 pure, 56 optimized, and 11 unrepresentable dispositions"
+  identical(unname(as.integer(r_roles)), c(17L, 55L, 11L)),
+  "R rows are split into 17 pure, 55 optimized, and 11 unrepresentable dispositions"
 )
 
 bad <- clone(evidence$raw)
@@ -231,6 +448,18 @@ expect_error(
   "unsupported evidence schema version"
 )
 
+bad <- clone(evidence$raw)
+c_diagnostic_group <- which(vapply(bad$task_dispositions, function(group) {
+  identical(as.character(group$runner), "c_call") &&
+    identical(as.character(group$evidence_use), "diagnostic_control")
+}, logical(1)))[[1L]]
+bad$task_dispositions[[c_diagnostic_group]]$evidence_use <- "kernel_comparison"
+expect_error(
+  "authored evidence use differs from catalog",
+  validate_and_expand_evidence_manifest(bad, manifest),
+  "task evidence use differs from the exact catalog"
+)
+
 bad <- c(clone(evidence$raw), list(schema_version = 1L))
 expect_error(
   "duplicate object field",
@@ -242,7 +471,7 @@ bad <- clone(evidence$raw)
 group_index <- which(vapply(bad$task_dispositions, function(group) {
   identical(as.character(group$runner), "cpp11") && identical(as.character(group$status), "supported_and_executable")
 }, logical(1)))[[1L]]
-bad$task_dispositions[[group_index]]$exclude_tasks <- list("42_external_ptr")
+bad$task_dispositions[[group_index]]$exclude_tasks <- list("50_boundary_zero_generated")
 expect_error(
   "missing task disposition",
   validate_and_expand_evidence_manifest(bad, manifest),
@@ -370,6 +599,6 @@ expect_error(
 )
 
 cat(sprintf(
-  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and eighteen negative checks.\n",
+  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and nineteen negative checks.\n",
   nrow(evidence$tasks), nrow(evidence$fixture_rows)
 ))

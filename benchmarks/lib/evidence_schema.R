@@ -1,6 +1,6 @@
 evidence_schema_vocabulary <- function() {
   list(
-    version = "p4.0-2026-07-13-r1",
+    version = "p4.5-2026-07-13-r2",
     runners = c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"),
     fixtures = sprintf("F%02d", seq_len(12L)),
     dispositions = c(
@@ -26,10 +26,380 @@ evidence_schema_vocabulary <- function() {
     ),
     comparison_tiers = c("tier_a", "tier_b", "tier_c", "tier_d", "gap"),
     mutation_policies = c(
-      "immutable", "fresh_input_required", "stateful_reset_required", "rng_reset_required", "unclassified"
+      "immutable", "fresh_input_required", "stateful_reset_required", "rng_reset_required",
+      "not_applicable", "unclassified"
     ),
     setup_policies = c("setup_outside_timer", "legacy_shared_instance", "not_timed", "unclassified")
   )
+}
+
+evidence_task_contract_version <- function(task_id) {
+  revision <- if (task_id %in% c(
+    "17_string_concat", "18_string_nchar", "19_string_encoding", "20_factor_ops",
+    "41_serialize_roundtrip", "42_external_ptr", "43_rng_stress", "72_boundary_external_method_generated",
+    "73_boundary_external_method_handwritten"
+  )) "v2" else "v1"
+  paste0("task-contract:", task_id, ":", revision)
+}
+
+evidence_task_mutation_policy <- function(task_id) {
+  if (task_id %in% c("04_sort", "21_attrib_ops")) return("fresh_input_required")
+  if (task_id %in% c("72_boundary_external_method_generated", "73_boundary_external_method_handwritten")) {
+    return("stateful_reset_required")
+  }
+  if (identical(task_id, "43_rng_stress")) return("rng_reset_required")
+  "immutable"
+}
+
+evidence_boundary_group <- function(task_id) {
+  if (!grepl("^[0-9]{2}_boundary_.*_(generated|handwritten)$", task_id)) return("")
+  sub("^[0-9]{2}_boundary_(.*)_(generated|handwritten)$", "\\1", task_id)
+}
+
+evidence_boundary_kernel <- function(boundary) {
+  kernels <- c(
+    zero = "real-scalar-one-construction-v1",
+    scalar = "nonmissing-real-scalar-roundtrip-v1",
+    optional_null = "null-or-missing-real-presence-indicator-v1",
+    optional_typed_na = "null-or-missing-real-presence-indicator-v1",
+    numeric_small = "f64-scalar-left-fold-sum-v1",
+    numeric_large = "f64-scalar-left-fold-sum-v1",
+    altrep_integer = "i32-to-f64-scalar-left-fold-sum-v1",
+    string_view = "nonmissing-string-element-count-v1",
+    raw = "raw-byte-integer-left-fold-sum-v1",
+    complex = "complex-real-component-left-fold-sum-v1",
+    schema = "four-field-named-list-validation-and-identity-v1",
+    external_method = "typed-state-integer-add-and-return-v1",
+    external = "real-scalar-add-one-v1"
+  )
+  value <- unname(kernels[[boundary]])
+  if (is.null(value)) stop(sprintf("boundary kernel catalog is missing %s", boundary))
+  value
+}
+
+evidence_task_kernel_base <- function(task_id) {
+  boundary <- evidence_boundary_group(task_id)
+  if (nzchar(boundary)) return(evidence_boundary_kernel(boundary))
+  representation <- c(
+    "76_string_view_one" = "string-byte-count-one-pass-v1",
+    "77_string_cache_build" = "string-metadata-cache-construction-v1",
+    "78_string_cache_one" = "string-cache-build-plus-one-byte-count-pass-v1",
+    "79_string_headers_one" = "string-header-copy-plus-one-byte-count-pass-v1",
+    "80_string_view_repeated" = "string-byte-count-four-element-passes-v1",
+    "81_string_cache_repeated" = "string-cache-build-plus-four-byte-count-passes-v1",
+    "82_string_headers_repeated" = "string-header-copy-plus-four-byte-count-passes-v1",
+    "83_raw_view" = "raw-byte-sum-borrowed-v1",
+    "84_raw_copy" = "raw-byte-copy-plus-sum-v1",
+    "85_complex_view" = "complex-real-plus-imaginary-sum-v1",
+    "86_complex_return" = "complex-output-copy-v1"
+  )
+  if (task_id %in% names(representation)) return(unname(representation[[task_id]]))
+  kernels <- c(
+    "01_vectorsum" = "f64-scalar-left-fold-sum-v1",
+    "02_elem_ops" = "f64-abs-log-exp-sqrt-four-column-loop-v1",
+    "03_memcpy_bandwidth" = "copy-temp-copy-output-fill-output-two-pass-compound-v1",
+    "04_sort" = "f64-eight-pass-lsd-radix-copy-sort-v1",
+    "05_fib_recursive" = "recursive-fibonacci-i64-v1",
+    "06_broadcast" = "f64-scalar-left-fold-vector-plus-scalar-v1",
+    "07a_protect_shallow" = "protect-unprotect-100x10-v1",
+    "07b_protect_scaling" = "protect-unprotect-100x10x10000-v1",
+    "08_type_dispatch" = "three-type-tag-dispatch-2048-passes-v1",
+    "09_longjmp_safety" = "direct-adjusted-sum-plus-try-sum-error-unwind-four-strategy-512-passes-v1",
+    "10_sexp_create" = "real-scalar-allocation-10x10000-v1",
+    "11_sexp_inspect" = "five-cached-object-type-vector-real-query-10000-passes-v1",
+    "12_matrix_transpose" = "column-major-blocked-transpose-32-v1",
+    "13_matrix_rowsums" = "column-major-row-sums-v1",
+    "14_matrix_rowcol_means" = "column-major-row-means-column-sums-v1",
+    "15_dataframe_filter" = "named-column-lookup-positive-x-grouped-x-over-y-sum-v1",
+    "16_list_access" = "first-real-element-list-sum-v1",
+    "17_string_concat" = "utf8-or-bytes-comma-space-concatenation-v2",
+    "18_string_nchar" = "charsxp-byte-length-sum-skip-missing-v2",
+    "19_string_encoding" = "utf8-encoding-mark-count-v2",
+    "20_factor_ops" = "factor-conversion-code-sum-100-level-one-missing-v2",
+    "21_attrib_ops" = "class-and-creator-attribute-set-read-v1",
+    "22_s4_slot_access" = "bench-s4-construct-assign-read-slot-v1",
+    "23_na_propagation" = "f64-mean-skip-na-and-nan-v1",
+    "24_long_vector_idx" = "compact-integer-altrep-every-10000th-element-sum-v1",
+    "25_l1_arithmetic" = "f64-scale-add-left-fold-2500-passes-v1",
+    "26_matmul" = "blas-dgemm-nn-column-major-v1",
+    "27_crossprod" = "blas-dsyrk-upper-transpose-plus-mirror-v1",
+    "28_cholesky" = "lapack-dpotrf-upper-plus-zero-lower-v1",
+    "29_lm_fit" = "normal-equations-dgemm-dpotrf-two-dtrsm-v1",
+    "30_altrep_create" = "base-compact-integer-sequence-construction-v1",
+    "31_altrep_materialize" = "compact-integer-duplicate-pointer-endpoint-sum-v1",
+    "32_altrep_elt_walk" = "compact-integer-element-walk-sum-v1",
+    "33_altrep_region_read" = "compact-integer-4096-region-walk-sum-v1",
+    "34_altrep_sum_via_R" = "compact-integer-r-sum-dispatch-v1",
+    "35_altrep_sum_native" = "compact-integer-native-element-walk-sum-v1",
+    "36_altrep_min_max" = "compact-integer-element-min-max-difference-v1",
+    "37_altrep_no_na_query" = "compact-integer-element-missing-query-v1",
+    "38_struct_convert" = "ten-field-declaration-order-record-copy-v1",
+    "39_r_eval" = "global-environment-direct-eval-sum-plus-mean-v1",
+    "40_r_tryeval" = "silent-stop-evaluation-512-errors-v1",
+    "41_serialize_roundtrip" = "r-direct-eval-serialize-unserialize-real-sum-v1",
+    "42_external_ptr" = "owned-integer-state-constructor-finalizer-v2",
+    "43_rng_stress" = "r-inversion-normal-rng-one-million-draws-v2",
+    "48_weakref_lifecycle" = "zigr-weakref-create-key-value-check-4096-v1",
+    "49_owned_altrep_create" = "zigr-owned-integer-altrep-callback-lifecycle-v1"
+  )
+  value <- unname(kernels[[task_id]])
+  if (is.null(value)) stop(sprintf("task kernel catalog is missing %s", task_id))
+  value
+}
+
+evidence_optimized_r_kernel <- function(task_id) {
+  kernels <- c(
+    "01_vectorsum" = "base-sum-primitive-v1",
+    "02_elem_ops" = "base-vectorized-abs-ifelse-log-exp-sqrt-cbind-v1",
+    "03_memcpy_bandwidth" = "base-r-vector-copy-allocation-sum-two-passes-v1",
+    "04_sort" = "base-sort-method-dispatch-v1",
+    "06_broadcast" = "base-vector-add-plus-sum-v1",
+    "12_matrix_transpose" = "base-transpose-primitive-v1",
+    "13_matrix_rowsums" = "base-row-sums-primitive-v1",
+    "14_matrix_rowcol_means" = "base-row-means-plus-column-sums-v1",
+    "15_dataframe_filter" = "base-dataframe-subset-plus-stats-aggregate-sum-v1",
+    "17_string_concat" = "base-paste0-collapse-utf8-or-bytes-v2",
+    "18_string_nchar" = "base-nchar-bytes-plus-sum-remove-missing-v2",
+    "19_string_encoding" = "base-encoding-utf8-equality-sum-v2",
+    "20_factor_ops" = "base-factor-code-sum-100-level-one-missing-v2",
+    "21_attrib_ops" = "base-attribute-set-read-nchar-sum-v1",
+    "22_s4_slot_access" = "methods-s4-new-assign-read-slot-v1",
+    "23_na_propagation" = "base-mean-remove-missing-v1",
+    "26_matmul" = "base-matrix-product-blas-v1",
+    "27_crossprod" = "base-crossprod-blas-v1",
+    "28_cholesky" = "base-chol-lapack-v1",
+    "29_lm_fit" = "stats-lm-fit-qr-fortran-v1",
+    "30_altrep_create" = "base-seq-len-compact-integer-altrep-v1",
+    "31_altrep_materialize" = "base-seq-len-slice-materialization-endpoint-sum-v1",
+    "34_altrep_sum_via_R" = "base-sum-altrep-dispatch-v1",
+    "36_altrep_min_max" = "base-min-max-compact-integer-v1",
+    "37_altrep_no_na_query" = "base-any-is-na-compact-integer-v1",
+    "38_struct_convert" = "base-ten-field-scalar-coercion-copy-v1",
+    "39_r_eval" = "base-sum-plus-mean-v1",
+    "40_r_tryeval" = "base-try-catch-stop-512-errors-v1",
+    "41_serialize_roundtrip" = "base-serialize-unserialize-sum-v1",
+    "43_rng_stress" = "base-rnorm-inversion-one-million-draws-v2",
+    "58_boundary_numeric_small_generated" = "base-sum-numeric-boundary-v1",
+    "59_boundary_numeric_small_handwritten" = "base-sum-numeric-boundary-v1",
+    "60_boundary_numeric_large_generated" = "base-sum-numeric-boundary-v1",
+    "61_boundary_numeric_large_handwritten" = "base-sum-numeric-boundary-v1",
+    "62_boundary_altrep_integer_generated" = "base-sum-compact-integer-plus-double-coercion-v1",
+    "63_boundary_altrep_integer_handwritten" = "base-sum-compact-integer-plus-double-coercion-v1",
+    "64_boundary_string_view_generated" = "base-nonmissing-string-count-v1",
+    "65_boundary_string_view_handwritten" = "base-nonmissing-string-count-v1",
+    "66_boundary_raw_generated" = "base-raw-to-integer-coercion-plus-sum-v1",
+    "67_boundary_raw_handwritten" = "base-raw-to-integer-coercion-plus-sum-v1",
+    "68_boundary_complex_generated" = "base-complex-real-part-plus-sum-v1",
+    "69_boundary_complex_handwritten" = "base-complex-real-part-plus-sum-v1",
+    "74_boundary_external_generated" = "base-vector-add-one-plus-double-coercion-v1",
+    "75_boundary_external_handwritten" = "base-vector-add-one-plus-double-coercion-v1",
+    "76_string_view_one" = "base-nchar-bytes-sum-one-pass-v1",
+    "77_string_cache_build" = "base-length-only-no-string-cache-v1",
+    "78_string_cache_one" = "base-nchar-bytes-sum-no-cache-one-pass-v1",
+    "79_string_headers_one" = "base-nchar-bytes-sum-no-header-copy-one-pass-v1",
+    "80_string_view_repeated" = "base-nchar-bytes-sum-four-passes-v1",
+    "81_string_cache_repeated" = "base-nchar-bytes-sum-no-cache-four-passes-v1",
+    "82_string_headers_repeated" = "base-nchar-bytes-sum-no-header-copy-four-passes-v1",
+    "83_raw_view" = "base-raw-to-integer-coercion-plus-sum-no-view-v1",
+    "84_raw_copy" = "base-raw-to-integer-coercion-plus-sum-no-copy-v1",
+    "85_complex_view" = "base-complex-real-plus-imaginary-vector-sum-v1",
+    "86_complex_return" = "base-complex-vector-add-zero-output-v1"
+  )
+  value <- unname(kernels[[task_id]])
+  if (is.null(value)) stop(sprintf("optimized R kernel catalog is missing %s", task_id))
+  value
+}
+
+evidence_task_kernel_id <- function(runner, task_id, implementation_role) {
+  base <- evidence_task_kernel_base(task_id)
+  if (identical(implementation_role, "optimized_base_r")) {
+    return(evidence_optimized_r_kernel(task_id))
+  }
+  if (identical(runner, "zigr") && identical(task_id, "01_vectorsum")) {
+    return("f64-simd-chunk-reduction-plus-scalar-tail-v1")
+  }
+  if (identical(runner, "zigr") && identical(task_id, "06_broadcast")) {
+    return("f64-simd-vector-plus-scalar-reduction-v1")
+  }
+  if (identical(runner, "zigr") && identical(task_id, "14_matrix_rowcol_means")) {
+    return("column-major-simd4-row-means-column-sums-v1")
+  }
+  if (identical(runner, "zigr") && identical(task_id, "09_longjmp_safety")) {
+    return("direct-adjusted-sum-plus-try-sum-hoisted-error-call-unwind-four-strategy-512-passes-v1")
+  }
+  if (identical(runner, "zigr") && identical(task_id, "11_sexp_inspect")) {
+    return("five-object-type-vector-real-query-once-plus-10000-accumulation-passes-v1")
+  }
+  if (identical(runner, "extendr") && identical(task_id, "15_dataframe_filter")) {
+    return("positional-column-iteration-positive-x-grouped-x-over-y-sum-v1")
+  }
+  if (runner %in% c("extendr", "savvy") && identical(task_id, "39_r_eval")) {
+    return("global-environment-silent-try-eval-sum-plus-mean-v1")
+  }
+  if (identical(runner, "zigr") && identical(task_id, "41_serialize_roundtrip")) {
+    return("r-persistent-stream-xdr-v3-serialize-unserialize-real-sum-v1")
+  }
+  if (runner %in% c("extendr", "savvy") && identical(task_id, "41_serialize_roundtrip")) {
+    return("r-silent-try-eval-serialize-unserialize-real-sum-v1")
+  }
+  if (identical(runner, "savvy") && task_id %in% c("07a_protect_shallow", "07b_protect_scaling")) {
+    return("savvy-no-protection-loop-zero-control-v1")
+  }
+  if (identical(runner, "savvy") && identical(task_id, "11_sexp_inspect")) {
+    return("five-list-element-type-vector-real-query-10000-passes-v1")
+  }
+  base
+}
+
+evidence_native_invariant_tasks <- function() {
+  c(
+    "07a_protect_shallow", "07b_protect_scaling", "08_type_dispatch",
+    "09_longjmp_safety", "10_sexp_create", "11_sexp_inspect", "42_external_ptr",
+    "48_weakref_lifecycle", "49_owned_altrep_create"
+  )
+}
+
+evidence_task_evidence_use <- function(runner, task_id, implementation_role, comparison_tier) {
+  if (identical(implementation_role, "capability_gap")) return("gap")
+  if (identical(implementation_role, "pure_r")) return("semantic_oracle")
+  if (identical(implementation_role, "optimized_base_r")) return("timed_baseline")
+  if (identical(implementation_role, "c_control")) {
+    if (task_id %in% evidence_native_invariant_tasks()) return("diagnostic_control")
+    return("kernel_comparison")
+  }
+  if (identical(implementation_role, "product_public_path")) {
+    return(switch(comparison_tier,
+      tier_a = "product_comparison",
+      tier_b = "strategy_comparison",
+      tier_d = "diagnostic_control",
+      stop(sprintf("product task has invalid comparison tier %s/%s", runner, task_id))
+    ))
+  }
+  if (identical(implementation_role, "language_control")) return("diagnostic_control")
+  stop(sprintf("task evidence-use catalog is missing %s/%s/%s", runner, task_id, implementation_role))
+}
+
+evidence_task_representation_strategy <- function(runner, task_id, implementation_role) {
+  if (identical(implementation_role, "optimized_base_r")) return("runtime_service")
+  if (identical(implementation_role, "pure_r")) {
+    if (task_id %in% c(
+      "01_vectorsum", "06_broadcast", "12_matrix_transpose", "13_matrix_rowsums",
+      "14_matrix_rowcol_means", "16_list_access", "23_na_propagation",
+      "24_long_vector_idx", "25_l1_arithmetic", "32_altrep_elt_walk",
+      "33_altrep_region_read", "35_altrep_sum_native", "36_altrep_min_max",
+      "37_altrep_no_na_query"
+    )) {
+      return("element_access")
+    }
+    if (task_id %in% c("38_struct_convert", "70_boundary_schema_generated", "71_boundary_schema_handwritten")) return("mixed")
+    if (task_id %in% c("50_boundary_zero_generated", "51_boundary_zero_handwritten",
+                       "54_boundary_optional_null_generated", "55_boundary_optional_null_handwritten",
+                       "56_boundary_optional_typed_na_generated", "57_boundary_optional_typed_na_handwritten")) {
+      return("owned_output")
+    }
+    if (task_id %in% c("52_boundary_scalar_generated", "53_boundary_scalar_handwritten")) return("borrowed_direct")
+    return("kernel_specific")
+  }
+  boundary <- evidence_boundary_group(task_id)
+  if (nzchar(boundary)) {
+    strategy <- switch(boundary,
+      zero = "owned_output", scalar = "owned_output", optional_null = "owned_output",
+      optional_typed_na = "owned_output", numeric_small = "borrowed_direct",
+      numeric_large = "borrowed_direct", altrep_integer = "region_access",
+      string_view = "element_access", raw = "borrowed_direct", complex = "borrowed_direct",
+      schema = "mixed", external_method = "external_state", external = "runtime_service"
+    )
+    if (identical(runner, "zigr") && identical(task_id, "62_boundary_altrep_integer_generated")) {
+      strategy <- "copied_contiguous"
+    }
+    if (identical(runner, "zigr") && task_id %in% c("66_boundary_raw_generated")) {
+      strategy <- "copied_contiguous"
+    }
+    strategy
+  } else if (task_id %in% c("76_string_view_one", "80_string_view_repeated")) {
+    "element_access"
+  } else if (task_id %in% c("77_string_cache_build", "78_string_cache_one", "81_string_cache_repeated")) {
+    "cache_construction"
+  } else if (task_id %in% c("79_string_headers_one", "82_string_headers_repeated", "84_raw_copy")) {
+    "copied_contiguous"
+  } else if (task_id %in% c("83_raw_view", "85_complex_view")) {
+    "borrowed_direct"
+  } else if (identical(task_id, "86_complex_return")) {
+    "owned_output"
+  } else if (task_id %in% c("01_vectorsum", "02_elem_ops", "06_broadcast", "12_matrix_transpose",
+                             "13_matrix_rowsums", "14_matrix_rowcol_means", "23_na_propagation", "25_l1_arithmetic", "26_matmul",
+                             "27_crossprod", "28_cholesky", "29_lm_fit")) {
+    "borrowed_direct"
+  } else if (identical(task_id, "15_dataframe_filter")) {
+    "mixed"
+  } else if (identical(task_id, "16_list_access")) {
+    "element_access"
+  } else if (identical(task_id, "03_memcpy_bandwidth")) {
+    "mixed"
+  } else if (identical(task_id, "04_sort")) {
+    "copied_contiguous"
+  } else if (task_id %in% c("05_fib_recursive", "08_type_dispatch", "11_sexp_inspect")) {
+    "kernel_specific"
+  } else if (task_id %in% c("07a_protect_shallow", "07b_protect_scaling", "09_longjmp_safety",
+                             "22_s4_slot_access", "30_altrep_create", "34_altrep_sum_via_R",
+                             "39_r_eval", "40_r_tryeval", "41_serialize_roundtrip")) {
+    "runtime_service"
+  } else if (identical(task_id, "10_sexp_create")) {
+    "owned_output"
+  } else if (task_id %in% c("17_string_concat", "18_string_nchar", "19_string_encoding",
+                             "24_long_vector_idx", "32_altrep_elt_walk",
+                             "35_altrep_sum_native", "36_altrep_min_max", "37_altrep_no_na_query")) {
+    "element_access"
+  } else if (task_id %in% c("20_factor_ops", "21_attrib_ops")) {
+    "runtime_service"
+  } else if (identical(task_id, "31_altrep_materialize")) {
+    "materialized_r_vector"
+  } else if (identical(task_id, "33_altrep_region_read")) {
+    "region_access"
+  } else if (task_id %in% c("38_struct_convert", "43_rng_stress")) {
+    "owned_output"
+  } else if (identical(task_id, "42_external_ptr")) {
+    "external_state"
+  } else if (task_id %in% c("48_weakref_lifecycle", "49_owned_altrep_create")) {
+    "mixed"
+  } else {
+    stop(sprintf("task representation catalog is missing %s/%s", runner, task_id))
+  }
+}
+
+hydrate_detailed_task_evidence <- function(rows) {
+  for (index in seq_len(nrow(rows))) {
+    task_id <- as.character(rows$task[[index]])
+    runner <- as.character(rows$runner[[index]])
+    implementation_role <- as.character(rows$implementation_role[[index]])
+    comparison_tier <- as.character(rows$comparison_tier[[index]])
+    expected_evidence_use <- evidence_task_evidence_use(
+      runner, task_id, implementation_role, comparison_tier
+    )
+    if (!identical(as.character(rows$evidence_use[[index]]), expected_evidence_use)) {
+      stop(sprintf("task evidence use differs from the exact catalog for %s/%s", runner, task_id))
+    }
+    if (isTRUE(rows$executable[[index]])) {
+      rows$kernel_id[[index]] <- evidence_task_kernel_id(
+        runner, task_id, implementation_role
+      )
+      rows$representation_strategy[[index]] <- evidence_task_representation_strategy(
+        runner, task_id, implementation_role
+      )
+      rows$mutation_policy[[index]] <- evidence_task_mutation_policy(task_id)
+      rows$setup_policy[[index]] <- "setup_outside_timer"
+    } else {
+      rows$kernel_id[[index]] <- paste0("not-applicable:", task_id)
+      rows$representation_strategy[[index]] <- "not_applicable"
+      rows$mutation_policy[[index]] <- "not_applicable"
+      rows$setup_policy[[index]] <- "not_timed"
+    }
+    rows$contract_version[[index]] <- evidence_task_contract_version(task_id)
+    rows$fixture_version[[index]] <- "p4.5-task-input-v2"
+    rows$comparison_group[[index]] <- paste0("task:", task_id)
+    rows$timing_eligible[[index]] <- FALSE
+  }
+  rows
 }
 
 evidence_values <- function(value) {
@@ -325,12 +695,27 @@ validate_and_expand_evidence_manifest <- function(raw, task_manifest) {
   )
   evidence_check_keys(raw$task_defaults, default_fields, default_fields, "task evidence defaults")
   evidence_check_keys(raw$fixture_defaults, default_fields, default_fields, "fixture evidence defaults")
+  if (!identical(as.character(raw$task_defaults$kernel_id), "catalog:evidence_task_kernel_id") ||
+      !identical(as.character(raw$task_defaults$contract_version), "catalog:evidence_task_contract_version")) {
+    stop("task evidence defaults must declare the exact kernel and contract catalog derivation")
+  }
   task_rows <- evidence_expand_groups(raw$task_dispositions, raw$task_defaults, "task", task_sets)
+  task_rows <- hydrate_detailed_task_evidence(task_rows)
   fixture_rows <- evidence_expand_groups(raw$fixture_dispositions, raw$fixture_defaults, "fixture")
   validate_evidence_rows(task_rows, "task evidence")
   validate_evidence_rows(fixture_rows, "fixture evidence")
   validate_evidence_coverage(task_rows, runners, task_sets$all_tasks, "task")
   validate_evidence_coverage(fixture_rows, runners, fixtures, "fixture")
+  if (any(grepl("unverified|unclassified|legacy|^catalog:", unlist(
+    task_rows[c("kernel_id", "contract_version", "fixture_version", "mutation_policy", "setup_policy")],
+    use.names = FALSE
+  ), fixed = FALSE))) {
+    stop("task evidence retains a coarse P4.0 placeholder")
+  }
+  if (any(task_rows$executable & task_rows$owner != "P4.6") ||
+      any(!task_rows$executable & !nzchar(task_rows$owner))) {
+    stop("task evidence has an invalid downstream owner")
+  }
   list(
     schema_version = as.integer(raw$schema_version),
     vocabulary_version = as.character(raw$vocabulary_version),

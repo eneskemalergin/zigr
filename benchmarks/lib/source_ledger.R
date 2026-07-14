@@ -652,7 +652,7 @@ validate_source_path_gate <- function(records, evidence, enforce_current_gate = 
       function(record) record$source_class, character(1)),
     levels = c("pure_r", "optimized_base_r", "pure_r_unrepresentable")
   ))
-  if (!identical(unname(as.integer(r_classes)), c(16L, 56L, 11L))) {
+  if (!identical(unname(as.integer(r_classes)), c(17L, 55L, 11L))) {
     stop("source verifier does not reject the mixed R runner as uniformly pure R")
   }
   invisible(records)

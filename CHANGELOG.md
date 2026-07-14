@@ -15,10 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Correct cross-target, build-option, public-surface, testing, and Zig 0.16 guidance.
 - Benchmark list access now uses zigr's ABI-selected vector and data accessors instead of a raw payload offset.
+- Benchmark evidence now classifies every runner/task cell as comparable product evidence, a strategy comparison, a reference or control, a diagnostic, or an explicit gap.
 
 ### Fixed
 
 - `argmin` and `argmax` now skip missing and `NaN` values, preserve the first tie, and return `-1` when every value is missing.
+- Benchmark string, factor, RNG, serialization, and external-pointer diagnostics now use exact encodings and vocabulary, deterministic RNG-state checks, protected serialized objects, and owned finalized native state.
 
 ## [0.0.11] - 2026-07-12
 

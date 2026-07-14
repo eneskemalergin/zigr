@@ -50,9 +50,13 @@ if (!is.null(tasks_filter)) {
 }
 
 source(file.path(root_dir, "src", "r", "run_all.R"))
-r_reference_map <- fromJSON(file.path(root_dir, "runners", "r.json"), simplifyVector = FALSE)$exports
+r_config <- fromJSON(file.path(root_dir, "runners", "r.json"), simplifyVector = FALSE)
+r_runner_map <- r_config$exports
+r_reference_exports <- r_reference_map(r_config)
 r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
-r_provenance <- build_run_r_provenance(selected_tasks, r_reference_map, manifest, r_evidence_rows)
+r_provenance <- build_run_r_provenance(
+  selected_tasks, r_runner_map, r_reference_exports, manifest, r_evidence_rows
+)
 
 coverage_args <- c("check_coverage.R")
 if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))

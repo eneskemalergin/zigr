@@ -1,6 +1,79 @@
-benchmark_input_schema_version <- function() "p4.1-input-v1"
+benchmark_input_schema_version <- function() "p4.5-input-v2"
 
 benchmark_master_seed <- function() 20260713L
+
+benchmark_encoded_strings <- function() {
+  byte_marked <- rawToChar(as.raw(c(0x66, 0x61, 0xe7, 0x61, 0x64, 0x65)))
+  values <- c(
+    enc2utf8("façade"),
+    iconv("façade", from = "UTF-8", to = "latin1"),
+    byte_marked,
+    "",
+    NA_character_
+  )
+  Encoding(values[[1L]]) <- "UTF-8"
+  Encoding(values[[2L]]) <- "latin1"
+  Encoding(values[[3L]]) <- "bytes"
+  values
+}
+
+benchmark_string_input <- function(task_id) {
+  cases <- benchmark_encoded_strings()
+  if (identical(task_id, "17_string_concat")) {
+    return(rep(cases, length.out = 10000L))
+  }
+  if (identical(task_id, "18_string_nchar")) {
+    values <- rep(cases[seq_len(4L)], length.out = 10000L)
+    values[seq.int(20L, 10000L, by = 20L)] <- NA_character_
+    return(values)
+  }
+  if (identical(task_id, "19_string_encoding")) {
+    return(rep(cases, length.out = 10000L))
+  }
+  stop(sprintf("no benchmark string input is declared for %s", task_id))
+}
+
+benchmark_factor_input <- function() {
+  vocabulary <- sprintf("level_%03d", seq_len(100L))
+  values <- rep(vocabulary, length.out = 10000L)
+  values[[10000L]] <- NA_character_
+  values
+}
+
+validate_special_task_input <- function(task_id, arguments) {
+  if (task_id %in% c("17_string_concat", "18_string_nchar", "19_string_encoding")) {
+    expected <- benchmark_string_input(task_id)
+    if (length(arguments) != 1L || !identical(arguments[[1L]], expected) ||
+        !identical(Encoding(arguments[[1L]]), Encoding(expected))) {
+      stop(sprintf("string contract input differs for %s", task_id))
+    }
+  }
+  if (identical(task_id, "20_factor_ops")) {
+    if (length(arguments) != 1L) {
+      stop("factor contract requires 100 deterministic levels and one explicit trailing missing value")
+    }
+    values <- arguments[[1L]]
+    vocabulary <- sprintf("level_%03d", seq_len(100L))
+    if (!is.character(values) || length(values) != 10000L ||
+        !identical(sort(unique(values[!is.na(values)])), vocabulary) ||
+        sum(is.na(values)) != 1L || !is.na(values[[10000L]])) {
+      stop("factor contract requires 100 deterministic levels and one explicit trailing missing value")
+    }
+  }
+  if (identical(task_id, "24_long_vector_idx")) {
+    values <- arguments[[1L]]
+    if (length(arguments) != 1L || typeof(values) != "integer" || length(values) != 10000000L ||
+        values[[1L]] != 1L || values[[length(values)]] != 10000000L) {
+      stop("compact ALTREP indexing contract input differs")
+    }
+  }
+  if (identical(task_id, "43_rng_stress")) {
+    if (length(arguments) != 1L || !identical(arguments[[1L]], 1000000L)) {
+      stop("RNG contract requires exactly one million normal draws")
+    }
+  }
+  invisible(arguments)
+}
 
 input_scalar_integer <- function(value, label) {
   numeric_value <- suppressWarnings(as.numeric(value))
@@ -64,8 +137,23 @@ materialize_task_input <- function(task, seed) {
   with_preserved_rng(seed, {
     arguments <- task$args()
     if (!is.list(arguments)) stop(sprintf("input factory for %s did not return a list", task$id))
+    validate_special_task_input(task$id, arguments)
     list(arguments = arguments, post_factory_rng_state = get(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
   })
+}
+
+rng_state_snapshot <- function() {
+  if (!exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+    stop("RNG contract expected .Random.seed to exist")
+  }
+  as.integer(get(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
+}
+
+assert_rng_state_equivalent <- function(expected, actual, task_id = "43_rng_stress") {
+  if (!identical(as.integer(expected), as.integer(actual))) {
+    stop(sprintf("post-call RNG state differs for %s", task_id))
+  }
+  invisible(actual)
 }
 
 canonical_input_value <- function(value) {

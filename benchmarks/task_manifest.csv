@@ -16,14 +16,14 @@ task,workload_group,display_name,category,input_factory,expected_return,correctn
 14_matrix_rowcol_means,objects_and_strings,Matrix row and column means,data_structure,task_spec.args,real_list,r_reference,comparable,TRUE,,1
 15_dataframe_filter,objects_and_strings,Data-frame filter,data_structure,task_spec.args,data_frame_list,r_reference,comparable,TRUE,,1
 16_list_access,objects_and_strings,List access,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
-17_string_concat,objects_and_strings,String concatenation,data_structure,task_spec.args,r_object,r_reference,comparable,TRUE,,1
-18_string_nchar,objects_and_strings,String length,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
-19_string_encoding,objects_and_strings,String encoding,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
-20_factor_ops,objects_and_strings,Factor operations,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
+17_string_concat,objects_and_strings,Encoding-aware string concatenation,data_structure,task_spec.args,r_object,r_reference,comparable,TRUE,,1
+18_string_nchar,objects_and_strings,String byte length,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
+19_string_encoding,objects_and_strings,UTF-8 encoding-mark count,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
+20_factor_ops,objects_and_strings,Factor conversion with 100-level vocabulary,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
 21_attrib_ops,objects_and_strings,Attribute operations,data_structure,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
 22_s4_slot_access,objects_and_strings,S4 slot access,data_structure,task_spec.args,r_object,r_reference,comparable,TRUE,,1
 23_na_propagation,objects_and_strings,NA propagation,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
-24_long_vector_idx,objects_and_strings,Long-vector indexing,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
+24_long_vector_idx,objects_and_strings,Compact ALTREP sampled indexing,data_structure,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
 25_l1_arithmetic,numerical,Level-one arithmetic,numeric_kernel,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
 26_matmul,numerical,Matrix multiplication,linear_algebra,task_spec.args,real_matrix,r_reference,comparable,TRUE,,2
 27_crossprod,numerical,Cross-product,linear_algebra,task_spec.args,real_matrix,r_reference,comparable,TRUE,,1
@@ -42,7 +42,7 @@ task,workload_group,display_name,category,input_factory,expected_return,correctn
 40_r_tryeval,runtime_services,R try-evaluation,integration,task_spec.args,integer_scalar,r_reference,comparable,TRUE,,1
 41_serialize_roundtrip,runtime_services,Serialization round trip,integration,task_spec.args,real_scalar,r_reference,comparable,TRUE,,1
 42_external_ptr,runtime_services,External pointer,integration,task_spec.args,external_pointer,native_invariant,non_comparable,FALSE,Pointer identity and finalization are not shared R values,1
-43_rng_stress,runtime_services,RNG stress,integration,task_spec.args,nondeterministic_vector,nondeterministic,non_comparable,FALSE,Random output is not compared by value,1
+43_rng_stress,runtime_services,RNG stress,integration,task_spec.args,real_vector,r_reference,comparable,TRUE,,1
 48_weakref_lifecycle,runtime_services,Weak-reference create/access,integration,task_spec.args,integer_scalar,native_invariant,non_comparable,FALSE,zigr-only checked weak-reference construction and access workload,1
 49_owned_altrep_create,altrep,Owned ALTREP callbacks,altrep,task_spec.args,named_real_vector,native_invariant,non_comparable,FALSE,zigr-only package-registered copied ALTREP summary region duplicate metadata and serialization workload,1
 50_boundary_zero_generated,api_boundary,Generated zero-argument call,api_overhead,task_spec.args,real_scalar,r_reference,non_comparable,FALSE,Boundary pair; excluded from the primary aggregate,0

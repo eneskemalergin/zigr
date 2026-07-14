@@ -762,10 +762,11 @@ fixture_expect_error <- function(expression, label) {
 }
 
 fixture_encoded_strings <- function() {
+  byte_marked <- rawToChar(as.raw(c(0x66, 0x61, 0xe7, 0x61, 0x64, 0x65)))
   values <- c(
     enc2utf8("façade"),
     iconv("façade", from = "UTF-8", to = "latin1"),
-    "bytes",
+    byte_marked,
     "",
     NA_character_
   )

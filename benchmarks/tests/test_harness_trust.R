@@ -73,6 +73,61 @@ second_phase <- materialize_task_input(small_task, record$task_seed)$arguments
 first_phase[[1L]][[1L]] <- -1
 expect_true(second_phase[[1L]][[1L]] != -1, "phase inputs do not share mutable state")
 
+encoded_cases <- benchmark_encoded_strings()
+expect_true(
+  identical(Encoding(encoded_cases), c("UTF-8", "latin1", "bytes", "unknown", "unknown")) &&
+    identical(charToRaw(encoded_cases[[3L]]), as.raw(c(0x66, 0x61, 0xe7, 0x61, 0x64, 0x65))) &&
+    identical(encoded_cases[[4L]], "") && is.na(encoded_cases[[5L]]),
+  "F05 task inputs contain real UTF-8, Latin-1, bytes, empty, and missing cases"
+)
+for (task_id in c("17_string_concat", "18_string_nchar", "19_string_encoding")) {
+  values <- benchmark_string_input(task_id)
+  validate_special_task_input(task_id, list(values))
+  expect_true(length(values) == 10000L, sprintf("%s uses the exact shared string input size", task_id))
+}
+expect_true(
+  sum(is.na(benchmark_string_input("18_string_nchar"))) == 500L,
+  "string byte-length input contains deterministic missing cases"
+)
+
+factor_values <- benchmark_factor_input()
+validate_special_task_input("20_factor_ops", list(factor_values))
+expect_true(
+  length(factor_values) == 10000L &&
+    length(unique(factor_values[!is.na(factor_values)])) == 100L &&
+    sum(is.na(factor_values)) == 1L && is.na(factor_values[[10000L]]),
+  "factor input contains 100 deterministic levels and one explicit trailing missing value"
+)
+expect_error(
+  "old 26-letter factor vocabulary",
+  validate_special_task_input("20_factor_ops", list(letters[seq_len(100L)])),
+  "factor contract requires 100 deterministic levels"
+)
+expect_error(
+  "old compact-vector size",
+  validate_special_task_input("24_long_vector_idx", list(seq_len(1000000L))),
+  "compact ALTREP indexing contract input differs"
+)
+
+set.seed(43L, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+first_rng_values <- rnorm(32L)
+first_rng_state <- rng_state_snapshot()
+set.seed(43L, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+second_rng_values <- rnorm(32L)
+second_rng_state <- rng_state_snapshot()
+expect_true(
+  identical(first_rng_values, second_rng_values) &&
+    identical(assert_rng_state_equivalent(first_rng_state, second_rng_state), second_rng_state),
+  "RNG values and post-call state are reproducible under the declared generator"
+)
+bad_rng_state <- second_rng_state
+bad_rng_state[[2L]] <- bad_rng_state[[2L]] + 1L
+expect_error(
+  "post-call RNG state mismatch",
+  assert_rng_state_equivalent(first_rng_state, bad_rng_state),
+  "post-call RNG state differs"
+)
+
 immutable_arguments <- list(c(1, 2, 3))
 immutable_before <- task_arguments_fingerprint("immutable_fixture", immutable_arguments, "ordinary_r_object")
 immutable_arguments[[1L]][[1L]] <- 99

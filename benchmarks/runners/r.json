@@ -84,5 +84,16 @@
         "84_raw_copy": "r_raw",
         "85_complex_view": "r_complex_view",
         "86_complex_return": "r_complex_return"
+    },
+    "reference_overrides": {
+        "01_vectorsum": "r_oracle_vectorsum",
+        "06_broadcast": "r_oracle_broadcast",
+        "12_matrix_transpose": "r_oracle_transpose",
+        "13_matrix_rowsums": "r_oracle_rowsums",
+        "14_matrix_rowcol_means": "r_oracle_rowcol_means",
+        "23_na_propagation": "r_oracle_na_mean",
+        "36_altrep_min_max": "r_oracle_altrep_min_max",
+        "37_altrep_no_na_query": "r_oracle_altrep_no_na",
+        "38_struct_convert": "r_oracle_struct_convert"
     }
 }

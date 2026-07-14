@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <new>
 using namespace Rcpp;
 
 static void radix_sort_f64(double *arr, size_t n) {
@@ -416,9 +417,16 @@ SEXP rcpp_bench_list_access(SEXP arg) {
 SEXP rcpp_bench_string_concat(SEXP arg) {
     R_xlen_t n = XLENGTH(arg);
     R_xlen_t total = 0;
+    int output_encoding = CE_UTF8;
     for (R_xlen_t i = 0; i < n; i++) {
         SEXP elt = STRING_ELT(arg, i);
-        total += (elt == NA_STRING) ? 2 : LENGTH(elt);
+        if (elt == NA_STRING) {
+            total += 2;
+        } else {
+            if (Rf_getCharCE(elt) == CE_BYTES) output_encoding = CE_BYTES;
+            const char* bytes = Rf_getCharCE(elt) == CE_BYTES ? CHAR(elt) : Rf_translateCharUTF8(elt);
+            total += std::strlen(bytes);
+        }
     }
     if (n > 1) total += (n - 1) * 2;
 
@@ -429,15 +437,16 @@ SEXP rcpp_bench_string_concat(SEXP arg) {
         if (elt == NA_STRING) {
             memcpy(pos, "NA", 2); pos += 2;
         } else {
-            R_xlen_t len = LENGTH(elt);
-            memcpy(pos, CHAR(elt), len);
+            const char* bytes = Rf_getCharCE(elt) == CE_BYTES ? CHAR(elt) : Rf_translateCharUTF8(elt);
+            R_xlen_t len = std::strlen(bytes);
+            memcpy(pos, bytes, len);
             pos += len;
         }
         if (i + 1 < n) { memcpy(pos, ", ", 2); pos += 2; }
     }
 
     SEXP out = PROTECT(Rf_allocVector(STRSXP, 1));
-    SEXP cs = Rf_mkCharLenCE(buf, pos - buf, CE_UTF8);
+    SEXP cs = Rf_mkCharLenCE(buf, pos - buf, (cetype_t) output_encoding);
     SET_STRING_ELT(out, 0, cs);
     UNPROTECT(1);
     return out;
@@ -456,7 +465,7 @@ SEXP rcpp_bench_string_encoding(SEXP arg) {
     R_xlen_t n = XLENGTH(arg);
     int total = 0;
     for (R_xlen_t i = 0; i < n; i++) {
-        total += Rf_getCharCE(STRING_ELT(arg, i));
+        total += Rf_getCharCE(STRING_ELT(arg, i)) == CE_UTF8;
     }
     return Rf_ScalarInteger(total);
 }
@@ -782,20 +791,38 @@ SEXP rcpp_bench_r_tryeval(SEXP arg) {
 SEXP rcpp_bench_serialize_roundtrip(SEXP arg) {
     SEXP ser_call = PROTECT(Rf_lang3(Rf_install("serialize"), arg, R_NilValue));
     SEXP conn = PROTECT(Rf_eval(ser_call, R_GlobalEnv));
-    UNPROTECT(2);
     SEXP unser_call = PROTECT(Rf_lang2(Rf_install("unserialize"), conn));
     SEXP result = PROTECT(Rf_eval(unser_call, R_GlobalEnv));
     double total = 0;
     double *xp = REAL(result);
     R_xlen_t n = XLENGTH(result);
     for (R_xlen_t i = 0; i < n; i++) total += xp[i];
-    UNPROTECT(2);
+    UNPROTECT(4);
     return Rf_ScalarReal(total);
 }
+struct RcppBenchmarkState {
+    int value;
+};
+static void rcpp_benchmark_state_finalizer(SEXP pointer) {
+    RcppBenchmarkState* state = static_cast<RcppBenchmarkState*>(R_ExternalPtrAddr(pointer));
+    if (state == nullptr) return;
+    delete state;
+    R_ClearExternalPtr(pointer);
+}
 SEXP rcpp_bench_external_ptr(SEXP arg) {
-    (void)arg;
-    static char dummy;
-    SEXP ptr = PROTECT(R_MakeExternalPtr(&dummy, R_NilValue, R_NilValue));
+    int value = Rf_asInteger(arg);
+    SEXP ptr = PROTECT(R_MakeExternalPtr(
+        nullptr,
+        Rf_install("zigr.p4.rcpp.task42.state"),
+        R_NilValue
+    ));
+    RcppBenchmarkState* state = new (std::nothrow) RcppBenchmarkState{value};
+    if (state == nullptr) {
+        UNPROTECT(1);
+        Rf_error("Rcpp external-pointer benchmark could not allocate state");
+    }
+    R_SetExternalPtrAddr(ptr, state);
+    R_RegisterCFinalizerEx(ptr, rcpp_benchmark_state_finalizer, TRUE);
     UNPROTECT(1);
     return ptr;
 }
