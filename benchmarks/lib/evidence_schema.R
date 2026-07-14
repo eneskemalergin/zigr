@@ -821,3 +821,296 @@ run_disposition_records <- function(evidence, runners, tasks) {
   }
   records
 }
+
+separated_report_files <- function() {
+  c(
+    product = "product_metrics.csv",
+    strategy = "strategy_metrics.csv",
+    r_baseline = "r_baseline_metrics.csv",
+    control = "control_metrics.csv",
+    diagnostic = "diagnostic_metrics.csv",
+    capability = "capability_matrix.csv",
+    safety = "safety_results.csv"
+  )
+}
+
+report_product_runners <- function() c("zigr", "rcpp", "cpp11", "extendr", "savvy")
+
+report_linked_runners <- function() c(report_product_runners(), "r", "c_call")
+
+report_require_columns <- function(rows, required, label) {
+  missing <- setdiff(required, names(rows))
+  if (length(missing) > 0L) {
+    stop(sprintf("%s missing columns: %s", label, paste(missing, collapse = ", ")))
+  }
+  invisible(rows)
+}
+
+report_require_unique <- function(rows, fields, label) {
+  keys <- do.call(paste, c(rows[fields], sep = "\r"))
+  if (anyDuplicated(keys)) stop(sprintf("%s contains duplicate keys", label))
+  invisible(rows)
+}
+
+report_require_no_claims <- function(rows, label) {
+  claims <- as.logical(rows$claim_eligible)
+  if (anyNA(claims) || any(claims)) stop(sprintf("%s contain a public claim row", label))
+  invisible(rows)
+}
+
+report_require_one_value <- function(rows, field, label) {
+  values <- unique(as.character(rows[[field]]))
+  if (length(values) != 1L || is.na(values) || !nzchar(values)) {
+    stop(sprintf("%s do not contain one nonblank %s", label, field))
+  }
+  invisible(rows)
+}
+
+report_validate_comparisons <- function(rows, ratio_fields, result_field, label) {
+  result <- as.character(rows[[result_field]])
+  allowed <- c("LOSS", "WIN", "TIE", "NOT_COMPARABLE")
+  if (anyNA(result) || any(!(result %in% allowed))) {
+    stop(sprintf("%s contain an invalid relative result", label))
+  }
+  comparable <- result != "NOT_COMPARABLE"
+  for (field in ratio_fields) {
+    values <- as.numeric(rows[[field]])
+    if (any(!is.finite(values[comparable])) || any(!is.na(values[!comparable]))) {
+      stop(sprintf("%s comparison field %s disagrees with comparability", label, field))
+    }
+  }
+  noise <- as.character(rows$noise_status)
+  if (any(!(noise[comparable] %in% c("low_noise", "high_noise"))) ||
+      any(noise[!comparable] != "not_comparable")) {
+    stop(sprintf("%s noise status disagrees with comparability", label))
+  }
+  invisible(rows)
+}
+
+validate_product_metrics <- function(rows) {
+  label <- "product metrics"
+  required <- c(
+    "run_id", "group_id", "runner", "implementation_role", "comparison_tier",
+    "input_fingerprint", "kernel_id", "contract_version", "setup_policy",
+    "measurement_status", "report_status", "claim_eligible", "reason", "owner",
+    "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high",
+    "row_relative_to_zigr", "noise_status"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("group_id", "runner"), label)
+  report_require_one_value(rows, "run_id", label)
+  linked <- report_linked_runners()
+  for (group in unique(as.character(rows$group_id))) {
+    runners <- sort(as.character(rows$runner[rows$group_id == group]))
+    if (!identical(runners, sort(linked))) {
+      stop(sprintf("%s group %s does not contain the exact linked runner set", label, group))
+    }
+  }
+  product <- rows$runner %in% report_product_runners()
+  eligible <- as.logical(rows$claim_eligible)
+  qualified <- product & rows$implementation_role == "product_public_path" &
+    rows$comparison_tier == "tier_a" & rows$measurement_status == "PASS" &
+    rows$report_status == "PRODUCT_PASS"
+  if (anyNA(eligible) || !identical(eligible, qualified)) stop("product metrics claim eligibility differs from Tier A product PASS rows")
+  if (any(!product & eligible)) stop("product metrics promote a linked control row")
+  if (any(product & !(rows$report_status %in% c("PRODUCT_PASS", "PRODUCT_GAP", "EXCLUDED_DIAGNOSTIC"))) ||
+      any(!product & rows$report_status != "LINKED_BASELINE")) {
+    stop("product metrics contain an invalid report status")
+  }
+  for (group in unique(as.character(rows$group_id))) {
+    tier_a <- rows[
+      rows$group_id == group & rows$runner %in% report_product_runners() &
+        rows$implementation_role == "product_public_path" & rows$comparison_tier == "tier_a",
+      , drop = FALSE
+    ]
+    for (field in c("input_fingerprint", "kernel_id", "contract_version", "setup_policy")) {
+      values <- unique(as.character(tier_a[[field]]))
+      if (length(values) != 1L || is.na(values) || !nzchar(values)) {
+        stop(sprintf("product metrics Tier A group %s has mixed %s", group, field))
+      }
+    }
+  }
+  visible_gap <- rows$report_status %in% c("PRODUCT_GAP", "EXCLUDED_DIAGNOSTIC")
+  if (any(visible_gap & (!nzchar(as.character(rows$reason)) | !nzchar(as.character(rows$owner))))) {
+    stop("product metrics contain a gap without reason and owner")
+  }
+  report_validate_comparisons(
+    rows,
+    c("row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"),
+    "row_relative_to_zigr", label
+  )
+  invisible(rows)
+}
+
+validate_strategy_metrics <- function(rows) {
+  label <- "strategy metrics"
+  required <- c(
+    "run_id", "group_id", "runner", "implementation_role", "comparison_tier",
+    "measurement_status", "report_status", "claim_eligible", "reason", "owner",
+    "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high",
+    "row_relative_to_zigr", "noise_status"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("group_id", "runner"), label)
+  report_require_one_value(rows, "run_id", label)
+  for (group in unique(as.character(rows$group_id))) {
+    group_rows <- rows[rows$group_id == group, , drop = FALSE]
+    if (!identical(sort(as.character(group_rows$runner)), sort(report_linked_runners()))) {
+      stop(sprintf("%s group %s does not contain the exact linked runner set", label, group))
+    }
+    if (!any(group_rows$report_status %in% c("STRATEGY_PASS", "STRATEGY_CORRECTNESS_ONLY"))) {
+      stop(sprintf("%s group %s has no visible strategy result", label, group))
+    }
+  }
+  report_require_no_claims(rows, label)
+  strategy <- rows$report_status %in% c("STRATEGY_PASS", "STRATEGY_CORRECTNESS_ONLY")
+  if (any(strategy & !(
+    rows$runner %in% report_product_runners() &
+      rows$implementation_role == "product_public_path" & rows$comparison_tier == "tier_b"
+  ))) stop("strategy metrics label a non-Tier-B product row as strategy evidence")
+  if (any(rows$report_status == "STRATEGY_PASS" & rows$measurement_status != "PASS") ||
+      any(rows$report_status == "STRATEGY_CORRECTNESS_ONLY" & rows$measurement_status != "CORRECTNESS_ONLY")) {
+    stop("strategy metrics report status disagrees with measurement status")
+  }
+  report_validate_comparisons(
+    rows,
+    c("row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"),
+    "row_relative_to_zigr", label
+  )
+  invisible(rows)
+}
+
+validate_r_baseline_metrics <- function(rows, expected_tasks, expected_fixtures) {
+  label <- "R baseline metrics"
+  required <- c(
+    "run_id", "universe", "item_id", "runner", "baseline_class", "measurement_status",
+    "claim_eligible", "zigr_relative_to_r", "zigr_over_r_ratio", "zigr_over_r_ratio_ci_low",
+    "zigr_over_r_ratio_ci_high", "owner", "backend_provenance", "timer_noise_status", "noise_status"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("universe", "item_id", "baseline_class"), label)
+  report_require_one_value(rows, "run_id", label)
+  task_ids <- as.character(rows$item_id[rows$universe == "task"])
+  fixture_ids <- as.character(rows$item_id[rows$universe == "fixture"])
+  if (!setequal(task_ids, expected_tasks) || length(task_ids) != length(expected_tasks)) {
+    stop("R baseline metrics task coverage differs from the required matrix")
+  }
+  if (!setequal(fixture_ids, expected_fixtures) || length(fixture_ids) != length(expected_fixtures)) {
+    stop("R baseline metrics fixture coverage differs from the required matrix")
+  }
+  if (any(!(rows$baseline_class %in% c("pure_r", "optimized_base_r", "pure_r_unrepresentable")))) {
+    stop("R baseline metrics contain an invalid baseline class")
+  }
+  report_require_no_claims(rows, label)
+  losses <- rows$zigr_relative_to_r == "LOSS"
+  if (any(losses & rows$owner != "P8")) stop("R baseline metrics contain an unowned relative loss")
+  if (any(!nzchar(as.character(rows$backend_provenance)))) stop("R baseline metrics contain blank backend provenance")
+  report_validate_comparisons(
+    rows,
+    c("zigr_over_r_ratio", "zigr_over_r_ratio_ci_low", "zigr_over_r_ratio_ci_high"),
+    "zigr_relative_to_r", label
+  )
+  invisible(rows)
+}
+
+validate_control_metrics <- function(rows) {
+  label <- "control metrics"
+  required <- c(
+    "run_id", "universe", "item_id", "runner", "control_role", "measurement_status",
+    "report_status", "claim_eligible", "zigr_relative_to_control", "zigr_over_control_ratio",
+    "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high", "owner",
+    "timer_noise_status", "noise_status"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("universe", "item_id", "runner", "control_role"), label)
+  report_require_one_value(rows, "run_id", label)
+  if (any(!(rows$control_role %in% c("c_control", "language_control")))) {
+    stop("control metrics contain an invalid control role")
+  }
+  if (any(rows$report_status != "CONTROL_ONLY")) stop("control metrics contain a promoted status")
+  report_require_no_claims(rows, label)
+  losses <- rows$zigr_relative_to_control == "LOSS"
+  if (any(losses & rows$owner != "P8")) stop("control metrics contain an unowned relative loss")
+  report_validate_comparisons(
+    rows,
+    c("zigr_over_control_ratio", "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high"),
+    "zigr_relative_to_control", label
+  )
+  invisible(rows)
+}
+
+validate_diagnostic_metrics <- function(rows, expected_task_keys, expected_probe_ids) {
+  label <- "diagnostic metrics"
+  required <- c(
+    "run_id", "universe", "item_id", "runner", "measurement_status", "claim_eligible", "source_label",
+    "exclusion_reason", "owner", "timer_noise_status", "noise_status"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("universe", "item_id", "runner"), label)
+  report_require_one_value(rows, "run_id", label)
+  task_rows <- rows[rows$universe == "task", , drop = FALSE]
+  probe_rows <- rows[rows$universe == "system_probe", , drop = FALSE]
+  actual_task_keys <- paste(task_rows$runner, task_rows$item_id, sep = "\r")
+  if (!setequal(actual_task_keys, expected_task_keys) || length(actual_task_keys) != length(expected_task_keys)) {
+    stop("diagnostic metrics task coverage differs from the historical matrix")
+  }
+  if (!setequal(as.character(probe_rows$item_id), expected_probe_ids) || nrow(probe_rows) != length(expected_probe_ids)) {
+    stop("diagnostic metrics system probe coverage differs")
+  }
+  report_require_no_claims(rows, label)
+  if (any(!nzchar(as.character(rows$exclusion_reason)) | !nzchar(as.character(rows$owner)))) {
+    stop("diagnostic metrics contain an invisible exclusion")
+  }
+  invisible(rows)
+}
+
+validate_capability_matrix <- function(rows, expected_keys) {
+  label <- "capability matrix"
+  required <- c(
+    "run_id", "runner", "fixture", "source_class", "source_paths", "verification_digest",
+    "fixture_result", "gap_reason", "owner", "claim_eligible"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, c("runner", "fixture"), label)
+  report_require_one_value(rows, "run_id", label)
+  actual <- paste(rows$runner, rows$fixture, sep = "\r")
+  if (!setequal(actual, expected_keys) || length(actual) != length(expected_keys)) {
+    stop("capability matrix coverage differs from the evidence matrix")
+  }
+  if (any(!nzchar(as.character(rows$source_class)) |
+          !nzchar(as.character(rows$source_paths)) |
+          !nzchar(as.character(rows$verification_digest)) |
+          !nzchar(as.character(rows$fixture_result)) |
+          !nzchar(as.character(rows$owner)))) {
+    stop("capability matrix contains incomplete source or ownership evidence")
+  }
+  gaps <- rows$fixture_result == "GAP"
+  if (any(gaps & !nzchar(as.character(rows$gap_reason)))) stop("capability matrix contains a gap without reason")
+  report_require_no_claims(rows, label)
+  invisible(rows)
+}
+
+validate_safety_results <- function(rows, expected_runners) {
+  label <- "safety results"
+  required <- c(
+    "run_id", "runner", "proof_status", "claim_eligible", "allocation_status", "protection_status",
+    "recovery_status", "external_pointer_status", "altrep_callback_status", "finalizer_status",
+    "source_ledger_identity_digest", "artifact_digest"
+  )
+  report_require_columns(rows, required, label)
+  report_require_unique(rows, "runner", label)
+  report_require_one_value(rows, "run_id", label)
+  if (!setequal(as.character(rows$runner), expected_runners) || nrow(rows) != length(expected_runners)) {
+    stop("safety results runner coverage differs from the run manifest")
+  }
+  if (any(rows$proof_status != "PASS")) stop("safety results contain a failing proof")
+  status_fields <- c(
+    "allocation_status", "protection_status", "recovery_status", "external_pointer_status",
+    "altrep_callback_status", "finalizer_status"
+  )
+  if (any(!vapply(rows[status_fields], function(values) all(values %in% c("PASS", "NOT_APPLICABLE")), logical(1)))) {
+    stop("safety results contain an invalid domain status")
+  }
+  report_require_no_claims(rows, label)
+  invisible(rows)
+}

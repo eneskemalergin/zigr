@@ -17,15 +17,21 @@ runner <- NULL
 run_dir <- NULL
 validation_only <- FALSE
 validation_output <- NULL
+proof_only <- FALSE
+proof_output <- NULL
 for (arg in args) {
   if (grepl("^--runner=", arg)) runner <- sub("^--runner=", "", arg)
   if (grepl("^--run-dir=", arg)) run_dir <- sub("^--run-dir=", "", arg)
   if (identical(arg, "--validation-only")) validation_only <- TRUE
   if (grepl("^--validation-output=", arg)) validation_output <- sub("^--validation-output=", "", arg)
+  if (identical(arg, "--proof-only")) proof_only <- TRUE
+  if (grepl("^--proof-output=", arg)) proof_output <- sub("^--proof-output=", "", arg)
 }
 if (is.null(runner)) stop("--runner= is required")
 if (is.null(run_dir)) stop("--run-dir= is required")
 if (validation_only && is.null(validation_output)) stop("--validation-output= is required with --validation-only")
+if (proof_only && is.null(proof_output)) stop("--proof-output= is required with --proof-only")
+if (validation_only && proof_only) stop("validation-only and proof-only modes are mutually exclusive")
 
 root_dir <- normalizePath(".")
 run_dir <- normalizePath(run_dir, mustWork = TRUE)
@@ -40,7 +46,60 @@ environment <- runner_environment_record(metadata$environment, runner)
 validate_fixture_artifact_identity(environment)
 validate_tool_source_ledger(root_dir, metadata$environment$tool_source_ledger, runner)
 
-run_live_product_fixture_gate(root_dir, evidence, runner)
+proof <- run_live_product_fixture_gate(root_dir, evidence, runner)
+if (proof_only) {
+  supported <- evidence$fixture_rows[
+    evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable,
+    "fixture",
+    drop = TRUE
+  ]
+  domain_status <- function(fixtures) {
+    if (any(as.character(fixtures) %in% supported)) "PASS" else "NOT_APPLICABLE"
+  }
+  count_status <- function(value) {
+    if (isTRUE(as.numeric(value) > 0)) "PASS" else "NOT_APPLICABLE"
+  }
+  proof_row <- data.frame(
+    run_id = as.character(metadata$run_id),
+    runner = runner,
+    proof_status = "PASS",
+    claim_eligible = FALSE,
+    allocation_status = count_status(proof$values[["allocation"]]),
+    protection_status = domain_status(c("F04", "F12")),
+    recovery_status = domain_status("F11"),
+    external_pointer_status = count_status(proof$state[["constructor"]]),
+    altrep_callback_status = domain_status("F04"),
+    finalizer_status = count_status(proof$state[["finalizer"]]),
+    valid_case_count = unname(proof$values[["valid"]]),
+    invalid_case_count = unname(proof$values[["invalid"]]),
+    allocation_event_count = unname(proof$values[["allocation"]]),
+    copy_event_count = unname(proof$values[["copy"]]),
+    output_construction_count = unname(proof$output[["construction"]]),
+    retained_output_count = unname(proof$output[["retention"]]),
+    altrep_element_count = unname(proof$altrep[["element"]]),
+    altrep_region_count = unname(proof$altrep[["region"]]),
+    altrep_pointer_count = unname(proof$altrep[["pointer"]]),
+    altrep_materialization_count = unname(proof$altrep[["materialization"]]),
+    altrep_materialized_count = unname(proof$altrep[["is_materialized"]]),
+    recovery_error_count = unname(proof$recovery[["error"]]),
+    recovery_success_count = unname(proof$recovery[["recovery"]]),
+    state_constructor_count = unname(proof$state[["constructor"]]),
+    state_method_count = unname(proof$state[["method"]]),
+    state_finalizer_count = unname(proof$state[["finalizer"]]),
+    source_tree_digest = as.character(metadata$environment$source_tree$digest),
+    source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
+    artifact_digest = as.character(environment$fixture_artifact_digest),
+    stringsAsFactors = FALSE
+  )
+  output_path <- normalizePath(proof_output, mustWork = FALSE)
+  if (file.exists(output_path)) stop(sprintf("fixture proof output already exists: %s", output_path))
+  staged_output <- paste0(output_path, ".tmp-", Sys.getpid())
+  on.exit(unlink(staged_output), add = TRUE)
+  write_csv(proof_row, staged_output)
+  if (!file.rename(staged_output, output_path)) stop(sprintf("cannot promote fixture proof output: %s", output_path))
+  cat(sprintf("Fixture safety proof passed for %s.\n", runner))
+  quit(save = "no", status = 0L, runLast = FALSE)
+}
 context <- fixture_measurement_context(root_dir, runner, evidence)
 on.exit(context$close(), add = TRUE)
 reference <- fixture_r_functions(root_dir)

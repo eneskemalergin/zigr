@@ -612,7 +612,152 @@ expect_error(
   "legacy optional_tasks differs from evidence dispositions"
 )
 
+linked <- report_linked_runners()
+product_report <- data.frame(
+  run_id = "run", group_id = "group", runner = linked,
+  implementation_role = ifelse(
+    linked %in% report_product_runners(), "product_public_path",
+    ifelse(linked == "r", "pure_r", "c_control")
+  ),
+  comparison_tier = ifelse(linked %in% report_product_runners(), "tier_a", "tier_c"),
+  input_fingerprint = "input", kernel_id = "kernel", contract_version = "contract",
+  setup_policy = "setup_outside_timer", measurement_status = "PASS",
+  report_status = ifelse(linked %in% report_product_runners(), "PRODUCT_PASS", "LINKED_BASELINE"),
+  claim_eligible = linked %in% report_product_runners(), reason = "visible", owner = "P8",
+  row_over_zigr_ratio = 1, row_over_zigr_ratio_ci_low = 0.9,
+  row_over_zigr_ratio_ci_high = 1.1, row_relative_to_zigr = "TIE", noise_status = "low_noise",
+  stringsAsFactors = FALSE
+)
+expect_true(is.data.frame(validate_product_metrics(product_report)), "valid product report")
+bad_report <- product_report[-1L, , drop = FALSE]
+expect_error(
+  "product report missing product slot",
+  validate_product_metrics(bad_report),
+  "exact linked runner set"
+)
+
+bad_report <- product_report
+bad_report$input_fingerprint[[1L]] <- "mixed-input"
+expect_error(
+  "product report mixed Tier A input",
+  validate_product_metrics(bad_report),
+  "mixed input_fingerprint"
+)
+
+bad_report <- product_report
+bad_report$measurement_status[[1L]] <- "N/A"
+expect_error(
+  "product report claim suppresses measurement gap",
+  validate_product_metrics(bad_report),
+  "claim eligibility differs"
+)
+
+strategy_report <- product_report
+strategy_report$comparison_tier <- ifelse(strategy_report$runner == "zigr", "tier_b", "tier_c")
+strategy_report$report_status <- ifelse(strategy_report$runner == "zigr", "STRATEGY_PASS", "LINKED_OR_EXCLUDED")
+strategy_report$claim_eligible <- FALSE
+expect_true(is.data.frame(validate_strategy_metrics(strategy_report)), "valid strategy report")
+bad_report <- strategy_report
+bad_report$claim_eligible[[1L]] <- TRUE
+expect_error(
+  "strategy report public claim",
+  validate_strategy_metrics(bad_report),
+  "public claim row"
+)
+
+r_report <- data.frame(
+  run_id = "run", universe = c("task", "fixture"), item_id = c("task", "fixture"), runner = "r",
+  baseline_class = "pure_r", measurement_status = "PASS", claim_eligible = FALSE,
+  zigr_relative_to_r = c("LOSS", "TIE"), zigr_over_r_ratio = c(1.2, 1),
+  zigr_over_r_ratio_ci_low = c(1.1, 0.9), zigr_over_r_ratio_ci_high = c(1.3, 1.1),
+  owner = c("P8", "P8"),
+  backend_provenance = "pure_r:none", timer_noise_status = "above_floor",
+  noise_status = "low_noise", stringsAsFactors = FALSE
+)
+expect_true(
+  is.data.frame(validate_r_baseline_metrics(r_report, "task", "fixture")),
+  "valid R baseline report"
+)
+bad_report <- r_report
+bad_report$owner[[1L]] <- ""
+expect_error(
+  "R report unowned loss",
+  validate_r_baseline_metrics(bad_report, "task", "fixture"),
+  "unowned relative loss"
+)
+
+control_report <- data.frame(
+  run_id = "run", universe = "task", item_id = "task", runner = "c_call", control_role = "c_control",
+  measurement_status = "PASS", report_status = "CONTROL_ONLY", claim_eligible = FALSE,
+  zigr_relative_to_control = "LOSS", zigr_over_control_ratio = 1.2,
+  zigr_over_control_ratio_ci_low = 1.1, zigr_over_control_ratio_ci_high = 1.3, owner = "P8",
+  timer_noise_status = "above_floor", noise_status = "low_noise", stringsAsFactors = FALSE
+)
+expect_true(is.data.frame(validate_control_metrics(control_report)), "valid control report")
+bad_report <- control_report
+bad_report$report_status <- "PRODUCT_PASS"
+expect_error(
+  "control report promoted status",
+  validate_control_metrics(bad_report),
+  "promoted status"
+)
+
+diagnostic_report <- data.frame(
+  run_id = "run", universe = c("task", "system_probe"), item_id = c("task", "probe"),
+  runner = c("zigr", "system"), measurement_status = c("PASS", "EXCLUDED"), claim_eligible = FALSE,
+  source_label = c("generated_typed", "source_invalid_system_probe"),
+  exclusion_reason = "diagnostic only", owner = "P9", timer_noise_status = "not_measured",
+  noise_status = "not_measured", stringsAsFactors = FALSE
+)
+expect_true(
+  is.data.frame(validate_diagnostic_metrics(
+    diagnostic_report, paste("zigr", "task", sep = "\r"), "probe"
+  )),
+  "valid diagnostic report"
+)
+bad_report <- diagnostic_report
+bad_report$exclusion_reason[[1L]] <- ""
+expect_error(
+  "diagnostic report invisible exclusion",
+  validate_diagnostic_metrics(bad_report, paste("zigr", "task", sep = "\r"), "probe"),
+  "invisible exclusion"
+)
+
+capability_report <- data.frame(
+  run_id = "run", runner = "zigr", fixture = "F01", source_class = "generated_typed",
+  source_paths = "src/fixture.zig", verification_digest = "digest", fixture_result = "GAP",
+  gap_reason = "missing", owner = "P7", claim_eligible = FALSE, stringsAsFactors = FALSE
+)
+expect_true(
+  is.data.frame(validate_capability_matrix(
+    capability_report, paste("zigr", "F01", sep = "\r")
+  )),
+  "valid capability report"
+)
+bad_report <- capability_report
+bad_report$gap_reason <- ""
+expect_error(
+  "capability report unreasoned gap",
+  validate_capability_matrix(bad_report, paste("zigr", "F01", sep = "\r")),
+  "gap without reason"
+)
+
+safety_report <- data.frame(
+  run_id = "run", runner = "zigr", proof_status = "PASS", claim_eligible = FALSE,
+  allocation_status = "PASS", protection_status = "PASS", recovery_status = "PASS",
+  external_pointer_status = "PASS", altrep_callback_status = "PASS", finalizer_status = "PASS",
+  source_ledger_identity_digest = "ledger", artifact_digest = "artifact", stringsAsFactors = FALSE
+)
+expect_true(is.data.frame(validate_safety_results(safety_report, "zigr")), "valid safety report")
+bad_report <- safety_report
+bad_report$finalizer_status <- "UNKNOWN"
+expect_error(
+  "safety report invalid domain status",
+  validate_safety_results(bad_report, "zigr"),
+  "invalid domain status"
+)
+
 cat(sprintf(
-  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and nineteen negative checks.\n",
+  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and twenty-eight negative checks.\n",
   nrow(evidence$tasks), nrow(evidence$fixture_rows)
 ))
