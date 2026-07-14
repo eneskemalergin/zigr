@@ -53,6 +53,16 @@ NULL
 }
 
 
+`fixture_lifecycle_counts` <- function() {
+  .Call(savvy_fixture_lifecycle_counts__impl)
+}
+
+
+`fixture_lifecycle_reset` <- function() {
+  invisible(.Call(savvy_fixture_lifecycle_reset__impl))
+}
+
+
 `fixture_logical_counts` <- function(`value`) {
   .Call(savvy_fixture_logical_counts__impl, `value`)
 }

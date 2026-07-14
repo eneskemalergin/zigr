@@ -23,6 +23,15 @@ const NestedOutput = struct {
     value: i32,
 };
 
+const FixtureLifecycleCounts = struct {
+    constructor: i32 = 0,
+    method: i32 = 0,
+    error_count: i32 = 0,
+    finalizer: i32 = 0,
+};
+
+var lifecycle_counts = FixtureLifecycleCounts{};
+
 fn fixtureZero() i32 {
     return 1;
 }
@@ -42,7 +51,10 @@ fn fixtureNumeric(value: []const f64) R.SEXP {
 
 fn fixtureAltrepInteger(value: []const i32) f64 {
     var total: f64 = 0.0;
-    for (value) |element| total += @floatFromInt(element);
+    for (value) |element| {
+        if (element == R.R_NaInt) return R.R_NaReal;
+        total += @floatFromInt(element);
+    }
     return total;
 }
 
@@ -70,23 +82,46 @@ fn fixtureSchema(value: R.SEXP) R.SEXP {
     return value;
 }
 
-fn fixtureStateDeinit(_: *FixtureState) void {}
+fn fixtureStateDeinit(_: *FixtureState) void {
+    lifecycle_counts.finalizer += 1;
+}
 
 fn fixtureNew() R.SEXP {
+    lifecycle_counts.constructor += 1;
     return zigr.externalptr.createTyped(FixtureState, .{ .value = 0 }, fixtureStateDeinit);
 }
 
 fn fixtureIncrement(state: *FixtureState, amount: i32) i32 {
+    lifecycle_counts.method += 1;
     state.value += amount;
     return state.value;
 }
 
 fn fixtureRead(state: *FixtureState) i32 {
+    lifecycle_counts.method += 1;
     return state.value;
 }
 
 fn fixtureError(_: f64) void {
+    lifecycle_counts.error_count += 1;
     zigr.@"error".signal("fixture error");
+}
+
+fn fixtureLifecycleReset() void {
+    lifecycle_counts = .{};
+}
+
+fn fixtureLifecycleCounts() R.SEXP {
+    const values = [_]i32{
+        lifecycle_counts.constructor,
+        lifecycle_counts.method,
+        lifecycle_counts.error_count,
+        lifecycle_counts.finalizer,
+    };
+    var result = zigr.protect.scoped(convert.fromIntSlice(&values));
+    defer result.deinit();
+    zigr.attrib.setNames(result.get(), &.{ "constructor", "method", "error", "finalizer" });
+    return result.get();
 }
 
 fn fixtureOutputs() R.SEXP {
@@ -137,6 +172,8 @@ const FixtureExports = zigr.@"export".generateExports(&.{
     .{ .name = "fixture_schema", .func = fixtureSchema },
     .{ .name = "fixture_new", .func = fixtureNew },
     .{ .name = "fixture_error", .func = fixtureError },
+    .{ .name = "fixture_lifecycle_reset", .func = fixtureLifecycleReset },
+    .{ .name = "fixture_lifecycle_counts", .func = fixtureLifecycleCounts },
     .{ .name = "fixture_outputs", .func = fixtureOutputs },
 }, &.{});
 

@@ -257,12 +257,18 @@ r_boundary_external <- function(x) as.double(x + 1.0)
 
 # P4 first-wave fixtures. These functions are authored R implementations of
 # the declared kernels. Vectorized alternatives are kept under separate names.
-r_fixture_zero <- function() 1L
+r_fixture_zero <- function() {
+  result <- integer(1L)
+  result[[1L]] <- 1L
+  result
+}
 
 r_fixture_scalar <- function(x) {
   if (typeof(x) != "double" || length(x) != 1L) stop("scalar expected one REAL value")
   if (is.na(x) && !is.nan(x)) stop("scalar expected a non-missing REAL value")
-  x
+  result <- numeric(1L)
+  result[[1L]] <- x[[1L]]
+  result
 }
 
 r_fixture_numeric <- function(x) {
@@ -365,7 +371,11 @@ r_fixture_outputs <- function() {
   result
 }
 
-r_optimized_fixture_numeric <- function(x) x * 2.0
+r_optimized_fixture_numeric <- function(x) {
+  result <- x * 2.0
+  attributes(result) <- NULL
+  result
+}
 r_optimized_fixture_altrep_integer <- function(x) as.double(sum(x))
 
 # Four passes keep cache setup visible instead of hiding it in repetition.

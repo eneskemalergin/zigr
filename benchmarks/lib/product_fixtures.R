@@ -92,6 +92,30 @@ fixture_signatures_are_typed <- function(signatures, forbidden_pattern, raw_allo
   all(raw_allowed | !grepl(forbidden_pattern, arguments, perl = TRUE))
 }
 
+fixture_definition_contains <- function(lines, signature_pattern, required_text, max_lines = 64L) {
+  indices <- grep(signature_pattern, lines, perl = TRUE)
+  if (length(indices) == 0L || !nzchar(required_text)) return(FALSE)
+  any(vapply(indices, function(index) {
+    end <- min(length(lines), index + max_lines - 1L)
+    body <- character(0)
+    depth <- 0L
+    opened <- FALSE
+    for (line in lines[index:end]) {
+      body <- c(body, line)
+      open_count <- lengths(regmatches(line, gregexpr("{", line, fixed = TRUE)))
+      close_count <- lengths(regmatches(line, gregexpr("}", line, fixed = TRUE)))
+      if (!opened && open_count > 0L) opened <- TRUE
+      if (opened) {
+        depth <- depth + open_count - close_count
+        if (depth <= 0L) break
+      } else if (grepl(";", line, fixed = TRUE)) {
+        return(FALSE)
+      }
+    }
+    opened && depth == 0L && any(grepl(required_text, body, fixed = TRUE))
+  }, logical(1)))
+}
+
 cpp11_fixture_dependency_source <- function() {
   package_root <- system.file(package = "cpp11")
   if (!nzchar(package_root)) stop("cpp11 is required for fixture source verification")
@@ -281,9 +305,40 @@ verify_rcpp_fixture_source <- function(record, root_dir) {
     "^[[:space:]]*int[[:space:]]+increment[[:space:]]*\\(",
     "^[[:space:]]*int[[:space:]]+read[[:space:]]*\\("
   ), function(pattern) source_ledger_definition_present(source, pattern), logical(1)))
+  r_object_arguments <- grepl("\\bRcpp::RObject\\b", ordinary_signatures, perl = TRUE)
+  adapter_guard <- switch(record$fixture,
+    F02 = "Rcpp::is<Rcpp::NumericVector>(value)",
+    F03 = "Rcpp::is<Rcpp::NumericVector>(value)",
+    F04 = "Rcpp::is<Rcpp::IntegerVector>(value)",
+    F05 = "Rcpp::is<Rcpp::CharacterVector>(value)",
+    F06 = "Rcpp::is<Rcpp::RawVector>(value)",
+    F07 = "Rcpp::is<Rcpp::ComplexVector>(value)",
+    F08 = "Rcpp::is<Rcpp::LogicalVector>(value)",
+    F10 = "Rcpp::is<Rcpp::IntegerVector>(amount)",
+    F11 = "Rcpp::is<Rcpp::NumericVector>(value)",
+    ""
+  )
+  module_adapter <- module_cell && source_ledger_definition_present(
+    source, "^[[:space:]]*int[[:space:]]+increment[[:space:]]*\\([[:space:]]*Rcpp::RObject"
+  )
+  ordinary_adapter <- !module_cell && any(r_object_arguments)
+  adapter_function <- if (module_cell) {
+    "increment"
+  } else if (identical(record$fixture, "F11")) {
+    "fixture_scalar"
+  } else {
+    ordinary[[1L]]
+  }
+  adapter_signature <- sprintf(
+    "^[[:space:]]*.*\\b%s[[:space:]]*\\([[:space:]]*Rcpp::RObject", adapter_function
+  )
+  record$approved_public_adapter <- record$annotation_present &&
+    (module_adapter || ordinary_adapter) && nzchar(adapter_guard) &&
+    fixture_definition_contains(source, adapter_signature, adapter_guard)
   record$typed_public_signature <- record$annotation_present &&
-    (if (module_cell) module_signatures_typed else {
-      fixture_signatures_are_typed(ordinary_signatures, "\\bSEXP\\b")
+    (if (module_cell) module_signatures_typed && !module_adapter else {
+      fixture_signatures_are_typed(ordinary_signatures, "\\bSEXP\\b") &&
+        !any(r_object_arguments)
     }) &&
     !any(grepl("extern[[:space:]]+\"C\"|R_MakeExternalPtr|R_RegisterCFinalizer", source, perl = TRUE))
   record$generated_native_wrapper <- if (module_cell) {
@@ -306,16 +361,26 @@ verify_rcpp_fixture_source <- function(record, root_dir) {
     any(grepl(".registration = TRUE", namespace, fixed = TRUE))
   record$forced_symbols <- any(grepl("R_forceSymbols(dll, TRUE)", native, fixed = TRUE))
   record$product_eligible <- all(c(
-    record$annotation_present, record$typed_public_signature, record$generated_native_wrapper,
+    record$annotation_present,
+    record$typed_public_signature || record$approved_public_adapter,
+    record$generated_native_wrapper,
     record$generated_r_wrapper, record$registered_entry, record$configured_symbol_present,
     record$dynamic_lookup_disabled
   ))
-  record$source_class <- if (record$product_eligible) "generated_typed" else "generated_path_invalid"
+  record$source_class <- if (!record$product_eligible) {
+    "generated_path_invalid"
+  } else if (record$approved_public_adapter) {
+    "generated_public_adapter"
+  } else {
+    "generated_typed"
+  }
   record$source_paths <- as.list(c(
     "src/cpp/fixture/src/fixture.cpp", "src/cpp/fixture/src/RcppExports.cpp",
     "src/cpp/fixture/R/RcppExports.R", "src/cpp/fixture/R/fixture.R"
   ))
-  record$reason <- if (record$product_eligible) {
+  record$reason <- if (record$approved_public_adapter) {
+    "Rcpp generated glue enters through Rcpp::RObject, applies an exact Rcpp type guard, and then constructs the typed Rcpp view"
+  } else if (record$product_eligible) {
     "Rcpp attributes or Modules, retained generated native glue, and the package R path are present"
   } else {
     "Rcpp fixture lacks at least one generated package-path marker"
@@ -696,67 +761,658 @@ fixture_expect_error <- function(expression, label) {
   invisible(error)
 }
 
-fixture_expected_outputs <- function() {
+fixture_encoded_strings <- function() {
+  values <- c(
+    enc2utf8("façade"),
+    iconv("façade", from = "UTF-8", to = "latin1"),
+    "bytes",
+    "",
+    NA_character_
+  )
+  Encoding(values[[1L]]) <- "UTF-8"
+  Encoding(values[[2L]]) <- "latin1"
+  Encoding(values[[3L]]) <- "bytes"
+  values
+}
+
+fixture_schema_value <- function(ratio = 0.5) {
+  list(id = 1L, count = 2L, ratio = ratio, enabled = TRUE)
+}
+
+fixture_case <- function(id, function_name, arguments, valid = TRUE, fresh_output = FALSE,
+                         copied_output = FALSE,
+                         allocation_nodes = if (fresh_output) 1L else 0L) {
   list(
-    numeric = c(1.5, NA_real_),
-    string = "fixture",
-    raw = as.raw(c(1, 2, 3)),
-    complex = c(1 + 2i, NA_complex_),
-    logical = c(FALSE, TRUE, NA),
-    list = list(value = 7L)
+    id = id,
+    function_name = function_name,
+    arguments = arguments,
+    valid = valid,
+    fresh_output = fresh_output,
+    copied_output = copied_output,
+    allocation_nodes = allocation_nodes
   )
 }
 
-fixture_public_contract <- function(functions, supported) {
-  input_strings <- c(enc2utf8("façade"), iconv("façade", from = "UTF-8", to = "latin1"), "bytes", NA_character_)
-  Encoding(input_strings[[1L]]) <- "UTF-8"
-  Encoding(input_strings[[2L]]) <- "latin1"
-  Encoding(input_strings[[3L]]) <- "bytes"
-  scalar <- function(name, ...) functions[[name]](...)
-  if ("F01" %in% supported) stopifnot(identical(scalar("fixture_zero"), 1L))
-  if ("F02" %in% supported) stopifnot(identical(scalar("fixture_scalar", 2.5), 2.5))
-  if ("F03" %in% supported) {
-    input <- c(1.5, -2.0, NA_real_)
-    stopifnot(identical(scalar("fixture_numeric", input), input * 2.0))
+fixture_contract_cases <- function() {
+  schema_extra_attribute <- function() {
+    value <- fixture_schema_value()
+    attr(value, "extra") <- "not allowed"
+    value
   }
-  if ("F04" %in% supported) {
-    input <- 1:100000
-    stopifnot(identical(scalar("fixture_altrep_integer", input), 5000050000))
+  schema_reordered <- function() {
+    value <- fixture_schema_value()
+    value[c("count", "id", "ratio", "enabled")]
   }
-  if ("F05" %in% supported) stopifnot(identical(scalar("fixture_strings", input_strings), 3L))
-  if ("F06" %in% supported) {
-    input <- as.raw(c(0, 1, 127, 255))
-    stopifnot(identical(scalar("fixture_raw", input), input))
+  schema_duplicate_names <- function() {
+    value <- fixture_schema_value()
+    names(value)[[2L]] <- "id"
+    value
   }
-  if ("F07" %in% supported) {
-    input <- c(1 + 2i, NA_complex_, complex(real = NaN, imaginary = 3))
-    stopifnot(identical(scalar("fixture_complex", input), input))
+  schema_field <- function(name, value) {
+    result <- fixture_schema_value()
+    result[[name]] <- value
+    result
   }
-  if ("F08" %in% supported) {
-    expected <- c(false = 2L, true = 2L, missing = 2L)
-    stopifnot(identical(scalar("fixture_logical_counts", c(FALSE, TRUE, NA, FALSE, NA, TRUE)), expected))
-  }
-  if ("F09" %in% supported) {
-    input <- list(id = 1L, count = 2L, ratio = 0.5, enabled = TRUE)
-    stopifnot(identical(scalar("fixture_schema", input), input))
-  }
-  if ("F10" %in% supported) {
-    state <- scalar("fixture_new")
-    stopifnot(
-      identical(scalar("fixture_method", state, 3L), 3L),
-      identical(scalar("fixture_read", state), 3L)
+  list(
+    F01 = list(
+      fixture_case("integer one", "fixture_zero", function() list(), fresh_output = TRUE)
+    ),
+    F02 = list(
+      fixture_case("finite", "fixture_scalar", function() list(2.5), fresh_output = TRUE),
+      fixture_case("negative zero", "fixture_scalar", function() list(-0.0), fresh_output = TRUE),
+      fixture_case("positive infinity", "fixture_scalar", function() list(Inf), fresh_output = TRUE),
+      fixture_case("negative infinity", "fixture_scalar", function() list(-Inf), fresh_output = TRUE),
+      fixture_case("NaN", "fixture_scalar", function() list(NaN), fresh_output = TRUE),
+      fixture_case("missing scalar", "fixture_scalar", function() list(NA_real_), valid = FALSE),
+      fixture_case("integer type", "fixture_scalar", function() list(1L), valid = FALSE),
+      fixture_case("logical type", "fixture_scalar", function() list(TRUE), valid = FALSE),
+      fixture_case("null", "fixture_scalar", function() list(NULL), valid = FALSE),
+      fixture_case("empty", "fixture_scalar", function() list(numeric()), valid = FALSE),
+      fixture_case("length two", "fixture_scalar", function() list(c(1, 2)), valid = FALSE)
+    ),
+    F03 = list(
+      fixture_case("empty", "fixture_numeric", function() list(numeric()), fresh_output = TRUE,
+                   copied_output = TRUE),
+      fixture_case(
+        "special values and attributes", "fixture_numeric",
+        function() list(structure(c(-0.0, 1.5, NA_real_, NaN, Inf, -Inf), names = letters[1:6])),
+        fresh_output = TRUE, copied_output = TRUE
+      ),
+      fixture_case("integer type", "fixture_numeric", function() list(1:3), valid = FALSE),
+      fixture_case("logical type", "fixture_numeric", function() list(c(TRUE, FALSE)), valid = FALSE)
+    ),
+    F04 = list(
+      fixture_case("compact sequence", "fixture_altrep_integer", function() list(1:100000),
+                   fresh_output = TRUE),
+      fixture_case("empty", "fixture_altrep_integer", function() list(integer()),
+                   fresh_output = TRUE),
+      fixture_case("negative and large", "fixture_altrep_integer",
+                   function() list(c(-7L, 0L, .Machine$integer.max, .Machine$integer.max)),
+                   fresh_output = TRUE),
+      fixture_case("missing integer", "fixture_altrep_integer",
+                   function() list(c(1L, NA_integer_, 3L)), fresh_output = TRUE),
+      fixture_case("double type", "fixture_altrep_integer", function() list(c(1, 2)), valid = FALSE),
+      fixture_case("logical type", "fixture_altrep_integer", function() list(c(TRUE, FALSE)),
+                   valid = FALSE)
+    ),
+    F05 = list(
+      fixture_case("encodings empty and missing", "fixture_strings",
+                   function() list(fixture_encoded_strings()), fresh_output = TRUE),
+      fixture_case("empty vector", "fixture_strings", function() list(character()),
+                   fresh_output = TRUE),
+      fixture_case("factor type", "fixture_strings", function() list(factor("a")), valid = FALSE),
+      fixture_case("raw type", "fixture_strings", function() list(charToRaw("a")), valid = FALSE)
+    ),
+    F06 = list(
+      fixture_case("empty", "fixture_raw", function() list(raw()), fresh_output = TRUE,
+                   copied_output = TRUE),
+      fixture_case("all byte edges", "fixture_raw",
+                   function() list(structure(as.raw(c(0, 1, 127, 128, 255)), names = letters[1:5])),
+                   fresh_output = TRUE, copied_output = TRUE),
+      fixture_case("integer type", "fixture_raw", function() list(1:3), valid = FALSE)
+    ),
+    F07 = list(
+      fixture_case("empty", "fixture_complex", function() list(complex()), fresh_output = TRUE,
+                   copied_output = TRUE),
+      fixture_case(
+        "missing NaN infinity and attributes", "fixture_complex",
+        function() list(structure(c(
+          1 + 2i, NA_complex_, complex(real = NaN, imaginary = 3),
+          complex(real = Inf, imaginary = -Inf), complex(real = -0.0, imaginary = 0.0)
+        ), names = letters[1:5])),
+        fresh_output = TRUE, copied_output = TRUE
+      ),
+      fixture_case("double type", "fixture_complex", function() list(c(1, 2)), valid = FALSE)
+    ),
+    F08 = list(
+      fixture_case("all states", "fixture_logical_counts",
+                   function() list(c(FALSE, TRUE, NA, FALSE, NA, TRUE)), fresh_output = TRUE),
+      fixture_case("empty", "fixture_logical_counts", function() list(logical()),
+                   fresh_output = TRUE),
+      fixture_case("integer type", "fixture_logical_counts", function() list(c(0L, 1L)),
+                   valid = FALSE)
+    ),
+    F09 = list(
+      fixture_case("finite schema", "fixture_schema", function() list(fixture_schema_value())),
+      fixture_case("NaN ratio", "fixture_schema", function() list(fixture_schema_value(NaN))),
+      fixture_case("infinite ratio", "fixture_schema", function() list(fixture_schema_value(Inf))),
+      fixture_case("unnamed", "fixture_schema", function() list(unname(fixture_schema_value())),
+                   valid = FALSE),
+      fixture_case("reordered", "fixture_schema", function() list(schema_reordered()), valid = FALSE),
+      fixture_case("duplicate names", "fixture_schema", function() list(schema_duplicate_names()),
+                   valid = FALSE),
+      fixture_case("extra field", "fixture_schema",
+                   function() list(c(fixture_schema_value(), list(extra = 1L))), valid = FALSE),
+      fixture_case("extra attribute", "fixture_schema", function() list(schema_extra_attribute()),
+                   valid = FALSE),
+      fixture_case("missing id", "fixture_schema",
+                   function() list(schema_field("id", NA_integer_)), valid = FALSE),
+      fixture_case("missing count", "fixture_schema",
+                   function() list(schema_field("count", NA_integer_)), valid = FALSE),
+      fixture_case("missing ratio", "fixture_schema",
+                   function() list(schema_field("ratio", NA_real_)), valid = FALSE),
+      fixture_case("missing enabled", "fixture_schema",
+                   function() list(schema_field("enabled", NA)), valid = FALSE),
+      fixture_case("wrong id type", "fixture_schema",
+                   function() list(schema_field("id", 1)), valid = FALSE),
+      fixture_case("wrong count length", "fixture_schema",
+                   function() list(schema_field("count", c(1L, 2L))), valid = FALSE),
+      fixture_case("wrong ratio type", "fixture_schema",
+                   function() list(schema_field("ratio", 1L)), valid = FALSE),
+      fixture_case("wrong enabled type", "fixture_schema",
+                   function() list(schema_field("enabled", 1L)), valid = FALSE)
+    ),
+    F12 = list(
+      fixture_case(
+        "complete owned output", "fixture_outputs", function() list(),
+        fresh_output = TRUE, allocation_nodes = 8L
+      )
     )
-  }
-  if ("F11" %in% supported) {
-    fixture_expect_error(scalar("fixture_scalar", 1L), "wrong scalar type")
-    fixture_expect_error(scalar("fixture_scalar", c(1, 2)), "wrong scalar length")
-    fixture_expect_error(scalar("fixture_error", 1), "native fixture error")
-    stopifnot(identical(scalar("fixture_scalar", 2.5), 2.5))
-  }
-  if ("F12" %in% supported) {
-    stopifnot(identical(scalar("fixture_outputs"), fixture_expected_outputs()))
+  )
+}
+
+fixture_capture <- function(expression) {
+  tryCatch(
+    list(ok = TRUE, value = force(expression), condition = NULL),
+    error = function(condition) list(ok = FALSE, value = NULL, condition = condition)
+  )
+}
+
+fixture_value_metadata <- function(value) {
+  attributes_value <- attributes(value)
+  list(
+    type = typeof(value),
+    length = length(value),
+    attribute_names = names(attributes_value),
+    encoding = if (is.character(value)) Encoding(value) else character(0),
+    missing = if (is.atomic(value)) {
+      ifelse(is.na(value), ifelse(is.nan(value), "nan", "na"), "present")
+    } else {
+      character(0)
+    },
+    zero_sign = if (is.double(value)) {
+      ifelse(!is.na(value) & value == 0, ifelse(1 / value < 0, "negative", "positive"), "none")
+    } else if (is.complex(value)) {
+      list(
+        real = ifelse(!is.na(Re(value)) & Re(value) == 0,
+                      ifelse(1 / Re(value) < 0, "negative", "positive"), "none"),
+        imaginary = ifelse(!is.na(Im(value)) & Im(value) == 0,
+                           ifelse(1 / Im(value) < 0, "negative", "positive"), "none")
+      )
+    } else {
+      character(0)
+    },
+    values = if (is.list(value)) lapply(value, fixture_value_metadata) else NULL,
+    attributes = if (is.null(attributes_value)) NULL else {
+      lapply(unname(attributes_value), fixture_value_metadata)
+    }
+  )
+}
+
+fixture_assert_same <- function(expected, actual, label) {
+  if (!identical(expected, actual) ||
+      !identical(fixture_value_metadata(expected), fixture_value_metadata(actual))) {
+    stop(sprintf("fixture values differ for %s", label), call. = FALSE)
   }
   invisible(TRUE)
+}
+
+fixture_assert_error <- function(outcome, label, message_pattern = NULL) {
+  if (isTRUE(outcome$ok) || !inherits(outcome$condition, "error")) {
+    stop(sprintf("fixture call did not return an R error for %s", label), call. = FALSE)
+  }
+  message <- conditionMessage(outcome$condition)
+  if (!nzchar(message)) stop(sprintf("fixture error message is blank for %s", label), call. = FALSE)
+  if (!is.null(message_pattern) && !grepl(message_pattern, message, ignore.case = TRUE, perl = TRUE)) {
+    stop(sprintf("fixture error message differs for %s: %s", label, message), call. = FALSE)
+  }
+  invisible(outcome$condition)
+}
+
+fixture_visible_output_nodes <- function(value) {
+  if (!is.list(value)) return(1L)
+  1L + sum(vapply(value, fixture_visible_output_nodes, integer(1)))
+}
+
+fixture_assert_fresh_tree <- function(left, right, diagnostics, label) {
+  if (isTRUE(diagnostics$same_sexp(left, right))) {
+    stop(sprintf("fixture reused an output SEXP for %s", label), call. = FALSE)
+  }
+  if (is.list(left) && is.list(right)) {
+    if (length(left) != length(right)) {
+      stop(sprintf("fixture output trees differ for %s", label), call. = FALSE)
+    }
+    for (index in seq_along(left)) {
+      fixture_assert_fresh_tree(
+        left[[index]], right[[index]], diagnostics,
+        sprintf("%s/child-%d", label, index)
+      )
+    }
+  }
+  invisible(TRUE)
+}
+
+fixture_run_value_matrix <- function(runner, functions, supported, reference_functions,
+                                     control_functions, control_diagnostics, optimized_functions) {
+  cases <- fixture_contract_cases()
+  counts <- c(valid = 0L, invalid = 0L, allocation = 0L, copy = 0L)
+  for (fixture in intersect(names(cases), supported)) {
+    for (case in cases[[fixture]]) {
+      label <- sprintf("%s/%s/%s", runner, fixture, case$id)
+      reference_arguments <- case$arguments()
+      reference <- fixture_capture(do.call(
+        reference_functions[[case$function_name]], reference_arguments
+      ))
+      target_arguments <- case$arguments()
+      target_before <- unserialize(serialize(target_arguments, NULL))
+      target <- fixture_capture(do.call(functions[[case$function_name]], target_arguments))
+      fixture_assert_same(target_before, target_arguments, paste(label, "input preservation"))
+
+      control_arguments <- case$arguments()
+      control <- fixture_capture(do.call(control_functions[[case$function_name]], control_arguments))
+      if (isTRUE(case$valid)) {
+        if (!isTRUE(reference$ok)) fixture_assert_error(reference, paste(label, "R oracle"))
+        if (!isTRUE(target$ok)) fixture_assert_error(target, paste(label, "target"))
+        if (!isTRUE(control$ok)) fixture_assert_error(control, paste(label, "C control"))
+        fixture_assert_same(reference$value, target$value, paste(label, "R comparison"))
+        fixture_assert_same(reference$value, control$value, paste(label, "C comparison"))
+        counts[["valid"]] <- counts[["valid"]] + 1L
+
+        if (isTRUE(case$fresh_output)) {
+          if (length(target_arguments) > 0L &&
+              isTRUE(control_diagnostics$same_sexp(target_arguments[[1L]], target$value))) {
+            stop(sprintf("fixture returned its input SEXP for %s", label), call. = FALSE)
+          }
+          repeated <- fixture_capture(do.call(
+            functions[[case$function_name]], case$arguments()
+          ))
+          if (!isTRUE(repeated$ok)) fixture_assert_error(repeated, paste(label, "repeat"))
+          fixture_assert_same(target$value, repeated$value, paste(label, "repeat comparison"))
+          fixture_assert_fresh_tree(
+            target$value, repeated$value, control_diagnostics, paste(label, "fresh output")
+          )
+          allocation_nodes <- fixture_visible_output_nodes(target$value)
+          if (!identical(allocation_nodes, case$allocation_nodes)) {
+            stop(sprintf(
+              "R-visible output allocation count differs for %s: got %d; expected %d",
+              label, allocation_nodes, case$allocation_nodes
+            ), call. = FALSE)
+          }
+          counts[["allocation"]] <- counts[["allocation"]] + allocation_nodes
+        }
+        if (isTRUE(case$copied_output) && length(target_arguments[[1L]]) > 0L) {
+          if (isTRUE(control_diagnostics$same_data_pointer(
+            target_arguments[[1L]], target$value
+          ))) {
+            stop(sprintf("fixture output aliases input storage for %s", label), call. = FALSE)
+          }
+          counts[["copy"]] <- counts[["copy"]] + 1L
+        }
+        if (fixture %in% names(optimized_functions)) {
+          optimized <- fixture_capture(do.call(optimized_functions[[fixture]], case$arguments()))
+          if (!isTRUE(optimized$ok)) fixture_assert_error(optimized, paste(label, "optimized R"))
+          fixture_assert_same(reference$value, optimized$value, paste(label, "optimized R comparison"))
+        }
+      } else {
+        fixture_assert_error(reference, paste(label, "R oracle"))
+        fixture_assert_error(target, paste(label, "target"))
+        fixture_assert_error(control, paste(label, "C control"))
+        counts[["invalid"]] <- counts[["invalid"]] + 1L
+      }
+    }
+  }
+
+  counts
+}
+
+fixture_run_output_proof <- function(runner, functions, supported, reference_functions) {
+  if (!"F12" %in% supported) return(c(construction = 0L, retention = 0L))
+
+  expected <- reference_functions$fixture_outputs()
+  previous_torture <- gctorture(TRUE)
+  torture_restored <- FALSE
+  on.exit({
+    if (!torture_restored) gctorture(previous_torture)
+  }, add = TRUE)
+  output <- functions$fixture_outputs()
+  gctorture(previous_torture)
+  torture_restored <- TRUE
+  fixture_assert_same(
+    expected, output, sprintf("%s/F12/construction under forced GC", runner)
+  )
+
+  retained <- functions$fixture_outputs()
+  retained_expected <- unserialize(serialize(retained, NULL))
+  pressure <- lapply(seq_len(64L), function(index) raw(1024L + index))
+  gc()
+  fixture_assert_same(retained_expected, retained, sprintf("%s/F12/GC retention", runner))
+  if (length(pressure) != 64L) stop("fixture GC pressure was not constructed")
+  c(construction = 1L, retention = 1L)
+}
+
+fixture_r_functions <- function(root_dir) {
+  environment <- new.env(parent = .GlobalEnv)
+  sys.source(file.path(root_dir, "src", "r", "run_all.R"), envir = environment)
+  mapping <- fixture_r_function_map()
+  functions <- lapply(unique(unlist(fixture_function_map(), use.names = FALSE)), function(name) NULL)
+  names(functions) <- unique(unlist(fixture_function_map(), use.names = FALSE))
+  for (fixture in setdiff(names(mapping), "F11")) {
+    functions[[fixture_function_map()[[fixture]][[1L]]]] <- environment[[mapping[[fixture]]]]
+  }
+  functions$fixture_scalar <- environment$r_fixture_scalar
+  functions$fixture_error <- environment$r_fixture_error
+  list(
+    functions = functions,
+    optimized = list(
+      F03 = environment$r_optimized_fixture_numeric,
+      F04 = environment$r_optimized_fixture_altrep_integer
+    )
+  )
+}
+
+fixture_c_context <- function(root_dir) {
+  path <- file.path(root_dir, "src", "c_call", paste0("bench", .Platform$dynlib.ext))
+  if (!file.exists(path)) stop("registered C fixture library is missing")
+  dll <- dyn.load(path)
+  routines <- getDLLRegisteredRoutines(dll)[[".Call"]]
+  call <- function(name, ...) {
+    routine <- routines[[name]]
+    if (is.null(routine)) stop(sprintf("registered C diagnostic is missing: %s", name))
+    do.call(.Call, c(list(routine), list(...)))
+  }
+  functions <- list()
+  for (fixture in names(fixture_function_map())) {
+    function_names <- fixture_function_map()[[fixture]]
+    for (function_name in function_names) {
+      functions[[function_name]] <- local({
+        symbol <- paste0("c_p4_", function_name)
+        function(...) call(symbol, ...)
+      })
+    }
+  }
+  list(
+    dll = dll,
+    close = function() {
+      gc()
+      dyn.unload(dll[["path"]])
+    },
+    functions = functions,
+    diagnostics = list(
+      same_sexp = function(left, right) call("c_p4_same_sexp", left, right),
+      same_data_pointer = function(left, right) {
+        call("c_p4_same_data_pointer", left, right)
+      },
+      wrong_pointer = function() call("c_p4_wrong_pointer"),
+      cleared_pointer_like = function(value) call("c_p4_cleared_pointer_like", value),
+      altrep_new = function(start, length) call("c_p4_altrep_new", start, length),
+      altrep_reset = function() call("c_p4_altrep_reset"),
+      altrep_snapshot = function(value) call("c_p4_altrep_snapshot", value),
+      lifecycle_reset = function() call("c_p4_lifecycle_reset"),
+      lifecycle_counts = function() call("c_p4_lifecycle_snapshot")
+    )
+  )
+}
+
+fixture_altrep_expectation <- function(runner) {
+  expected <- list(
+    zigr = c(element = 0L, region = 1L, pointer = 0L, materialization = 0L,
+             is_materialized = 0L),
+    rcpp = c(element = 0L, region = 0L, pointer = 1L, materialization = 1L,
+             is_materialized = 1L),
+    cpp11 = c(element = 0L, region = 7L, pointer = 0L, materialization = 0L,
+              is_materialized = 0L),
+    extendr = c(element = 257L, region = 0L, pointer = 0L, materialization = 0L,
+                is_materialized = 0L),
+    savvy = c(element = 0L, region = 0L, pointer = 1L, materialization = 1L,
+              is_materialized = 1L),
+    r = c(element = 257L, region = 0L, pointer = 0L, materialization = 0L,
+          is_materialized = 0L),
+    c_call = c(element = 0L, region = 1L, pointer = 0L, materialization = 0L,
+               is_materialized = 0L)
+  )[[runner]]
+  if (is.null(expected)) stop(sprintf("ALTREP strategy is not declared for %s", runner))
+  expected
+}
+
+fixture_run_altrep_probe <- function(runner, functions, supported, diagnostics) {
+  if (!"F04" %in% supported) return(integer())
+  expected <- fixture_altrep_expectation(runner)
+
+  input <- diagnostics$altrep_new(1L, 257L)
+  diagnostics$altrep_reset()
+  result <- functions$fixture_altrep_integer(input)
+  counts <- diagnostics$altrep_snapshot(input)
+  fixture_assert_same(33153, result, sprintf("%s/F04/instrumented ALTREP result", runner))
+  if (!identical(counts, expected)) {
+    stop(sprintf(
+      "ALTREP callback counts differ for %s: got %s; expected %s",
+      runner,
+      paste(sprintf("%s=%d", names(counts), counts), collapse = ", "),
+      paste(sprintf("%s=%d", names(expected), expected), collapse = ", ")
+    ), call. = FALSE)
+  }
+  counts
+}
+
+fixture_lifecycle_api <- function(functions, control_diagnostics = NULL) {
+  if (!is.null(control_diagnostics)) {
+    return(list(
+      reset = control_diagnostics$lifecycle_reset,
+      counts = control_diagnostics$lifecycle_counts
+    ))
+  }
+  if (is.null(functions$fixture_lifecycle_reset) || is.null(functions$fixture_lifecycle_counts)) {
+    return(NULL)
+  }
+  list(reset = functions$fixture_lifecycle_reset, counts = functions$fixture_lifecycle_counts)
+}
+
+fixture_run_error_recovery <- function(runner, functions, supported, lifecycle) {
+  if (!"F11" %in% supported) return(c(error = 0L, recovery = 0L))
+  gc()
+  if (!is.null(lifecycle)) lifecycle$reset()
+  attempts <- list(
+    wrong_type = function() functions$fixture_scalar(1L),
+    wrong_length = function() functions$fixture_scalar(c(1, 2)),
+    missing_scalar = function() functions$fixture_scalar(NA_real_),
+    native_error = function() functions$fixture_error(1.0)
+  )
+  counts <- c(error = 0L, recovery = 0L)
+  for (iteration in seq_len(8L)) {
+    for (name in names(attempts)) {
+      outcome <- fixture_capture(attempts[[name]]())
+      fixture_assert_error(
+        outcome,
+        sprintf("%s/F11/%s/repetition-%d", runner, name, iteration),
+        if (identical(name, "native_error")) "fixture error" else NULL
+      )
+      counts[["error"]] <- counts[["error"]] + 1L
+      fixture_assert_same(
+        2.5,
+        functions$fixture_scalar(2.5),
+        sprintf("%s/F11/recovery-%s-%d", runner, name, iteration)
+      )
+      counts[["recovery"]] <- counts[["recovery"]] + 1L
+    }
+  }
+  if (!is.null(lifecycle)) {
+    expected <- c(constructor = 0L, method = 0L, error = 8L, finalizer = 0L)
+    actual <- lifecycle$counts()
+    if (!identical(actual, expected)) {
+      stop(sprintf("native error lifecycle counts differ for %s", runner), call. = FALSE)
+    }
+  }
+  counts
+}
+
+fixture_state_pointer <- function(runner, state) {
+  switch(runner,
+    zigr = state,
+    c_call = state,
+    extendr = state,
+    rcpp = get(".pointer", envir = methods::slot(state, ".xData"), inherits = FALSE),
+    savvy = get("self", envir = environment(state$increment), inherits = FALSE),
+    stop(sprintf("no state-pointer observation for %s", runner))
+  )
+}
+
+fixture_state_with_pointer <- function(runner, state, pointer) {
+  switch(runner,
+    zigr = pointer,
+    c_call = pointer,
+    extendr = {
+      class(pointer) <- class(state)
+      pointer
+    },
+    rcpp = {
+      assign(".pointer", pointer, envir = methods::slot(state, ".xData"))
+      state
+    },
+    savvy = {
+      assign("self", pointer, envir = environment(state$increment))
+      state
+    },
+    stop(sprintf("no state-pointer replacement for %s", runner))
+  )
+}
+
+fixture_run_state_lifecycle <- function(runner, functions, supported, diagnostics, lifecycle) {
+  if (!"F10" %in% supported) return(c(constructor = 0L, method = 0L, finalizer = 0L))
+  if (is.null(lifecycle)) stop(sprintf("F10 lifecycle counters are missing for %s", runner))
+  gc()
+  lifecycle$reset()
+  state <- functions$fixture_new()
+  fixture_assert_same(0L, functions$fixture_read(state), sprintf("%s/F10/initial read", runner))
+  fixture_assert_same(3L, functions$fixture_method(state, 3L), sprintf("%s/F10/increment", runner))
+  fixture_assert_same(2L, functions$fixture_method(state, -1L), sprintf("%s/F10/decrement", runner))
+  fixture_assert_same(2L, functions$fixture_read(state), sprintf("%s/F10/read", runner))
+
+  wrong_pointer <- diagnostics$wrong_pointer()
+  invalid <- list(
+    wrong_receiver = function() functions$fixture_method(list(), 1L),
+    wrong_pointer_type = function() functions$fixture_method(wrong_pointer, 1L),
+    wrong_amount_type = function() functions$fixture_method(state, 1.0),
+    wrong_amount_length = function() functions$fixture_method(state, c(1L, 2L)),
+    missing_amount = function() functions$fixture_method(state, NA_integer_)
+  )
+  for (iteration in seq_len(8L)) {
+    for (name in names(invalid)) {
+      fixture_assert_error(
+        fixture_capture(invalid[[name]]()),
+        sprintf("%s/F10/%s/repetition-%d", runner, name, iteration)
+      )
+    }
+  }
+
+  owned_pointer <- fixture_state_pointer(runner, state)
+  cleared_pointer <- diagnostics$cleared_pointer_like(owned_pointer)
+  cleared_state <- fixture_state_with_pointer(runner, state, cleared_pointer)
+  if (!identical(class(cleared_state), class(state))) {
+    stop(sprintf("cleared fixture receiver class differs for %s", runner), call. = FALSE)
+  }
+  for (iteration in seq_len(8L)) {
+    fixture_assert_error(
+      fixture_capture(functions$fixture_method(cleared_state, 1L)),
+      sprintf("%s/F10/cleared-pointer/repetition-%d", runner, iteration)
+    )
+  }
+  if (runner %in% c("rcpp", "savvy")) {
+    state <- fixture_state_with_pointer(runner, state, owned_pointer)
+  }
+  fixture_assert_same(3L, functions$fixture_method(state, 1L), sprintf("%s/F10/recovery", runner))
+
+  rm(cleared_state, cleared_pointer, owned_pointer, wrong_pointer)
+  rm(state)
+  gc()
+  gc()
+  expected <- c(constructor = 1L, method = 5L, error = 0L, finalizer = 1L)
+  actual <- lifecycle$counts()
+  if (!identical(actual, expected)) {
+    stop(sprintf(
+      "native state lifecycle counts differ for %s: got %s; expected %s",
+      runner,
+      paste(sprintf("%s=%d", names(actual), actual), collapse = ", "),
+      paste(sprintf("%s=%d", names(expected), expected), collapse = ", ")
+    ), call. = FALSE)
+  }
+  actual[c("constructor", "method", "finalizer")]
+}
+
+fixture_expected_value_counts <- function(supported) {
+  contract_cases <- fixture_contract_cases()
+  cases <- unlist(
+    contract_cases[intersect(names(contract_cases), supported)],
+    recursive = FALSE, use.names = FALSE
+  )
+  valid <- vapply(cases, function(case) isTRUE(case$valid), logical(1))
+  c(
+    valid = sum(valid),
+    invalid = sum(!valid),
+    allocation = sum(vapply(cases[valid], function(case) case$allocation_nodes, integer(1))),
+    copy = sum(valid & vapply(cases, function(case) {
+      isTRUE(case$copied_output) && length(case$arguments()[[1L]]) > 0L
+    }, logical(1)))
+  )
+}
+
+fixture_validate_proof <- function(proof, runner, supported) {
+  required <- c("values", "output", "altrep", "recovery", "state")
+  if (!is.list(proof) || !identical(names(proof), required)) {
+    stop(sprintf("fixture proof fields differ for %s", runner), call. = FALSE)
+  }
+  expected_values <- fixture_expected_value_counts(supported)
+  if (!identical(proof$values, expected_values)) {
+    stop(sprintf("fixture semantic case counts differ for %s", runner), call. = FALSE)
+  }
+  expected_output <- if ("F12" %in% supported) {
+    c(construction = 1L, retention = 1L)
+  } else {
+    c(construction = 0L, retention = 0L)
+  }
+  if (!identical(proof$output, expected_output)) {
+    stop(sprintf("fixture output protection proof differs for %s", runner), call. = FALSE)
+  }
+  expected_altrep <- if ("F04" %in% supported) fixture_altrep_expectation(runner) else integer()
+  if (!identical(proof$altrep, expected_altrep)) {
+    stop(sprintf("fixture ALTREP proof differs for %s", runner), call. = FALSE)
+  }
+  expected_recovery <- if ("F11" %in% supported) {
+    c(error = 32L, recovery = 32L)
+  } else {
+    c(error = 0L, recovery = 0L)
+  }
+  if (!identical(proof$recovery, expected_recovery)) {
+    stop(sprintf("fixture recovery counts differ for %s", runner), call. = FALSE)
+  }
+  expected_state <- if ("F10" %in% supported) {
+    c(constructor = 1L, method = 5L, finalizer = 1L)
+  } else {
+    c(constructor = 0L, method = 0L, finalizer = 0L)
+  }
+  if (!identical(proof$state, expected_state)) {
+    stop(sprintf("fixture state lifecycle proof differs for %s", runner), call. = FALSE)
+  }
+  invisible(proof)
 }
 
 fixture_registered_surface <- function(dll, required_symbols) {
@@ -803,6 +1459,17 @@ fixture_package_symbols <- function(runner, supported) {
   )
 }
 
+fixture_lifecycle_symbols <- function(runner) {
+  switch(runner,
+    zigr = c("fixture_lifecycle_reset", "fixture_lifecycle_counts"),
+    rcpp = paste0("_zigrRcpp_fixture_lifecycle_", c("reset", "counts")),
+    cpp11 = paste0("_zigrCpp11_fixture_lifecycle_", c("reset", "counts")),
+    extendr = paste0("wrap__fixture_lifecycle_", c("reset", "counts")),
+    savvy = paste0("savvy_fixture_lifecycle_", c("reset", "counts"), "__impl"),
+    stop(sprintf("no lifecycle symbol map for %s", runner))
+  )
+}
+
 run_fixture_package_gate <- function(root_dir, runner, evidence) {
   package <- fixture_package_map(root_dir)[[runner]]
   rows <- evidence$fixture_rows[
@@ -829,7 +1496,9 @@ run_fixture_package_gate <- function(root_dir, runner, evidence) {
   if (!identical(isTRUE(dll[["forceSymbols"]]), expected_forced)) {
     stop(sprintf("fixture DLL force-symbol policy differs from generated %s convention", runner))
   }
-  fixture_registered_surface(dll, fixture_package_symbols(runner, supported))
+  fixture_registered_surface(
+    dll, c(fixture_package_symbols(runner, supported), fixture_lifecycle_symbols(runner))
+  )
   namespace <- asNamespace(package$package)
   gap_fixtures <- as.character(evidence$fixture_rows$fixture[
     evidence$fixture_rows$runner == runner & !evidence$fixture_rows$executable
@@ -845,45 +1514,68 @@ run_fixture_package_gate <- function(root_dir, runner, evidence) {
       stop(sprintf("non-executable fixture gaps remain exposed for %s", runner))
     }
   }
-  functions <- lapply(unique(unlist(fixture_function_map(), use.names = FALSE)), function(name) {
+  public_names <- c(
+    unique(unlist(fixture_function_map(), use.names = FALSE)),
+    "fixture_lifecycle_reset", "fixture_lifecycle_counts"
+  )
+  functions <- lapply(public_names, function(name) {
     if (exists(name, envir = namespace, mode = "function", inherits = FALSE)) {
       get(name, envir = namespace, mode = "function", inherits = FALSE)
     } else {
       NULL
     }
   })
-  names(functions) <- unique(unlist(fixture_function_map(), use.names = FALSE))
-  fixture_public_contract(functions, supported)
-  invisible(TRUE)
+  names(functions) <- public_names
+
+  reference <- fixture_r_functions(root_dir)
+  control <- fixture_c_context(root_dir)
+  on.exit(control$close(), add = TRUE)
+  lifecycle <- fixture_lifecycle_api(functions)
+  proof <- list(
+    values = fixture_run_value_matrix(
+      runner, functions, supported, reference$functions, control$functions,
+      control$diagnostics, reference$optimized
+    ),
+    output = fixture_run_output_proof(runner, functions, supported, reference$functions),
+    altrep = fixture_run_altrep_probe(runner, functions, supported, control$diagnostics),
+    recovery = fixture_run_error_recovery(runner, functions, supported, lifecycle),
+    state = fixture_run_state_lifecycle(
+      runner, functions, supported, control$diagnostics, lifecycle
+    )
+  )
+  fixture_validate_proof(proof, runner, supported)
+  invisible(proof)
 }
 
 run_fixture_r_gate <- function(root_dir, evidence) {
-  source(file.path(root_dir, "src", "r", "run_all.R"), local = .GlobalEnv)
+  reference <- fixture_r_functions(root_dir)
   supported <- evidence$fixture_rows$fixture[
     evidence$fixture_rows$runner == "r" & evidence$fixture_rows$executable
   ]
-  mapping <- fixture_r_function_map()
-  functions <- lapply(unique(unlist(fixture_function_map(), use.names = FALSE)), function(name) NULL)
-  names(functions) <- unique(unlist(fixture_function_map(), use.names = FALSE))
-  for (fixture in setdiff(supported, "F11")) {
-    public_name <- fixture_function_map()[[fixture]][[1L]]
-    functions[[public_name]] <- get(unname(mapping[[fixture]]), mode = "function", inherits = TRUE)
-  }
-  if ("F11" %in% supported) {
-    functions$fixture_scalar <- r_fixture_scalar
-    functions$fixture_error <- r_fixture_error
-  }
-  fixture_public_contract(functions, supported)
+  functions <- reference$functions
+  control <- fixture_c_context(root_dir)
+  on.exit(control$close(), add = TRUE)
+  proof <- list(
+    values = fixture_run_value_matrix(
+      "r", functions, supported, reference$functions, control$functions,
+      control$diagnostics, reference$optimized
+    ),
+    output = fixture_run_output_proof("r", functions, supported, reference$functions),
+    altrep = fixture_run_altrep_probe("r", functions, supported, control$diagnostics),
+    recovery = fixture_run_error_recovery("r", functions, supported, lifecycle = NULL),
+    state = c(constructor = 0L, method = 0L, finalizer = 0L)
+  )
   optimized <- build_fixture_optimized_r_provenance()
   stopifnot(
     all(vapply(optimized, function(record) {
       identical(record$implementation_class, "optimized_base_r") &&
         !identical(record$compiled_backend, "none")
     }, logical(1))),
-    identical(r_optimized_fixture_numeric(c(1.5, -2.0, NA_real_)), c(3, -4, NA_real_)),
-    identical(r_optimized_fixture_altrep_integer(1:100000), 5000050000)
+    identical(reference$optimized$F03(c(1.5, -2.0, NA_real_)), c(3, -4, NA_real_)),
+    identical(reference$optimized$F04(1:100000), 5000050000)
   )
-  invisible(TRUE)
+  fixture_validate_proof(proof, "r", supported)
+  invisible(proof)
 }
 
 run_fixture_c_gate <- function(root_dir, evidence) {
@@ -891,37 +1583,51 @@ run_fixture_c_gate <- function(root_dir, evidence) {
   if (!file.exists(path)) stop("registered C fixture library is missing")
   dll <- dyn.load(path)
   dyn.unload(dll[["path"]])
-  dll <- dyn.load(path)
-  on.exit({
-    gc()
-    dyn.unload(dll[["path"]])
-  }, add = TRUE)
+  control <- fixture_c_context(root_dir)
+  dll <- control$dll
+  on.exit(control$close(), add = TRUE)
   if (isTRUE(dll[["dynamicLookup"]]) || !isTRUE(dll[["forceSymbols"]])) {
     stop("registered C fixture does not enforce disabled lookup and forced symbols")
   }
-  symbols <- unique(unlist(fixture_c_symbol_map(), use.names = FALSE))
+  symbols <- c(
+    unique(unlist(fixture_c_symbol_map(), use.names = FALSE)),
+    "c_p4_lifecycle_reset", "c_p4_lifecycle_snapshot",
+    "c_p4_same_sexp", "c_p4_same_data_pointer", "c_p4_wrong_pointer",
+    "c_p4_cleared_pointer_like",
+    "c_p4_altrep_new", "c_p4_altrep_reset", "c_p4_altrep_snapshot"
+  )
   fixture_registered_surface(dll, symbols)
-  flat <- list()
-  for (fixture in names(fixture_function_map())) {
-    names <- fixture_function_map()[[fixture]]
-    for (index in seq_along(names)) {
-      address <- getNativeSymbolInfo(paste0("c_p4_", names[[index]]), PACKAGE = dll)$address
-      flat[[names[[index]]]] <- local({
-        native_address <- address
-        function(...) .Call(native_address, ...)
-      })
-    }
-  }
+  functions <- control$functions
   supported <- evidence$fixture_rows$fixture[
     evidence$fixture_rows$runner == "c_call" & evidence$fixture_rows$executable
   ]
-  fixture_public_contract(flat, supported)
-  invisible(TRUE)
+  reference <- fixture_r_functions(root_dir)
+  lifecycle <- fixture_lifecycle_api(functions, control$diagnostics)
+  proof <- list(
+    values = fixture_run_value_matrix(
+      "c_call", functions, supported, reference$functions, functions,
+      control$diagnostics, reference$optimized
+    ),
+    output = fixture_run_output_proof(
+      "c_call", functions, supported, reference$functions
+    ),
+    altrep = fixture_run_altrep_probe(
+      "c_call", functions, supported, control$diagnostics
+    ),
+    recovery = fixture_run_error_recovery(
+      "c_call", functions, supported, lifecycle
+    ),
+    state = fixture_run_state_lifecycle(
+      "c_call", functions, supported, control$diagnostics, lifecycle
+    )
+  )
+  fixture_validate_proof(proof, "c_call", supported)
+  invisible(proof)
 }
 
 run_live_product_fixture_gate <- function(root_dir, evidence, runner) {
   if (length(runner) != 1L || is.na(runner)) stop("live fixture gate requires one runner")
-  if (runner %in% c("zigr", "rcpp", "cpp11", "extendr", "savvy")) {
+  proof <- if (runner %in% c("zigr", "rcpp", "cpp11", "extendr", "savvy")) {
     run_fixture_package_gate(root_dir, runner, evidence)
   } else if (identical(runner, "r")) {
     run_fixture_r_gate(root_dir, evidence)
@@ -930,5 +1636,5 @@ run_live_product_fixture_gate <- function(root_dir, evidence, runner) {
   } else {
     stop(sprintf("no live fixture gate for runner %s", runner))
   }
-  invisible(TRUE)
+  invisible(proof)
 }

@@ -1,4 +1,5 @@
 #include <Rinternals.h>
+#include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -51,6 +52,24 @@ extern SEXP c_call_bench_rng_stress(SEXP);
 
 static int fixture_state = 0;
 static SEXP fixture_tag_symbol = NULL;
+
+typedef struct {
+    int constructor;
+    int method;
+    int error;
+    int finalizer;
+} c_p4_lifecycle_counts;
+
+typedef struct {
+    int element;
+    int region;
+    int pointer;
+    int materialization;
+} c_p4_altrep_counts;
+
+static c_p4_lifecycle_counts c_p4_lifecycle = {0, 0, 0, 0};
+static c_p4_altrep_counts c_p4_altrep = {0, 0, 0, 0};
+static R_altrep_class_t c_p4_altrep_integer_class;
 
 static SEXP fixture_tag(void) {
     if (fixture_tag_symbol == NULL) fixture_tag_symbol = Rf_install("zigr_fixture_state");
@@ -293,6 +312,144 @@ static void c_p4_set_names(SEXP value, const char *const *names, R_xlen_t length
     UNPROTECT(1);
 }
 
+static SEXP c_p4_lifecycle_reset(void) {
+    memset(&c_p4_lifecycle, 0, sizeof(c_p4_lifecycle));
+    return R_NilValue;
+}
+
+static SEXP c_p4_lifecycle_snapshot(void) {
+    static const char *const names[] = {"constructor", "method", "error", "finalizer"};
+    SEXP result = PROTECT(Rf_allocVector(INTSXP, 4));
+    INTEGER(result)[0] = c_p4_lifecycle.constructor;
+    INTEGER(result)[1] = c_p4_lifecycle.method;
+    INTEGER(result)[2] = c_p4_lifecycle.error;
+    INTEGER(result)[3] = c_p4_lifecycle.finalizer;
+    c_p4_set_names(result, names, 4);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_same_sexp(SEXP left, SEXP right) {
+    return Rf_ScalarLogical(left == right);
+}
+
+static SEXP c_p4_same_data_pointer(SEXP left, SEXP right) {
+    if (TYPEOF(left) != TYPEOF(right) || XLENGTH(left) != XLENGTH(right)) {
+        return Rf_ScalarLogical(FALSE);
+    }
+    switch (TYPEOF(left)) {
+        case REALSXP:
+        case INTSXP:
+        case LGLSXP:
+        case RAWSXP:
+        case CPLXSXP:
+            return Rf_ScalarLogical(DATAPTR_RO(left) == DATAPTR_RO(right));
+        default:
+            Rf_error("data-pointer comparison requires matching atomic vectors");
+    }
+    return R_NilValue;
+}
+
+static SEXP c_p4_wrong_pointer(void) {
+    return R_MakeExternalPtr(&fixture_state, Rf_install("p4_wrong_fixture_type"), R_NilValue);
+}
+
+static SEXP c_p4_cleared_pointer_like(SEXP value) {
+    if (TYPEOF(value) != EXTPTRSXP) Rf_error("pointer template must be an external pointer");
+    SEXP result = R_MakeExternalPtr(&fixture_state, R_ExternalPtrTag(value), R_NilValue);
+    R_ClearExternalPtr(result);
+    return result;
+}
+
+static R_xlen_t c_p4_altrep_length(SEXP value) {
+    return (R_xlen_t) INTEGER(R_altrep_data1(value))[1];
+}
+
+static int c_p4_altrep_value(SEXP value, R_xlen_t index) {
+    return INTEGER(R_altrep_data1(value))[0] + (int) index;
+}
+
+static int c_p4_altrep_elt(SEXP value, R_xlen_t index) {
+    ++c_p4_altrep.element;
+    SEXP materialized = R_altrep_data2(value);
+    if (materialized != R_NilValue) return INTEGER(materialized)[index];
+    return c_p4_altrep_value(value, index);
+}
+
+static R_xlen_t c_p4_altrep_get_region(SEXP value, R_xlen_t index, R_xlen_t length, int *buffer) {
+    ++c_p4_altrep.region;
+    const R_xlen_t total = c_p4_altrep_length(value);
+    if (index >= total) return 0;
+    const R_xlen_t available = total - index;
+    const R_xlen_t count = available < length ? available : length;
+    SEXP materialized = R_altrep_data2(value);
+    for (R_xlen_t offset = 0; offset < count; ++offset) {
+        buffer[offset] = materialized == R_NilValue
+            ? c_p4_altrep_value(value, index + offset)
+            : INTEGER(materialized)[index + offset];
+    }
+    return count;
+}
+
+static void *c_p4_altrep_dataptr(SEXP value, Rboolean writable) {
+    (void) writable;
+    ++c_p4_altrep.pointer;
+    SEXP materialized = R_altrep_data2(value);
+    if (materialized == R_NilValue) {
+        ++c_p4_altrep.materialization;
+        const R_xlen_t length = c_p4_altrep_length(value);
+        materialized = PROTECT(Rf_allocVector(INTSXP, length));
+        for (R_xlen_t index = 0; index < length; ++index) {
+            INTEGER(materialized)[index] = c_p4_altrep_value(value, index);
+        }
+        R_set_altrep_data2(value, materialized);
+        UNPROTECT(1);
+    }
+    return INTEGER(materialized);
+}
+
+static const void *c_p4_altrep_dataptr_or_null(SEXP value) {
+    SEXP materialized = R_altrep_data2(value);
+    return materialized == R_NilValue ? NULL : INTEGER(materialized);
+}
+
+static SEXP c_p4_altrep_new(SEXP start, SEXP length) {
+    if (TYPEOF(start) != INTSXP || XLENGTH(start) != 1 || INTEGER(start)[0] == NA_INTEGER) {
+        Rf_error("instrumented ALTREP start must be one non-missing integer");
+    }
+    if (TYPEOF(length) != INTSXP || XLENGTH(length) != 1 ||
+        INTEGER(length)[0] == NA_INTEGER || INTEGER(length)[0] < 0) {
+        Rf_error("instrumented ALTREP length must be one non-negative integer");
+    }
+    SEXP state = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(state)[0] = INTEGER(start)[0];
+    INTEGER(state)[1] = INTEGER(length)[0];
+    SEXP result = R_new_altrep(c_p4_altrep_integer_class, state, R_NilValue);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_p4_altrep_reset(void) {
+    memset(&c_p4_altrep, 0, sizeof(c_p4_altrep));
+    return R_NilValue;
+}
+
+static SEXP c_p4_altrep_snapshot(SEXP value) {
+    if (!ALTREP(value)) Rf_error("ALTREP snapshot requires an ALTREP object");
+    SEXP result = PROTECT(Rf_allocVector(INTSXP, 5));
+    INTEGER(result)[0] = c_p4_altrep.element;
+    INTEGER(result)[1] = c_p4_altrep.region;
+    INTEGER(result)[2] = c_p4_altrep.pointer;
+    INTEGER(result)[3] = c_p4_altrep.materialization;
+    INTEGER(result)[4] = R_altrep_data2(value) != R_NilValue;
+    static const char *const snapshot_names[] = {
+        "element", "region", "pointer", "materialization", "is_materialized"
+    };
+    c_p4_set_names(result, snapshot_names, 5);
+    UNPROTECT(1);
+    return result;
+}
+
 static SEXP c_p4_fixture_zero(void) {
     return Rf_ScalarInteger(1);
 }
@@ -322,7 +479,10 @@ static SEXP c_p4_fixture_altrep_integer(SEXP value) {
         const R_xlen_t requested = (length - offset) < 4096 ? length - offset : 4096;
         const R_xlen_t received = INTEGER_GET_REGION(value, offset, requested, buffer);
         if (received == 0) Rf_error("ALTREP fixture could not read an integer region");
-        for (R_xlen_t index = 0; index < received; ++index) total += buffer[index];
+        for (R_xlen_t index = 0; index < received; ++index) {
+            if (buffer[index] == NA_INTEGER) return Rf_ScalarReal(NA_REAL);
+            total += buffer[index];
+        }
         offset += received;
     }
     return Rf_ScalarReal(total);
@@ -385,6 +545,7 @@ static void c_p4_fixture_state_finalizer(SEXP pointer) {
     if (state == NULL) return;
     R_ClearExternalPtr(pointer);
     free(state);
+    ++c_p4_lifecycle.finalizer;
 }
 
 static SEXP c_p4_fixture_new(void) {
@@ -392,6 +553,7 @@ static SEXP c_p4_fixture_new(void) {
     c_p4_fixture_state *state = (c_p4_fixture_state *) malloc(sizeof(c_p4_fixture_state));
     if (state == NULL) Rf_error("native state allocation failed");
     state->value = 0;
+    ++c_p4_lifecycle.constructor;
     R_SetExternalPtrAddr(result, state);
     R_RegisterCFinalizerEx(result, c_p4_fixture_state_finalizer, TRUE);
     UNPROTECT(1);
@@ -413,18 +575,22 @@ static SEXP c_p4_fixture_method(SEXP receiver, SEXP amount) {
         Rf_error("fixture method expected one non-missing integer");
     }
     c_p4_fixture_state *state = c_p4_fixture_state_pointer(receiver);
+    ++c_p4_lifecycle.method;
     state->value += INTEGER(amount)[0];
     return Rf_ScalarInteger(state->value);
 }
 
 static SEXP c_p4_fixture_read(SEXP receiver) {
-    return Rf_ScalarInteger(c_p4_fixture_state_pointer(receiver)->value);
+    c_p4_fixture_state *state = c_p4_fixture_state_pointer(receiver);
+    ++c_p4_lifecycle.method;
+    return Rf_ScalarInteger(state->value);
 }
 
 static SEXP c_p4_fixture_error(SEXP trigger) {
     if (TYPEOF(trigger) != REALSXP || XLENGTH(trigger) != 1) {
         Rf_error("error trigger expected one REAL value");
     }
+    ++c_p4_lifecycle.error;
     Rf_error("fixture error");
     return R_NilValue;
 }
@@ -548,6 +714,15 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_p4_fixture_read",               (DL_FUNC) &c_p4_fixture_read,               1},
   {"c_p4_fixture_error",              (DL_FUNC) &c_p4_fixture_error,              1},
   {"c_p4_fixture_outputs",            (DL_FUNC) &c_p4_fixture_outputs,            0},
+  {"c_p4_lifecycle_reset",            (DL_FUNC) &c_p4_lifecycle_reset,            0},
+  {"c_p4_lifecycle_snapshot",         (DL_FUNC) &c_p4_lifecycle_snapshot,         0},
+  {"c_p4_same_sexp",                  (DL_FUNC) &c_p4_same_sexp,                  2},
+  {"c_p4_same_data_pointer",          (DL_FUNC) &c_p4_same_data_pointer,          2},
+  {"c_p4_wrong_pointer",              (DL_FUNC) &c_p4_wrong_pointer,              0},
+  {"c_p4_cleared_pointer_like",       (DL_FUNC) &c_p4_cleared_pointer_like,       1},
+  {"c_p4_altrep_new",                 (DL_FUNC) &c_p4_altrep_new,                 2},
+  {"c_p4_altrep_reset",               (DL_FUNC) &c_p4_altrep_reset,               0},
+  {"c_p4_altrep_snapshot",            (DL_FUNC) &c_p4_altrep_snapshot,            1},
   {NULL, NULL, 0}
 };
 
@@ -557,6 +732,14 @@ static const R_ExternalMethodDef ExternalEntries[] = {
 };
 
 void R_init_bench(DllInfo *dll) {
+    c_p4_altrep_integer_class = R_make_altinteger_class(
+        "p4_instrumented_integer", "zigrBenchmarks", dll
+    );
+    R_set_altrep_Length_method(c_p4_altrep_integer_class, c_p4_altrep_length);
+    R_set_altvec_Dataptr_method(c_p4_altrep_integer_class, c_p4_altrep_dataptr);
+    R_set_altvec_Dataptr_or_null_method(c_p4_altrep_integer_class, c_p4_altrep_dataptr_or_null);
+    R_set_altinteger_Elt_method(c_p4_altrep_integer_class, c_p4_altrep_elt);
+    R_set_altinteger_Get_region_method(c_p4_altrep_integer_class, c_p4_altrep_get_region);
     R_registerRoutines(dll, NULL, CallEntries, NULL, ExternalEntries);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);

@@ -1,6 +1,8 @@
 SEXP savvy_fixture_altrep_integer__ffi(SEXP c_arg__value);
 SEXP savvy_fixture_complex__ffi(SEXP c_arg__value);
 SEXP savvy_fixture_error__ffi(SEXP c_arg___trigger);
+SEXP savvy_fixture_lifecycle_counts__ffi(void);
+SEXP savvy_fixture_lifecycle_reset__ffi(void);
 SEXP savvy_fixture_logical_counts__ffi(SEXP c_arg__value);
 SEXP savvy_fixture_numeric__ffi(SEXP c_arg__value);
 SEXP savvy_fixture_outputs__ffi(void);

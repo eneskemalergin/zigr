@@ -1,4 +1,10 @@
 use savvy::*;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static CONSTRUCTOR_COUNT: AtomicI32 = AtomicI32::new(0);
+static METHOD_COUNT: AtomicI32 = AtomicI32::new(0);
+static ERROR_COUNT: AtomicI32 = AtomicI32::new(0);
+static FINALIZER_COUNT: AtomicI32 = AtomicI32::new(0);
 
 #[savvy]
 fn fixture_zero() -> savvy::Result<Sexp> {
@@ -17,12 +23,24 @@ fn fixture_scalar(value: RealSexp) -> savvy::Result<Sexp> {
 
 #[savvy]
 fn fixture_numeric(value: RealSexp) -> savvy::Result<Sexp> {
-    OwnedRealSexp::try_from_iter(value.iter().map(|element| element * 2.0))?.into()
+    let mut result = OwnedRealSexp::new(value.len())?;
+    for (index, element) in value.as_slice().iter().enumerate() {
+        result.set_elt(index, element * 2.0)?;
+    }
+    result.into()
 }
 
 #[savvy]
 fn fixture_altrep_integer(value: IntegerSexp) -> savvy::Result<Sexp> {
-    let total = value.iter().map(|element| *element as f64).sum();
+    let mut total = 0.0;
+    for element in value.iter() {
+        if element.is_na() {
+            let mut result = OwnedRealSexp::new(1)?;
+            result.set_na(0)?;
+            return result.into();
+        }
+        total += *element as f64;
+    }
     OwnedRealSexp::try_from_scalar(total)?.into()
 }
 
@@ -68,6 +86,15 @@ fn fixture_schema(value: ListSexp) -> savvy::Result<Sexp> {
     {
         return Err(savvy_err!("schema names do not match the declared order"));
     }
+    let attributes_function_result = eval_parse_text("base::attributes")?;
+    let attributes_function = FunctionSexp::try_from(Sexp(attributes_function_result.inner()))?;
+    let mut attributes_args = FunctionArgs::new();
+    attributes_args.add("", Sexp(value.inner()))?;
+    let attributes_result = attributes_function.call(attributes_args)?;
+    let attributes = ListSexp::try_from(Sexp(attributes_result.inner()))?;
+    if attributes.len() != 1 || !attributes.names_iter().eq(["names"].into_iter()) {
+        return Err(savvy_err!("schema must have names and no other attributes"));
+    }
     let mut fields = value.values_iter();
     let id = fields.next().unwrap();
     let count = fields.next().unwrap();
@@ -85,7 +112,29 @@ fn fixture_schema(value: ListSexp) -> savvy::Result<Sexp> {
 
 #[savvy]
 fn fixture_error(_trigger: f64) -> savvy::Result<()> {
+    ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     Err(savvy_err!("fixture error"))
+}
+
+#[savvy]
+fn fixture_lifecycle_reset() -> savvy::Result<()> {
+    CONSTRUCTOR_COUNT.store(0, Ordering::Relaxed);
+    METHOD_COUNT.store(0, Ordering::Relaxed);
+    ERROR_COUNT.store(0, Ordering::Relaxed);
+    FINALIZER_COUNT.store(0, Ordering::Relaxed);
+    Ok(())
+}
+
+#[savvy]
+fn fixture_lifecycle_counts() -> savvy::Result<Sexp> {
+    let mut result = OwnedIntegerSexp::try_from_slice([
+        CONSTRUCTOR_COUNT.load(Ordering::Relaxed),
+        METHOD_COUNT.load(Ordering::Relaxed),
+        ERROR_COUNT.load(Ordering::Relaxed),
+        FINALIZER_COUNT.load(Ordering::Relaxed),
+    ])?;
+    result.set_names(["constructor", "method", "error", "finalizer"])?;
+    result.into()
 }
 
 #[savvy]
@@ -121,15 +170,24 @@ struct FixtureState {
 #[savvy]
 impl FixtureState {
     fn new() -> savvy::Result<Self> {
+        CONSTRUCTOR_COUNT.fetch_add(1, Ordering::Relaxed);
         Ok(Self { value: 0 })
     }
 
     fn increment(&mut self, amount: i32) -> savvy::Result<Sexp> {
+        METHOD_COUNT.fetch_add(1, Ordering::Relaxed);
         self.value += amount;
         OwnedIntegerSexp::try_from_scalar(self.value)?.into()
     }
 
     fn read(&self) -> savvy::Result<Sexp> {
+        METHOD_COUNT.fetch_add(1, Ordering::Relaxed);
         OwnedIntegerSexp::try_from_scalar(self.value)?.into()
+    }
+}
+
+impl Drop for FixtureState {
+    fn drop(&mut self) {
+        FINALIZER_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }

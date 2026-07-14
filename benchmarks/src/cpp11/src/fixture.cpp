@@ -8,6 +8,15 @@ using namespace cpp11::literals;
 
 namespace {
 
+struct FixtureLifecycleCounts {
+  int constructor = 0;
+  int method = 0;
+  int error = 0;
+  int finalizer = 0;
+};
+
+FixtureLifecycleCounts lifecycle_counts;
+
 void require_length(R_xlen_t actual, R_xlen_t expected, const char* label) {
   if (actual != expected) {
     cpp11::stop("%s must have length %lld", label, static_cast<long long>(expected));
@@ -84,6 +93,7 @@ double numeric_sum(const cpp11::doubles& value) {
 double integer_sum(const cpp11::integers& value) {
   double total = 0.0;
   for (int element : value) {
+    if (element == NA_INTEGER) return NA_REAL;
     total += element;
   }
   return total;
@@ -172,7 +182,22 @@ double integer_sum(const cpp11::integers& value) {
 
 [[cpp11::register]] void fixture_error(double trigger) {
   (void)trigger;
+  ++lifecycle_counts.error;
   cpp11::stop("fixture error");
+}
+
+[[cpp11::register]] void fixture_lifecycle_reset() {
+  lifecycle_counts = FixtureLifecycleCounts{};
+}
+
+[[cpp11::register]] cpp11::integers fixture_lifecycle_counts() {
+  cpp11::writable::integers result(4);
+  result[0] = lifecycle_counts.constructor;
+  result[1] = lifecycle_counts.method;
+  result[2] = lifecycle_counts.error;
+  result[3] = lifecycle_counts.finalizer;
+  result.names() = {"constructor", "method", "error", "finalizer"};
+  return result;
 }
 
 [[cpp11::register]] double boundary_zero() { return 1.0; }

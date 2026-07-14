@@ -49,9 +49,21 @@ expect_true(
   "all 56 supported product cells use eligible generated public paths"
 )
 expect_true(
-  sum(vapply(records, function(record) identical(record$source_class, "generated_typed"), logical(1))) == 55L &&
-    sum(vapply(records, function(record) identical(record$source_class, "generated_public_adapter"), logical(1))) == 1L,
-  "source records distinguish 55 typed paths from the one approved fixed-schema adapter"
+  sum(vapply(records, function(record) identical(record$source_class, "generated_typed"), logical(1))) == 46L &&
+    sum(vapply(records, function(record) identical(record$source_class, "generated_public_adapter"), logical(1))) == 10L,
+  "source records distinguish 46 typed paths from ten approved public adapters"
+)
+adapter_keys <- sort(vapply(records[vapply(records, function(record) {
+  identical(record$source_class, "generated_public_adapter")
+}, logical(1))], function(record) {
+  paste(record$runner, record$fixture, sep = "/")
+}, character(1)))
+expect_true(
+  identical(adapter_keys, sort(c(
+    "zigr/F09", "rcpp/F02", "rcpp/F03", "rcpp/F04", "rcpp/F05",
+    "rcpp/F06", "rcpp/F07", "rcpp/F08", "rcpp/F10", "rcpp/F11"
+  ))),
+  "only the reviewed zigr schema and strict Rcpp boundaries are public adapters"
 )
 expect_true(
   sum(vapply(records, function(record) isTRUE(record$accepted_control), logical(1))) == 23L,
@@ -71,6 +83,194 @@ gap_keys <- sort(vapply(records[gaps], function(record) {
 expect_true(
   identical(gap_keys, sort(c("cpp11/F07", "cpp11/F10", "cpp11/F12", "r/F10", "zigr/F08"))),
   "only five source-backed fixture gaps remain"
+)
+
+contract_cases <- fixture_contract_cases()
+case_counts <- vapply(contract_cases, length, integer(1))
+expect_true(
+  identical(
+    case_counts,
+    c(F01 = 1L, F02 = 11L, F03 = 4L, F04 = 6L, F05 = 4L, F06 = 3L,
+      F07 = 3L, F08 = 3L, F09 = 16L, F12 = 1L)
+  ),
+  "semantic matrix retains every declared value and output case"
+)
+expect_true(
+  identical(fixture_expected_value_counts(names(contract_cases)),
+            c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L)),
+  "semantic matrix has exact valid, invalid, fresh-allocation, and copy coverage"
+)
+expect_true(
+  all(vapply(contract_cases, function(cases) {
+    ids <- vapply(cases, `[[`, character(1), "id")
+    all(nzchar(ids)) && !anyDuplicated(ids)
+  }, logical(1))),
+  "case identifiers are nonblank and unique within every fixture"
+)
+expect_true(
+  all(c("missing scalar", "integer type", "logical type", "empty", "length two") %in%
+        vapply(contract_cases$F02, `[[`, character(1), "id")) &&
+    all(c("reordered", "duplicate names", "extra attribute", "missing ratio",
+          "wrong enabled type") %in%
+        vapply(contract_cases$F09, `[[`, character(1), "id")),
+  "strict scalar and fixed-schema invalid families remain present"
+)
+expect_error(
+  "NA and NaN metadata distinction",
+  fixture_assert_same(NA_real_, NaN, "negative metadata probe"),
+  "fixture values differ"
+)
+expect_error(
+  "signed zero metadata distinction",
+  fixture_assert_same(-0.0, 0.0, "negative metadata probe"),
+  "fixture values differ"
+)
+expect_error(
+  "attribute metadata distinction",
+  fixture_assert_same(1:2, structure(1:2, names = c("a", "b")), "negative metadata probe"),
+  "fixture values differ"
+)
+utf8_probe <- enc2utf8("façade")
+latin1_probe <- iconv("façade", from = "UTF-8", to = "latin1")
+Encoding(utf8_probe) <- "UTF-8"
+Encoding(latin1_probe) <- "latin1"
+expect_true(identical(utf8_probe, latin1_probe), "encoding probe has equal R string values")
+expect_error(
+  "encoding metadata distinction",
+  fixture_assert_same(utf8_probe, latin1_probe, "negative metadata probe"),
+  "fixture values differ"
+)
+
+expected_runner_values <- list(
+  c_call = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
+  cpp11 = c(valid = 21L, invalid = 27L, allocation = 18L, copy = 2L),
+  extendr = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
+  r = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
+  rcpp = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
+  savvy = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
+  zigr = c(valid = 22L, invalid = 27L, allocation = 26L, copy = 3L)
+)
+for (runner in names(expected_runner_values)) {
+  supported <- evidence$fixture_rows$fixture[
+    evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable
+  ]
+  expect_true(
+    identical(fixture_expected_value_counts(supported), expected_runner_values[[runner]]),
+    sprintf("%s has the expected semantic case disposition", runner)
+  )
+}
+
+source_has_all <- function(path, needles) {
+  source <- source_ledger_read_lines(root_dir, path)
+  all(vapply(needles, function(needle) any(grepl(needle, source, fixed = TRUE)), logical(1)))
+}
+expect_true(
+  source_has_all("src/c_call/register.c", c(
+    "c_p4_lifecycle_reset", "c_p4_lifecycle_snapshot", "c_p4_same_data_pointer",
+    "c_p4_wrong_pointer", "c_p4_cleared_pointer_like", "c_p4_altrep_new",
+    "R_set_altinteger_Get_region_method"
+  )),
+  "C control retains lifecycle, pointer, storage, and ALTREP diagnostics"
+)
+expect_true(
+  source_has_all("src/zig/fixture.zig", c(
+    "lifecycle_counts.constructor += 1", "lifecycle_counts.method += 1",
+    "lifecycle_counts.error_count += 1", "lifecycle_counts.finalizer += 1",
+    ".name = \"fixture_lifecycle_reset\"", ".name = \"fixture_lifecycle_counts\""
+  )) &&
+    source_has_all("src/zig/fixture/R/fixture.R", c(
+      "fixture_lifecycle_reset", "fixture_lifecycle_counts"
+    )),
+  "zigr lifecycle instrumentation is retained through its public package path"
+)
+expect_true(
+  source_has_all("src/cpp/fixture/src/fixture.cpp", c(
+    "++lifecycle_counts.constructor", "++lifecycle_counts.method",
+    "++lifecycle_counts.error", "++lifecycle_counts.finalizer",
+    "fixture_lifecycle_reset", "fixture_lifecycle_counts"
+  )) &&
+    source_has_all("src/cpp/fixture/src/RcppExports.cpp", c(
+      "_zigrRcpp_fixture_lifecycle_reset", "_zigrRcpp_fixture_lifecycle_counts"
+    )),
+  "Rcpp lifecycle instrumentation is retained in source and official generated glue"
+)
+expect_true(
+  source_has_all("src/cpp11/src/fixture.cpp", c(
+    "++lifecycle_counts.error", "fixture_lifecycle_reset", "fixture_lifecycle_counts"
+  )) &&
+    source_has_all("src/cpp11/src/cpp11.cpp", c(
+      "_zigrCpp11_fixture_lifecycle_reset", "_zigrCpp11_fixture_lifecycle_counts"
+    )),
+  "cpp11 error instrumentation is retained in source and official generated glue"
+)
+expect_true(
+  source_has_all("src/extendr/fixture/src/rust/src/lib.rs", c(
+    "CONSTRUCTOR_COUNT.fetch_add", "METHOD_COUNT.fetch_add", "ERROR_COUNT.fetch_add",
+    "FINALIZER_COUNT.fetch_add", "fn fixture_lifecycle_reset", "fn fixture_lifecycle_counts"
+  )) &&
+    source_has_all("src/extendr/fixture/R/extendr-wrappers.R", c(
+      "wrap__fixture_lifecycle_reset", "wrap__fixture_lifecycle_counts"
+    )),
+  "extendr lifecycle instrumentation is retained through official generated wrappers"
+)
+expect_true(
+  source_has_all("src/savvy/fixture/src/rust/src/lib.rs", c(
+    "CONSTRUCTOR_COUNT.fetch_add", "METHOD_COUNT.fetch_add", "ERROR_COUNT.fetch_add",
+    "FINALIZER_COUNT.fetch_add", "fn fixture_lifecycle_reset", "fn fixture_lifecycle_counts"
+  )) &&
+    source_has_all("src/savvy/fixture/src/init.c", c(
+      "savvy_fixture_lifecycle_reset__impl", "savvy_fixture_lifecycle_counts__impl"
+    )),
+  "Savvy lifecycle instrumentation is retained through official generated glue"
+)
+
+r_supported <- evidence$fixture_rows$fixture[
+  evidence$fixture_rows$runner == "r" & evidence$fixture_rows$executable
+]
+synthetic_proof <- list(
+  values = fixture_expected_value_counts(r_supported),
+  output = c(construction = 1L, retention = 1L),
+  altrep = fixture_altrep_expectation("r"),
+  recovery = c(error = 32L, recovery = 32L),
+  state = c(constructor = 0L, method = 0L, finalizer = 0L)
+)
+fixture_validate_proof(synthetic_proof, "r", r_supported)
+damaged_proof <- synthetic_proof
+damaged_proof$recovery[["recovery"]] <- 31L
+expect_error(
+  "damaged recovery proof",
+  fixture_validate_proof(damaged_proof, "r", r_supported),
+  "recovery counts differ"
+)
+
+output_value <- list(numeric = c(-0.0, NA_real_, NaN))
+torture_states <- logical()
+output_functions <- list(fixture_outputs = function() {
+  torture_enabled <- gctorture(FALSE)
+  gctorture(torture_enabled)
+  torture_states <<- c(torture_states, torture_enabled)
+  output_value
+})
+output_proof <- fixture_run_output_proof(
+  "forced-GC probe", output_functions, "F12",
+  list(fixture_outputs = function() output_value)
+)
+expect_true(
+  identical(output_proof, c(construction = 1L, retention = 1L)) &&
+    identical(torture_states, c(TRUE, FALSE)),
+  "F12 construction runs under forced GC and restores the prior GC mode before retention"
+)
+damaged_output_proof <- synthetic_proof
+damaged_output_proof$output[["construction"]] <- 0L
+expect_error(
+  "damaged output protection proof",
+  fixture_validate_proof(damaged_output_proof, "r", r_supported),
+  "output protection proof differs"
+)
+expect_error(
+  "missing native-state lifecycle diagnostics",
+  fixture_run_state_lifecycle("missing diagnostics", list(), "F10", list(), NULL),
+  "F10 lifecycle counters are missing"
 )
 
 cpp11_source <- source_ledger_read_lines(root_dir, "src/cpp11/src/fixture.cpp")
@@ -131,6 +331,31 @@ expect_true(
       "\\b(SEXP|Sexp)\\b"
     ),
   "typed signature checks reject raw arguments without rejecting typed SEXP wrappers"
+)
+expect_true(
+  fixture_definition_contains(
+    c(
+      "double fixture_scalar(Rcpp::RObject value) {",
+      "  if (!Rcpp::is<Rcpp::NumericVector>(value)) Rcpp::stop(\"wrong type\");",
+      "}",
+      "double unrelated(Rcpp::RObject value) {",
+      "  if (!Rcpp::is<Rcpp::RawVector>(value)) Rcpp::stop(\"wrong type\");",
+      "}"
+    ),
+    "^[[:space:]]*.*\\bfixture_scalar[[:space:]]*\\([[:space:]]*Rcpp::RObject",
+    "Rcpp::is<Rcpp::NumericVector>(value)"
+  ) &&
+    !fixture_definition_contains(
+      c(
+        "double fixture_scalar(Rcpp::RObject value) { return 1.0; }",
+        "double unrelated(Rcpp::RObject value) {",
+        "  if (!Rcpp::is<Rcpp::NumericVector>(value)) Rcpp::stop(\"wrong type\");",
+        "}"
+      ),
+      "^[[:space:]]*.*\\bfixture_scalar[[:space:]]*\\([[:space:]]*Rcpp::RObject",
+      "Rcpp::is<Rcpp::NumericVector>(value)"
+    ),
+  "public-adapter guards must occur in the reviewed Rcpp definition"
 )
 
 damaged <- unserialize(serialize(records, NULL))
@@ -219,8 +444,8 @@ if (live && nzchar(live_runner)) {
 
 cat(sprintf(
   paste0(
-    "Product fixture %s gate passed: 84 cells, 56 product paths, ",
-    "23 controls, and five source-backed gaps.\n"
+    "Product fixture %s gate passed: 84 cells, 56 product paths ",
+    "(9 Tier A and 47 Tier B), 23 controls, and five source-backed gaps.\n"
   ),
   if (live && nzchar(live_runner)) {
     paste("source and live", live_runner)

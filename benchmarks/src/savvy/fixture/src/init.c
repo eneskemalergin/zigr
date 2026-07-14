@@ -54,6 +54,16 @@ SEXP savvy_fixture_error__impl(SEXP c_arg___trigger) {
     return handle_result(res);
 }
 
+SEXP savvy_fixture_lifecycle_counts__impl(void) {
+    SEXP res = savvy_fixture_lifecycle_counts__ffi();
+    return handle_result(res);
+}
+
+SEXP savvy_fixture_lifecycle_reset__impl(void) {
+    SEXP res = savvy_fixture_lifecycle_reset__ffi();
+    return handle_result(res);
+}
+
 SEXP savvy_fixture_logical_counts__impl(SEXP c_arg__value) {
     SEXP res = savvy_fixture_logical_counts__ffi(c_arg__value);
     return handle_result(res);
@@ -114,6 +124,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"savvy_fixture_altrep_integer__impl", (DL_FUNC) &savvy_fixture_altrep_integer__impl, 1},
     {"savvy_fixture_complex__impl", (DL_FUNC) &savvy_fixture_complex__impl, 1},
     {"savvy_fixture_error__impl", (DL_FUNC) &savvy_fixture_error__impl, 1},
+    {"savvy_fixture_lifecycle_counts__impl", (DL_FUNC) &savvy_fixture_lifecycle_counts__impl, 0},
+    {"savvy_fixture_lifecycle_reset__impl", (DL_FUNC) &savvy_fixture_lifecycle_reset__impl, 0},
     {"savvy_fixture_logical_counts__impl", (DL_FUNC) &savvy_fixture_logical_counts__impl, 1},
     {"savvy_fixture_numeric__impl", (DL_FUNC) &savvy_fixture_numeric__impl, 1},
     {"savvy_fixture_outputs__impl", (DL_FUNC) &savvy_fixture_outputs__impl, 0},

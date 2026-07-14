@@ -39,7 +39,59 @@ expect_true(is.null(evidence$raw$task_sets$all_tasks), "evidence manifest does n
 expect_true(!any(evidence$tasks$timing_eligible), "legacy task evidence is not timing eligible")
 expect_true(!any(evidence$fixture_rows$timing_eligible), "fixture evidence is not timing eligible")
 expect_true(!any(evidence$tasks$comparison_tier == "tier_a"), "no legacy task is prematurely Tier A")
-expect_true(!any(evidence$fixture_rows$comparison_tier == "tier_a"), "no fixture is prematurely Tier A")
+fixture_tiers <- table(factor(
+  evidence$fixture_rows$comparison_tier,
+  levels = c("tier_a", "tier_b", "tier_c", "tier_d", "gap")
+))
+expect_true(
+  identical(unname(as.integer(fixture_tiers)), c(9L, 47L, 23L, 0L, 5L)),
+  "P4.4 fixture tiers contain exact products, strategy products, controls, no diagnostics, and gaps"
+)
+expect_true(
+  identical(
+    sort(unique(evidence$fixture_rows$fixture[evidence$fixture_rows$comparison_tier == "tier_a"])),
+    c("F01", "F12")
+  ),
+  "Tier A is limited to fixtures with matching public semantics, boundary class, and representation"
+)
+for (fixture in c("F01", "F12")) {
+  product_rows <- evidence$fixture_rows[
+    evidence$fixture_rows$fixture == fixture &
+      evidence$fixture_rows$runner %in% c("zigr", "rcpp", "cpp11", "extendr", "savvy"),
+    , drop = FALSE
+  ]
+  expect_true(
+    nrow(product_rows) == 5L &&
+      all(product_rows$comparison_tier == "tier_a" | !product_rows$executable) &&
+      all(product_rows$comparison_tier[product_rows$executable] == "tier_a"),
+    sprintf("%s Tier A group contains all five products or an explicit gap", fixture)
+  )
+}
+f04_products <- evidence$fixture_rows[
+  evidence$fixture_rows$fixture == "F04" &
+    evidence$fixture_rows$implementation_role == "product_public_path",
+  c("runner", "comparison_tier", "representation_strategy"), drop = FALSE
+]
+expect_true(
+  all(f04_products$comparison_tier == "tier_b") &&
+    identical(
+      setNames(f04_products$representation_strategy, f04_products$runner)[
+        c("zigr", "rcpp", "cpp11", "extendr", "savvy")
+      ],
+      c(
+        zigr = "region_access", rcpp = "materialized_r_vector",
+        cpp11 = "region_access", extendr = "element_access",
+        savvy = "materialized_r_vector"
+      )
+    ),
+  "F04 records the measured per-product ALTREP strategies as Tier B"
+)
+expect_true(
+  all(evidence$fixture_rows$mutation_policy[
+    evidence$fixture_rows$fixture == "F10" & evidence$fixture_rows$executable
+  ] == "stateful_reset_required"),
+  "every executable native-state fixture declares reset-required mutation"
+)
 expect_true(
   all(evidence$tasks$path_kind[evidence$tasks$implementation_role == "product_public_path"] %in%
     c("generated_typed", "generated_public_adapter")) &&
@@ -109,6 +161,18 @@ expect_true(
 expect_true(
   nrow(zigr_f09) == 1L && zigr_f09$path_kind == "generated_public_adapter",
   "zigr F09 retains the P1-approved explicit fixed-schema adapter label"
+)
+rcpp_fixture_adapters <- evidence$fixture_rows[
+  evidence$fixture_rows$runner == "rcpp" &
+    evidence$fixture_rows$path_kind == "generated_public_adapter",
+  "fixture"
+]
+expect_true(
+  identical(
+    sort(rcpp_fixture_adapters),
+    sort(c("F02", "F03", "F04", "F05", "F06", "F07", "F08", "F10", "F11"))
+  ),
+  "Rcpp strict RObject boundaries are explicit generated public adapters"
 )
 
 rcpp_executable <- evidence$tasks[evidence$tasks$runner == "rcpp" & evidence$tasks$executable, , drop = FALSE]
@@ -253,6 +317,18 @@ expect_error(
   "Tier A group with mixed representation_strategy values"
 )
 
+tier_a_paths <- evidence$fixture_rows[
+  evidence$fixture_rows$fixture == "F01" &
+    evidence$fixture_rows$runner %in% c("rcpp", "zigr"),
+  , drop = FALSE
+]
+tier_a_paths$path_kind[[1L]] <- "generated_public_adapter"
+expect_error(
+  "Tier A mixed generated boundary classes",
+  validate_evidence_rows(tier_a_paths, "negative evidence"),
+  "Tier A group with mixed path_kind values"
+)
+
 bad_rows <- evidence$tasks[1L, , drop = FALSE]
 bad_rows$path_kind <- "invented_path"
 expect_error(
@@ -294,6 +370,6 @@ expect_error(
 )
 
 cat(sprintf(
-  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and seventeen negative checks.\n",
+  "Evidence schema passed: %d task cells, %d fixture cells, seven runners, and eighteen negative checks.\n",
   nrow(evidence$tasks), nrow(evidence$fixture_rows)
 ))

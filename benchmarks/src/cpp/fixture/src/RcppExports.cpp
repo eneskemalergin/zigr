@@ -32,67 +32,67 @@ BEGIN_RCPP
 END_RCPP
 }
 // fixture_numeric
-Rcpp::NumericVector fixture_numeric(Rcpp::NumericVector value);
+Rcpp::NumericVector fixture_numeric(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_numeric(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_numeric(value));
     return rcpp_result_gen;
 END_RCPP
 }
 // fixture_altrep_integer
-double fixture_altrep_integer(Rcpp::IntegerVector value);
+double fixture_altrep_integer(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_altrep_integer(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_altrep_integer(value));
     return rcpp_result_gen;
 END_RCPP
 }
 // fixture_strings
-int fixture_strings(Rcpp::CharacterVector value);
+int fixture_strings(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_strings(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_strings(value));
     return rcpp_result_gen;
 END_RCPP
 }
 // fixture_raw
-Rcpp::RawVector fixture_raw(Rcpp::RawVector value);
+Rcpp::RawVector fixture_raw(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_raw(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::RawVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_raw(value));
     return rcpp_result_gen;
 END_RCPP
 }
 // fixture_complex
-Rcpp::ComplexVector fixture_complex(Rcpp::ComplexVector value);
+Rcpp::ComplexVector fixture_complex(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_complex(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::ComplexVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_complex(value));
     return rcpp_result_gen;
 END_RCPP
 }
 // fixture_logical_counts
-Rcpp::IntegerVector fixture_logical_counts(Rcpp::LogicalVector value);
+Rcpp::IntegerVector fixture_logical_counts(Rcpp::RObject value);
 RcppExport SEXP _zigrRcpp_fixture_logical_counts(SEXP valueSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< Rcpp::LogicalVector >::type value(valueSEXP);
+    Rcpp::traits::input_parameter< Rcpp::RObject >::type value(valueSEXP);
     rcpp_result_gen = Rcpp::wrap(fixture_logical_counts(value));
     return rcpp_result_gen;
 END_RCPP
@@ -116,6 +116,25 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< double >::type trigger(triggerSEXP);
     fixture_error(trigger);
     return R_NilValue;
+END_RCPP
+}
+// fixture_lifecycle_reset
+void fixture_lifecycle_reset();
+RcppExport SEXP _zigrRcpp_fixture_lifecycle_reset() {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    fixture_lifecycle_reset();
+    return R_NilValue;
+END_RCPP
+}
+// fixture_lifecycle_counts
+Rcpp::IntegerVector fixture_lifecycle_counts();
+RcppExport SEXP _zigrRcpp_fixture_lifecycle_counts() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(fixture_lifecycle_counts());
+    return rcpp_result_gen;
 END_RCPP
 }
 // fixture_outputs
@@ -142,6 +161,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_zigrRcpp_fixture_logical_counts", (DL_FUNC) &_zigrRcpp_fixture_logical_counts, 1},
     {"_zigrRcpp_fixture_schema", (DL_FUNC) &_zigrRcpp_fixture_schema, 1},
     {"_zigrRcpp_fixture_error", (DL_FUNC) &_zigrRcpp_fixture_error, 1},
+    {"_zigrRcpp_fixture_lifecycle_reset", (DL_FUNC) &_zigrRcpp_fixture_lifecycle_reset, 0},
+    {"_zigrRcpp_fixture_lifecycle_counts", (DL_FUNC) &_zigrRcpp_fixture_lifecycle_counts, 0},
     {"_zigrRcpp_fixture_outputs", (DL_FUNC) &_zigrRcpp_fixture_outputs, 0},
     {"_rcpp_module_boot_zigr_fixture_module", (DL_FUNC) &_rcpp_module_boot_zigr_fixture_module, 0},
     {NULL, NULL, 0}

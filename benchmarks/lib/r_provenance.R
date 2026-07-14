@@ -85,8 +85,11 @@ r_pure_contract_policy <- function(task_id) {
       "is.double", "is.integer", "is.logical", "is.na", "is.nan", "length", "list", "stop", "typeof"
     ),
     external_method_value_invariant = "as.integer",
-    fixture_zero = character(0),
-    fixture_scalar = c("!", "!=", "{", "&&", "||", "if", "is.na", "is.nan", "length", "stop", "typeof"),
+    fixture_zero = c("[[<-", "{", "<-", "integer"),
+    fixture_scalar = c(
+      "!", "!=", "[[", "[[<-", "{", "<-", "&&", "||", "if", "is.na", "is.nan",
+      "length", "numeric", "stop", "typeof"
+    ),
     fixture_numeric = c("*", "!=", "[[", "[[<-", "{", "<-", "for", "if", "length", "numeric", "seq_len", "stop", "typeof"),
     fixture_altrep_integer = c("+", "!=", "[[", "{", "<-", "for", "if", "length", "seq_len", "stop", "typeof"),
     fixture_strings = c("!", "+", "!=", "[[", "{", "<-", "for", "if", "is.na", "length", "seq_len", "stop", "typeof"),

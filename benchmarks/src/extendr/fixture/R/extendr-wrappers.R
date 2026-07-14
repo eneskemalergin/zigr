@@ -18,6 +18,10 @@ fixture_schema <- function(value) .Call(wrap__fixture_schema, value)
 
 fixture_error <- function(`_trigger`) .Call(wrap__fixture_error, `_trigger`)
 
+fixture_lifecycle_reset <- function() .Call(wrap__fixture_lifecycle_reset)
+
+fixture_lifecycle_counts <- function() .Call(wrap__fixture_lifecycle_counts)
+
 fixture_outputs <- function() .Call(wrap__fixture_outputs)
 
 FixtureState <- new.env(parent = emptyenv())
@@ -33,5 +37,4 @@ FixtureState$read <- function() .Call(wrap__FixtureState__read, self)
 
 #' @export
 `[[.FixtureState` <- `$.FixtureState`
-
 

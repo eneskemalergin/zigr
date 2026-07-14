@@ -1,4 +1,10 @@
 use extendr_api::prelude::*;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static CONSTRUCTOR_COUNT: AtomicI32 = AtomicI32::new(0);
+static METHOD_COUNT: AtomicI32 = AtomicI32::new(0);
+static ERROR_COUNT: AtomicI32 = AtomicI32::new(0);
+static FINALIZER_COUNT: AtomicI32 = AtomicI32::new(0);
 
 fn fixture_failure(message: &str) -> Error {
     Error::Other(message.to_string())
@@ -28,9 +34,15 @@ fn fixture_numeric(value: Doubles) -> Doubles {
 
 #[extendr]
 fn fixture_altrep_integer(value: Integers) -> f64 {
-    (0..value.len())
-        .map(|index| value.elt(index).0 as f64)
-        .sum()
+    let mut total = 0.0;
+    for index in 0..value.len() {
+        let element = value.elt(index);
+        if element.is_na() {
+            return Rfloat::na().0;
+        }
+        total += element.0 as f64;
+    }
+    total
 }
 
 #[extendr]
@@ -79,6 +91,17 @@ fn fixture_schema(value: List) -> std::result::Result<List, Error> {
             "schema names do not match the declared order",
         ));
     }
+    let attributes = call!("attributes", value.clone())?;
+    let attribute_list = List::try_from(&attributes)?;
+    let attribute_names: Vec<_> = attribute_list
+        .names()
+        .ok_or_else(|| fixture_failure("schema attributes must be named"))?
+        .collect();
+    if attribute_list.len() != 1 || attribute_names != ["names"] {
+        return Err(fixture_failure(
+            "schema must have names and no other attributes",
+        ));
+    }
     let fields: Vec<_> = value.values().collect();
     if !fields[0].is_integer()
         || !fields[1].is_integer()
@@ -104,7 +127,30 @@ fn fixture_schema(value: List) -> std::result::Result<List, Error> {
 
 #[extendr]
 fn fixture_error(_trigger: f64) -> std::result::Result<(), Error> {
+    ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     Err(fixture_failure("fixture error"))
+}
+
+#[extendr]
+fn fixture_lifecycle_reset() {
+    CONSTRUCTOR_COUNT.store(0, Ordering::Relaxed);
+    METHOD_COUNT.store(0, Ordering::Relaxed);
+    ERROR_COUNT.store(0, Ordering::Relaxed);
+    FINALIZER_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[extendr]
+fn fixture_lifecycle_counts() -> Integers {
+    let mut result = Integers::from_values([
+        CONSTRUCTOR_COUNT.load(Ordering::Relaxed),
+        METHOD_COUNT.load(Ordering::Relaxed),
+        ERROR_COUNT.load(Ordering::Relaxed),
+        FINALIZER_COUNT.load(Ordering::Relaxed),
+    ]);
+    result
+        .set_names(["constructor", "method", "error", "finalizer"])
+        .unwrap();
+    result
 }
 
 #[extendr]
@@ -136,16 +182,30 @@ struct FixtureState {
 #[extendr]
 impl FixtureState {
     fn new() -> Self {
+        CONSTRUCTOR_COUNT.fetch_add(1, Ordering::Relaxed);
         Self { value: 0 }
     }
 
-    fn increment(&mut self, amount: i32) -> i32 {
-        self.value += amount;
-        self.value
+    fn increment(&mut self, amount: Integers) -> std::result::Result<i32, Error> {
+        if amount.len() != 1 || amount.elt(0).is_na() {
+            return Err(fixture_failure(
+                "fixture method amount must be one non-missing INTEGER value",
+            ));
+        }
+        METHOD_COUNT.fetch_add(1, Ordering::Relaxed);
+        self.value += amount.elt(0).0;
+        Ok(self.value)
     }
 
     fn read(&self) -> i32 {
+        METHOD_COUNT.fetch_add(1, Ordering::Relaxed);
         self.value
+    }
+}
+
+impl Drop for FixtureState {
+    fn drop(&mut self) {
+        FINALIZER_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -161,6 +221,8 @@ extendr_module! {
     fn fixture_logical_counts;
     fn fixture_schema;
     fn fixture_error;
+    fn fixture_lifecycle_reset;
+    fn fixture_lifecycle_counts;
     fn fixture_outputs;
     impl FixtureState;
 }

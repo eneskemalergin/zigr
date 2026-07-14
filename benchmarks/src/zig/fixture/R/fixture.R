@@ -22,4 +22,8 @@ fixture_read <- function(state) .Call(C_fixture_FixtureState__read, state)
 
 fixture_error <- function(trigger) invisible(.Call(C_fixture_error, trigger))
 
+fixture_lifecycle_reset <- function() invisible(.Call(C_fixture_lifecycle_reset))
+
+fixture_lifecycle_counts <- function() .Call(C_fixture_lifecycle_counts)
+
 fixture_outputs <- function() .Call(C_fixture_outputs)

@@ -48,6 +48,14 @@ fixture_error <- function(trigger) {
   invisible(.Call(`_zigrCpp11_fixture_error`, trigger))
 }
 
+fixture_lifecycle_reset <- function() {
+  invisible(.Call(`_zigrCpp11_fixture_lifecycle_reset`))
+}
+
+fixture_lifecycle_counts <- function() {
+  .Call(`_zigrCpp11_fixture_lifecycle_counts`)
+}
+
 boundary_zero <- function() {
   .Call(`_zigrCpp11_boundary_zero`)
 }

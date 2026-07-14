@@ -259,7 +259,9 @@ validate_evidence_rows <- function(rows, label = "evidence") {
     group_key <- paste(tier_a$universe, tier_a$comparison_group, sep = "\r")
     for (key in unique(group_key)) {
       group <- tier_a[group_key == key, , drop = FALSE]
-      for (field in c("contract_version", "kernel_id", "representation_strategy", "setup_policy")) {
+      for (field in c(
+        "contract_version", "path_kind", "kernel_id", "representation_strategy", "setup_policy"
+      )) {
         if (length(unique(as.character(group[[field]]))) != 1L) {
           stop(sprintf("%s has a Tier A group with mixed %s values", label, field))
         }
