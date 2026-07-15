@@ -1296,6 +1296,8 @@ separated_report_files <- function() {
   )
 }
 
+comparative_report_schema_version <- function() "separated-report-v3"
+
 build_analysis_summary <- function(summaries, manifest, run_id) {
   summary_column <- function(name, default = NA) {
     if (name %in% names(summaries)) summaries[[name]] else rep(default, nrow(summaries))
@@ -1371,35 +1373,205 @@ report_require_one_value <- function(rows, field, label) {
   invisible(rows)
 }
 
-report_validate_comparisons <- function(rows, ratio_fields, result_field, label) {
+classify_comparative_evidence <- function(evidence, policy, direction = "row_over_reference",
+                                          minimum_samples = 2L) {
+  required <- c(
+    "row_median", "row_ci_low", "row_ci_high", "reference_median", "reference_ci_low",
+    "reference_ci_high", "row_cv", "reference_cv", "row_floor", "reference_floor",
+    "row_samples", "reference_samples", "row_stage", "reference_stage",
+    "semantic_admitted", "source_identical", "tier_comparable", "contract_identical",
+    "capability_supported", "metric_supported"
+  )
+  missing <- setdiff(required, names(evidence))
+  if (length(missing) > 0L) {
+    stop(sprintf("comparative evidence missing fields: %s", paste(missing, collapse = ", ")))
+  }
+  if (!(direction %in% c("row_over_reference", "reference_over_row"))) {
+    stop("comparative evidence has an invalid ratio direction")
+  }
+  minimum_samples <- as.integer(minimum_samples)
+  if (length(minimum_samples) != 1L || is.na(minimum_samples) || minimum_samples < 2L) {
+    stop("comparative evidence minimum sample count must be at least two")
+  }
+  margin <- as.numeric(policy$meaningful_margin_ratio)
+  noise_limit <- as.numeric(policy$low_noise_cv_threshold_pct)
+  if (length(margin) != 1L || is.na(margin) || !is.finite(margin) || margin <= 1 ||
+      length(noise_limit) != 1L || is.na(noise_limit) || !is.finite(noise_limit) || noise_limit <= 0) {
+    stop("comparative evidence policy is invalid")
+  }
+
+  n <- nrow(evidence)
+  result <- rep("INCONCLUSIVE", n)
+  reason <- rep("interval_unavailable", n)
+  noise_status <- rep("not_measured", n)
+  ratio <- ratio_low <- ratio_high <- rep(NA_real_, n)
+  semantic <- as.logical(evidence$semantic_admitted) %in% TRUE
+  source <- as.logical(evidence$source_identical) %in% TRUE
+  tier <- as.logical(evidence$tier_comparable) %in% TRUE
+  contract <- as.logical(evidence$contract_identical) %in% TRUE
+  capability <- as.logical(evidence$capability_supported) %in% TRUE
+  supported <- as.logical(evidence$metric_supported) %in% TRUE
+  comparable <- semantic & source & tier & contract & capability & supported
+  result[!comparable] <- "NOT_COMPARABLE"
+  reason[!semantic] <- "semantic_not_admitted"
+  reason[semantic & !source] <- "source_identity_mismatch"
+  reason[semantic & source & !tier] <- "tier_mismatch"
+  reason[semantic & source & tier & !contract] <- "contract_mismatch"
+  reason[semantic & source & tier & contract & !capability] <- "capability_unsupported"
+  reason[semantic & source & tier & contract & capability & !supported] <- "metric_unsupported"
+  noise_status[!comparable] <- "not_comparable"
+
+  row_median <- as.numeric(evidence$row_median)
+  reference_median <- as.numeric(evidence$reference_median)
+  finite_medians <- comparable & is.finite(row_median) & row_median > 0 &
+    is.finite(reference_median) & reference_median > 0
+  if (identical(direction, "reference_over_row")) {
+    ratio[finite_medians] <- reference_median[finite_medians] / row_median[finite_medians]
+  } else {
+    ratio[finite_medians] <- row_median[finite_medians] / reference_median[finite_medians]
+  }
+  row_low <- as.numeric(evidence$row_ci_low)
+  row_high <- as.numeric(evidence$row_ci_high)
+  reference_low <- as.numeric(evidence$reference_ci_low)
+  reference_high <- as.numeric(evidence$reference_ci_high)
+  finite_intervals <- finite_medians & is.finite(row_low) & row_low > 0 & is.finite(row_high) &
+    row_high >= row_low & is.finite(reference_low) & reference_low > 0 &
+    is.finite(reference_high) & reference_high >= reference_low
+  if (identical(direction, "reference_over_row")) {
+    ratio_low[finite_intervals] <- reference_low[finite_intervals] / row_high[finite_intervals]
+    ratio_high[finite_intervals] <- reference_high[finite_intervals] / row_low[finite_intervals]
+  } else {
+    ratio_low[finite_intervals] <- row_low[finite_intervals] / reference_high[finite_intervals]
+    ratio_high[finite_intervals] <- row_high[finite_intervals] / reference_low[finite_intervals]
+  }
+
+  row_cv <- as.numeric(evidence$row_cv)
+  reference_cv <- as.numeric(evidence$reference_cv)
+  finite_noise <- comparable & is.finite(row_cv) & row_cv >= 0 &
+    is.finite(reference_cv) & reference_cv >= 0
+  low_noise <- finite_noise & row_cv <= noise_limit & reference_cv <= noise_limit
+  noise_status[finite_noise] <- ifelse(low_noise[finite_noise], "low_noise", "high_noise")
+  row_stage <- as.character(evidence$row_stage)
+  reference_stage <- as.character(evidence$reference_stage)
+  confirmation <- comparable & !is.na(row_stage) & !is.na(reference_stage) &
+    row_stage == "confirmation" & reference_stage == "confirmation"
+  row_samples <- suppressWarnings(as.integer(evidence$row_samples))
+  reference_samples <- suppressWarnings(as.integer(evidence$reference_samples))
+  enough_samples <- comparable & !is.na(row_samples) & !is.na(reference_samples) &
+    row_samples >= minimum_samples & reference_samples >= minimum_samples
+  symmetric_samples <- enough_samples & row_samples == reference_samples
+  row_floor <- as.character(evidence$row_floor)
+  reference_floor <- as.character(evidence$reference_floor)
+  above_floor <- comparable & !is.na(row_floor) & !is.na(reference_floor) &
+    row_floor == "above_floor" & reference_floor == "above_floor"
+
+  reason[comparable & !confirmation] <- "confirmation_missing"
+  reason[comparable & confirmation & !enough_samples] <- "insufficient_samples"
+  reason[comparable & confirmation & enough_samples & !symmetric_samples] <- "sample_count_mismatch"
+  reason[comparable & confirmation & symmetric_samples & !above_floor] <- "timer_floor"
+  reason[comparable & confirmation & symmetric_samples & above_floor & !finite_noise] <- "noise_unavailable"
+  reason[comparable & confirmation & symmetric_samples & above_floor & finite_noise & !low_noise] <- "high_noise"
+  admitted <- comparable & confirmation & symmetric_samples & above_floor & low_noise & finite_intervals
+  inverse_margin <- 1 / margin
+  loss <- admitted & ratio_low > margin
+  win <- admitted & ratio_high < inverse_margin
+  tie <- admitted & ratio_low >= inverse_margin & ratio_high <= margin
+  result[loss] <- "LOSS"
+  reason[loss] <- "interval_above_margin"
+  result[win] <- "WIN"
+  reason[win] <- "interval_below_margin"
+  result[tie] <- "TIE"
+  reason[tie] <- "interval_within_margin"
+  reason[admitted & !(loss | win | tie)] <- "interval_overlaps_margin"
+
+  data.frame(
+    ratio = ratio, ratio_ci_low = ratio_low, ratio_ci_high = ratio_high,
+    noise_status = noise_status, relative_result = result, comparison_reason = reason,
+    stringsAsFactors = FALSE
+  )
+}
+
+report_validate_comparisons <- function(rows, ratio_fields, result_field, label, policy) {
   result <- as.character(rows[[result_field]])
-  allowed <- c("LOSS", "WIN", "TIE", "NOT_COMPARABLE")
+  allowed <- c("LOSS", "WIN", "TIE", "INCONCLUSIVE", "NOT_COMPARABLE")
   if (anyNA(result) || any(!(result %in% allowed))) {
     stop(sprintf("%s contain an invalid relative result", label))
   }
-  comparable <- result != "NOT_COMPARABLE"
+  resolved <- result %in% c("LOSS", "WIN", "TIE")
+  not_comparable <- result == "NOT_COMPARABLE"
   for (field in ratio_fields) {
     values <- as.numeric(rows[[field]])
-    if (any(!is.finite(values[comparable])) || any(!is.na(values[!comparable]))) {
+    if (any(!is.finite(values[resolved])) || any(!is.na(values[not_comparable]))) {
       stop(sprintf("%s comparison field %s disagrees with comparability", label, field))
     }
   }
   noise <- as.character(rows$noise_status)
-  if (any(!(noise[comparable] %in% c("low_noise", "high_noise"))) ||
-      any(noise[!comparable] != "not_comparable")) {
+  if (anyNA(noise) || any(noise[resolved] != "low_noise") || any(noise[not_comparable] != "not_comparable") ||
+      any(!(noise[!resolved & !not_comparable] %in% c("low_noise", "high_noise", "not_measured")))) {
     stop(sprintf("%s noise status disagrees with comparability", label))
+  }
+  reason <- as.character(rows$comparison_reason)
+  reason_by_result <- list(
+    LOSS = "interval_above_margin",
+    WIN = "interval_below_margin",
+    TIE = "interval_within_margin",
+    INCONCLUSIVE = c(
+      "confirmation_missing", "insufficient_samples", "timer_floor", "noise_unavailable",
+      "sample_count_mismatch", "high_noise", "interval_unavailable", "interval_overlaps_margin"
+    ),
+    NOT_COMPARABLE = c(
+      "semantic_not_admitted", "source_identity_mismatch", "tier_mismatch", "contract_mismatch",
+      "capability_unsupported", "metric_unsupported"
+    )
+  )
+  valid_reason <- vapply(seq_along(result), function(index) {
+    !is.na(reason[[index]]) && reason[[index]] %in% reason_by_result[[result[[index]]]]
+  }, logical(1))
+  if (any(!valid_reason)) stop(sprintf("%s comparison reason disagrees with the relative result", label))
+  samples <- suppressWarnings(as.integer(rows$n_iterations))
+  reference_samples <- suppressWarnings(as.integer(rows$zigr_n_iterations))
+  complete_confirmation <- as.character(rows$sample_stage) %in% "confirmation" &
+    as.character(rows$zigr_sample_stage) %in% "confirmation" &
+    !is.na(samples) & samples >= 2L & !is.na(reference_samples) & reference_samples >= 2L &
+    samples == reference_samples & as.character(rows$timer_noise_status) %in% "above_floor" &
+    as.character(rows$zigr_timer_noise_status) %in% "above_floor"
+  if (any(resolved & !complete_confirmation)) {
+    stop(sprintf("%s contain a conclusion without complete confirmation evidence", label))
+  }
+  margin <- as.numeric(policy$meaningful_margin_ratio)
+  if (length(margin) != 1L || is.na(margin) || !is.finite(margin) || margin <= 1) {
+    stop(sprintf("%s comparison policy has an invalid meaningful margin", label))
+  }
+  ratio <- as.numeric(rows[[ratio_fields[[1L]]]])
+  ratio_low <- as.numeric(rows[[ratio_fields[[2L]]]])
+  ratio_high <- as.numeric(rows[[ratio_fields[[3L]]]])
+  valid_interval <- is.finite(ratio) & ratio > 0 & is.finite(ratio_low) & ratio_low > 0 &
+    is.finite(ratio_high) & ratio_high >= ratio_low & ratio >= ratio_low & ratio <= ratio_high
+  if (any(resolved & !valid_interval)) {
+    stop(sprintf("%s contain an invalid resolved confidence interval", label))
+  }
+  interval_result <- rep("INCONCLUSIVE", nrow(rows))
+  interval_result[which(is.finite(ratio_low) & ratio_low > margin)] <- "LOSS"
+  interval_result[which(is.finite(ratio_high) & ratio_high < 1 / margin)] <- "WIN"
+  interval_result[which(
+    is.finite(ratio_low) & is.finite(ratio_high) & ratio_low >= 1 / margin & ratio_high <= margin
+  )] <- "TIE"
+  if (any(resolved & interval_result != result)) {
+    stop(sprintf("%s relative result disagrees with the confidence interval", label))
   }
   invisible(rows)
 }
 
-validate_product_metrics <- function(rows) {
+validate_product_metrics <- function(rows, policy = benchmark_timing_policy()) {
   label <- "product metrics"
   required <- c(
     "run_id", "group_id", "runner", "implementation_role", "comparison_tier",
-    "input_fingerprint", "kernel_id", "contract_version", "setup_policy",
+    "input_fingerprint", "kernel_id", "contract_version", "fixture_version", "path_kind",
+    "representation_strategy", "mutation_policy", "setup_policy",
     "measurement_status", "report_status", "claim_eligible", "reason", "owner",
     "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high",
-    "row_relative_to_zigr", "noise_status"
+    "row_relative_to_zigr", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
+    "zigr_n_iterations", "zigr_sample_stage", "timer_noise_status", "zigr_timer_noise_status"
   )
   report_require_columns(rows, required, label)
   report_require_unique(rows, c("group_id", "runner"), label)
@@ -1415,7 +1587,7 @@ validate_product_metrics <- function(rows) {
   eligible <- as.logical(rows$claim_eligible)
   qualified <- product & rows$implementation_role == "product_public_path" &
     rows$comparison_tier == "tier_a" & rows$measurement_status == "PASS" &
-    rows$report_status == "PRODUCT_PASS"
+    rows$report_status == "PRODUCT_PASS" & rows$row_relative_to_zigr %in% c("LOSS", "WIN", "TIE")
   if (anyNA(eligible) || !identical(eligible, qualified)) stop("product metrics claim eligibility differs from Tier A product PASS rows")
   if (any(!product & eligible)) stop("product metrics promote a linked control row")
   if (any(product & !(rows$report_status %in% c("PRODUCT_PASS", "PRODUCT_GAP", "EXCLUDED_DIAGNOSTIC"))) ||
@@ -1428,7 +1600,10 @@ validate_product_metrics <- function(rows) {
         rows$implementation_role == "product_public_path" & rows$comparison_tier == "tier_a",
       , drop = FALSE
     ]
-    for (field in c("input_fingerprint", "kernel_id", "contract_version", "setup_policy")) {
+    for (field in c(
+      "input_fingerprint", "kernel_id", "contract_version", "fixture_version", "path_kind",
+      "representation_strategy", "mutation_policy", "setup_policy"
+    )) {
       values <- unique(as.character(tier_a[[field]]))
       if (length(values) != 1L || is.na(values) || !nzchar(values)) {
         stop(sprintf("product metrics Tier A group %s has mixed %s", group, field))
@@ -1442,18 +1617,19 @@ validate_product_metrics <- function(rows) {
   report_validate_comparisons(
     rows,
     c("row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"),
-    "row_relative_to_zigr", label
+    "row_relative_to_zigr", label, policy
   )
   invisible(rows)
 }
 
-validate_strategy_metrics <- function(rows) {
+validate_strategy_metrics <- function(rows, policy = benchmark_timing_policy()) {
   label <- "strategy metrics"
   required <- c(
     "run_id", "group_id", "runner", "implementation_role", "comparison_tier",
     "measurement_status", "report_status", "claim_eligible", "reason", "owner",
     "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high",
-    "row_relative_to_zigr", "noise_status"
+    "row_relative_to_zigr", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
+    "zigr_n_iterations", "zigr_sample_stage", "timer_noise_status", "zigr_timer_noise_status"
   )
   report_require_columns(rows, required, label)
   report_require_unique(rows, c("group_id", "runner"), label)
@@ -1480,17 +1656,20 @@ validate_strategy_metrics <- function(rows) {
   report_validate_comparisons(
     rows,
     c("row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"),
-    "row_relative_to_zigr", label
+    "row_relative_to_zigr", label, policy
   )
   invisible(rows)
 }
 
-validate_r_baseline_metrics <- function(rows, expected_tasks, expected_fixtures) {
+validate_r_baseline_metrics <- function(
+    rows, expected_tasks, expected_fixtures, policy = benchmark_timing_policy()) {
   label <- "R baseline metrics"
   required <- c(
     "run_id", "universe", "item_id", "runner", "baseline_class", "measurement_status",
     "claim_eligible", "zigr_relative_to_r", "zigr_over_r_ratio", "zigr_over_r_ratio_ci_low",
-    "zigr_over_r_ratio_ci_high", "owner", "backend_provenance", "timer_noise_status", "noise_status"
+    "zigr_over_r_ratio_ci_high", "owner", "backend_provenance", "timer_noise_status", "noise_status",
+    "comparison_reason", "n_iterations", "sample_stage", "zigr_n_iterations", "zigr_sample_stage",
+    "zigr_timer_noise_status"
   )
   report_require_columns(rows, required, label)
   report_require_unique(rows, c("universe", "item_id", "baseline_class"), label)
@@ -1513,18 +1692,19 @@ validate_r_baseline_metrics <- function(rows, expected_tasks, expected_fixtures)
   report_validate_comparisons(
     rows,
     c("zigr_over_r_ratio", "zigr_over_r_ratio_ci_low", "zigr_over_r_ratio_ci_high"),
-    "zigr_relative_to_r", label
+    "zigr_relative_to_r", label, policy
   )
   invisible(rows)
 }
 
-validate_control_metrics <- function(rows) {
+validate_control_metrics <- function(rows, policy = benchmark_timing_policy()) {
   label <- "control metrics"
   required <- c(
     "run_id", "universe", "item_id", "runner", "control_role", "measurement_status",
     "report_status", "claim_eligible", "zigr_relative_to_control", "zigr_over_control_ratio",
     "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high", "owner",
-    "timer_noise_status", "noise_status"
+    "timer_noise_status", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
+    "zigr_n_iterations", "zigr_sample_stage", "zigr_timer_noise_status"
   )
   report_require_columns(rows, required, label)
   report_require_unique(rows, c("universe", "item_id", "runner", "control_role"), label)
@@ -1539,7 +1719,7 @@ validate_control_metrics <- function(rows) {
   report_validate_comparisons(
     rows,
     c("zigr_over_control_ratio", "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high"),
-    "zigr_relative_to_control", label
+    "zigr_relative_to_control", label, policy
   )
   invisible(rows)
 }

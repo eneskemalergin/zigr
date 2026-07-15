@@ -75,13 +75,14 @@ export_separated_metrics <- function() {
   validate_fixture_measurement_artifacts(results_dir, run_metadata, evidence)
   source_bundle <- verify_fixture_source_paths(root_dir, evidence)
 
-  raw_ci <- function(universe, runner, item_id, row_id, status) {
+  raw_ci <- function(universe, runner, item_id, row_id, status, n_iterations) {
     if (!identical(as.character(status), "PASS")) return(c(low = NA_real_, high = NA_real_))
     id <- if (identical(universe, "task")) item_id else row_id
-    median_confidence_interval(
-      read_run_wall_time_samples(results_dir, run_metadata, universe, runner, id),
-      as.numeric(timing_policy$median_ci_level)
+    values <- read_run_wall_time_samples(
+      results_dir, run_metadata, universe, runner, id,
+      expected_n = as.integer(n_iterations)
     )
+    median_confidence_interval(values, as.numeric(timing_policy$median_ci_level))
   }
   evidence_fallback <- function(values, fallback) {
     values <- as.character(values)
@@ -94,6 +95,7 @@ export_separated_metrics <- function() {
   task_index <- match(task_keys, task_evidence_keys)
   if (anyNA(task_index)) stop("task summaries cannot be joined to the evidence matrix")
   task_manifest_index <- match(summaries$task, manifest$task)
+  task_sample_stage <- rep("legacy_adaptive", nrow(summaries))
   task_cells <- data.frame(
     run_id = as.character(summaries$run_id), universe = "task",
     item_id = as.character(summaries$task), row_id = as.character(summaries$task),
@@ -120,6 +122,7 @@ export_separated_metrics <- function() {
     median_ms = as.numeric(summaries$median_ms), cv_pct = as.numeric(summaries$cv_pct),
     timer_noise_floor_ms = as.numeric(summaries$timer_noise_floor_ms),
     timer_noise_status = as.character(summaries$timer_noise_status),
+    n_iterations = as.integer(summaries$n_iterations), sample_stage = task_sample_stage,
     source_label = as.character(summaries$source_path_class),
     source_verification_digest = as.character(summaries$source_verification_digest),
     artifact_digest = as.character(summaries$artifact_digest),
@@ -140,6 +143,7 @@ export_separated_metrics <- function() {
   fixture_tier[fixture_optimized] <- "tier_c"
   fixture_group <- as.character(evidence$fixture_rows$comparison_group[fixture_index])
   fixture_group[fixture_optimized] <- paste0("normalized:", fixture_summaries$fixture[fixture_optimized], ":optimized-base-r")
+  fixture_sample_stage <- rep("legacy_adaptive", nrow(fixture_summaries))
   fixture_backend <- rep("not_applicable", nrow(fixture_summaries))
   for (index in which(fixture_summaries$runner == "r")) {
     fixture <- as.character(fixture_summaries$fixture[[index]])
@@ -175,6 +179,7 @@ export_separated_metrics <- function() {
     median_ms = as.numeric(fixture_summaries$median_ms), cv_pct = as.numeric(fixture_summaries$cv_pct),
     timer_noise_floor_ms = as.numeric(fixture_summaries$timer_noise_floor_ms),
     timer_noise_status = as.character(fixture_summaries$timer_noise_status),
+    n_iterations = as.integer(fixture_summaries$n_iterations), sample_stage = fixture_sample_stage,
     source_label = as.character(fixture_summaries$path_kind),
     source_verification_digest = as.character(fixture_summaries$source_ledger_identity_digest),
     artifact_digest = as.character(fixture_summaries$fixture_artifact_digest),
@@ -188,7 +193,7 @@ export_separated_metrics <- function() {
   for (index in which(cells$status == "PASS")) {
     interval <- raw_ci(
       cells$universe[[index]], cells$runner[[index]], cells$item_id[[index]],
-      cells$row_id[[index]], cells$status[[index]]
+      cells$row_id[[index]], cells$status[[index]], cells$n_iterations[[index]]
     )
     cells$median_ci_low_ms[[index]] <- interval[["low"]]
     cells$median_ci_high_ms[[index]] <- interval[["high"]]
@@ -207,27 +212,61 @@ export_separated_metrics <- function() {
     rows$zigr_median_ci_high_ms <- reference$median_ci_high_ms
     rows$zigr_cv_pct <- reference$cv_pct
     rows$zigr_timer_noise_status <- reference$timer_noise_status
-    rows$ratio <- NA_real_
-    rows$ratio_ci_low <- NA_real_
-    rows$ratio_ci_high <- NA_real_
-    rows$noise_status <- "not_comparable"
-    rows$relative_result <- "NOT_COMPARABLE"
-    comparable <- is.finite(rows$median_ms) & is.finite(reference$median_ms)
-    if (identical(direction, "zigr_over_row")) {
-      rows$ratio[comparable] <- reference$median_ms[comparable] / rows$median_ms[comparable]
-      rows$ratio_ci_low[comparable] <- reference$median_ci_low_ms[comparable] / rows$median_ci_high_ms[comparable]
-      rows$ratio_ci_high[comparable] <- reference$median_ci_high_ms[comparable] / rows$median_ci_low_ms[comparable]
-    } else {
-      rows$ratio[comparable] <- rows$median_ms[comparable] / reference$median_ms[comparable]
-      rows$ratio_ci_low[comparable] <- rows$median_ci_low_ms[comparable] / reference$median_ci_high_ms[comparable]
-      rows$ratio_ci_high[comparable] <- rows$median_ci_high_ms[comparable] / reference$median_ci_low_ms[comparable]
-    }
-    low_noise <- rows$cv_pct <= low_noise_cv_threshold & reference$cv_pct <= low_noise_cv_threshold
-    rows$noise_status[comparable] <- ifelse(low_noise[comparable], "low_noise", "high_noise")
-    rows$relative_result[comparable] <- ifelse(
-      rows$ratio[comparable] > meaningful_margin, "LOSS",
-      ifelse(rows$ratio[comparable] < 1 / meaningful_margin, "WIN", "TIE")
+    rows$zigr_n_iterations <- reference$n_iterations
+    rows$zigr_sample_stage <- reference$sample_stage
+    admitted_tiers <- c("tier_a", "tier_b", "tier_c")
+    admitted_dispositions <- c("supported_and_executable", "control_only")
+    semantic_admitted <- rows$status == "PASS" & reference$status == "PASS" &
+      rows$correctness_status %in% c("PASS", "REFERENCE") &
+      reference$correctness_status %in% c("PASS", "REFERENCE")
+    tier_comparable <- rows$comparison_tier %in% admitted_tiers &
+      reference$comparison_tier %in% admitted_tiers &
+      (rows$comparison_tier != "tier_a" | reference$comparison_tier == "tier_a")
+    capability_supported <- rows$disposition %in% admitted_dispositions &
+      reference$disposition %in% admitted_dispositions
+    contract_fields <- c(
+      "input_fingerprint", "kernel_id", "contract_version", "fixture_version",
+      "mutation_policy", "setup_policy"
     )
+    contract_identical <- rep(TRUE, nrow(rows))
+    for (field in contract_fields) {
+      row_value <- as.character(rows[[field]])
+      reference_value <- as.character(reference[[field]])
+      contract_identical <- contract_identical &
+        !is.na(row_value) & nzchar(row_value) & row_value == reference_value
+    }
+    exact_product <- rows$comparison_tier == "tier_a"
+    contract_identical <- contract_identical & (!exact_product |
+      rows$path_kind == reference$path_kind &
+      rows$representation_strategy == reference$representation_strategy)
+    identity_present <- function(values) !is.na(values) & nzchar(as.character(values))
+    source_identical <- identity_present(rows$source_verification_digest) &
+      identity_present(reference$source_verification_digest) & identity_present(rows$artifact_digest) &
+      identity_present(reference$artifact_digest) & identity_present(rows$source_ledger_identity_digest) &
+      identity_present(reference$source_ledger_identity_digest) &
+      rows$source_ledger_identity_digest == reference$source_ledger_identity_digest
+    decision <- classify_comparative_evidence(
+      data.frame(
+        row_median = rows$median_ms, row_ci_low = rows$median_ci_low_ms, row_ci_high = rows$median_ci_high_ms,
+        reference_median = reference$median_ms, reference_ci_low = reference$median_ci_low_ms,
+        reference_ci_high = reference$median_ci_high_ms, row_cv = rows$cv_pct, reference_cv = reference$cv_pct,
+        row_floor = rows$timer_noise_status, reference_floor = reference$timer_noise_status,
+        row_samples = rows$n_iterations, reference_samples = reference$n_iterations,
+        row_stage = rows$sample_stage, reference_stage = reference$sample_stage,
+        semantic_admitted = semantic_admitted, source_identical = source_identical,
+        tier_comparable = tier_comparable, contract_identical = contract_identical,
+        capability_supported = capability_supported, metric_supported = TRUE,
+        stringsAsFactors = FALSE
+      ),
+      timing_policy,
+      if (identical(direction, "zigr_over_row")) "reference_over_row" else "row_over_reference"
+    )
+    rows$ratio <- decision$ratio
+    rows$ratio_ci_low <- decision$ratio_ci_low
+    rows$ratio_ci_high <- decision$ratio_ci_high
+    rows$noise_status <- decision$noise_status
+    rows$relative_result <- decision$relative_result
+    rows$comparison_reason <- decision$comparison_reason
     rows
   }
 
@@ -245,9 +284,8 @@ export_separated_metrics <- function() {
       ifelse(product$runner %in% c("r", "c_call"), "LINKED_BASELINE", "EXCLUDED_DIAGNOSTIC")
     )
   )
-  product$claim_eligible <- product$product_status == "PRODUCT_PASS"
   product$reason <- ifelse(
-    product$product_status == "PRODUCT_PASS", "Tier A product-public path passed correctness and timing gates",
+    product$product_status == "PRODUCT_PASS", "Tier A product-public path completed correctness and timing measurement",
     evidence_fallback(product$reason, ifelse(
       product$product_status == "LINKED_BASELINE", "linked R or registered-C baseline retained for the comparison",
       "row is not a Tier A product-public result for this comparison"
@@ -255,6 +293,8 @@ export_separated_metrics <- function() {
   )
   product$owner <- evidence_fallback(product$owner, "performance")
   product <- add_zigr_comparison(product)
+  product$claim_eligible <- product$product_status == "PRODUCT_PASS" &
+    product$relative_result %in% c("WIN", "LOSS", "TIE")
   product$measurement_status <- product$status
   product$report_status <- product$product_status
   product$row_over_zigr_ratio <- product$ratio
@@ -392,9 +432,11 @@ export_separated_metrics <- function() {
     "kernel_id", "contract_version", "fixture_version", "mutation_policy", "setup_policy",
     "measurement_status", "report_status", "claim_eligible",
     "reason", "owner", "correctness_status", "median_ms", "median_ci_low_ms", "median_ci_high_ms",
-    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "zigr_median_ms", "zigr_median_ci_low_ms",
+    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "n_iterations", "sample_stage",
+    "zigr_median_ms", "zigr_median_ci_low_ms",
     "zigr_median_ci_high_ms", "zigr_cv_pct", "zigr_timer_noise_status", "row_over_zigr_ratio",
-    "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high", "noise_status", "row_relative_to_zigr",
+    "zigr_n_iterations", "zigr_sample_stage", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high",
+    "noise_status", "row_relative_to_zigr", "comparison_reason",
     "source_label", "source_verification_digest",
     "artifact_digest", "source_ledger_identity_digest"
   )]
@@ -404,9 +446,11 @@ export_separated_metrics <- function() {
     "representation_strategy", "input_fingerprint", "kernel_id", "contract_version", "fixture_version",
     "mutation_policy", "setup_policy", "measurement_status", "claim_eligible", "reason", "owner",
     "backend_provenance", "correctness_status", "median_ms", "median_ci_low_ms", "median_ci_high_ms",
-    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "zigr_median_ms", "zigr_median_ci_low_ms",
+    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "n_iterations", "sample_stage",
+    "zigr_median_ms", "zigr_median_ci_low_ms",
     "zigr_median_ci_high_ms", "zigr_cv_pct", "zigr_timer_noise_status", "zigr_over_r_ratio",
-    "zigr_over_r_ratio_ci_low", "zigr_over_r_ratio_ci_high", "noise_status", "zigr_relative_to_r",
+    "zigr_n_iterations", "zigr_sample_stage", "zigr_over_r_ratio_ci_low", "zigr_over_r_ratio_ci_high",
+    "noise_status", "zigr_relative_to_r", "comparison_reason",
     "source_label", "source_verification_digest",
     "artifact_digest", "source_ledger_identity_digest"
   )]
@@ -415,10 +459,11 @@ export_separated_metrics <- function() {
     "representation_strategy", "input_fingerprint", "kernel_id", "contract_version", "fixture_version",
     "mutation_policy", "setup_policy", "measurement_status", "report_status", "claim_eligible",
     "reason", "owner", "correctness_status", "median_ms", "median_ci_low_ms", "median_ci_high_ms",
-    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "zigr_reference_item_id", "zigr_median_ms",
+    "cv_pct", "timer_noise_floor_ms", "timer_noise_status", "n_iterations", "sample_stage",
+    "zigr_reference_item_id", "zigr_median_ms",
     "zigr_median_ci_low_ms", "zigr_median_ci_high_ms", "zigr_cv_pct", "zigr_timer_noise_status",
-    "zigr_over_control_ratio", "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high",
-    "noise_status", "zigr_relative_to_control", "source_label",
+    "zigr_n_iterations", "zigr_sample_stage", "zigr_over_control_ratio", "zigr_over_control_ratio_ci_low",
+    "zigr_over_control_ratio_ci_high", "noise_status", "zigr_relative_to_control", "comparison_reason", "source_label",
     "source_verification_digest", "artifact_digest", "source_ledger_identity_digest"
   )]
   diagnostic_output <- diagnostic[, c(
@@ -431,12 +476,13 @@ export_separated_metrics <- function() {
     "source_ledger_identity_digest"
   )]
 
-  validate_product_metrics(product_output)
-  validate_strategy_metrics(strategy_output)
+  validate_product_metrics(product_output, timing_policy)
+  validate_strategy_metrics(strategy_output, timing_policy)
   validate_r_baseline_metrics(
-    r_output, expected_tasks, c(evidence$fixtures, "F03_optimized_base_r", "F04_optimized_base_r")
+    r_output, expected_tasks, c(evidence$fixtures, "F03_optimized_base_r", "F04_optimized_base_r"),
+    timing_policy
   )
-  validate_control_metrics(control_output)
+  validate_control_metrics(control_output, timing_policy)
   expected_task_keys <- unlist(lapply(expected_runners, function(runner) paste(runner, expected_tasks, sep = "\r")))
   validate_diagnostic_metrics(diagnostic_output, expected_task_keys)
   validate_capability_matrix(capability, paste(evidence$fixture_rows$runner, evidence$fixture_rows$fixture, sep = "\r"))
@@ -463,7 +509,7 @@ export_separated_metrics <- function() {
     rows = nrow(outputs[[index]]), md5 = unname(as.character(tools::md5sum(staged_reports[[index]]))[[1L]])
   ))
   manifest_record <- list(
-    schema_version = "separated-report-v2", run_id = as.character(run_metadata$run_id),
+    schema_version = comparative_report_schema_version(), run_id = as.character(run_metadata$run_id),
     evidence_schema_version = as.integer(evidence$schema_version),
     evidence_vocabulary_version = as.character(evidence$vocabulary_version),
     recorded_source_tree_digest = as.character(run_metadata$environment$source_tree$digest),
@@ -474,7 +520,10 @@ export_separated_metrics <- function() {
       meaningful_margin_ratio = meaningful_margin,
       timer_noise_floor_ms = timer_noise_floor_ms,
       median_ci_level = as.numeric(timing_policy$median_ci_level),
-      median_ci_method = as.character(timing_policy$median_ci_method)
+      median_ci_method = as.character(timing_policy$median_ci_method),
+      comparison_sample_stage = "confirmation",
+      minimum_comparison_samples = 2L,
+      comparison_decision = "exact-median-ci-margin-v1"
     ),
     report_code_sources = lapply(c(
       "export_comparative_metrics.R", "benchmark_worker.R", "lib/specification.R",

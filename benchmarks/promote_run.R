@@ -115,7 +115,7 @@ if (length(missing_reports) > 0L) {
 }
 
 report_manifest <- jsonlite::fromJSON(file.path(stage_dir, "report_manifest.json"), simplifyVector = FALSE)
-if (!identical(as.character(report_manifest$schema_version), "separated-report-v2") ||
+if (!identical(as.character(report_manifest$schema_version), comparative_report_schema_version()) ||
     !identical(as.character(report_manifest$run_id), as.character(metadata$run_id)) ||
     !identical(as.character(report_manifest$recorded_source_tree_digest), as.character(metadata$environment$source_tree$digest)) ||
     !identical(as.character(report_manifest$task_correctness_artifact_digest), as.character(correctness_identity$task_artifact_digest)) ||
@@ -144,10 +144,13 @@ control <- read.csv(file.path(stage_dir, report_files[["control"]]), stringsAsFa
 diagnostic <- read.csv(file.path(stage_dir, report_files[["diagnostic"]]), stringsAsFactors = FALSE)
 capability <- read.csv(file.path(stage_dir, report_files[["capability"]]), stringsAsFactors = FALSE)
 safety <- read.csv(file.path(stage_dir, report_files[["safety"]]), stringsAsFactors = FALSE)
-validate_product_metrics(product)
-validate_strategy_metrics(strategy)
-validate_r_baseline_metrics(r_baseline, as.character(manifest$task), c(evidence$fixtures, "F03_optimized_base_r", "F04_optimized_base_r"))
-validate_control_metrics(control)
+validate_product_metrics(product, metadata$timing_policy)
+validate_strategy_metrics(strategy, metadata$timing_policy)
+validate_r_baseline_metrics(
+  r_baseline, as.character(manifest$task),
+  c(evidence$fixtures, "F03_optimized_base_r", "F04_optimized_base_r"), metadata$timing_policy
+)
+validate_control_metrics(control, metadata$timing_policy)
 validate_diagnostic_metrics(
   diagnostic,
   unlist(lapply(expected_runners, function(runner) paste(runner, manifest$task, sep = "\r")), use.names = FALSE)

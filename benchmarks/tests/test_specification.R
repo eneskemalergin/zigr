@@ -686,6 +686,81 @@ expect_error(
   "unknown task"
 )
 
+comparison_evidence <- data.frame(
+  row_median = 1, row_ci_low = 0.99, row_ci_high = 1.01,
+  reference_median = 1, reference_ci_low = 0.99, reference_ci_high = 1.01,
+  row_cv = 1, reference_cv = 1, row_floor = "above_floor", reference_floor = "above_floor",
+  row_samples = 20L, reference_samples = 20L,
+  row_stage = "confirmation", reference_stage = "confirmation",
+  semantic_admitted = TRUE, source_identical = TRUE, tier_comparable = TRUE,
+  contract_identical = TRUE, capability_supported = TRUE, metric_supported = TRUE,
+  stringsAsFactors = FALSE
+)
+expect_true(
+  identical(classify_comparative_evidence(comparison_evidence, benchmark_timing_policy())$relative_result, "TIE"),
+  "complete low-noise confirmation interval can produce a tie"
+)
+expect_true(
+  identical(comparative_report_schema_version(), "separated-report-v3"),
+  "comparative report schema records the fail-closed contract"
+)
+legacy_evidence <- comparison_evidence
+legacy_evidence$row_stage <- "legacy_adaptive"
+legacy_evidence$reference_stage <- "legacy_adaptive"
+expect_true(
+  identical(classify_comparative_evidence(legacy_evidence, benchmark_timing_policy())$relative_result, "INCONCLUSIVE"),
+  "current adaptive evidence remains diagnostic"
+)
+comparison_cases <- list(
+  list(label = "pilot evidence", field = "row_stage", value = "pilot", result = "INCONCLUSIVE", reason = "confirmation_missing"),
+  list(label = "insufficient samples", field = "row_samples", value = 1L, result = "INCONCLUSIVE", reason = "insufficient_samples"),
+  list(label = "asymmetric samples", field = "row_samples", value = 19L, result = "INCONCLUSIVE", reason = "sample_count_mismatch"),
+  list(label = "timer-floor evidence", field = "row_floor", value = "below_floor", result = "INCONCLUSIVE", reason = "timer_floor"),
+  list(label = "high-noise evidence", field = "row_cv", value = 25, result = "INCONCLUSIVE", reason = "high_noise"),
+  list(label = "median without interval", field = "row_ci_low", value = NA_real_, result = "INCONCLUSIVE", reason = "interval_unavailable"),
+  list(label = "overlapping interval", field = "row_ci_high", value = 1.10, result = "INCONCLUSIVE", reason = "interval_overlaps_margin"),
+  list(label = "missing memory support", field = "metric_supported", value = FALSE, result = "NOT_COMPARABLE", reason = "metric_unsupported"),
+  list(label = "tier mismatch", field = "tier_comparable", value = FALSE, result = "NOT_COMPARABLE", reason = "tier_mismatch"),
+  list(label = "mixed contract", field = "contract_identical", value = FALSE, result = "NOT_COMPARABLE", reason = "contract_mismatch"),
+  list(label = "capability gap", field = "capability_supported", value = FALSE, result = "NOT_COMPARABLE", reason = "capability_unsupported"),
+  list(label = "source mismatch", field = "source_identical", value = FALSE, result = "NOT_COMPARABLE", reason = "source_identity_mismatch"),
+  list(label = "semantic exclusion", field = "semantic_admitted", value = FALSE, result = "NOT_COMPARABLE", reason = "semantic_not_admitted")
+)
+for (case in comparison_cases) {
+  changed <- comparison_evidence
+  changed[[case$field]] <- case$value
+  decision <- classify_comparative_evidence(changed, benchmark_timing_policy())
+  expect_true(
+    identical(decision$relative_result, case$result) && identical(decision$comparison_reason, case$reason),
+    paste(case$label, "cannot create a comparative conclusion")
+  )
+}
+loss_evidence <- comparison_evidence
+loss_evidence$row_median <- 1.3
+loss_evidence$row_ci_low <- 1.25
+loss_evidence$row_ci_high <- 1.35
+expect_true(
+  identical(classify_comparative_evidence(loss_evidence, benchmark_timing_policy())$relative_result, "LOSS"),
+  "interval wholly above the meaningful margin produces a loss"
+)
+expect_true(
+  identical(
+    classify_comparative_evidence(
+      loss_evidence, benchmark_timing_policy(), direction = "reference_over_row"
+    )$relative_result,
+    "WIN"
+  ),
+  "reference-over-row comparisons preserve their declared direction"
+)
+win_evidence <- comparison_evidence
+win_evidence$row_median <- 0.7
+win_evidence$row_ci_low <- 0.65
+win_evidence$row_ci_high <- 0.75
+expect_true(
+  identical(classify_comparative_evidence(win_evidence, benchmark_timing_policy())$relative_result, "WIN"),
+  "interval wholly below the meaningful margin produces a win"
+)
+
 product_report <- data.frame(
   run_id = "run", group_id = "group", runner = linked,
   implementation_role = ifelse(
@@ -694,14 +769,29 @@ product_report <- data.frame(
   ),
   comparison_tier = ifelse(linked %in% report_product_runners(), "tier_a", "tier_c"),
   input_fingerprint = "input", kernel_id = "kernel", contract_version = "contract",
+  fixture_version = "fixture", path_kind = "generated_typed",
+  representation_strategy = "owned_output", mutation_policy = "immutable",
   setup_policy = "setup_outside_timer", measurement_status = "PASS",
   report_status = ifelse(linked %in% report_product_runners(), "PRODUCT_PASS", "LINKED_BASELINE"),
   claim_eligible = linked %in% report_product_runners(), reason = "visible", owner = "performance",
-  row_over_zigr_ratio = 1, row_over_zigr_ratio_ci_low = 0.9,
-  row_over_zigr_ratio_ci_high = 1.1, row_relative_to_zigr = "TIE", noise_status = "low_noise",
+  row_over_zigr_ratio = 1, row_over_zigr_ratio_ci_low = 0.99,
+  row_over_zigr_ratio_ci_high = 1.01, row_relative_to_zigr = "TIE", noise_status = "low_noise",
+  comparison_reason = "interval_within_margin", n_iterations = 20L, sample_stage = "confirmation",
+  zigr_n_iterations = 20L, zigr_sample_stage = "confirmation",
+  timer_noise_status = "above_floor", zigr_timer_noise_status = "above_floor",
   stringsAsFactors = FALSE
 )
 expect_true(is.data.frame(validate_product_metrics(product_report)), "valid product report")
+wide_margin_policy <- benchmark_timing_policy()
+wide_margin_policy$meaningful_margin_ratio <- 1.10
+wide_margin_report <- product_report
+wide_margin_report$row_over_zigr_ratio[[1L]] <- 1.07
+wide_margin_report$row_over_zigr_ratio_ci_low[[1L]] <- 1.06
+wide_margin_report$row_over_zigr_ratio_ci_high[[1L]] <- 1.08
+expect_true(
+  is.data.frame(validate_product_metrics(wide_margin_report, wide_margin_policy)),
+  "report validation uses the recorded meaningful margin"
+)
 bad_report <- product_report[-1L, , drop = FALSE]
 expect_error(
   "product report missing product slot",
@@ -718,11 +808,67 @@ expect_error(
 )
 
 bad_report <- product_report
+bad_report$representation_strategy[[1L]] <- "copied_contiguous"
+expect_error(
+  "product report mixed Tier A strategy",
+  validate_product_metrics(bad_report),
+  "mixed representation_strategy"
+)
+
+bad_report <- product_report
 bad_report$measurement_status[[1L]] <- "N/A"
 expect_error(
   "product report claim suppresses measurement gap",
   validate_product_metrics(bad_report),
   "claim eligibility differs"
+)
+
+bad_report <- product_report
+bad_report$row_relative_to_zigr[[1L]] <- "INCONCLUSIVE"
+bad_report$comparison_reason[[1L]] <- "confirmation_missing"
+bad_report$sample_stage[[1L]] <- "pilot"
+bad_report$claim_eligible[[1L]] <- FALSE
+expect_true(
+  is.data.frame(validate_product_metrics(bad_report)),
+  "inconclusive product evidence remains visible without a claim"
+)
+
+bad_report <- product_report
+bad_report$noise_status[[1L]] <- "high_noise"
+expect_error(
+  "product report resolves high-noise evidence",
+  validate_product_metrics(bad_report),
+  "noise status disagrees"
+)
+
+bad_report <- product_report
+bad_report$sample_stage[[1L]] <- "pilot"
+expect_error(
+  "product report resolves pilot evidence",
+  validate_product_metrics(bad_report),
+  "without complete confirmation evidence"
+)
+
+bad_report <- product_report
+bad_report$row_over_zigr_ratio_ci_low[[1L]] <- 1.2
+bad_report$row_over_zigr_ratio_ci_high[[1L]] <- 0.8
+expect_error(
+  "product report has reversed resolved interval",
+  validate_product_metrics(bad_report),
+  "invalid resolved confidence interval"
+)
+
+not_comparable_report <- product_report
+index <- which(not_comparable_report$runner == "r")[[1L]]
+not_comparable_report[index, c(
+  "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"
+)] <- NA_real_
+not_comparable_report$row_relative_to_zigr[[index]] <- "NOT_COMPARABLE"
+not_comparable_report$noise_status[[index]] <- "not_comparable"
+not_comparable_report$comparison_reason[[index]] <- "capability_unsupported"
+expect_true(
+  is.data.frame(validate_product_metrics(not_comparable_report)),
+  "not-comparable linked evidence remains visible without ratios or a claim"
 )
 
 strategy_report <- product_report
@@ -742,10 +888,13 @@ r_report <- data.frame(
   run_id = "run", universe = c("task", "fixture"), item_id = c("task", "fixture"), runner = "r",
   baseline_class = "pure_r", measurement_status = "PASS", claim_eligible = FALSE,
   zigr_relative_to_r = c("LOSS", "TIE"), zigr_over_r_ratio = c(1.2, 1),
-  zigr_over_r_ratio_ci_low = c(1.1, 0.9), zigr_over_r_ratio_ci_high = c(1.3, 1.1),
+  zigr_over_r_ratio_ci_low = c(1.1, 0.99), zigr_over_r_ratio_ci_high = c(1.3, 1.01),
   owner = c("performance", "performance"),
   backend_provenance = "pure_r:none", timer_noise_status = "above_floor",
-  noise_status = "low_noise", stringsAsFactors = FALSE
+  noise_status = "low_noise", comparison_reason = c("interval_above_margin", "interval_within_margin"),
+  n_iterations = 20L, sample_stage = "confirmation", zigr_n_iterations = 20L,
+  zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
+  stringsAsFactors = FALSE
 )
 expect_true(
   is.data.frame(validate_r_baseline_metrics(r_report, "task", "fixture")),
@@ -764,7 +913,10 @@ control_report <- data.frame(
   measurement_status = "PASS", report_status = "CONTROL_ONLY", claim_eligible = FALSE,
   zigr_relative_to_control = "LOSS", zigr_over_control_ratio = 1.2,
   zigr_over_control_ratio_ci_low = 1.1, zigr_over_control_ratio_ci_high = 1.3, owner = "performance",
-  timer_noise_status = "above_floor", noise_status = "low_noise", stringsAsFactors = FALSE
+  timer_noise_status = "above_floor", noise_status = "low_noise", comparison_reason = "interval_above_margin",
+  n_iterations = 20L, sample_stage = "confirmation", zigr_n_iterations = 20L,
+  zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
+  stringsAsFactors = FALSE
 )
 expect_true(is.data.frame(validate_control_metrics(control_report)), "valid control report")
 bad_report <- control_report
