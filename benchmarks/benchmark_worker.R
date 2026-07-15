@@ -622,7 +622,6 @@ run_task_worker <- function(cli) {
     correctness_status <- if (call_type == "r") "REFERENCE" else "NOT_VALIDATED"
     correctness_message <- ""
     task_call_type <- if (call_type == "r") "r" else (task$call_type %||% call_type)
-    task_expr <- if (is.function(task$expr)) task$expr(cfg, root_dir) else NULL
     cfun <- exports[[tid]]
     disposition <- run_manifest_disposition(run_metadata, runner_name, tid)
     input_record <- input_recipes$tasks[[tid]]
@@ -645,9 +644,9 @@ run_task_worker <- function(cli) {
       arguments
     }
     expression_for_arguments <- function(arguments) {
-      if (!is.null(task_expr)) task_expr else make_call_expr(cfun, arguments, task_call_type)
+      make_call_expr(cfun, arguments, task_call_type)
     }
-    if (is.null(task_expr) && is.null(cfun)) {
+    if (is.null(cfun)) {
       n_na <- n_na + 1
       na_allowed <- !isTRUE(disposition$executable)
       if (!na_allowed) {

@@ -84,6 +84,10 @@ for (case in list(
   expect_error(case$label, parse_task_filter(case$value), case$pattern)
 }
 
+bad_task_specs <- benchmark_task_specs()
+bad_task_specs[[1L]]$name <- "duplicate display metadata"
+expect_error("task specs reject unsupported metadata", validate_task_specs(manifest, bad_task_specs), "unsupported fields: name")
+
 expect_true(nrow(evidence$tasks) == 83L * 7L, "complete task disposition matrix")
 expect_true(nrow(evidence$fixture_rows) == 12L * 7L, "complete fixture disposition matrix")
 expect_true(identical(evidence$task_sets$all_tasks, as.character(manifest$task)), "canonical task order")
@@ -133,7 +137,7 @@ expect_true(
   "no normalized task evidence retains a coarse or generic kernel placeholder"
 )
 expected_contracts <- unname(vapply(as.character(evidence$tasks$task), evidence_task_contract_version, character(1)))
-expected_mutation <- unname(vapply(as.character(evidence$tasks$task), evidence_task_mutation_policy, character(1)))
+expected_mutation <- unname(vapply(as.character(evidence$tasks$task), task_mutation_policy, character(1)))
 expect_true(
   identical(as.character(evidence$tasks$contract_version), expected_contracts),
   "every task cell uses the exact stable or revised contract version"

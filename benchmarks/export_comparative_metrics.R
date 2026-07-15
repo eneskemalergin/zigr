@@ -83,12 +83,7 @@ export_separated_metrics <- function() {
       as.numeric(timing_policy$median_ci_level)
     )
   }
-  evidence_owner <- function(values, fallback = "performance") {
-    values <- as.character(values)
-    values[!nzchar(values)] <- fallback
-    values
-  }
-  evidence_reason <- function(values, fallback) {
+  evidence_fallback <- function(values, fallback) {
     values <- as.character(values)
     values[!nzchar(values)] <- fallback
     values
@@ -200,51 +195,39 @@ export_separated_metrics <- function() {
   }
 
   add_zigr_comparison <- function(rows, compare_items = rows$item_id, direction = "row_over_zigr") {
+    reference_rows <- cells[cells$runner == "zigr" & cells$variant == "public", , drop = FALSE]
+    reference_keys <- paste(reference_rows$universe, reference_rows$item_id, sep = "\r")
+    if (anyDuplicated(reference_keys)) stop("zigr comparison reference is not unique")
+    reference_index <- match(paste(rows$universe, compare_items, sep = "\r"), reference_keys)
+    if (anyNA(reference_index)) stop("zigr comparison reference is not unique")
+    reference <- reference_rows[reference_index, , drop = FALSE]
     rows$zigr_reference_item_id <- as.character(compare_items)
-    rows$zigr_median_ms <- NA_real_
-    rows$zigr_median_ci_low_ms <- NA_real_
-    rows$zigr_median_ci_high_ms <- NA_real_
-    rows$zigr_cv_pct <- NA_real_
-    rows$zigr_timer_noise_status <- "not_measured"
+    rows$zigr_median_ms <- reference$median_ms
+    rows$zigr_median_ci_low_ms <- reference$median_ci_low_ms
+    rows$zigr_median_ci_high_ms <- reference$median_ci_high_ms
+    rows$zigr_cv_pct <- reference$cv_pct
+    rows$zigr_timer_noise_status <- reference$timer_noise_status
     rows$ratio <- NA_real_
     rows$ratio_ci_low <- NA_real_
     rows$ratio_ci_high <- NA_real_
     rows$noise_status <- "not_comparable"
     rows$relative_result <- "NOT_COMPARABLE"
-    for (index in seq_len(nrow(rows))) {
-      reference <- cells[
-        cells$universe == rows$universe[[index]] & cells$item_id == compare_items[[index]] &
-          cells$runner == "zigr" & cells$variant == "public",
-        , drop = FALSE
-      ]
-      if (nrow(reference) != 1L) stop("zigr comparison reference is not unique")
-      rows$zigr_median_ms[[index]] <- reference$median_ms[[1L]]
-      rows$zigr_median_ci_low_ms[[index]] <- reference$median_ci_low_ms[[1L]]
-      rows$zigr_median_ci_high_ms[[index]] <- reference$median_ci_high_ms[[1L]]
-      rows$zigr_cv_pct[[index]] <- reference$cv_pct[[1L]]
-      rows$zigr_timer_noise_status[[index]] <- reference$timer_noise_status[[1L]]
-      comparable <- is.finite(rows$median_ms[[index]]) && is.finite(reference$median_ms[[1L]])
-      if (!comparable) next
-      if (identical(direction, "zigr_over_row")) {
-        rows$ratio[[index]] <- reference$median_ms[[1L]] / rows$median_ms[[index]]
-        rows$ratio_ci_low[[index]] <- reference$median_ci_low_ms[[1L]] / rows$median_ci_high_ms[[index]]
-        rows$ratio_ci_high[[index]] <- reference$median_ci_high_ms[[1L]] / rows$median_ci_low_ms[[index]]
-      } else {
-        rows$ratio[[index]] <- rows$median_ms[[index]] / reference$median_ms[[1L]]
-        rows$ratio_ci_low[[index]] <- rows$median_ci_low_ms[[index]] / reference$median_ci_high_ms[[1L]]
-        rows$ratio_ci_high[[index]] <- rows$median_ci_high_ms[[index]] / reference$median_ci_low_ms[[1L]]
-      }
-      rows$noise_status[[index]] <- if (
-        rows$cv_pct[[index]] <= low_noise_cv_threshold && reference$cv_pct[[1L]] <= low_noise_cv_threshold
-      ) "low_noise" else "high_noise"
-      rows$relative_result[[index]] <- if (rows$ratio[[index]] > meaningful_margin) {
-        "LOSS"
-      } else if (rows$ratio[[index]] < 1 / meaningful_margin) {
-        "WIN"
-      } else {
-        "TIE"
-      }
+    comparable <- is.finite(rows$median_ms) & is.finite(reference$median_ms)
+    if (identical(direction, "zigr_over_row")) {
+      rows$ratio[comparable] <- reference$median_ms[comparable] / rows$median_ms[comparable]
+      rows$ratio_ci_low[comparable] <- reference$median_ci_low_ms[comparable] / rows$median_ci_high_ms[comparable]
+      rows$ratio_ci_high[comparable] <- reference$median_ci_high_ms[comparable] / rows$median_ci_low_ms[comparable]
+    } else {
+      rows$ratio[comparable] <- rows$median_ms[comparable] / reference$median_ms[comparable]
+      rows$ratio_ci_low[comparable] <- rows$median_ci_low_ms[comparable] / reference$median_ci_high_ms[comparable]
+      rows$ratio_ci_high[comparable] <- rows$median_ci_high_ms[comparable] / reference$median_ci_low_ms[comparable]
     }
+    low_noise <- rows$cv_pct <= low_noise_cv_threshold & reference$cv_pct <= low_noise_cv_threshold
+    rows$noise_status[comparable] <- ifelse(low_noise[comparable], "low_noise", "high_noise")
+    rows$relative_result[comparable] <- ifelse(
+      rows$ratio[comparable] > meaningful_margin, "LOSS",
+      ifelse(rows$ratio[comparable] < 1 / meaningful_margin, "WIN", "TIE")
+    )
     rows
   }
 
@@ -265,12 +248,12 @@ export_separated_metrics <- function() {
   product$claim_eligible <- product$product_status == "PRODUCT_PASS"
   product$reason <- ifelse(
     product$product_status == "PRODUCT_PASS", "Tier A product-public path passed correctness and timing gates",
-    evidence_reason(product$reason, ifelse(
+    evidence_fallback(product$reason, ifelse(
       product$product_status == "LINKED_BASELINE", "linked R or registered-C baseline retained for the comparison",
       "row is not a Tier A product-public result for this comparison"
     ))
   )
-  product$owner <- evidence_owner(product$owner)
+  product$owner <- evidence_fallback(product$owner, "performance")
   product <- add_zigr_comparison(product)
   product$measurement_status <- product$status
   product$report_status <- product$product_status
@@ -297,9 +280,9 @@ export_separated_metrics <- function() {
   strategy$reason <- ifelse(
     strategy$strategy_status %in% c("STRATEGY_PASS", "STRATEGY_CORRECTNESS_ONLY"),
     "Tier B strategy evidence retained outside product-level claims",
-    evidence_reason(strategy$reason, "linked baseline, gap, or non-Tier-B row retained for context")
+    evidence_fallback(strategy$reason, "linked baseline, gap, or non-Tier-B row retained for context")
   )
-  strategy$owner <- evidence_owner(strategy$owner)
+  strategy$owner <- evidence_fallback(strategy$owner, "performance")
   strategy <- add_zigr_comparison(strategy)
   strategy$measurement_status <- strategy$status
   strategy$report_status <- strategy$strategy_status
@@ -314,7 +297,7 @@ export_separated_metrics <- function() {
     ifelse(r_baseline$implementation_role == "capability_gap", "pure_r_unrepresentable", r_baseline$implementation_role)
   )
   r_baseline$claim_eligible <- FALSE
-  r_baseline$owner <- evidence_owner(r_baseline$owner)
+  r_baseline$owner <- evidence_fallback(r_baseline$owner, "performance")
   r_baseline <- add_zigr_comparison(r_baseline, direction = "zigr_over_row")
   r_baseline$item_id[r_baseline$variant == "optimized_base_r"] <- r_baseline$row_id[r_baseline$variant == "optimized_base_r"]
   r_baseline$owner[r_baseline$relative_result == "LOSS"] <- "performance"
@@ -335,7 +318,7 @@ export_separated_metrics <- function() {
   compare_items[handwritten] <- unname(generated_by_group[task_matrix_group(control$item_id[handwritten])])
   if (anyNA(compare_items)) stop("handwritten control cannot be linked to its generated zigr path")
   control <- add_zigr_comparison(control, compare_items, direction = "zigr_over_row")
-  control$owner <- evidence_owner(control$owner)
+  control$owner <- evidence_fallback(control$owner, "performance")
   control$owner[control$relative_result == "LOSS"] <- "performance"
   control$measurement_status <- control$status
   control$report_status <- "CONTROL_ONLY"
@@ -346,11 +329,11 @@ export_separated_metrics <- function() {
 
   diagnostic <- cells[cells$universe == "task", ]
   diagnostic$claim_eligible <- FALSE
-  diagnostic$exclusion_reason <- evidence_reason(
+  diagnostic$exclusion_reason <- evidence_fallback(
     diagnostic$reason,
     "historical task cell retained only in the complete diagnostic matrix"
   )
-  diagnostic$owner <- evidence_owner(diagnostic$owner)
+  diagnostic$owner <- evidence_fallback(diagnostic$owner, "performance")
   diagnostic$measurement_status <- diagnostic$status
   diagnostic$noise_status <- ifelse(
     diagnostic$status == "PASS" & diagnostic$cv_pct <= low_noise_cv_threshold,
@@ -374,7 +357,7 @@ export_separated_metrics <- function() {
       verification_digest = as.character(record$verification_digest),
       fixture_result = if (isTRUE(record$executable)) as.character(row$status) else "GAP",
       gap_reason = if (isTRUE(record$executable)) "" else as.character(record$reason),
-      owner = evidence_owner(row$owner), claim_eligible = FALSE,
+      owner = evidence_fallback(row$owner, "performance"), claim_eligible = FALSE,
       artifact_digest = as.character(row$artifact_digest),
       source_ledger_identity_digest = as.character(row$source_ledger_identity_digest),
       stringsAsFactors = FALSE

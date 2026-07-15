@@ -761,21 +761,6 @@ fixture_expect_error <- function(expression, label) {
   invisible(error)
 }
 
-fixture_encoded_strings <- function() {
-  byte_marked <- rawToChar(as.raw(c(0x66, 0x61, 0xe7, 0x61, 0x64, 0x65)))
-  values <- c(
-    enc2utf8("façade"),
-    iconv("façade", from = "UTF-8", to = "latin1"),
-    byte_marked,
-    "",
-    NA_character_
-  )
-  Encoding(values[[1L]]) <- "UTF-8"
-  Encoding(values[[2L]]) <- "latin1"
-  Encoding(values[[3L]]) <- "bytes"
-  values
-}
-
 fixture_schema_value <- function(ratio = 0.5) {
   list(id = 1L, count = 2L, ratio = ratio, enabled = TRUE)
 }
@@ -858,7 +843,7 @@ fixture_contract_cases <- function() {
     ),
     F05 = list(
       fixture_case("encodings empty and missing", "fixture_strings",
-                   function() list(fixture_encoded_strings()), fresh_output = TRUE),
+                   function() list(benchmark_encoded_strings()), fresh_output = TRUE),
       fixture_case("empty vector", "fixture_strings", function() list(character()),
                    fresh_output = TRUE),
       fixture_case("factor type", "fixture_strings", function() list(factor("a")), valid = FALSE),

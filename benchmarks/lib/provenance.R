@@ -2062,11 +2062,6 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
 
 # Worktree, host, and built-artifact identity.
 
-environment_scalar <- function(value, fallback = "") {
-  value <- as.character(value)
-  if (length(value) == 0L || is.na(value[[1L]]) || !nzchar(value[[1L]])) fallback else value[[1L]]
-}
-
 environment_extension <- function(extensions, name) {
   if (is.null(extensions) || is.null(names(extensions)) || !(name %in% names(extensions))) "" else extensions[[name]]
 }
@@ -2165,7 +2160,7 @@ validate_source_tree_identity <- function(root_dir, recorded) {
 }
 
 shared_library_metadata <- function(root_dir, relative_path) {
-  relative_path <- environment_scalar(relative_path)
+  relative_path <- source_ledger_scalar(relative_path)
   if (!nzchar(relative_path)) return(list(configured = FALSE))
   path <- file.path(root_dir, relative_path)
   exists <- file.exists(path)
@@ -2216,8 +2211,8 @@ runner_environment_metadata <- function(root_dir, runners, tool_source_ledger) {
     glue_paths <- as.character(unlist(ledger_record$generated_glue$identity$paths, use.names = FALSE))
     list(
       name = runner_name,
-      label = environment_scalar(cfg$label, runner_name),
-      call_type = environment_scalar(cfg$call_type, "unknown"),
+      label = source_ledger_scalar(cfg$label, runner_name),
+      call_type = source_ledger_scalar(cfg$call_type, "unknown"),
       tool_identity = source_ledger_tool_label(ledger_record),
       runner_config_digest = source_ledger_object_digest(configured_runners[[runner_name]]),
       generated_glue_kind = as.character(ledger_record$generated_glue$kind),
@@ -2315,8 +2310,8 @@ capture_environment_manifest <- function(
     parts <- strsplit(entry, "=", fixed = TRUE)[[1L]]
     if (length(parts) >= 2L) process_environment[[parts[[1L]]]] <- paste(parts[-1L], collapse = "=")
   }
-  blas_value <- environment_scalar(environment_extension(r_extensions, "BLAS"), "")
-  lapack_value <- environment_scalar(environment_extension(r_extensions, "LAPACK"), "")
+  blas_value <- source_ledger_scalar(environment_extension(r_extensions, "BLAS"), "")
+  lapack_value <- source_ledger_scalar(environment_extension(r_extensions, "LAPACK"), "")
   host_info <- Sys.info()
   safe_locale <- function(category) {
     tryCatch(Sys.getlocale(category), error = function(error) "")
@@ -2327,10 +2322,10 @@ capture_environment_manifest <- function(
     captured_at = run_manifest_timestamp(),
     source_tree = source_tree_identity(source_root),
     host = list(
-      sysname = environment_scalar(host_info[["sysname"]]),
-      release = environment_scalar(host_info[["release"]]),
-      version = environment_scalar(host_info[["version"]]),
-      machine = environment_scalar(host_info[["machine"]]),
+      sysname = source_ledger_scalar(host_info[["sysname"]]),
+      release = source_ledger_scalar(host_info[["release"]]),
+      version = source_ledger_scalar(host_info[["version"]]),
+      machine = source_ledger_scalar(host_info[["machine"]]),
       cpu_model = read_cpu_model(),
       logical_cores = parallel::detectCores(logical = TRUE)
     ),
@@ -2349,7 +2344,7 @@ capture_environment_manifest <- function(
     ),
     build = build_settings,
     blas = list(
-      vendor = environment_scalar(Sys.getenv("BLAS_VENDOR", unset = ""), blas_value),
+      vendor = source_ledger_scalar(Sys.getenv("BLAS_VENDOR", unset = ""), blas_value),
       version_or_path = blas_value,
       lapack = lapack_value,
       configured_threads = process_environment[c("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "BLAS_NUM_THREADS")]
@@ -2366,6 +2361,6 @@ capture_environment_manifest <- function(
     process_environment = process_environment,
     runner_configs = runner_environment_metadata(root_dir, runners, tool_source_ledger),
     tool_source_ledger = tool_source_ledger,
-    build_command = environment_scalar(build_settings$command)
+    build_command = source_ledger_scalar(build_settings$command)
   )
 }

@@ -99,15 +99,6 @@ task_input_seed <- function(master_seed, task_id, fixture_version) {
   as.integer(hash + 1)
 }
 
-task_mutation_policy <- function(task_id) {
-  if (task_id %in% c("04_sort", "21_attrib_ops")) return("fresh_input_required")
-  if (task_id %in% c("72_boundary_external_method_generated", "73_boundary_external_method_handwritten")) {
-    return("stateful_reset_required")
-  }
-  if (identical(task_id, "43_rng_stress")) return("rng_reset_required")
-  "immutable"
-}
-
 task_altrep_intent <- function(task_id) {
   if (task_id %in% c("24_long_vector_idx", "62_boundary_altrep_integer_generated", "63_boundary_altrep_integer_handwritten")) {
     return("compact_integer_input")
@@ -320,13 +311,6 @@ validate_materialized_task_input <- function(task, record, master_seed, material
     stop(sprintf("canonical input fingerprint mismatch for %s: expected %s, got %s", task$id, record$fingerprint, actual))
   }
   invisible(materialized)
-}
-
-validate_task_input_recipe <- function(task, record, master_seed) {
-  if (is.null(record)) stop(sprintf("canonical input recipe is missing for %s", task$id))
-  recorded_seed <- input_scalar_integer(record$task_seed, sprintf("recorded task seed for %s", task$id))
-  materialized <- materialize_task_input(task, recorded_seed)
-  validate_materialized_task_input(task, record, master_seed, materialized)
 }
 
 assert_immutable_input <- function(task_id, arguments, before_fingerprint, altrep_intent) {
@@ -688,7 +672,7 @@ fixture_measurement_specs <- function() {
     ),
     F05 = list(
       function_name = "fixture_strings",
-      arguments = function() list(rep(fixture_encoded_strings(), 2000L))
+      arguments = function() list(rep(benchmark_encoded_strings(), 2000L))
     ),
     F06 = list(
       function_name = "fixture_raw",

@@ -149,7 +149,9 @@ bad_seed <- unserialize(serialize(record, NULL))
 bad_seed$task_seed <- bad_seed$task_seed + 1L
 expect_error(
   "deliberate task seed mismatch",
-  validate_task_input_recipe(small_task, bad_seed, 12345L),
+  validate_materialized_task_input(
+    small_task, bad_seed, 12345L, materialize_task_input(small_task, bad_seed$task_seed)
+  ),
   "task seed mismatch"
 )
 
@@ -157,7 +159,9 @@ bad_master_seed <- unserialize(serialize(record, NULL))
 bad_master_seed$master_seed <- bad_master_seed$master_seed + 1L
 expect_error(
   "deliberate master seed mismatch",
-  validate_task_input_recipe(small_task, bad_master_seed, 12345L),
+  validate_materialized_task_input(
+    small_task, bad_master_seed, 12345L, materialize_task_input(small_task, bad_master_seed$task_seed)
+  ),
   "master seed mismatch"
 )
 
@@ -165,7 +169,9 @@ bad_fingerprint <- unserialize(serialize(record, NULL))
 bad_fingerprint$fingerprint <- "00000000000000000000000000000000"
 expect_error(
   "deliberate input fingerprint mismatch",
-  validate_task_input_recipe(small_task, bad_fingerprint, 12345L),
+  validate_materialized_task_input(
+    small_task, bad_fingerprint, 12345L, materialize_task_input(small_task, bad_fingerprint$task_seed)
+  ),
   "canonical input fingerprint mismatch"
 )
 
