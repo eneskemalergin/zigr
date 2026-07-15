@@ -1,17 +1,20 @@
 #!/usr/bin/env Rscript
 
 library(jsonlite)
-source("lib/task_manifest.R")
-source("lib/evidence_schema.R")
-source("lib/run_manifest.R")
-source("lib/source_ledger.R")
-source("lib/environment_manifest.R")
-source("lib/input_contract.R")
-source("lib/r_provenance.R")
-source("lib/product_fixtures.R")
-source("lib/fixture_measurement.R")
+root_dir <- normalizePath(".")
+source(file.path(root_dir, "lib", "specification.R"))
+source(file.path(root_dir, "lib", "measurement.R"))
+source(file.path(root_dir, "lib", "provenance.R"))
+source(file.path(root_dir, "lib", "run_manifest.R"))
+source(file.path(root_dir, "lib", "product_fixtures.R"))
 
 args <- commandArgs(trailingOnly = TRUE)
+validate_cli_arguments(
+  args,
+  value_options = c("runners", "tasks", "run-dir", "seed", "prune-runs"),
+  flag_options = c("build", "correctness-only"),
+  label = "benchmark"
+)
 runners_filter <- NULL
 tasks_filter   <- NULL
 do_build       <- FALSE
@@ -20,8 +23,8 @@ run_dir_arg    <- NULL
 prune_runs     <- NULL
 master_seed    <- benchmark_master_seed()
 for (a in args) {
-  if (grepl("^--runners=", a)) runners_filter <- strsplit(sub("^--runners=", "", a), ",")[[1]]
-  if (grepl("^--tasks=", a))  tasks_filter  <- as.integer(strsplit(sub("^--tasks=", "", a), ",")[[1]])
+  if (grepl("^--runners=", a)) runners_filter <- parse_csv_option(sub("^--runners=", "", a), "runner filter")
+  if (grepl("^--tasks=", a))  tasks_filter <- parse_task_filter(sub("^--tasks=", "", a))
   if (a == "--build")         do_build      <- TRUE
   if (a == "--correctness-only") correctness_only <- TRUE
   if (grepl("^--run-dir=", a)) run_dir_arg <- sub("^--run-dir=", "", a)
@@ -29,7 +32,6 @@ for (a in args) {
   if (grepl("^--prune-runs=", a)) prune_runs <- sub("^--prune-runs=", "", a)
 }
 
-root_dir <- normalizePath(".")
 if (!is.null(prune_runs)) {
   if (length(args) != 1L) stop("--prune-runs cannot be combined with benchmark arguments")
   receipt_path <- file.path(root_dir, "results", "CANONICAL_RUN.json")
@@ -54,18 +56,18 @@ if (!is.null(prune_runs)) {
 }
 manifest <- load_task_manifest(root_dir)
 evidence <- load_evidence_manifest(root_dir, manifest)
-runner_files <- Sys.glob("runners/*.json")
-if (length(runner_files) == 0) stop("no runner configs found in runners/")
-
+raw_runner_configs <- load_runner_configs(root_dir)
 all_runners <- list()
-for (f in runner_files) {
-  cfg <- fromJSON(f, simplifyVector = FALSE)
+for (runner_name in names(raw_runner_configs)) {
+  cfg <- raw_runner_configs[[runner_name]]
   if (!is.null(cfg$status) && cfg$status == "broken") next
   cfg <- hydrate_runner_config(manifest, cfg, cfg$name, evidence)
   all_runners[[cfg$name]] <- cfg
 }
 
 if (!is.null(runners_filter)) {
+  unknown_runners <- setdiff(runners_filter, names(all_runners))
+  if (length(unknown_runners) > 0L) stop(sprintf("runner filter contains unknown runners: %s", paste(unknown_runners, collapse = ", ")))
   all_runners <- all_runners[intersect(names(all_runners), runners_filter)]
 }
 if (length(all_runners) == 0L) stop("no active runners selected")
@@ -78,7 +80,7 @@ if (!is.null(tasks_filter)) {
 }
 
 source(file.path(root_dir, "src", "r", "run_all.R"))
-r_config <- fromJSON(file.path(root_dir, "runners", "r.json"), simplifyVector = FALSE)
+r_config <- raw_runner_configs$r
 r_runner_map <- r_config$exports
 r_reference_exports <- r_reference_map(r_config)
 r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
@@ -120,7 +122,8 @@ if (identical(dirname(run_dir), project_runs_root)) {
 }
 
 run_metadata <- list(
-  schema_version = 2L,
+  schema_version = 3L,
+  artifact_layout = "grouped-v1",
   run_id = run_id,
   status = "running",
   started_at = run_manifest_timestamp(),
@@ -129,7 +132,7 @@ run_metadata <- list(
   master_seed = master_seed,
   input_manifest = list(relative_path = "input_manifest.json", digest = "pending"),
   runner_dispositions = run_disposition_records(evidence, sort(names(all_runners)), selected_tasks),
-  r_provenance = r_provenance,
+  r_provenance = compact_run_r_provenance(r_provenance),
   timing_policy = benchmark_timing_policy(),
   boundary_budget_policy_version = boundary_budget_policy_version(),
   full_matrix = is.null(runners_filter) && is.null(tasks_filter),
@@ -155,7 +158,7 @@ options(error = function() {
 
 input_manifest_path <- file.path(run_dir, run_metadata$input_manifest$relative_path)
 prepare_args <- c(
-  "runner_subprocess.R",
+  "benchmark_worker.R", "--kind=task",
   sprintf("--prepare-inputs=%s", input_manifest_path),
   sprintf("--master-seed=%d", master_seed)
 )
@@ -169,7 +172,6 @@ prepared_inputs <- read_input_recipe_manifest(input_manifest_path)
 if (!identical(sort(names(prepared_inputs$tasks)), sort(as.character(selected_tasks)))) {
   stop("canonical input preparation produced the wrong task set")
 }
-run_metadata$task_inputs <- unname(prepared_inputs$tasks)
 write_run_manifest(run_dir, run_metadata)
 
 cat(sprintf("Runners: %s\n\n", paste(names(all_runners), collapse = ", ")))
@@ -216,55 +218,46 @@ run_metadata$environment <- capture_environment_manifest(
 validate_environment_manifest(run_metadata$environment)
 write_run_manifest(run_dir, run_metadata)
 
-runner_process_args <- function(runner_name, validation_only = FALSE, validation_output = NULL) {
-  runner_args <- c(
-    "runner_subprocess.R",
+worker_process_args <- function(kind, runner_name, validation_only = FALSE, validation_output = NULL) {
+  if (!(kind %in% c("task", "fixture"))) stop("worker kind must be task or fixture")
+  worker_args <- c(
+    "benchmark_worker.R", sprintf("--kind=%s", kind),
     sprintf("--runner=%s", runner_name),
-    sprintf("--results-dir=%s", run_dir),
+    sprintf("--%s=%s", if (identical(kind, "task")) "results-dir" else "run-dir", run_dir)
+  )
+  if (identical(kind, "task")) worker_args <- c(
+    worker_args,
     sprintf("--input-manifest=%s", input_manifest_path),
     sprintf("--expected-input-manifest-digest=%s", run_metadata$input_manifest$digest),
     sprintf("--master-seed=%d", master_seed)
   )
   if (validation_only) {
-    runner_args <- c(runner_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
+    worker_args <- c(worker_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
   } else {
-    runner_args <- c(
-      runner_args,
-      sprintf("--validated-correctness=%s", file.path(task_correctness_root, paste0(runner_name, ".csv")))
+    correctness_path <- if (identical(kind, "task")) task_correctness_path else fixture_correctness_path
+    worker_args <- c(
+      worker_args,
+      sprintf("--validated-correctness=%s", correctness_path)
     )
   }
-  if (!is.null(tasks_filter)) {
-    runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+  if (identical(kind, "task") && !is.null(tasks_filter)) {
+    worker_args <- c(worker_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
   }
-  runner_args
-}
-
-fixture_process_args <- function(runner_name, validation_only = FALSE, validation_output = NULL) {
-  fixture_args <- c(
-    "fixture_subprocess.R",
-    sprintf("--runner=%s", runner_name),
-    sprintf("--run-dir=%s", run_dir)
-  )
-  if (validation_only) {
-    fixture_args <- c(fixture_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
-  } else {
-    fixture_args <- c(
-      fixture_args,
-      sprintf("--validated-correctness=%s", file.path(fixture_correctness_root, paste0(runner_name, ".csv")))
-    )
-  }
-  fixture_args
+  worker_args
 }
 
 cat("Trust and correctness preflight\n")
 correctness_root <- file.path(run_dir, "correctness")
-task_correctness_root <- file.path(correctness_root, "tasks")
-fixture_correctness_root <- file.path(correctness_root, "fixtures")
+task_correctness_path <- run_correctness_artifact_paths(run_dir, run_metadata, "task")
+fixture_correctness_path <- run_correctness_artifact_paths(run_dir, run_metadata, "fixture")
+correctness_staging_root <- file.path(run_dir, ".staging", "correctness")
+task_correctness_staging <- file.path(correctness_staging_root, "tasks")
+fixture_correctness_staging <- file.path(correctness_staging_root, "fixtures")
 for (rn in names(all_runners)) {
   code <- system2(
     "Rscript",
-    args = fixture_process_args(
-      rn, validation_only = TRUE, validation_output = file.path(fixture_correctness_root, paste0(rn, ".csv"))
+    args = worker_process_args("fixture",
+      rn, validation_only = TRUE, validation_output = file.path(fixture_correctness_staging, paste0(rn, ".csv"))
     ),
     env = blas_env, stdout = "", stderr = ""
   )
@@ -276,8 +269,8 @@ for (rn in names(all_runners)) {
 for (rn in names(all_runners)) {
   code <- system2(
     "Rscript",
-    args = runner_process_args(
-      rn, validation_only = TRUE, validation_output = file.path(task_correctness_root, paste0(rn, ".csv"))
+    args = worker_process_args("task",
+      rn, validation_only = TRUE, validation_output = file.path(task_correctness_staging, paste0(rn, ".csv"))
     ),
     env = blas_env, stdout = "", stderr = ""
   )
@@ -286,6 +279,17 @@ for (rn in names(all_runners)) {
     stop(run_error)
   }
 }
+combine_csv_files_once(
+  file.path(task_correctness_staging, paste0(names(all_runners), ".csv")),
+  task_correctness_path,
+  "task correctness evidence"
+)
+combine_csv_files_once(
+  file.path(fixture_correctness_staging, paste0(names(all_runners), ".csv")),
+  fixture_correctness_path,
+  "fixture correctness evidence"
+)
+unlink(correctness_staging_root, recursive = TRUE)
 cat("\n")
 
 correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
@@ -313,7 +317,7 @@ if (correctness_only) {
 
 cat("Normalized fixture measurement\n")
 for (rn in names(all_runners)) {
-  code <- system2("Rscript", args = fixture_process_args(rn), env = blas_env, stdout = "", stderr = "")
+  code <- system2("Rscript", args = worker_process_args("fixture", rn), env = blas_env, stdout = "", stderr = "")
   if (code != 0L) {
     runner_failures <- c(runner_failures, sprintf("fixture-%s:%d", rn, code))
   }
@@ -323,12 +327,25 @@ if (length(runner_failures) > 0L) {
   run_error <- sprintf("fixture measurement subprocesses failed: %s", paste(runner_failures, collapse = ", "))
   stop(run_error)
 }
+fixture_sample_inputs <- file.path(run_dir, "fixtures", names(all_runners), "samples.csv")
+fixture_sample_inputs <- fixture_sample_inputs[file.exists(fixture_sample_inputs)]
+if (length(fixture_sample_inputs) > 0L) combine_csv_files_once(
+  fixture_sample_inputs,
+  run_sample_artifact_paths(run_dir, run_metadata, "fixture", names(all_runners)[[1L]], "."),
+  "fixture samples"
+)
+unlink(file.path(run_dir, "fixtures"), recursive = TRUE)
+combine_csv_files_once(
+  file.path(run_dir, paste0("fixture_", names(all_runners), "_summary.csv")),
+  run_summary_artifact_paths(run_dir, run_metadata, "fixture"),
+  "fixture summary"
+)
 
 for (rn in names(all_runners)) {
   cfg <- all_runners[[rn]]
   cat(sprintf("Runner: %s (%s)\n", rn, cfg$label))
 
-  runner_args <- runner_process_args(rn)
+  runner_args <- worker_process_args("task", rn)
 
   code <- system2("Rscript", args = runner_args, env = blas_env, stdout = "", stderr = "")
   if (code != 0) cat(sprintf("  [SUB] exited with code %d\n", code))
@@ -340,6 +357,19 @@ if (length(runner_failures) > 0L) {
   run_error <- sprintf("runner subprocesses failed: %s", paste(runner_failures, collapse = ", "))
   stop(run_error)
 }
+task_sample_inputs <- file.path(run_dir, names(all_runners), "samples.csv")
+task_sample_inputs <- task_sample_inputs[file.exists(task_sample_inputs)]
+if (length(task_sample_inputs) > 0L) combine_csv_files_once(
+  task_sample_inputs,
+  run_sample_artifact_paths(run_dir, run_metadata, "task", names(all_runners)[[1L]], "."),
+  "task samples"
+)
+unlink(file.path(run_dir, names(all_runners)), recursive = TRUE)
+combine_csv_files_once(
+  file.path(run_dir, paste0(names(all_runners), "_summary.csv")),
+  run_summary_artifact_paths(run_dir, run_metadata, "task"),
+  "task summary"
+)
 
 final_correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
 if (!identical(final_correctness_evidence, correctness_evidence)) {

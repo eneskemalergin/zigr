@@ -1,17 +1,15 @@
 #!/usr/bin/env Rscript
 
 library(jsonlite)
-source("lib/task_manifest.R")
-source("lib/evidence_schema.R")
-source("lib/input_contract.R")
-source("lib/r_provenance.R")
-source("lib/source_ledger.R")
-source("lib/environment_manifest.R")
-source("lib/run_manifest.R")
-source("lib/product_fixtures.R")
-source("lib/fixture_measurement.R")
+root_dir <- normalizePath(".")
+source(file.path(root_dir, "lib", "specification.R"))
+source(file.path(root_dir, "lib", "measurement.R"))
+source(file.path(root_dir, "lib", "provenance.R"))
+source(file.path(root_dir, "lib", "run_manifest.R"))
+source(file.path(root_dir, "lib", "product_fixtures.R"))
 
 args <- commandArgs(trailingOnly = TRUE)
+validate_cli_arguments(args, value_options = "run-dir", flag_options = "dry-run", label = "promotion")
 run_dir <- NULL
 dry_run <- FALSE
 for (arg in args) {
@@ -25,7 +23,6 @@ for (arg in args) {
 }
 if (is.null(run_dir)) stop("--run-dir= is required")
 
-root_dir <- normalizePath(".")
 repository_root <- normalizePath("..")
 resolve_path <- function(path) {
   expanded <- path.expand(path)
@@ -99,12 +96,11 @@ run_exporter <- function(script, arguments = character(0)) {
 
 run_exporter("export_comparative_metrics.R")
 run_exporter("export_boundary_metrics.R")
-run_exporter(file.path("analysis", "summarize.R"))
 
 report_files <- separated_report_files()
 required_reports <- c(
   unname(report_files), "report_manifest.json", "boundary_metrics.csv", "boundary_budgets.csv",
-  "representation_budgets.csv", "analysis_summary.csv"
+  "representation_budgets.csv"
 )
 missing_reports <- required_reports[!file.exists(file.path(stage_dir, required_reports))]
 if (length(missing_reports) > 0L) {
@@ -112,7 +108,7 @@ if (length(missing_reports) > 0L) {
 }
 
 report_manifest <- jsonlite::fromJSON(file.path(stage_dir, "report_manifest.json"), simplifyVector = FALSE)
-if (!identical(as.character(report_manifest$schema_version), "separated-report-v1") ||
+if (!identical(as.character(report_manifest$schema_version), "separated-report-v2") ||
     !identical(as.character(report_manifest$run_id), as.character(metadata$run_id)) ||
     !identical(as.character(report_manifest$recorded_source_tree_digest), as.character(metadata$environment$source_tree$digest)) ||
     !identical(as.character(report_manifest$task_correctness_artifact_digest), as.character(correctness_identity$task_artifact_digest)) ||
@@ -147,8 +143,7 @@ validate_r_baseline_metrics(r_baseline, as.character(manifest$task), c(evidence$
 validate_control_metrics(control)
 validate_diagnostic_metrics(
   diagnostic,
-  unlist(lapply(expected_runners, function(runner) paste(runner, manifest$task, sep = "\r")), use.names = FALSE),
-  c("44_build_time", "45_binary_size", "46_cross_compile", "47_allocator_count")
+  unlist(lapply(expected_runners, function(runner) paste(runner, manifest$task, sep = "\r")), use.names = FALSE)
 )
 validate_capability_matrix(capability, paste(evidence$fixture_rows$runner, evidence$fixture_rows$fixture, sep = "\r"))
 validate_safety_results(safety, expected_runners)
@@ -176,8 +171,8 @@ if (nrow(analysis) != expected_analysis_rows ||
   stop("regenerated analysis report coverage or run identity differs")
 }
 
-task_correctness_files <- file.path(stage_dir, "correctness", "tasks", paste0(expected_runners, ".csv"))
-fixture_correctness_files <- file.path(stage_dir, "correctness", "fixtures", paste0(expected_runners, ".csv"))
+task_correctness_files <- run_correctness_artifact_paths(stage_dir, staged_metadata, "task", expected_runners)
+fixture_correctness_files <- run_correctness_artifact_paths(stage_dir, staged_metadata, "fixture", expected_runners)
 task_correctness_rows <- sum(vapply(task_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
 fixture_correctness_rows <- sum(vapply(fixture_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
 derived_report_record <- function(role, file) list(
@@ -191,8 +186,7 @@ derived_reports <- c(
   list(
     derived_report_record("boundary", "boundary_metrics.csv"),
     derived_report_record("boundary_budget", "boundary_budgets.csv"),
-    derived_report_record("representation_budget", "representation_budgets.csv"),
-    derived_report_record("analysis", "analysis_summary.csv")
+    derived_report_record("representation_budget", "representation_budgets.csv")
   )
 )
 receipt <- list(

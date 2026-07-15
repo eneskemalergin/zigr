@@ -125,8 +125,6 @@ fn radix_sort_f64(arr: &mut [f64]) {
     }
 }
 
-fn stub() -> savvy::Result<Sexp> { Ok(NullSexp.into()) }
-
 fn fib_rs_savvy(n: i64) -> i64 {
     if n <= 1 { return n; }
     fib_rs_savvy(n - 1) + fib_rs_savvy(n - 2)
@@ -517,20 +515,6 @@ pub unsafe extern "C" fn savvy_bench_memory_bandwidth__ffi(x: SEXP) -> SEXP {
 ffi_stub!(savvy_bench_string_variants_manual__ffi, x: SEXP);
 ffi_stub!(savvy_bench_string_variants__ffi, x: SEXP);
 
-fn savvy_bench_vectorsum(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_elem_ops(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
-fn savvy_bench_memcpy_bandwidth(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_sort(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
-fn savvy_bench_fib_recursive(n: &IntegerSexp) -> savvy::Result<Sexp> {
-    let n_val: i64 = n.iter().next().copied().unwrap_or(0) as i64;
-    let result = fib_rs_savvy(n_val);
-    let mut out = OwnedRealSexp::new(1)?;
-    out.set_elt(0, result as f64)?;
-    Ok(out.into())
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_fib_recursive__ffi(c_arg__n: SEXP) -> SEXP {
     let n_ptr = savvy_ffi::INTEGER(c_arg__n);
@@ -541,8 +525,6 @@ pub unsafe extern "C" fn savvy_bench_fib_recursive__ffi(c_arg__n: SEXP) -> SEXP 
     *rp = result as f64;
     out
 }
-
-fn savvy_bench_broadcast(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_protect_shallow__ffi(x: SEXP) -> SEXP {
@@ -580,8 +562,6 @@ pub unsafe extern "C" fn savvy_bench_type_dispatch__ffi(x: SEXP) -> SEXP {
     *(savvy_ffi::INTEGER(out)) = total;
     out
 }
-fn savvy_bench_sexp_create(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_sexp_create__ffi(x: SEXP) -> SEXP {
     for _ in 0..10 {
@@ -614,8 +594,6 @@ pub unsafe extern "C" fn savvy_bench_sexp_inspect__ffi(x: SEXP) -> SEXP {
     out
 }
 
-fn savvy_bench_sexp_inspect(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_matrix_rowsums__ffi(x: SEXP) -> SEXP {
     let len = savvy_ffi::Rf_xlength(x) as usize;
@@ -634,8 +612,6 @@ pub unsafe extern "C" fn savvy_bench_matrix_rowsums__ffi(x: SEXP) -> SEXP {
     }
     out
 }
-
-fn savvy_bench_matrix_rowsums(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_matrix_rowcol_means__ffi(x: SEXP) -> SEXP {
@@ -667,8 +643,6 @@ pub unsafe extern "C" fn savvy_bench_matrix_rowcol_means__ffi(x: SEXP) -> SEXP {
     savvy_ffi::SET_VECTOR_ELT(out, 1, cs);
     out
 }
-
-fn savvy_bench_matrix_rowcol_means(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_dataframe_filter__ffi(x: SEXP) -> SEXP {
@@ -731,9 +705,6 @@ pub unsafe extern "C" fn savvy_bench_dataframe_filter__ffi(x: SEXP) -> SEXP {
     out
 }
 
-fn savvy_bench_dataframe_filter(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_list_access(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_list_access__ffi(x: SEXP) -> SEXP {
     let n = savvy_ffi::Rf_xlength(x);
@@ -745,8 +716,6 @@ pub unsafe extern "C" fn savvy_bench_list_access__ffi(x: SEXP) -> SEXP {
     *(savvy_ffi::REAL(out)) = total;
     out
 }
-
-fn savvy_bench_string_concat(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_string_concat__ffi(x: SEXP) -> SEXP {
@@ -919,12 +888,6 @@ pub unsafe extern "C" fn savvy_bench_l1_arithmetic__impl(x: SEXP) -> SEXP {
     Rf_ScalarReal(total)
 }
 
-fn savvy_bench_matmul(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_crossprod(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_cholesky(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-fn savvy_bench_lm_fit(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
-
-fn savvy_bench_altrep_create(x: &RealSexp) -> savvy::Result<Sexp> { stub() }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn savvy_bench_altrep_materialize__impl(x: SEXP) -> SEXP {
     let call = savvy_ffi::Rf_protect(Rf_lang2(Rf_install("seq_len\0".as_ptr() as _), x));

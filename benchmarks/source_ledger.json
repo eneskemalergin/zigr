@@ -71,7 +71,7 @@
     "rcpp": {
       "role": "product",
       "tool_kind": "r_package",
-      "verifier_kind": "rcpp_legacy",
+      "verifier_kind": "rcpp_attributes",
       "package": "Rcpp",
       "source_globs": ["src/cpp/main.cpp"],
       "build_files": ["build_all.sh", "src/cpp/main.cpp"],
@@ -85,7 +85,7 @@
     "savvy": {
       "role": "product",
       "tool_kind": "cargo",
-      "verifier_kind": "savvy_legacy",
+      "verifier_kind": "savvy_handwritten_ffi",
       "source_globs": ["src/savvy/api.h", "src/savvy/init.c", "src/savvy/rust/src/*.rs"],
       "build_files": [
         "build_all.sh",
@@ -112,7 +112,7 @@
       "generated_glue": {
         "kind": "compile_time_zigr_generator_output_not_retained",
         "retained_output": false,
-        "paths": ["src/zig/main.zig", "src/zig/task_28_only_main.zig", "../src/export.zig"]
+        "paths": ["src/zig/main.zig", "src/zig/tasks.zig", "../src/export.zig"]
       }
     }
   },

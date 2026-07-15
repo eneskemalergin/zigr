@@ -4,6 +4,33 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
+if [ "${1:-}" = "clean" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "usage: $0 clean" >&2
+    exit 1
+  fi
+  rm -rf \
+    .zig-cache \
+    .zig-global-cache \
+    zig-out \
+    tmp \
+    src/extendr/rust/target \
+    src/extendr/fixture/src/rust/target \
+    src/savvy/rust/target \
+    src/savvy/fixture/src/rust/target
+  rm -f \
+    src/c_call/*.o src/c_call/*.so \
+    src/cpp/*.o src/cpp/*.so \
+    src/extendr/*.o src/extendr/*.so \
+    src/savvy/*.o src/savvy/*.so
+  echo "Benchmark build products removed; retained results/."
+  exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: $0 [clean]" >&2
+  exit 1
+fi
+
 ZIG_BIN=${ZIG:-}
 if [ -z "$ZIG_BIN" ]; then
   ZIG_BIN=$(command -v zig || true)

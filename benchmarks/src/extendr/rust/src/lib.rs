@@ -13,7 +13,6 @@ extern "C" {
     fn Rf_setAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP, val: extendr_ffi::SEXP);
     fn Rf_getAttrib(x: extendr_ffi::SEXP, name: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
     fn Rf_classgets(x: extendr_ffi::SEXP, val: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
-    fn Rf_duplicate(x: extendr_ffi::SEXP) -> extendr_ffi::SEXP;
     fn Rf_asInteger(x: extendr_ffi::SEXP) -> i32;
     fn Rf_asLogical(x: extendr_ffi::SEXP) -> i32;
     fn Rf_asReal(x: extendr_ffi::SEXP) -> f64;
@@ -30,9 +29,7 @@ extern "C" {
     fn PutRNGstate();
     fn norm_rand() -> f64;
     fn VECTOR_ELT(x: extendr_ffi::SEXP, i: isize) -> extendr_ffi::SEXP;
-    fn LENGTH(x: extendr_ffi::SEXP) -> i32;
     fn Rf_mkChar(str: *const std::os::raw::c_char) -> extendr_ffi::SEXP;
-    fn Rf_allocVector(kind: u32, len: isize) -> extendr_ffi::SEXP;
     fn R_tryEvalSilent(expr: extendr_ffi::SEXP, env: extendr_ffi::SEXP, err: *mut i32) -> extendr_ffi::SEXP;
     fn R_MakeUnwindCont() -> extendr_ffi::SEXP;
     fn R_UnwindProtect(
@@ -46,15 +43,10 @@ extern "C" {
     fn R_do_slot_assign(obj: extendr_ffi::SEXP, name: extendr_ffi::SEXP, val: extendr_ffi::SEXP);
     fn INTEGER_ELT(x: extendr_ffi::SEXP, i: isize) -> i32;
     fn INTEGER_GET_REGION(x: extendr_ffi::SEXP, i: isize, n: isize, buf: *mut i32) -> isize;
-    fn Rf_nrows(x: extendr_ffi::SEXP) -> i32;
-    fn Rf_ncols(x: extendr_ffi::SEXP) -> i32;
     fn SET_STRING_ELT(x: extendr_ffi::SEXP, i: isize, v: extendr_ffi::SEXP);
-    fn REAL(x: extendr_ffi::SEXP) -> *mut f64;
     static R_GlobalEnv: extendr_ffi::SEXP;
     static R_ClassSymbol: extendr_ffi::SEXP;
 }
-
-fn stub() -> Robj { ().into() }
 
 unsafe extern "C" fn extendr_benchmark_state_finalizer(pointer: extendr_ffi::SEXP) {
     let address = R_ExternalPtrAddr(pointer) as *mut i32;
@@ -738,8 +730,6 @@ fn extendr_bench_cholesky(x: Robj) -> Robj {
     let s = unsafe { std::mem::transmute::<Robj, extendr_ffi::SEXP>(x) };
     let mut n = unsafe { extendr_ffi::Rf_nrows(s) };
     let n_usize = n as usize;
-    let n_isize = n as isize;
-
     let mut out = unsafe { Robj::from_sexp(extendr_ffi::Rf_allocMatrix(extendr_ffi::SEXPTYPE::REALSXP, n, n)) };
     let slice = if let Some(s) = out.as_real_slice_mut() { s } else { return r!(0.0) };
 

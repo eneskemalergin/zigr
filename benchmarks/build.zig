@@ -110,26 +110,4 @@ pub fn build(b: *std.Build) void {
     fixture_static_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
     fixture_static_lib.root_module.linkSystemLibrary("R", .{});
     b.getInstallStep().dependOn(&b.addInstallArtifact(fixture_static_lib, .{}).step);
-
-    const task12_lib = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "zigr_benchmarks_task28",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/task_28_only_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "R", .module = r_mod },
-                .{ .name = "zigr", .module = zigr_mod },
-            },
-        }),
-    });
-    if (target.result.os.tag == .linux) task12_lib.lto = .full;
-    task12_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
-    task12_lib.root_module.linkSystemLibrary("R", .{});
-    if (target.result.os.tag != .windows) task12_lib.root_module.linkSystemLibrary("blas", .{});
-
-    b.getInstallStep().dependOn(&b.addInstallArtifact(task12_lib, .{
-        .dest_sub_path = b.fmt("zigr_benchmarks_task28{s}", .{shared_lib_ext}),
-    }).step);
 }

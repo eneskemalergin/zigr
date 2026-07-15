@@ -23,6 +23,7 @@ load_retained_correctness <- function(
   if (length(missing) > 0L) {
     stop(sprintf("retained correctness is missing columns: %s", paste(missing, collapse = ", ")))
   }
+  rows <- rows[as.character(rows$runner) == runner, , drop = FALSE]
   ids <- as.character(rows[[id_field]])
   if (!identical(sort(ids), sort(as.character(expected_ids))) || anyDuplicated(ids) ||
       any(as.character(rows$runner) != runner) || any(as.character(rows$run_id) != run_id) ||
@@ -82,9 +83,16 @@ run_manifest_completion_contract <- function(metadata) {
     "schema_version", "run_id", "status", "started_at", "finished_at", "runners", "tasks",
     "master_seed", "input_manifest", "runner_dispositions", "r_provenance", "timing_policy",
     "boundary_budget_policy_version", "full_matrix", "measurement_mode", "environment",
-    "task_inputs", "correctness_stage", "completion_artifacts"
+    "correctness_stage", "completion_artifacts"
   )
+  if (!is.null(metadata$schema_version) && as.integer(metadata$schema_version) < 3L) {
+    required <- c(required, "task_inputs")
+  }
   missing <- required[vapply(required, function(field) is.null(metadata[[field]]), logical(1))]
+  if (!is.null(metadata$schema_version) && as.integer(metadata$schema_version) >= 3L &&
+      is.null(metadata$artifact_layout)) {
+    missing <- c(missing, "artifact_layout")
+  }
   if (length(missing) > 0L) {
     stop(sprintf("run completion contract is missing fields: %s", paste(missing, collapse = ", ")))
   }
@@ -192,33 +200,30 @@ run_completion_artifact_paths <- function(run_dir, metadata) {
   runners <- sort(run_manifest_values(metadata$runners))
   paths <- c(
     as.character(metadata$input_manifest$relative_path),
-    paste0(runners, "_summary.csv"),
-    paste0("fixture_", runners, "_summary.csv"),
-    file.path("correctness", "tasks", paste0(runners, ".csv")),
-    file.path("correctness", "fixtures", paste0(runners, ".csv"))
+    run_summary_artifact_paths("", metadata, "task", runners),
+    run_summary_artifact_paths("", metadata, "fixture", runners),
+    run_correctness_artifact_paths("", metadata, "task", runners),
+    run_correctness_artifact_paths("", metadata, "fixture", runners)
   )
+  task_summaries <- read_run_summary_table(run_dir, metadata, "task", runners)
+  fixture_summaries <- read_run_summary_table(run_dir, metadata, "fixture", runners)
   for (runner in runners) {
-    task_summary_path <- file.path(run_dir, paste0(runner, "_summary.csv"))
-    fixture_summary_path <- file.path(run_dir, paste0("fixture_", runner, "_summary.csv"))
-    if (!file.exists(task_summary_path) || !file.exists(fixture_summary_path)) {
-      stop(sprintf("run completion summaries are missing for %s", runner))
-    }
-    task_summary <- read.csv(task_summary_path, stringsAsFactors = FALSE)
+    task_summary <- task_summaries[as.character(task_summaries$runner) == runner, , drop = FALSE]
     task_ids <- as.character(task_summary$task[task_summary$status == "PASS"])
-    paths <- c(paths, vapply(
-      task_ids,
-      function(task) run_manifest_relative_artifact_path(runner, paste0("task_", task, ".csv")),
-      character(1)
-    ))
-    if (length(task_ids) > 0L) paths <- c(paths, file.path(runner, "cold_start.csv"))
+    if (length(task_ids) > 0L) paths <- c(
+      paths,
+      run_sample_artifact_paths("", metadata, "task", runner, task_ids)
+    )
+    if (length(task_ids) > 0L && identical(benchmark_artifact_layout(metadata), "per-cell-v1")) {
+      paths <- c(paths, file.path(runner, "cold_start.csv"))
+    }
 
-    fixture_summary <- read.csv(fixture_summary_path, stringsAsFactors = FALSE)
+    fixture_summary <- fixture_summaries[as.character(fixture_summaries$runner) == runner, , drop = FALSE]
     fixture_rows <- as.character(fixture_summary$row_id[fixture_summary$status == "PASS"])
-    paths <- c(paths, vapply(
-      fixture_rows,
-      function(row_id) run_manifest_relative_artifact_path("fixtures", runner, paste0(row_id, ".csv")),
-      character(1)
-    ))
+    if (length(fixture_rows) > 0L) paths <- c(
+      paths,
+      run_sample_artifact_paths("", metadata, "fixture", runner, fixture_rows)
+    )
   }
   sort(unique(run_manifest_relative_artifact_paths(paths)))
 }
@@ -269,7 +274,10 @@ validate_run_disposition_identity <- function(metadata, current_dispositions) {
 
 run_manifest_r_provenance_records <- function(metadata, field) {
   provenance <- metadata$r_provenance
-  if (is.null(provenance) || !identical(as.character(provenance$schema_version), r_provenance_schema_version())) {
+  supported <- if (as.integer(metadata$schema_version) >= 3L) {
+    run_r_provenance_schema_version()
+  } else r_provenance_schema_version()
+  if (is.null(provenance) || !identical(as.character(provenance$schema_version), supported)) {
     stop("run manifest has no supported R provenance")
   }
   records <- provenance[[field]]
@@ -374,9 +382,10 @@ read_run_manifest <- function(run_dir) {
   if (is.null(metadata$run_id) || !nzchar(as.character(metadata$run_id))) {
     stop(sprintf("run manifest has no run_id: %s", path))
   }
-  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 2L) {
+  if (is.null(metadata$schema_version) || !(as.integer(metadata$schema_version) %in% c(2L, 3L))) {
     stop(sprintf("unsupported run manifest schema version: %s", path))
   }
+  benchmark_artifact_layout(metadata)
   metadata
 }
 
@@ -554,9 +563,10 @@ validate_environment_manifest <- function(environment) {
 }
 
 validate_run_artifacts <- function(run_dir, metadata) {
-  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 2L) {
+  if (is.null(metadata$schema_version) || !(as.integer(metadata$schema_version) %in% c(2L, 3L))) {
     stop("unsupported run manifest schema version")
   }
+  benchmark_artifact_layout(metadata)
   validate_environment_manifest(metadata$environment)
   if (as.integer(metadata$environment$schema_version) >= 3L) {
     validate_tool_source_ledger(
@@ -588,19 +598,21 @@ validate_run_artifacts <- function(run_dir, metadata) {
   if (!identical(sort(input_payload_tasks), expected_tasks) || anyDuplicated(input_payload_tasks)) {
     stop("canonical input manifest task set differs from the run manifest")
   }
-  input_tasks <- vapply(metadata$task_inputs, function(record) as.character(record$task), character(1))
-  if (!identical(sort(input_tasks), expected_tasks) || anyDuplicated(input_tasks)) {
-    stop("run task input records differ from the declared task set")
-  }
-  for (task in expected_tasks) {
-    metadata_input <- run_manifest_task_input(metadata, task)
-    payload_input <- input_payload_records[[match(task, input_payload_tasks)]]
-    for (field in c(
-      "master_seed", "task_seed", "fixture_version", "contract_version",
-      "mutation_policy", "altrep_intent", "fingerprint"
-    )) {
-      if (!identical(as.character(metadata_input[[field]]), as.character(payload_input[[field]]))) {
-        stop(sprintf("run task input field %s differs from the canonical artifact for %s", field, task))
+  if (as.integer(metadata$schema_version) < 3L) {
+    input_tasks <- vapply(metadata$task_inputs, function(record) as.character(record$task), character(1))
+    if (!identical(sort(input_tasks), expected_tasks) || anyDuplicated(input_tasks)) {
+      stop("run task input records differ from the declared task set")
+    }
+    for (task in expected_tasks) {
+      metadata_input <- run_manifest_task_input(metadata, task)
+      payload_input <- input_payload_records[[match(task, input_payload_tasks)]]
+      for (field in c(
+        "master_seed", "task_seed", "fixture_version", "contract_version",
+        "mutation_policy", "altrep_intent", "fingerprint"
+      )) {
+        if (!identical(as.character(metadata_input[[field]]), as.character(payload_input[[field]]))) {
+          stop(sprintf("run task input field %s differs from the canonical artifact for %s", field, task))
+        }
       }
     }
   }
@@ -612,7 +624,12 @@ validate_run_artifacts <- function(run_dir, metadata) {
   if (length(setdiff(names(r_reference_provenance), expected_tasks)) > 0L) {
     stop("run R reference provenance contains undeclared tasks")
   }
-  required_provenance_fields <- c(
+  required_provenance_fields <- if (as.integer(metadata$schema_version) >= 3L) {
+    c(
+      "schema_version", "task", "function_name", "implementation_class", "source_digest",
+      "backend_identity_keys", "record_digest"
+    )
+  } else c(
     "schema_version", "task", "function_name", "implementation_class", "source_digest",
     "source_body", "ast_calls", "ast_allowlist_id", "ast_allowlist", "forbidden_call_result",
     "compiled_backend", "backend_calls", "backend_classes", "backend_identity_keys"
@@ -665,7 +682,10 @@ validate_run_artifacts <- function(run_dir, metadata) {
     if (!identical(sort(disposition_tasks), expected_tasks) || anyDuplicated(disposition_tasks)) {
       stop(sprintf("run dispositions for %s differ from the declared task set", runner))
     }
-    required_disposition_fields <- c(
+    required_disposition_fields <- if (as.integer(metadata$schema_version) >= 3L) c(
+      "task", "status", "executable", "reason", "evidence_use", "path_kind",
+      "representation_strategy", "kernel_id", "contract_version", "timing_eligible"
+    ) else c(
       "task", "status", "executable", "reason", "owner", "implementation_role", "evidence_use",
       "path_kind", "public_path", "representation_strategy", "kernel_id", "contract_version",
       "fixture_version", "comparison_tier", "mutation_policy", "setup_policy", "comparison_group",
@@ -705,10 +725,10 @@ validate_run_artifacts <- function(run_dir, metadata) {
   }
 
   all_summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
-  expected_files <- file.path(run_dir, paste0(expected_runners, "_summary.csv"))
+  expected_files <- run_summary_artifact_paths(run_dir, metadata, "task", expected_runners)
   allowed_derived_files <- c(
     file.path(run_dir, "analysis_summary.csv"),
-    file.path(run_dir, paste0("fixture_", expected_runners, "_summary.csv"))
+    run_summary_artifact_paths(run_dir, metadata, "fixture", expected_runners)
   )
   missing_files <- expected_files[!file.exists(expected_files)]
   unexpected_files <- setdiff(all_summary_files, c(expected_files, allowed_derived_files))
@@ -719,9 +739,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
       paste(basename(c(setdiff(expected_files, missing_files), unexpected_files)), collapse = ", ")
     ))
   }
-  summary_files <- expected_files
-
-  summaries <- do.call(rbind, lapply(summary_files, read.csv, stringsAsFactors = FALSE))
+  summaries <- read_run_summary_table(run_dir, metadata, "task", expected_runners)
   required <- c(
     "run_id", "runner", "task", "status",
     "correctness_status", "correctness_policy", "correctness_message",
@@ -803,7 +821,9 @@ validate_run_artifacts <- function(run_dir, metadata) {
     runner <- as.character(row$runner)
     task <- as.character(row$task)
     disposition <- run_manifest_disposition(metadata, runner, task)
-    input <- run_manifest_task_input(metadata, task)
+    input <- if (as.integer(metadata$schema_version) >= 3L) {
+      input_payload_records[[match(task, input_payload_tasks)]]
+    } else run_manifest_task_input(metadata, task)
     environment_records <- metadata$environment$runner_configs
     environment_matches <- environment_records[vapply(
       environment_records,
@@ -879,6 +899,16 @@ validate_run_artifacts <- function(run_dir, metadata) {
   keys <- paste(summaries$runner, summaries$task, sep = "\r")
   if (anyDuplicated(keys)) stop("run summaries contain duplicate runner/task rows")
 
+  layout <- benchmark_artifact_layout(metadata)
+  if (identical(layout, "grouped-v1")) {
+    shared_samples <- run_sample_artifact_paths(run_dir, metadata, "task", expected_runners[[1L]], ".")
+    if (!identical(file.exists(shared_samples), any(summaries$status == "PASS"))) {
+      stop("shared task timing artifact presence differs from PASS summaries")
+    }
+    if (any(dir.exists(file.path(run_dir, expected_runners)))) {
+      stop("grouped run retains per-runner task artifact directories")
+    }
+  }
   for (runner in expected_runners) {
     runner_tasks <- sort(unique(as.character(summaries$task[summaries$runner == runner])))
     if (!identical(expected_tasks, runner_tasks)) {
@@ -886,21 +916,46 @@ validate_run_artifacts <- function(run_dir, metadata) {
     }
 
     runner_dir <- file.path(run_dir, runner)
-    raw_files <- sort(list.files(runner_dir, pattern = "^task_.*\\.csv$", full.names = TRUE))
     expected_raw_tasks <- sort(as.character(summaries$task[summaries$runner == runner & summaries$status == "PASS"]))
-    actual_raw_tasks <- sort(sub("\\.csv$", "", sub("^task_", "", basename(raw_files))))
+    if (identical(layout, "per-cell-v1")) {
+      expected_raw_files <- basename(run_sample_artifact_paths(run_dir, metadata, "task", runner, expected_raw_tasks))
+      actual_raw_files <- if (dir.exists(runner_dir)) list.files(runner_dir, pattern = "^task_.*\\.csv$") else character(0)
+      if (!identical(sort(unique(expected_raw_files)), sort(actual_raw_files))) {
+        stop(sprintf("raw timing artifact set for %s differs from PASS summaries", runner))
+      }
+    }
+    raw_samples <- read_run_sample_table(run_dir, metadata, "task", runner, expected_raw_tasks)
+    required_raw <- c("run_id", "runner", "task", "iteration", "wall_ms")
+    if (identical(layout, "grouped-v1")) required_raw <- c(required_raw, "phase")
+    if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
+      stop(sprintf("raw timing samples have missing columns for %s", runner))
+    }
+    if (identical(layout, "grouped-v1") && nrow(raw_samples) > 0L &&
+        !setequal(unique(as.character(raw_samples$phase)), c("cold", "timed"))) {
+      stop(sprintf("raw timing samples have invalid phases for %s", runner))
+    }
+    actual_raw_tasks <- sort(unique(as.character(raw_samples$task)))
     if (!identical(expected_raw_tasks, actual_raw_tasks)) {
       stop(sprintf("raw timing coverage for %s differs from PASS summaries", runner))
     }
-    for (raw_file in raw_files) {
-      raw <- read.csv(raw_file, stringsAsFactors = FALSE)
-      if (!"run_id" %in% names(raw)) stop(sprintf("raw result lacks run_id: %s", raw_file))
-      if (!all(as.character(raw$run_id) == expected_run_id)) stop("raw results contain mixed run IDs")
-      if (!"wall_ms" %in% names(raw) || any(!is.finite(raw$wall_ms))) stop(sprintf("raw result has invalid wall_ms: %s", raw_file))
-      task <- sub("\\.csv$", "", sub("^task_", "", basename(raw_file)))
+    if (nrow(raw_samples) > 0L && (!all(as.character(raw_samples$run_id) == expected_run_id) ||
+        !all(as.character(raw_samples$runner) == runner))) {
+      stop("raw results contain mixed run or runner IDs")
+    }
+    if (nrow(raw_samples) > 0L && any(!is.finite(raw_samples$wall_ms) | raw_samples$wall_ms < 0)) {
+      stop(sprintf("raw result has invalid wall_ms for %s", runner))
+    }
+    for (task in expected_raw_tasks) {
+      raw <- raw_samples[as.character(raw_samples$task) == task, , drop = FALSE]
+      if (identical(layout, "grouped-v1")) {
+        raw <- raw[as.character(raw$phase) == "timed", , drop = FALSE]
+      }
       summary_row <- summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE]
       if (nrow(summary_row) != 1L || nrow(raw) != summary_row$n_iterations[[1]]) {
-        stop(sprintf("raw result sample count differs from summary: %s", raw_file))
+        stop(sprintf("raw result sample count differs from summary: %s/%s", runner, task))
+      }
+      if (!identical(as.integer(raw$iteration), seq_len(nrow(raw)))) {
+        stop(sprintf("raw result iterations differ from summary: %s/%s", runner, task))
       }
       if (!is.null(metadata$timing_policy)) {
         raw_mean <- mean(raw$wall_ms)
@@ -918,15 +973,32 @@ validate_run_artifacts <- function(run_dir, metadata) {
           as.numeric(summary_row[[field]][[1L]])
         }, numeric(1))
         if (!identical(unname(actual_statistics), unname(expected_statistics))) {
-          stop(sprintf("raw result statistics differ from summary: %s", raw_file))
+          stop(sprintf("raw result statistics differ from summary: %s/%s", runner, task))
         }
         expected_noise <- if (raw_median < as.numeric(metadata$timing_policy$timer_noise_floor_ms)) "below_floor" else "above_floor"
         if (summary_row$timer_noise_status[[1]] != expected_noise) {
-          stop(sprintf("raw result disagrees with timer-noise policy: %s", raw_file))
+          stop(sprintf("raw result disagrees with timer-noise policy: %s/%s", runner, task))
         }
       }
     }
     if (!is.null(metadata$timing_policy)) {
+      if (identical(layout, "grouped-v1")) {
+        cold <- raw_samples[as.character(raw_samples$phase) == "cold", , drop = FALSE]
+        actual_cold_tasks <- sort(as.character(cold$task))
+        if (!identical(expected_raw_tasks, actual_cold_tasks) ||
+            any(as.integer(cold$iteration) != 1L) || any(!is.na(cold$error))) {
+          stop(sprintf("cold-start samples differ from PASS summaries for %s", runner))
+        }
+        cold_summary <- summaries[
+          summaries$runner == runner & summaries$task %in% expected_raw_tasks,
+          c("task", "cold_start_ms"), drop = FALSE
+        ]
+        cold_summary <- cold_summary[match(as.character(cold$task), as.character(cold_summary$task)), , drop = FALSE]
+        if (any(round(as.numeric(cold$wall_ms), 3) != as.numeric(cold_summary$cold_start_ms))) {
+          stop(sprintf("cold-start timing differs from summaries for %s", runner))
+        }
+        next
+      }
       cold_file <- file.path(runner_dir, "cold_start.csv")
       if (length(expected_raw_tasks) == 0L) {
         if (file.exists(cold_file)) stop(sprintf("cold-start results exist without PASS rows for %s", runner))

@@ -19,20 +19,9 @@ benchmarks/**/*.a
 benchmarks/**/*.d
 benchmarks/**/*.obj
 
-# System diagnostic binaries
-benchmarks/task47_alloc_count*
-benchmarks/task47_test*
-
 # Benchmark data is local and regenerated. Only the compact acceptance receipt is tracked.
 benchmarks/results/*
 !benchmarks/results/CANONICAL_RUN.json
-benchmarks/results/**/task_*.csv
-benchmarks/results/**/cold_start.csv
-benchmarks/results/**/error_*.csv
-
-# Rust build directories in runner subdirectories
-benchmarks/src/extendr/rust/target/
-benchmarks/src/savvy/rust/target/
 
 # R build artifacts
 .Rcheck/

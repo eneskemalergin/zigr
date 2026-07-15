@@ -8,12 +8,11 @@ for (arg in args) {
 if (is.null(run_dir)) stop("--run-dir= is required")
 
 root_dir <- normalizePath(".")
-source(file.path(root_dir, "lib", "task_manifest.R"))
-source(file.path(root_dir, "lib", "input_contract.R"))
-source(file.path(root_dir, "lib", "r_provenance.R"))
-source(file.path(root_dir, "lib", "source_ledger.R"))
-source(file.path(root_dir, "lib", "environment_manifest.R"))
+source(file.path(root_dir, "lib", "specification.R"))
+source(file.path(root_dir, "lib", "measurement.R"))
+source(file.path(root_dir, "lib", "provenance.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
+validate_cli_arguments(args, value_options = "run-dir", label = "boundary export")
 
 run_dir <- normalizePath(run_dir, mustWork = FALSE)
 metadata <- read_run_manifest(run_dir)
@@ -38,29 +37,21 @@ required_tasks <- c(boundary_tasks, representation_tasks)
 missing_tasks <- setdiff(required_tasks, run_manifest_values(metadata$tasks))
 if (length(missing_tasks) > 0L) stop(sprintf("boundary export is missing tasks: %s", paste(missing_tasks, collapse = ", ")))
 
-summaries <- do.call(rbind, lapply(required_runners, function(runner) {
-  read.csv(file.path(run_dir, paste0(runner, "_summary.csv")), stringsAsFactors = FALSE)
-}))
+summaries <- read_run_summary_table(run_dir, metadata, "task", required_runners)
+summaries <- summaries[summaries$runner %in% required_runners, , drop = FALSE]
 
 task_sample_stats <- function(runner, task, expected_n) {
-  path <- file.path(run_dir, runner, sprintf("task_%s.csv", task))
-  if (!file.exists(path)) stop(sprintf("raw timing samples are missing: %s", path))
-  samples <- read.csv(path, stringsAsFactors = FALSE)
-  if (!"wall_ms" %in% names(samples)) stop(sprintf("raw timing samples lack wall_ms: %s", path))
-  values <- sort(samples$wall_ms)
-  values <- values[is.finite(values)]
+  values <- read_run_wall_time_samples(
+    run_dir, metadata, "task", runner, task, expected_n = expected_n
+  )
   n <- length(values)
-  if (n < 2L) stop(sprintf("raw timing samples are incomplete: %s", path))
-  if (n != expected_n) stop(sprintf("raw timing sample count differs from summary: %s", path))
-  alpha <- 1 - as.numeric(timing_policy$median_ci_level)
-  low_rank <- max(1L, as.integer(qbinom(alpha / 2, n, 0.5)))
-  high_rank <- min(n, as.integer(qbinom(1 - alpha / 2, n, 0.5)) + 1L)
+  interval <- median_confidence_interval(values, as.numeric(timing_policy$median_ci_level))
   sample_mean <- mean(values)
   list(
     median = median(values),
     cv_pct = if (sample_mean > 0) sd(values) / sample_mean * 100 else 0,
-    ci_low = values[[low_rank]],
-    ci_high = values[[high_rank]],
+    ci_low = interval[["low"]],
+    ci_high = interval[["high"]],
     n = n
   )
 }

@@ -5,11 +5,10 @@ if (length(script_argument) != 1L) stop("cannot determine product fixture test l
 script_path <- normalizePath(sub("^--file=", "", script_argument[[1L]]))
 root_dir <- normalizePath(file.path(dirname(script_path), ".."))
 
-source(file.path(root_dir, "lib", "task_manifest.R"))
-source(file.path(root_dir, "lib", "evidence_schema.R"))
-source(file.path(root_dir, "lib", "input_contract.R"))
-source(file.path(root_dir, "lib", "r_provenance.R"))
-source(file.path(root_dir, "lib", "source_ledger.R"))
+source(file.path(root_dir, "lib", "specification.R"))
+source(file.path(root_dir, "lib", "measurement.R"))
+source(file.path(root_dir, "lib", "provenance.R"))
+source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "product_fixtures.R"))
 
 expect_true <- function(condition, label) {
@@ -115,31 +114,25 @@ expect_true(
         vapply(contract_cases$F09, `[[`, character(1), "id")),
   "strict scalar and fixed-schema invalid families remain present"
 )
-expect_error(
-  "NA and NaN metadata distinction",
-  fixture_assert_same(NA_real_, NaN, "negative metadata probe"),
-  "fixture values differ"
-)
-expect_error(
-  "signed zero metadata distinction",
-  fixture_assert_same(-0.0, 0.0, "negative metadata probe"),
-  "fixture values differ"
-)
-expect_error(
-  "attribute metadata distinction",
-  fixture_assert_same(1:2, structure(1:2, names = c("a", "b")), "negative metadata probe"),
-  "fixture values differ"
-)
 utf8_probe <- enc2utf8("façade")
 latin1_probe <- iconv("façade", from = "UTF-8", to = "latin1")
 Encoding(utf8_probe) <- "UTF-8"
 Encoding(latin1_probe) <- "latin1"
-expect_true(identical(utf8_probe, latin1_probe), "encoding probe has equal R string values")
-expect_error(
-  "encoding metadata distinction",
-  fixture_assert_same(utf8_probe, latin1_probe, "negative metadata probe"),
-  "fixture values differ"
+metadata_mismatches <- list(
+  "NA versus NaN" = list(NA_real_, NaN),
+  "negative versus positive zero" = list(-0.0, 0.0),
+  "unnamed versus named vector" = list(1:2, structure(1:2, names = c("a", "b"))),
+  "UTF-8 versus Latin-1 mark" = list(utf8_probe, latin1_probe)
 )
+expect_true(identical(utf8_probe, latin1_probe), "encoding mutation preserves the visible string value")
+for (label in names(metadata_mismatches)) {
+  values <- metadata_mismatches[[label]]
+  expect_error(
+    label,
+    fixture_assert_same(values[[1L]], values[[2L]], "negative metadata probe"),
+    "fixture values differ"
+  )
+}
 
 expected_runner_values <- list(
   c_call = c(valid = 24L, invalid = 28L, allocation = 28L, copy = 3L),
