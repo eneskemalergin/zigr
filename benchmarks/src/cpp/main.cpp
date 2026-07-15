@@ -813,7 +813,7 @@ SEXP rcpp_bench_external_ptr(SEXP arg) {
     int value = Rf_asInteger(arg);
     SEXP ptr = PROTECT(R_MakeExternalPtr(
         nullptr,
-        Rf_install("zigr.p4.rcpp.task42.state"),
+        Rf_install("zigr.benchmark.rcpp.task42.state"),
         R_NilValue
     ));
     RcppBenchmarkState* state = new (std::nothrow) RcppBenchmarkState{value};

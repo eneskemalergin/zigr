@@ -72,7 +72,7 @@ unsafe extern "C" fn savvy_benchmark_state_finalizer(pointer: SEXP) {
 unsafe fn savvy_owned_external_pointer(value: i32) -> SEXP {
     let pointer = savvy_ffi::Rf_protect(R_MakeExternalPtr(
         std::ptr::null_mut(),
-        Rf_install("zigr.p4.savvy.task42.state\0".as_ptr() as _),
+        Rf_install("zigr.benchmark.savvy.task42.state\0".as_ptr() as _),
         savvy_ffi::R_NilValue,
     ));
     let address = Box::into_raw(Box::new(value)) as *mut std::os::raw::c_void;

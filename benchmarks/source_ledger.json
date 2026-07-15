@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "vocabulary_version": "p4.3-source-ledger-2026-07-13",
+  "vocabulary_version": "source-ledger-v1",
   "runners": {
     "c_call": {
       "role": "c_control",

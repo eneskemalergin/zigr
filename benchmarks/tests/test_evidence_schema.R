@@ -58,7 +58,7 @@ task_tiers <- table(factor(
 ))
 expect_true(
   identical(unname(as.integer(task_tiers)), c(14L, 9L, 142L, 203L, 213L)),
-  "P4.5 task tiers contain exact products, strategy products, controls, diagnostics, and gaps"
+  "task tiers contain exact products, strategy products, controls, diagnostics, and gaps"
 )
 exact_product_tasks <- sort(unlist(evidence$raw$task_sets$exact_generated_product_tasks, use.names = FALSE))
 tier_a_tasks <- evidence$tasks[evidence$tasks$comparison_tier == "tier_a", c("runner", "task"), drop = FALSE]
@@ -78,7 +78,7 @@ expect_true(
     "unverified|unclassified|legacy|declared-kernel|verified-source-catalog|verified-task-contract|^catalog:",
     unlist(evidence$tasks[placeholder_fields], use.names = FALSE)
   )),
-  "no normalized task evidence retains a P4.0 or generic kernel placeholder"
+  "no normalized task evidence retains a coarse or generic kernel placeholder"
 )
 expected_contracts <- unname(vapply(as.character(evidence$tasks$task), evidence_task_contract_version, character(1)))
 expected_mutation <- unname(vapply(as.character(evidence$tasks$task), evidence_task_mutation_policy, character(1)))
@@ -213,14 +213,14 @@ expect_true(
 expect_true(
   all(evidence$tasks$setup_policy[evidence$tasks$executable] == "setup_outside_timer") &&
     all(evidence$tasks$setup_policy[!evidence$tasks$executable] == "not_timed") &&
-    all(evidence$tasks$fixture_version == "p4.5-task-input-v2") &&
+    all(evidence$tasks$fixture_version == "task-input-v2") &&
     identical(as.character(evidence$tasks$comparison_group), paste0("task:", evidence$tasks$task)),
   "task input, setup, and comparison identities are exact for all 581 cells"
 )
 expect_true(
   all(evidence$fixture_rows$setup_policy[evidence$fixture_rows$timing_eligible] == "setup_outside_timer") &&
     all(evidence$fixture_rows$setup_policy[!evidence$fixture_rows$timing_eligible] == "not_timed"),
-  "fixture setup policy agrees with P4.6 timing admission"
+  "fixture setup policy agrees with timing admission"
 )
 revised_contract_tasks <- c(
   "17_string_concat", "18_string_nchar", "19_string_encoding",
@@ -233,7 +233,7 @@ expect_true(
   "only semantic or lifecycle repairs bump the historical task contract"
 )
 expect_true(
-  all(evidence$tasks$owner[evidence$tasks$executable] == "P4.6") &&
+  all(evidence$tasks$owner[evidence$tasks$executable] == "accepted_evidence") &&
     all(nzchar(evidence$tasks$owner[!evidence$tasks$executable])),
   "every executable row routes to source-matched correctness and every gap has an owner"
 )
@@ -250,7 +250,7 @@ fixture_tiers <- table(factor(
 ))
 expect_true(
   identical(unname(as.integer(fixture_tiers)), c(9L, 47L, 23L, 0L, 5L)),
-  "P4.4 fixture tiers contain exact products, strategy products, controls, no diagnostics, and gaps"
+  "fixture tiers contain exact products, strategy products, controls, no diagnostics, and gaps"
 )
 expect_true(
   identical(
@@ -318,7 +318,7 @@ expected_executable <- c(c_call = 70L, cpp11 = 11L, extendr = 44L, r = 72L, rcpp
 actual_executable <- vapply(names(expected_executable), function(runner) {
   sum(evidence$tasks$runner == runner & evidence$tasks$executable)
 }, integer(1))
-expect_true(identical(actual_executable, expected_executable), "executable coverage matches the P4.1 R split")
+expect_true(identical(actual_executable, expected_executable), "executable coverage matches the declared R split")
 expected_task_tiers_by_runner <- rbind(
   c_call = c(gap = 13L, tier_a = 0L, tier_b = 0L, tier_c = 70L, tier_d = 0L),
   cpp11 = c(gap = 72L, tier_a = 7L, tier_b = 3L, tier_c = 0L, tier_d = 1L),
@@ -345,7 +345,7 @@ actual_fixture_executable <- vapply(names(expected_fixture_executable), function
 }, integer(1))
 expect_true(
   identical(actual_fixture_executable, expected_fixture_executable),
-  "fixture execution coverage matches the implemented P4.3 matrix"
+  "fixture execution coverage matches the implemented matrix"
 )
 
 disposition_snapshot <- run_disposition_records(evidence, "r", "52_boundary_scalar_generated")$r[[1L]]
@@ -386,12 +386,12 @@ expect_true(
   "cpp11 F10 is an honest source-backed product gap"
 )
 expect_true(
-  nrow(zigr_f08) == 1L && zigr_f08$status == "product_gap" && zigr_f08$owner == "P5",
+  nrow(zigr_f08) == 1L && zigr_f08$status == "product_gap" && zigr_f08$owner == "product_capability",
   "zigr F08 does not disguise the untyped escape hatch as a product path"
 )
 expect_true(
   nrow(zigr_f09) == 1L && zigr_f09$path_kind == "generated_public_adapter",
-  "zigr F09 retains the P1-approved explicit fixed-schema adapter label"
+  "zigr F09 retains the accepted explicit fixed-schema adapter label"
 )
 rcpp_fixture_adapters <- evidence$fixture_rows[
   evidence$fixture_rows$runner == "rcpp" &
@@ -623,7 +623,7 @@ product_report <- data.frame(
   input_fingerprint = "input", kernel_id = "kernel", contract_version = "contract",
   setup_policy = "setup_outside_timer", measurement_status = "PASS",
   report_status = ifelse(linked %in% report_product_runners(), "PRODUCT_PASS", "LINKED_BASELINE"),
-  claim_eligible = linked %in% report_product_runners(), reason = "visible", owner = "P8",
+  claim_eligible = linked %in% report_product_runners(), reason = "visible", owner = "performance",
   row_over_zigr_ratio = 1, row_over_zigr_ratio_ci_low = 0.9,
   row_over_zigr_ratio_ci_high = 1.1, row_relative_to_zigr = "TIE", noise_status = "low_noise",
   stringsAsFactors = FALSE
@@ -670,7 +670,7 @@ r_report <- data.frame(
   baseline_class = "pure_r", measurement_status = "PASS", claim_eligible = FALSE,
   zigr_relative_to_r = c("LOSS", "TIE"), zigr_over_r_ratio = c(1.2, 1),
   zigr_over_r_ratio_ci_low = c(1.1, 0.9), zigr_over_r_ratio_ci_high = c(1.3, 1.1),
-  owner = c("P8", "P8"),
+  owner = c("performance", "performance"),
   backend_provenance = "pure_r:none", timer_noise_status = "above_floor",
   noise_status = "low_noise", stringsAsFactors = FALSE
 )
@@ -690,7 +690,7 @@ control_report <- data.frame(
   run_id = "run", universe = "task", item_id = "task", runner = "c_call", control_role = "c_control",
   measurement_status = "PASS", report_status = "CONTROL_ONLY", claim_eligible = FALSE,
   zigr_relative_to_control = "LOSS", zigr_over_control_ratio = 1.2,
-  zigr_over_control_ratio_ci_low = 1.1, zigr_over_control_ratio_ci_high = 1.3, owner = "P8",
+  zigr_over_control_ratio_ci_low = 1.1, zigr_over_control_ratio_ci_high = 1.3, owner = "performance",
   timer_noise_status = "above_floor", noise_status = "low_noise", stringsAsFactors = FALSE
 )
 expect_true(is.data.frame(validate_control_metrics(control_report)), "valid control report")
@@ -706,7 +706,7 @@ diagnostic_report <- data.frame(
   run_id = "run", universe = c("task", "system_probe"), item_id = c("task", "probe"),
   runner = c("zigr", "system"), measurement_status = c("PASS", "EXCLUDED"), claim_eligible = FALSE,
   source_label = c("generated_typed", "source_invalid_system_probe"),
-  exclusion_reason = "diagnostic only", owner = "P9", timer_noise_status = "not_measured",
+  exclusion_reason = "diagnostic only", owner = "portability", timer_noise_status = "not_measured",
   noise_status = "not_measured", stringsAsFactors = FALSE
 )
 expect_true(
@@ -726,7 +726,7 @@ expect_error(
 capability_report <- data.frame(
   run_id = "run", runner = "zigr", fixture = "F01", source_class = "generated_typed",
   source_paths = "src/fixture.zig", verification_digest = "digest", fixture_result = "GAP",
-  gap_reason = "missing", owner = "P7", claim_eligible = FALSE, stringsAsFactors = FALSE
+  gap_reason = "missing", owner = "lifecycle_safety", claim_eligible = FALSE, stringsAsFactors = FALSE
 )
 expect_true(
   is.data.frame(validate_capability_matrix(

@@ -182,6 +182,7 @@ task_correctness_rows <- sum(vapply(task_correctness_files, function(path) nrow(
 fixture_correctness_rows <- sum(vapply(fixture_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
 derived_report_record <- function(role, file) list(
   role = role,
+  file = file,
   rows = nrow(read.csv(file.path(stage_dir, file), stringsAsFactors = FALSE)),
   md5 = unname(as.character(tools::md5sum(file.path(stage_dir, file))[[1L]]))
 )

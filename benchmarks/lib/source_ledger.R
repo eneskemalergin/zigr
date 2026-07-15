@@ -1,4 +1,4 @@
-source_ledger_schema_version <- function() "p4.6-tool-source-ledger-v3"
+source_ledger_schema_version <- function() "tool-source-ledger-v3"
 
 source_ledger_fixture_artifact_paths <- function(root_dir, runner, must_work = TRUE) {
   extension <- .Platform$dynlib.ext
@@ -120,7 +120,7 @@ load_source_ledger_spec <- function(root_dir) {
     stop("source ledger specification fields differ from the schema")
   }
   if (!identical(as.integer(spec$schema_version), 2L)) stop("unsupported source ledger schema version")
-  if (!identical(as.character(spec$vocabulary_version), "p4.3-source-ledger-2026-07-13")) {
+  if (!identical(as.character(spec$vocabulary_version), "source-ledger-v1")) {
     stop("unsupported source ledger vocabulary version")
   }
   expected_runners <- c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr")

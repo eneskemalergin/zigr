@@ -66,7 +66,7 @@ unsafe extern "C" fn extendr_benchmark_state_finalizer(pointer: extendr_ffi::SEX
 unsafe fn extendr_owned_external_pointer(value: i32) -> extendr_ffi::SEXP {
     let pointer = extendr_ffi::Rf_protect(R_MakeExternalPtr(
         std::ptr::null_mut(),
-        Rf_install("zigr.p4.extendr.task42.state\0".as_ptr() as _),
+        Rf_install("zigr.benchmark.extendr.task42.state\0".as_ptr() as _),
         extendr_ffi::R_NilValue,
     ));
     let address = Box::into_raw(Box::new(value)) as *mut std::os::raw::c_void;

@@ -17,6 +17,7 @@ runner <- NULL
 run_dir <- NULL
 validation_only <- FALSE
 validation_output <- NULL
+validated_correctness <- NULL
 proof_only <- FALSE
 proof_output <- NULL
 for (arg in args) {
@@ -24,12 +25,18 @@ for (arg in args) {
   if (grepl("^--run-dir=", arg)) run_dir <- sub("^--run-dir=", "", arg)
   if (identical(arg, "--validation-only")) validation_only <- TRUE
   if (grepl("^--validation-output=", arg)) validation_output <- sub("^--validation-output=", "", arg)
+  if (grepl("^--validated-correctness=", arg)) {
+    validated_correctness <- sub("^--validated-correctness=", "", arg)
+  }
   if (identical(arg, "--proof-only")) proof_only <- TRUE
   if (grepl("^--proof-output=", arg)) proof_output <- sub("^--proof-output=", "", arg)
 }
 if (is.null(runner)) stop("--runner= is required")
 if (is.null(run_dir)) stop("--run-dir= is required")
 if (validation_only && is.null(validation_output)) stop("--validation-output= is required with --validation-only")
+if (validation_only && !is.null(validated_correctness)) {
+  stop("validation-only mode cannot reuse retained correctness")
+}
 if (proof_only && is.null(proof_output)) stop("--proof-output= is required with --proof-only")
 if (validation_only && proof_only) stop("validation-only and proof-only modes are mutually exclusive")
 
@@ -46,7 +53,11 @@ environment <- runner_environment_record(metadata$environment, runner)
 validate_fixture_artifact_identity(environment)
 validate_tool_source_ledger(root_dir, metadata$environment$tool_source_ledger, runner)
 
-proof <- run_live_product_fixture_gate(root_dir, evidence, runner)
+proof <- if (is.null(validated_correctness) || proof_only) {
+  run_live_product_fixture_gate(root_dir, evidence, runner)
+} else {
+  NULL
+}
 if (proof_only) {
   supported <- evidence$fixture_rows[
     evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable,
@@ -107,20 +118,46 @@ specs <- fixture_measurement_specs()
 rows <- evidence$fixture_rows[evidence$fixture_rows$runner == runner, , drop = FALSE]
 rows <- rows[match(evidence$fixtures, rows$fixture), , drop = FALSE]
 
-for (index in seq_len(nrow(rows))) {
-  row <- rows[index, , drop = FALSE]
-  fixture <- as.character(row$fixture)
-  if (isTRUE(row$executable) && fixture %in% names(specs)) {
-    fixture_measurement_validate_case(
-      runner, context$functions, reference$functions, fixture, specs[[fixture]]
+retained_correctness_rows <- NULL
+if (!is.null(validated_correctness)) {
+  expected_path <- normalizePath(
+    file.path(run_dir, "correctness", "fixtures", paste0(runner, ".csv")),
+    mustWork = TRUE
+  )
+  expected_row_ids <- c(
+    evidence$fixtures,
+    if (identical(runner, "r")) c("F03_optimized_base_r", "F04_optimized_base_r") else character(0)
+  )
+  retained_correctness_rows <- load_retained_correctness(
+    validated_correctness, expected_path, runner, as.character(metadata$run_id), "row_id", expected_row_ids,
+    c(
+      as.character(rows$fixture[rows$executable]),
+      if (identical(runner, "r")) c("F03_optimized_base_r", "F04_optimized_base_r") else character(0)
+    ),
+    list(
+      source_tree_digest = as.character(metadata$environment$source_tree$digest),
+      source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
+      artifact_digest = as.character(environment$fixture_artifact_digest)
     )
-  }
+  )
 }
-if (identical(runner, "r")) {
-  for (fixture in names(fixture_measurement_optimized_specs())) {
-    fixture_measurement_validate_optimized(
-      context$optimized, reference$functions, fixture, specs[[fixture]]
-    )
+
+if (is.null(retained_correctness_rows)) {
+  for (index in seq_len(nrow(rows))) {
+    row <- rows[index, , drop = FALSE]
+    fixture <- as.character(row$fixture)
+    if (isTRUE(row$executable) && fixture %in% names(specs)) {
+      fixture_measurement_validate_case(
+        runner, context$functions, reference$functions, fixture, specs[[fixture]]
+      )
+    }
+  }
+  if (identical(runner, "r")) {
+    for (fixture in names(fixture_measurement_optimized_specs())) {
+      fixture_measurement_validate_optimized(
+        context$optimized, reference$functions, fixture, specs[[fixture]]
+      )
+    }
   }
 }
 if (validation_only) {
@@ -215,9 +252,9 @@ identity_fields <- function(row, fixture, variant, input_fingerprint) {
     comparison_tier = if (optimized) "tier_c" else as.character(row$comparison_tier),
     setup_policy = if (optimized) "setup_outside_timer" else as.character(row$setup_policy),
     timing_eligible = if (optimized) TRUE else isTRUE(row$timing_eligible),
-    kernel_id = if (optimized) paste0("first-wave:", fixture, ":optimized-base-r-v1") else as.character(row$kernel_id),
+    kernel_id = if (optimized) paste0("normalized:", fixture, ":optimized-base-r-v1") else as.character(row$kernel_id),
     contract_version = as.character(row$contract_version), fixture_version = as.character(row$fixture_version),
-    comparison_group = if (optimized) paste0("first-wave:", fixture, ":optimized-base-r") else as.character(row$comparison_group),
+    comparison_group = if (optimized) paste0("normalized:", fixture, ":optimized-base-r") else as.character(row$comparison_group),
     tool_identity = as.character(environment$tool_identity),
     fixture_source_digest = as.character(environment$fixture_source_digest),
     fixture_build_digest = as.character(environment$fixture_build_digest),
@@ -234,7 +271,7 @@ measure <- function(row, fixture, variant = "public", functions = context$functi
   spec <- specs[[fixture]]
   fingerprint <- fixture_measurement_input_fingerprint(fixture, spec)
   fields <- identity_fields(row, fixture, variant, fingerprint)
-  prepare <- if (identical(variant, "optimized_base_r")) {
+  prepare_fresh <- if (identical(variant, "optimized_base_r")) {
     fn <- context$optimized[[fixture]]
     function() {
       arguments <- spec$arguments()
@@ -243,10 +280,30 @@ measure <- function(row, fixture, variant = "public", functions = context$functi
   } else {
     function() fixture_measurement_prepare(functions, fixture, spec)
   }
-  cold <- timed_call(prepare)
+  cold <- timed_call(prepare_fresh)
   if (!is.na(cold$error)) stop(sprintf("fixture cold call failed for %s/%s: %s", runner, fields$row_id, cold$error))
+
+  reusable <- !fixture_measurement_requires_fresh_input(spec)
+  if (reusable) {
+    warmup_arguments <- spec$arguments()
+    timed_arguments <- spec$arguments()
+    intent <- fixture_measurement_altrep_intent(spec)
+    warmup_before <- task_arguments_fingerprint(paste0("fixture:", fixture), warmup_arguments, intent)
+    timed_before <- task_arguments_fingerprint(paste0("fixture:", fixture), timed_arguments, intent)
+    if (identical(variant, "optimized_base_r")) {
+      fn <- context$optimized[[fixture]]
+      prepare_warmup <- function() function() do.call(fn, warmup_arguments)
+      prepare_timed <- function() function() do.call(fn, timed_arguments)
+    } else {
+      prepare_warmup <- function() fixture_measurement_prepare(functions, fixture, spec, warmup_arguments)
+      prepare_timed <- function() fixture_measurement_prepare(functions, fixture, spec, timed_arguments)
+    }
+  } else {
+    prepare_warmup <- prepare_fresh
+    prepare_timed <- prepare_fresh
+  }
   bm <- benchmark_call(
-    prepare, prepare,
+    prepare_warmup, prepare_timed,
     warmup = as.integer(timing_policy$warmup_iterations),
     block_size = as.integer(timing_policy$block_size),
     max_iter = as.integer(timing_policy$max_iterations),
@@ -256,6 +313,10 @@ measure <- function(row, fixture, variant = "public", functions = context$functi
     rss_metric = as.character(timing_policy$rss_metric)
   )
   if (!is.na(bm$error)) stop(sprintf("fixture timing failed for %s/%s: %s", runner, fields$row_id, bm$error))
+  if (reusable) {
+    assert_immutable_input(paste0("fixture:", fixture), warmup_arguments, warmup_before, intent)
+    assert_immutable_input(paste0("fixture:", fixture), timed_arguments, timed_before, intent)
+  }
   raw <- data.frame(
     run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
     variant = variant, row_id = fields$row_id, iteration = seq_along(bm$times),
@@ -268,7 +329,7 @@ measure <- function(row, fixture, variant = "public", functions = context$functi
     correctness_message = "validated by the complete fixture semantic and lifecycle gate",
     mean_ms = round(bm$mean_ms, 4), median_ms = round(bm$median_ms, 4),
     min_ms = round(bm$min_ms, 4), max_ms = round(bm$max_ms, 4), sd_ms = round(bm$sd_ms, 4),
-    cv_pct = round(bm$cv_pct, 2), rss_kb = bm$peak_rss,
+    cv_pct = round(bm$cv_pct, 2), rss_kb = bm$rss_delta_kb,
     cold_start_ms = round(cold$wall_ms, 3), n_iterations = bm$n_runs,
     stringsAsFactors = FALSE, as.data.frame(timing_fields(bm), stringsAsFactors = FALSE)
   )

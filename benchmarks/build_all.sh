@@ -4,12 +4,6 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
-Rscript tests/test_evidence_schema.R
-Rscript tests/test_harness_trust.R
-Rscript tests/test_source_ledger.R
-Rscript tests/test_product_fixtures.R
-Rscript tests/test_fixture_measurement.R
-
 ZIG_BIN=${ZIG:-}
 if [ -z "$ZIG_BIN" ]; then
   ZIG_BIN=$(command -v zig || true)
@@ -52,7 +46,10 @@ if [ -n "${ZIGR_CPU_FEATURES:-}" ] && [ "$ZIGR_CPU_FEATURES" != "default" ]; the
 fi
 ZIG_CACHE_DIR=${ZIG_CACHE_DIR:-$SCRIPT_DIR/.zig-cache}
 ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR:-$SCRIPT_DIR/.zig-global-cache}
+CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$SCRIPT_DIR/tmp/cargo-target}
+export CARGO_TARGET_DIR
 mkdir -p "$ZIG_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
+mkdir -p "$CARGO_TARGET_DIR"
 ZIG_CACHE_ARGS=("--cache-dir" "$ZIG_CACHE_DIR" "--global-cache-dir" "$ZIG_GLOBAL_CACHE_DIR")
 
 echo "=== Zig (zigR) ==="
@@ -69,13 +66,12 @@ echo "=== cpp11 (C++) ==="
 CPP11_LIBRARY="$SCRIPT_DIR/tmp/cpp11-library"
 mkdir -p "$CPP11_LIBRARY"
 R CMD INSTALL --preclean --clean --no-multiarch --library="$CPP11_LIBRARY" src/cpp11
-Rscript runner_subprocess.R --runner=cpp11 --check-only
 
 echo "=== extendr (Rust) ==="
-make -C src/extendr
+make -C src/extendr CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
 
 echo "=== Savvy (Rust) ==="
-make -C src/savvy
+make -C src/savvy CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
 
 echo "=== Normalized product fixtures ==="
 FIXTURE_LIBRARY="$SCRIPT_DIR/tmp/fixture-library"
@@ -84,7 +80,6 @@ for FIXTURE_PATH in src/zig/fixture src/cpp/fixture src/extendr/fixture src/savv
   R CMD INSTALL --preclean --clean --no-multiarch \
     --library="$FIXTURE_LIBRARY" "$FIXTURE_PATH"
 done
-Rscript tests/test_product_fixtures.R --live
 
 echo "=== Done ==="
 echo ""

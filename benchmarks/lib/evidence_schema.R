@@ -1,6 +1,6 @@
 evidence_schema_vocabulary <- function() {
   list(
-    version = "p4.6-2026-07-14-r1",
+    version = "evidence-v1",
     runners = c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr"),
     fixtures = sprintf("F%02d", seq_len(12L)),
     dispositions = c(
@@ -395,7 +395,7 @@ hydrate_detailed_task_evidence <- function(rows) {
       rows$setup_policy[[index]] <- "not_timed"
     }
     rows$contract_version[[index]] <- evidence_task_contract_version(task_id)
-    rows$fixture_version[[index]] <- "p4.5-task-input-v2"
+    rows$fixture_version[[index]] <- "task-input-v2"
     rows$comparison_group[[index]] <- paste0("task:", task_id)
     rows$timing_eligible[[index]] <- isTRUE(rows$executable[[index]])
   }
@@ -727,9 +727,9 @@ validate_and_expand_evidence_manifest <- function(raw, task_manifest) {
     task_rows[c("kernel_id", "contract_version", "fixture_version", "mutation_policy", "setup_policy")],
     use.names = FALSE
   ), fixed = FALSE))) {
-    stop("task evidence retains a coarse P4.0 placeholder")
+    stop("task evidence retains a coarse placeholder")
   }
-  if (any(task_rows$executable & task_rows$owner != "P4.6") ||
+  if (any(task_rows$executable & task_rows$owner != "accepted_evidence") ||
       any(!task_rows$executable & !nzchar(task_rows$owner))) {
     stop("task evidence has an invalid downstream owner")
   }
@@ -1003,7 +1003,7 @@ validate_r_baseline_metrics <- function(rows, expected_tasks, expected_fixtures)
   }
   report_require_no_claims(rows, label)
   losses <- rows$zigr_relative_to_r == "LOSS"
-  if (any(losses & rows$owner != "P8")) stop("R baseline metrics contain an unowned relative loss")
+  if (any(losses & rows$owner != "performance")) stop("R baseline metrics contain an unowned relative loss")
   if (any(!nzchar(as.character(rows$backend_provenance)))) stop("R baseline metrics contain blank backend provenance")
   report_validate_comparisons(
     rows,
@@ -1030,7 +1030,7 @@ validate_control_metrics <- function(rows) {
   if (any(rows$report_status != "CONTROL_ONLY")) stop("control metrics contain a promoted status")
   report_require_no_claims(rows, label)
   losses <- rows$zigr_relative_to_control == "LOSS"
-  if (any(losses & rows$owner != "P8")) stop("control metrics contain an unowned relative loss")
+  if (any(losses & rows$owner != "performance")) stop("control metrics contain an unowned relative loss")
   report_validate_comparisons(
     rows,
     c("zigr_over_control_ratio", "zigr_over_control_ratio_ci_low", "zigr_over_control_ratio_ci_high"),

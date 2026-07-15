@@ -40,7 +40,10 @@ expect_true(
 )
 expect_true(
   isTRUE(specs$F10$stateful) &&
-    identical(fixture_measurement_altrep_intent(specs$F04), "compact_integer_altrep"),
+    identical(fixture_measurement_altrep_intent(specs$F04), "compact_integer_altrep") &&
+    fixture_measurement_requires_fresh_input(specs$F04) &&
+    fixture_measurement_requires_fresh_input(specs$F10) &&
+    !fixture_measurement_requires_fresh_input(specs$F03),
   "state and ALTREP measurement setup are explicit"
 )
 first <- vapply(names(specs), function(fixture) {
@@ -78,6 +81,13 @@ prepared <- fixture_measurement_prepare(
 )
 expect_true(argument_builds == 1L && calls == 0L, "ordinary fixture input is prepared outside timing")
 expect_true(identical(prepared(), 42L) && argument_builds == 1L && calls == 1L, "prepared call times only the fixture")
+reused <- fixture_measurement_prepare(
+  list(probe = function(value) value),
+  "probe",
+  list(function_name = "probe", arguments = function() stop("reused fixture arguments were rebuilt")),
+  list(42L)
+)
+expect_true(identical(reused(), 42L), "ordinary fixture input can be reused without rebuilding")
 
 state_builds <- 0L
 state_calls <- 0L
@@ -153,6 +163,21 @@ task_path <- file.path(correctness_root, "correctness", "tasks", "zigr.csv")
 fixture_path <- file.path(correctness_root, "correctness", "fixtures", "zigr.csv")
 write.csv(task_correctness, task_path, row.names = FALSE, na = "")
 write.csv(fixture_correctness, fixture_path, row.names = FALSE, na = "")
+retained <- load_retained_correctness(
+  fixture_path,
+  fixture_path,
+  "zigr",
+  "correctness-test",
+  "row_id",
+  c("F01", "F08", "F11"),
+  c("F01", "F11"),
+  list(
+    source_tree_digest = "source-digest",
+    source_ledger_identity_digest = "ledger-digest",
+    artifact_digest = "fixture-artifact"
+  )
+)
+expect_true(nrow(retained) == 3L, "retained correctness is reusable by measurement subprocesses")
 validated <- validate_correctness_artifacts(correctness_root, test_metadata, test_evidence)
 expect_true(validated$task_rows == 2L && validated$fixture_rows == 3L, "structured correctness evidence validates")
 
@@ -165,8 +190,49 @@ expect_error(
   "source_tree_digest differs"
 )
 write.csv(task_correctness, task_path, row.names = FALSE, na = "")
+identity_drifted_fixture <- fixture_correctness
+identity_drifted_fixture$source_tree_digest[[2L]] <- "changed-source"
+write.csv(identity_drifted_fixture, fixture_path, row.names = FALSE, na = "")
+expect_error(
+  "retained correctness rejects source identity drift",
+  load_retained_correctness(
+    fixture_path, fixture_path, "zigr", "correctness-test", "row_id",
+    c("F01", "F08", "F11"), c("F01", "F11"),
+    list(source_tree_digest = "source-digest", artifact_digest = "fixture-artifact")
+  ),
+  "source_tree_digest differs"
+)
+write.csv(fixture_correctness, fixture_path, row.names = FALSE, na = "")
+not_passing_fixture <- fixture_correctness
+not_passing_fixture$status[[1L]] <- "N/A"
+not_passing_fixture$correctness_status[[1L]] <- "NOT_APPLICABLE"
+write.csv(not_passing_fixture, fixture_path, row.names = FALSE, na = "")
+expect_error(
+  "retained correctness requires executable cells to pass",
+  load_retained_correctness(
+    fixture_path, fixture_path, "zigr", "correctness-test", "row_id",
+    c("F01", "F08", "F11"), c("F01", "F11")
+  ),
+  "not passing for every executable cell"
+)
+write.csv(fixture_correctness, fixture_path, row.names = FALSE, na = "")
 drifted_fixture <- fixture_correctness
 drifted_fixture$correctness_message[[2L]] <- "hidden gap"
+failed_fixture <- fixture_correctness
+failed_fixture$status[[1L]] <- "FAIL"
+write.csv(failed_fixture, fixture_path, row.names = FALSE, na = "")
+expect_error(
+  "retained correctness rejects failures",
+  load_retained_correctness(
+    fixture_path,
+    fixture_path,
+    "zigr",
+    "correctness-test",
+    "row_id",
+    c("F01", "F08", "F11")
+  ),
+  "does not match the selected run cells"
+)
 write.csv(drifted_fixture, fixture_path, row.names = FALSE, na = "")
 expect_error(
   "correctness gap reason drift",

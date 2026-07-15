@@ -1,15 +1,15 @@
 R_HOME ?= $(shell R RHOME)
 R_INCLUDE ?= $(shell Rscript -e 'cat(R.home("include"))')
 
-TARGET_DIR = rust/target
-STATLIB = $(TARGET_DIR)/release/libextendr_benchmarks.a
+CARGO_TARGET_DIR ?= rust/target
+STATLIB = $(CARGO_TARGET_DIR)/release/libextendr_benchmarks.a
 OUT = extendr_benchmarks.so
 
 all: $(OUT)
 
-$(STATLIB): rust/Cargo.toml rust/src/lib.rs
+$(STATLIB): rust/Cargo.toml rust/Cargo.lock rust/src/lib.rs
 	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-	  cargo build --release --manifest-path rust/Cargo.toml --target-dir $(TARGET_DIR)
+	  cargo build --release --manifest-path rust/Cargo.toml --target-dir "$(CARGO_TARGET_DIR)"
 
 $(OUT): $(STATLIB) entrypoint.c
 	rm -f $(OUT)
@@ -17,6 +17,5 @@ $(OUT): $(STATLIB) entrypoint.c
 
 clean:
 	rm -f $(OUT) $(STATLIB) entrypoint.o
-	rm -rf $(TARGET_DIR)
 
 .PHONY: all clean

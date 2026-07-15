@@ -10,6 +10,7 @@ task_filter <- NULL
 check_only <- FALSE
 validation_only <- FALSE
 validation_output_arg <- NULL
+validated_correctness_arg <- NULL
 results_dir_arg <- NULL
 prepare_inputs_arg <- NULL
 input_manifest_arg <- NULL
@@ -21,6 +22,9 @@ for (a in cli) {
   if (a == "--check-only") check_only <- TRUE
   if (a == "--validation-only") validation_only <- TRUE
   if (grepl("^--validation-output=", a)) validation_output_arg <- sub("^--validation-output=", "", a)
+  if (grepl("^--validated-correctness=", a)) {
+    validated_correctness_arg <- sub("^--validated-correctness=", "", a)
+  }
   if (grepl("^--results-dir=", a)) results_dir_arg <- sub("^--results-dir=", "", a)
   if (grepl("^--prepare-inputs=", a)) prepare_inputs_arg <- sub("^--prepare-inputs=", "", a)
   if (grepl("^--input-manifest=", a)) input_manifest_arg <- sub("^--input-manifest=", "", a)
@@ -32,6 +36,9 @@ for (a in cli) {
 if (is.na(runner_name) && is.null(prepare_inputs_arg)) stop("--runner= required")
 if (is.na(runner_name)) runner_name <- "r"
 if (validation_only && is.null(validation_output_arg)) stop("--validation-output= is required with --validation-only")
+if (validation_only && !is.null(validated_correctness_arg)) {
+  stop("validation-only mode cannot reuse retained correctness")
+}
 
 cfg_dir <- "runners"
 cfg_path <- file.path(cfg_dir, paste0(runner_name, ".json"))
@@ -316,10 +323,30 @@ if (!check_only) {
   if (!identical(sort(names(input_recipes$tasks)), sort(selected_ids))) {
     stop("canonical input task set differs from the runner task set")
   }
-  for (task in all_tasks) validate_task_input_recipe(task, input_recipes$tasks[[task$id]], master_seed)
   runner_environment <- runner_environment_record(run_metadata$environment, runner_name)
   validate_runner_artifact_identity(root_dir, runner_environment)
   validate_tool_source_ledger(root_dir, run_metadata$environment$tool_source_ledger, runner_name)
+}
+
+retained_correctness <- NULL
+if (!is.null(validated_correctness_arg)) {
+  expected_path <- normalizePath(
+    file.path(results_dir, "correctness", "tasks", paste0(runner_name, ".csv")),
+    mustWork = TRUE
+  )
+  expected_tasks <- vapply(all_tasks, function(task) task$id, character(1))
+  executable_tasks <- expected_tasks[vapply(expected_tasks, function(task) {
+    isTRUE(run_manifest_disposition(run_metadata, runner_name, task)$executable)
+  }, logical(1))]
+  retained_correctness <- load_retained_correctness(
+    validated_correctness_arg, expected_path, runner_name, run_id, "task", expected_tasks, executable_tasks,
+    expected_identity = list(
+      source_tree_digest = as.character(run_metadata$environment$source_tree$digest),
+      source_ledger_identity_digest = as.character(runner_environment$source_ledger_identity_digest),
+      artifact_digest = as.character(runner_environment$artifact_digest),
+      input_manifest_digest = as.character(run_metadata$input_manifest$digest)
+    )
+  )
 }
 
 cat(sprintf("Runner: %s (%s)\n", runner_name, cfg$label))
@@ -811,8 +838,14 @@ for (task in all_tasks) {
   mutation_policy <- as.character(input_record$mutation_policy)
   altrep_intent <- as.character(input_record$altrep_intent)
   task_seed <- input_scalar_integer(input_record$task_seed, sprintf("task seed for %s", tid))
+  input_verified <- FALSE
   new_phase_arguments <- function() {
-    arguments <- materialize_task_input(task, task_seed)$arguments
+    materialized <- materialize_task_input(task, task_seed)
+    if (!input_verified) {
+      validate_materialized_task_input(task, input_record, master_seed, materialized)
+      input_verified <<- TRUE
+    }
+    arguments <- materialized$arguments
     if (identical(mutation_policy, "rng_reset_required")) {
       set.seed(task_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
     }
@@ -853,7 +886,19 @@ for (task in all_tasks) {
     stop(sprintf("runner %s exposes %s despite its non-executable disposition", runner_name, tid))
   }
 
-  if (task_call_type == "r") {
+  retained_row <- if (is.null(retained_correctness)) {
+    NULL
+  } else {
+    retained_correctness[retained_correctness$task == tid, , drop = FALSE]
+  }
+  if (!is.null(retained_row)) {
+    if (nrow(retained_row) != 1L || !identical(as.character(retained_row$status), "PASS") ||
+        !(as.character(retained_row$correctness_status) %in% c("PASS", "REFERENCE"))) {
+      stop(sprintf("retained task correctness is not passing for %s/%s", runner_name, tid))
+    }
+    correctness_status <- as.character(retained_row$correctness_status)
+    correctness_message <- as.character(retained_row$correctness_message)
+  } else if (task_call_type == "r") {
     r_arguments <- new_phase_arguments()
     before <- task_arguments_fingerprint(tid, r_arguments, altrep_intent)
     r_eval <- capture_result(function() do.call(get(cfun, mode = "function"), r_arguments))
@@ -1112,7 +1157,7 @@ for (task in all_tasks) {
 
   n_pass <- n_pass + 1
   cat(sprintf("  %-14s mean=%8.4fms median=%8.4fms sd=%7.4fms cv=%5.2f%% rss=%dKB runs=%d\n",
-              tid, bm$mean_ms, bm$median_ms, bm$sd_ms, bm$cv_pct, bm$peak_rss, bm$n_runs))
+              tid, bm$mean_ms, bm$median_ms, bm$sd_ms, bm$cv_pct, bm$rss_delta_kb, bm$n_runs))
 
   runs_df <- data.frame(
     runner      = runner_name,
@@ -1120,7 +1165,7 @@ for (task in all_tasks) {
     call_type   = task_call_type,
     iteration   = seq_len(length(bm$times)),
     wall_ms     = bm$times,
-    peak_rss_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$peak_rss),
+    rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$rss_delta_kb),
     error       = NA_character_,
     run_id      = run_id,
     correctness_status = correctness_status,
@@ -1141,7 +1186,7 @@ for (task in all_tasks) {
     max_ms        = round(bm$max_ms, 4),
     sd_ms         = round(bm$sd_ms, 4),
     cv_pct        = round(bm$cv_pct, 2),
-    rss_kb        = bm$peak_rss,
+    rss_kb        = bm$rss_delta_kb,
     cold_start_ms = round(cs$wall_ms, 3),
     n_iterations  = bm$n_runs,
     error         = NA_character_,

@@ -17,6 +17,7 @@ tasks_filter   <- NULL
 do_build       <- FALSE
 correctness_only <- FALSE
 run_dir_arg    <- NULL
+prune_runs     <- NULL
 master_seed    <- benchmark_master_seed()
 for (a in args) {
   if (grepl("^--runners=", a)) runners_filter <- strsplit(sub("^--runners=", "", a), ",")[[1]]
@@ -25,9 +26,32 @@ for (a in args) {
   if (a == "--correctness-only") correctness_only <- TRUE
   if (grepl("^--run-dir=", a)) run_dir_arg <- sub("^--run-dir=", "", a)
   if (grepl("^--seed=", a)) master_seed <- input_scalar_integer(sub("^--seed=", "", a), "master seed")
+  if (grepl("^--prune-runs=", a)) prune_runs <- sub("^--prune-runs=", "", a)
 }
 
 root_dir <- normalizePath(".")
+if (!is.null(prune_runs)) {
+  if (length(args) != 1L) stop("--prune-runs cannot be combined with benchmark arguments")
+  receipt_path <- file.path(root_dir, "results", "CANONICAL_RUN.json")
+  protected <- if (file.exists(receipt_path)) {
+    receipt <- fromJSON(receipt_path, simplifyVector = FALSE)
+    validate_run_promotion_receipt(receipt)
+    if (length(receipt$run_id) != 1L || is.na(receipt$run_id) || !nzchar(as.character(receipt$run_id))) {
+      stop("canonical acceptance receipt has no run ID")
+    }
+    as.character(receipt$run_id)
+  } else {
+    character(0)
+  }
+  removed <- prune_local_runs(file.path(root_dir, "results"), prune_runs, protected)
+  cat(sprintf(
+    "Removed %d local run director%s%s\n",
+    length(removed),
+    if (length(removed) == 1L) "y" else "ies",
+    if (length(removed) == 0L) "." else paste0(": ", paste(removed, collapse = ", "))
+  ))
+  quit(save = "no", status = 0L, runLast = FALSE)
+}
 manifest <- load_task_manifest(root_dir)
 evidence <- load_evidence_manifest(root_dir, manifest)
 runner_files <- Sys.glob("runners/*.json")
@@ -64,7 +88,12 @@ r_provenance <- build_run_r_provenance(
 
 coverage_args <- c("check_coverage.R")
 if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+if (!is.null(tasks_filter) || !is.null(runners_filter)) coverage_args <- c(coverage_args, "--quick")
 blas_env <- c("OPENBLAS_NUM_THREADS=1")
+cat(sprintf(
+  "Preflight: %s\n",
+  if ("--quick" %in% coverage_args) "quick manifest and selected-task admission" else "full static trust suite"
+))
 coverage_code <- system2("Rscript", args = coverage_args, env = blas_env, stdout = "", stderr = "")
 if (!identical(coverage_code, 0L)) stop(sprintf("coverage preflight failed with exit code %d", coverage_code))
 
@@ -198,6 +227,11 @@ runner_process_args <- function(runner_name, validation_only = FALSE, validation
   )
   if (validation_only) {
     runner_args <- c(runner_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
+  } else {
+    runner_args <- c(
+      runner_args,
+      sprintf("--validated-correctness=%s", file.path(task_correctness_root, paste0(runner_name, ".csv")))
+    )
   }
   if (!is.null(tasks_filter)) {
     runner_args <- c(runner_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
@@ -213,6 +247,11 @@ fixture_process_args <- function(runner_name, validation_only = FALSE, validatio
   )
   if (validation_only) {
     fixture_args <- c(fixture_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
+  } else {
+    fixture_args <- c(
+      fixture_args,
+      sprintf("--validated-correctness=%s", file.path(fixture_correctness_root, paste0(runner_name, ".csv")))
+    )
   }
   fixture_args
 }
@@ -302,6 +341,10 @@ if (length(runner_failures) > 0L) {
   stop(run_error)
 }
 
+final_correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
+if (!identical(final_correctness_evidence, correctness_evidence)) {
+  stop("correctness evidence changed after validation preflight")
+}
 validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
 validate_run_artifacts(run_dir, run_metadata)
 validate_fixture_measurement_artifacts(run_dir, run_metadata, evidence)
@@ -316,5 +359,5 @@ validate_run_completion_contract(run_metadata)
 validate_run_completion_artifacts(run_dir, run_metadata)
 run_complete <- TRUE
 options(error = previous_error_handler)
-cat("Report generation is deferred to the separate P4.7 stage.\n")
+cat("Report generation is a separate explicit command.\n")
 cat("Done.\n")

@@ -347,7 +347,7 @@ r_boundary_schema <- function(x) {
 r_boundary_external_method <- function(receiver, amount) as.integer(amount)
 r_boundary_external <- function(x) as.double(x + 1.0)
 
-# P4 first-wave fixtures. These functions are authored R implementations of
+# Normalized fixtures. These functions are authored R implementations of
 # the declared kernels. Vectorized alternatives are kept under separate names.
 r_fixture_zero <- function() {
   result <- integer(1L)

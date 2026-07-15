@@ -1,4 +1,4 @@
-benchmark_input_schema_version <- function() "p4.5-input-v2"
+benchmark_input_schema_version <- function() "benchmark-input-v2"
 
 benchmark_master_seed <- function() 20260713L
 
@@ -282,7 +282,7 @@ validate_input_manifest_digest <- function(path, expected_digest) {
   invisible(actual)
 }
 
-validate_task_input_recipe <- function(task, record, master_seed) {
+validate_materialized_task_input <- function(task, record, master_seed, materialized) {
   if (is.null(record)) stop(sprintf("canonical input recipe is missing for %s", task$id))
   expected_master <- input_scalar_integer(master_seed, "master seed")
   recorded_master <- input_scalar_integer(record$master_seed, sprintf("recorded master seed for %s", task$id))
@@ -298,7 +298,6 @@ validate_task_input_recipe <- function(task, record, master_seed) {
   if (!identical(as.character(record$altrep_intent), expected_intent)) {
     stop(sprintf("ALTREP intent mismatch for %s", task$id))
   }
-  materialized <- materialize_task_input(task, recorded_seed)
   actual <- task_input_fingerprint(
     task$id,
     materialized$arguments,
@@ -309,6 +308,13 @@ validate_task_input_recipe <- function(task, record, master_seed) {
     stop(sprintf("canonical input fingerprint mismatch for %s: expected %s, got %s", task$id, record$fingerprint, actual))
   }
   invisible(materialized)
+}
+
+validate_task_input_recipe <- function(task, record, master_seed) {
+  if (is.null(record)) stop(sprintf("canonical input recipe is missing for %s", task$id))
+  recorded_seed <- input_scalar_integer(record$task_seed, sprintf("recorded task seed for %s", task$id))
+  materialized <- materialize_task_input(task, recorded_seed)
+  validate_materialized_task_input(task, record, master_seed, materialized)
 }
 
 assert_immutable_input <- function(task_id, arguments, before_fingerprint, altrep_intent) {

@@ -36,6 +36,15 @@ expect_true(
   identical(record$task_seed, task_input_seed(12345L, small_task$id, fixture_version)),
   "stable per-task seed"
 )
+
+materialized_record <- materialize_task_input(small_task, record$task_seed)
+expect_true(
+  identical(
+    validate_materialized_task_input(small_task, record, 12345L, materialized_record)$arguments,
+    materialized_record$arguments
+  ),
+  "first phase materialization verifies the canonical input recipe"
+)
 expect_true(
   identical(
     record$fingerprint,
@@ -426,6 +435,75 @@ expect_error(
   validate_run_promotion_receipt(tampered_receipt),
   "receipt digest differs"
 )
+canonical_receipt <- jsonlite::fromJSON(
+  file.path(root_dir, "results", "CANONICAL_RUN.json"),
+  simplifyVector = FALSE
+)
+validate_run_promotion_receipt(canonical_receipt)
+canonical_shape <- if (identical(canonical_receipt$record_kind, "migrated_promotion_record")) {
+  identical(canonical_receipt$schema_version, "benchmark-acceptance-receipt-v1") &&
+    identical(canonical_receipt$origin$schema_version, "benchmark-promotion-v1") &&
+    identical(canonical_receipt$origin$promotion_manifest_md5, "cd6b3f60c547af5ac3599b21574699fd")
+} else {
+  identical(canonical_receipt$schema_version, "benchmark-promotion-v2") &&
+    length(canonical_receipt$promoted_at) == 1L && nzchar(as.character(canonical_receipt$promoted_at))
+}
+expect_true(
+  canonical_shape &&
+    !grepl(normalizePath(file.path(root_dir, "..")), jsonlite::toJSON(canonical_receipt), fixed = TRUE),
+  "tracked canonical evidence is a sealed portable acceptance record"
+)
+prune_root <- tempfile("run-prune-")
+dir.create(file.path(prune_root, "runs"), recursive = TRUE)
+prune_records <- list(
+  list(run_id = "old", status = "complete"),
+  list(run_id = "new", status = "incomplete"),
+  list(run_id = "protected", status = "complete"),
+  list(run_id = "active", status = "running")
+)
+for (index in seq_along(prune_records)) {
+  record <- prune_records[[index]]
+  path <- file.path(prune_root, "runs", record$run_id)
+  dir.create(path)
+  jsonlite::write_json(record, run_manifest_path(path), auto_unbox = TRUE)
+  Sys.setFileTime(path, as.POSIXct("2026-01-01", tz = "UTC") + index)
+}
+dry_candidates <- prune_local_runs(prune_root, 1L, "protected", dry_run = TRUE)
+expect_true(
+  identical(dry_candidates, "old") && dir.exists(file.path(prune_root, "runs", "old")),
+  "run pruning dry run selects only old unprotected completed evidence"
+)
+removed_runs <- prune_local_runs(prune_root, 1L, "protected")
+expect_true(
+  identical(removed_runs, "old") &&
+    !dir.exists(file.path(prune_root, "runs", "old")) &&
+    dir.exists(file.path(prune_root, "runs", "new")) &&
+    dir.exists(file.path(prune_root, "runs", "protected")) &&
+    dir.exists(file.path(prune_root, "runs", "active")),
+  "run pruning retains the newest, canonical, and active runs"
+)
+expect_error(
+  "run pruning rejects fractional retention",
+  prune_local_runs(prune_root, "1.5", dry_run = TRUE),
+  "non-negative integer"
+)
+expect_error(
+  "run pruning rejects negative retention",
+  prune_local_runs(prune_root, "-1", dry_run = TRUE),
+  "non-negative integer"
+)
+mismatched_path <- file.path(prune_root, "runs", "directory-name")
+dir.create(mismatched_path)
+jsonlite::write_json(
+  list(run_id = "different-manifest-id", status = "complete"),
+  run_manifest_path(mismatched_path), auto_unbox = TRUE
+)
+expect_true(
+  !("different-manifest-id" %in% prune_local_runs(prune_root, 0L, dry_run = TRUE)) &&
+    dir.exists(mismatched_path),
+  "run pruning ignores a manifest whose run ID differs from its directory"
+)
+unlink(prune_root, recursive = TRUE)
 unlink(atomic_record_dir, recursive = TRUE)
 unlink(sealed_run, recursive = TRUE)
 

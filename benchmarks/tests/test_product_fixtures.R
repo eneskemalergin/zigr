@@ -166,8 +166,8 @@ source_has_all <- function(path, needles) {
 }
 expect_true(
   source_has_all("src/c_call/register.c", c(
-    "c_p4_lifecycle_reset", "c_p4_lifecycle_snapshot", "c_p4_same_data_pointer",
-    "c_p4_wrong_pointer", "c_p4_cleared_pointer_like", "c_p4_altrep_new",
+    "c_benchmark_lifecycle_reset", "c_benchmark_lifecycle_snapshot", "c_benchmark_same_data_pointer",
+    "c_benchmark_wrong_pointer", "c_benchmark_cleared_pointer_like", "c_benchmark_altrep_new",
     "R_set_altinteger_Get_region_method"
   )),
   "C control retains lifecycle, pointer, storage, and ALTREP diagnostics"

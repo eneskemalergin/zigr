@@ -1,15 +1,15 @@
 R_INCLUDE ?= $(shell Rscript -e 'cat(R.home("include"))')
 
-TARGET_DIR = rust/target
-STATLIB = $(TARGET_DIR)/release/libsavvy_benchmarks.a
+CARGO_TARGET_DIR ?= rust/target
+STATLIB = $(CARGO_TARGET_DIR)/release/libsavvy_benchmarks.a
 OUT = savvy_benchmarks.so
 
 all: $(OUT)
 
-$(STATLIB): rust/Cargo.toml rust/src/lib.rs api.h init.c
+$(STATLIB): rust/Cargo.toml rust/Cargo.lock rust/src/lib.rs api.h init.c
 	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
 	  export R_INCLUDE_DIR="$(R_INCLUDE)" && \
-	  cargo build --release --manifest-path rust/Cargo.toml --target-dir $(TARGET_DIR)
+	  cargo build --release --manifest-path rust/Cargo.toml --target-dir "$(CARGO_TARGET_DIR)"
 
 $(OUT): $(STATLIB) init.c api.h
 	rm -f $(OUT)
@@ -17,6 +17,5 @@ $(OUT): $(STATLIB) init.c api.h
 
 clean:
 	rm -f $(OUT) $(STATLIB) init.o
-	rm -rf $(TARGET_DIR)
 
 .PHONY: all clean

@@ -54,6 +54,10 @@ fixture_measurement_altrep_intent <- function(spec) {
   if (is.null(spec$altrep_intent)) "ordinary_r_object" else as.character(spec$altrep_intent)
 }
 
+fixture_measurement_requires_fresh_input <- function(spec) {
+  isTRUE(spec$stateful) || !identical(fixture_measurement_altrep_intent(spec), "ordinary_r_object")
+}
+
 fixture_measurement_input_fingerprint <- function(fixture, spec) {
   task_arguments_fingerprint(
     paste0("fixture:", fixture),
@@ -111,13 +115,13 @@ fixture_measurement_context <- function(root_dir, runner, evidence) {
   stop(sprintf("no fixture measurement context for runner %s", runner))
 }
 
-fixture_measurement_prepare <- function(functions, fixture, spec) {
+fixture_measurement_prepare <- function(functions, fixture, spec, arguments = spec$arguments()) {
+  force(arguments)
   if (isTRUE(spec$stateful)) {
     state <- functions$fixture_new()
-    amount <- spec$arguments()[[1L]]
+    amount <- arguments[[1L]]
     return(function() functions$fixture_method(state, amount))
   }
-  arguments <- spec$arguments()
   fn <- functions[[spec$function_name]]
   if (!is.function(fn)) stop(sprintf("fixture %s has no callable implementation", fixture))
   function() do.call(fn, arguments)
@@ -370,10 +374,10 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
       representation_strategy = if (optimized) "runtime_service" else as.character(evidence_row$representation_strategy),
       comparison_tier = if (optimized) "tier_c" else as.character(evidence_row$comparison_tier),
       setup_policy = if (optimized) "setup_outside_timer" else as.character(evidence_row$setup_policy),
-      kernel_id = if (optimized) paste0("first-wave:", fixture, ":optimized-base-r-v1") else as.character(evidence_row$kernel_id),
+      kernel_id = if (optimized) paste0("normalized:", fixture, ":optimized-base-r-v1") else as.character(evidence_row$kernel_id),
       contract_version = as.character(evidence_row$contract_version),
       fixture_version = as.character(evidence_row$fixture_version),
-      comparison_group = if (optimized) paste0("first-wave:", fixture, ":optimized-base-r") else as.character(evidence_row$comparison_group),
+      comparison_group = if (optimized) paste0("normalized:", fixture, ":optimized-base-r") else as.character(evidence_row$comparison_group),
       tool_identity = as.character(environment$tool_identity),
       fixture_source_digest = as.character(environment$fixture_source_digest),
       fixture_build_digest = as.character(environment$fixture_build_digest),

@@ -1,12 +1,12 @@
 OBJECTS = entrypoint.o
-RUST_LIBRARY = rust/target/release/libzigr_extendr.a
+CARGO_TARGET_DIR ?= rust/target
+RUST_LIBRARY = $(CARGO_TARGET_DIR)/release/libzigr_extendr.a
 PKG_LIBS = -Wl,--whole-archive $(RUST_LIBRARY) -Wl,--no-whole-archive -lpthread -ldl -lm
 
 $(SHLIB): $(RUST_LIBRARY)
 
 $(RUST_LIBRARY): rust/Cargo.toml rust/Cargo.lock rust/src/lib.rs
-	cargo build --release --offline --manifest-path rust/Cargo.toml
+	cargo build --release --offline --manifest-path rust/Cargo.toml --target-dir "$(CARGO_TARGET_DIR)"
 
 clean:
 	rm -f $(OBJECTS) $(SHLIB)
-

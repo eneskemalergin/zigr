@@ -17,7 +17,7 @@ SEXP c_call_bench_external_ptr(SEXP arg) {
     int value = Rf_asInteger(arg);
     SEXP ptr = PROTECT(R_MakeExternalPtr(
         NULL,
-        Rf_install("zigr.p4.c_call.task42.state"),
+        Rf_install("zigr.benchmark.c_call.task42.state"),
         R_NilValue
     ));
     c_call_benchmark_state *state = (c_call_benchmark_state *) malloc(sizeof(c_call_benchmark_state));

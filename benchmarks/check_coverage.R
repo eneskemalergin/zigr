@@ -10,8 +10,10 @@ evidence <- load_evidence_manifest(root_dir, manifest)
 
 args <- commandArgs(trailingOnly = TRUE)
 task_filter <- NULL
+quick <- FALSE
 for (arg in args) {
   if (grepl("^--tasks=", arg)) task_filter <- as.integer(strsplit(sub("^--tasks=", "", arg), ",")[[1]])
+  if (identical(arg, "--quick")) quick <- TRUE
 }
 
 config_paths <- sort(Sys.glob(file.path(root_dir, "runners", "*.json")))
@@ -25,16 +27,18 @@ for (runner in runner_names[active]) {
   configs[[runner]] <- hydrate_runner_config(manifest, configs[[runner]], runner, evidence)
 }
 
-schema_test <- system2("Rscript", args = file.path("tests", "test_evidence_schema.R"))
-if (!identical(schema_test, 0L)) stop(sprintf("evidence schema tests failed with exit code %d", schema_test))
-trust_test <- system2("Rscript", args = file.path("tests", "test_harness_trust.R"))
-if (!identical(trust_test, 0L)) stop(sprintf("harness trust tests failed with exit code %d", trust_test))
-source_ledger_test <- system2("Rscript", args = file.path("tests", "test_source_ledger.R"))
-if (!identical(source_ledger_test, 0L)) stop(sprintf("source ledger tests failed with exit code %d", source_ledger_test))
-fixture_test <- system2("Rscript", args = file.path("tests", "test_product_fixtures.R"))
-if (!identical(fixture_test, 0L)) stop(sprintf("product fixture tests failed with exit code %d", fixture_test))
-measurement_test <- system2("Rscript", args = file.path("tests", "test_fixture_measurement.R"))
-if (!identical(measurement_test, 0L)) stop(sprintf("fixture measurement tests failed with exit code %d", measurement_test))
+if (!quick) {
+  schema_test <- system2("Rscript", args = file.path("tests", "test_evidence_schema.R"))
+  if (!identical(schema_test, 0L)) stop(sprintf("evidence schema tests failed with exit code %d", schema_test))
+  trust_test <- system2("Rscript", args = file.path("tests", "test_harness_trust.R"))
+  if (!identical(trust_test, 0L)) stop(sprintf("harness trust tests failed with exit code %d", trust_test))
+  source_ledger_test <- system2("Rscript", args = file.path("tests", "test_source_ledger.R"))
+  if (!identical(source_ledger_test, 0L)) stop(sprintf("source ledger tests failed with exit code %d", source_ledger_test))
+  fixture_test <- system2("Rscript", args = file.path("tests", "test_product_fixtures.R"))
+  if (!identical(fixture_test, 0L)) stop(sprintf("product fixture tests failed with exit code %d", fixture_test))
+  measurement_test <- system2("Rscript", args = file.path("tests", "test_fixture_measurement.R"))
+  if (!identical(measurement_test, 0L)) stop(sprintf("fixture measurement tests failed with exit code %d", measurement_test))
+}
 
 runner_args <- c("runner_subprocess.R", "--runner=r", "--check-only")
 if (!is.null(task_filter)) runner_args <- c(runner_args, sprintf("--tasks=%s", paste(task_filter, collapse = ",")))
@@ -42,6 +46,7 @@ status <- system2("Rscript", args = runner_args)
 if (!identical(status, 0L)) stop(sprintf("task-spec preflight failed with exit code %d", status))
 
 cat(sprintf(
-  "Runner coverage is valid for %d active runners, %d manifest tasks, and %d fixture cells.\n",
+  "%s coverage is valid for %d active runners, %d manifest tasks, and %d fixture cells.\n",
+  if (quick) "Quick" else "Full",
   sum(active), nrow(manifest), nrow(evidence$fixture_rows)
 ))

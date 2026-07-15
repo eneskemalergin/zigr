@@ -32,7 +32,7 @@ fixture_r_function_map <- function() {
 }
 
 fixture_c_symbol_map <- function() {
-  lapply(fixture_function_map(), function(functions) paste0("c_p4_", functions))
+  lapply(fixture_function_map(), function(functions) paste0("c_benchmark_", functions))
 }
 
 fixture_package_map <- function(root_dir) {
@@ -260,7 +260,7 @@ verify_zigr_fixture_source <- function(record, root_dir) {
     "src/zig/fixture.zig", "src/zig/fixture/R/fixture.R", "../src/export.zig"
   ))
   record$reason <- if (record$approved_public_adapter) {
-    "generated package symbols use the P1-approved explicit R.SEXP fixed-schema adapter"
+    "generated package symbols use the accepted explicit R.SEXP fixed-schema adapter"
   } else if (record$product_eligible) {
     "typed zigr declarations, generated wrappers, package symbol objects, and forced registration are present"
   } else {
@@ -1146,7 +1146,7 @@ fixture_c_context <- function(root_dir) {
     function_names <- fixture_function_map()[[fixture]]
     for (function_name in function_names) {
       functions[[function_name]] <- local({
-        symbol <- paste0("c_p4_", function_name)
+        symbol <- paste0("c_benchmark_", function_name)
         function(...) call(symbol, ...)
       })
     }
@@ -1159,17 +1159,17 @@ fixture_c_context <- function(root_dir) {
     },
     functions = functions,
     diagnostics = list(
-      same_sexp = function(left, right) call("c_p4_same_sexp", left, right),
+      same_sexp = function(left, right) call("c_benchmark_same_sexp", left, right),
       same_data_pointer = function(left, right) {
-        call("c_p4_same_data_pointer", left, right)
+        call("c_benchmark_same_data_pointer", left, right)
       },
-      wrong_pointer = function() call("c_p4_wrong_pointer"),
-      cleared_pointer_like = function(value) call("c_p4_cleared_pointer_like", value),
-      altrep_new = function(start, length) call("c_p4_altrep_new", start, length),
-      altrep_reset = function() call("c_p4_altrep_reset"),
-      altrep_snapshot = function(value) call("c_p4_altrep_snapshot", value),
-      lifecycle_reset = function() call("c_p4_lifecycle_reset"),
-      lifecycle_counts = function() call("c_p4_lifecycle_snapshot")
+      wrong_pointer = function() call("c_benchmark_wrong_pointer"),
+      cleared_pointer_like = function(value) call("c_benchmark_cleared_pointer_like", value),
+      altrep_new = function(start, length) call("c_benchmark_altrep_new", start, length),
+      altrep_reset = function() call("c_benchmark_altrep_reset"),
+      altrep_snapshot = function(value) call("c_benchmark_altrep_snapshot", value),
+      lifecycle_reset = function() call("c_benchmark_lifecycle_reset"),
+      lifecycle_counts = function() call("c_benchmark_lifecycle_snapshot")
     )
   )
 }
@@ -1429,7 +1429,7 @@ fixture_registered_surface <- function(dll, required_symbols) {
     do.call(.External, list(zero_symbol)), sprintf("%s wrong-interface probe", dll[["name"]])
   )
   fixture_expect_error(
-    getNativeSymbolInfo("p4_fixture_symbol_that_does_not_exist", PACKAGE = dll),
+    getNativeSymbolInfo("fixture_symbol_that_does_not_exist", PACKAGE = dll),
     sprintf("%s missing-symbol probe", dll[["name"]])
   )
   invisible(TRUE)
@@ -1592,10 +1592,10 @@ run_fixture_c_gate <- function(root_dir, evidence) {
   }
   symbols <- c(
     unique(unlist(fixture_c_symbol_map(), use.names = FALSE)),
-    "c_p4_lifecycle_reset", "c_p4_lifecycle_snapshot",
-    "c_p4_same_sexp", "c_p4_same_data_pointer", "c_p4_wrong_pointer",
-    "c_p4_cleared_pointer_like",
-    "c_p4_altrep_new", "c_p4_altrep_reset", "c_p4_altrep_snapshot"
+    "c_benchmark_lifecycle_reset", "c_benchmark_lifecycle_snapshot",
+    "c_benchmark_same_sexp", "c_benchmark_same_data_pointer", "c_benchmark_wrong_pointer",
+    "c_benchmark_cleared_pointer_like",
+    "c_benchmark_altrep_new", "c_benchmark_altrep_reset", "c_benchmark_altrep_snapshot"
   )
   fixture_registered_surface(dll, symbols)
   functions <- control$functions

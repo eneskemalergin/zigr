@@ -115,7 +115,7 @@ export_separated_metrics <- function() {
     if (!"wall_ms" %in% names(raw)) stop(sprintf("raw timing samples missing wall_ms: %s", path))
     report_ci(raw$wall_ms)
   }
-  evidence_owner <- function(values, fallback = "P8") {
+  evidence_owner <- function(values, fallback = "performance") {
     values <- as.character(values)
     values[!nzchar(values)] <- fallback
     values
@@ -177,7 +177,7 @@ export_separated_metrics <- function() {
   fixture_tier <- as.character(evidence$fixture_rows$comparison_tier[fixture_index])
   fixture_tier[fixture_optimized] <- "tier_c"
   fixture_group <- as.character(evidence$fixture_rows$comparison_group[fixture_index])
-  fixture_group[fixture_optimized] <- paste0("first-wave:", fixture_summaries$fixture[fixture_optimized], ":optimized-base-r")
+  fixture_group[fixture_optimized] <- paste0("normalized:", fixture_summaries$fixture[fixture_optimized], ":optimized-base-r")
   fixture_backend <- rep("not_applicable", nrow(fixture_summaries))
   for (index in which(fixture_summaries$runner == "r")) {
     fixture <- as.character(fixture_summaries$fixture[[index]])
@@ -207,7 +207,7 @@ export_separated_metrics <- function() {
     setup_policy = as.character(fixture_summaries$setup_policy),
     disposition = ifelse(fixture_optimized, "supported_and_executable", as.character(evidence$fixture_rows$status[fixture_index])),
     reason = ifelse(fixture_optimized, "declared optimized base-R baseline", as.character(evidence$fixture_rows$reason[fixture_index])),
-    owner = ifelse(fixture_optimized, "P8", as.character(evidence$fixture_rows$owner[fixture_index])),
+    owner = ifelse(fixture_optimized, "performance", as.character(evidence$fixture_rows$owner[fixture_index])),
     status = as.character(fixture_summaries$status), correctness_status = as.character(fixture_summaries$correctness_status),
     correctness_message = as.character(fixture_summaries$correctness_message),
     median_ms = as.numeric(fixture_summaries$median_ms), cv_pct = as.numeric(fixture_summaries$cv_pct),
@@ -350,7 +350,7 @@ export_separated_metrics <- function() {
   r_baseline$owner <- evidence_owner(r_baseline$owner)
   r_baseline <- add_zigr_comparison(r_baseline, direction = "zigr_over_row")
   r_baseline$item_id[r_baseline$variant == "optimized_base_r"] <- r_baseline$row_id[r_baseline$variant == "optimized_base_r"]
-  r_baseline$owner[r_baseline$relative_result == "LOSS"] <- "P8"
+  r_baseline$owner[r_baseline$relative_result == "LOSS"] <- "performance"
   r_baseline$measurement_status <- r_baseline$status
   r_baseline$zigr_over_r_ratio <- r_baseline$ratio
   r_baseline$zigr_over_r_ratio_ci_low <- r_baseline$ratio_ci_low
@@ -369,7 +369,7 @@ export_separated_metrics <- function() {
   if (anyNA(compare_items)) stop("handwritten control cannot be linked to its generated zigr path")
   control <- add_zigr_comparison(control, compare_items, direction = "zigr_over_row")
   control$owner <- evidence_owner(control$owner)
-  control$owner[control$relative_result == "LOSS"] <- "P8"
+  control$owner[control$relative_result == "LOSS"] <- "performance"
   control$measurement_status <- control$status
   control$report_status <- "CONTROL_ONLY"
   control$zigr_over_control_ratio <- control$ratio
@@ -402,7 +402,7 @@ export_separated_metrics <- function() {
     contract_version = "not_applicable", fixture_version = "not_applicable",
     mutation_policy = "not_applicable", setup_policy = "not_applicable",
     disposition = "source_invalid_system_probe", reason = "legacy system probe mutates or rebuilds the measured source tree",
-    owner = "P9", status = "EXCLUDED", correctness_status = "NOT_APPLICABLE",
+    owner = "portability", status = "EXCLUDED", correctness_status = "NOT_APPLICABLE",
     correctness_message = "excluded from product, strategy, baseline, and control evidence",
     median_ms = NA_real_, cv_pct = NA_real_, timer_noise_floor_ms = timer_noise_floor_ms,
     timer_noise_status = "not_measured",

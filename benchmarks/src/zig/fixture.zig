@@ -1,4 +1,4 @@
-//! Normalized package fixture for the P4 product capability matrix.
+//! Normalized package fixture for the product capability matrix.
 //!
 //! Every supported cell uses zigr's public conversion, export, method, and
 //! ownership APIs. R owns returned SEXPs and typed state after construction.

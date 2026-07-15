@@ -1,13 +1,13 @@
 OBJECTS = init.o
-RUST_LIBRARY = rust/target/release/libzigr_savvy.a
+CARGO_TARGET_DIR ?= rust/target
+RUST_LIBRARY = $(CARGO_TARGET_DIR)/release/libzigr_savvy.a
 PKG_LIBS = $(RUST_LIBRARY) -lpthread -ldl -lm
 
 $(SHLIB): $(RUST_LIBRARY)
 
-$(RUST_LIBRARY): rust/Cargo.toml rust/Cargo.lock rust/src/lib.rs
+$(RUST_LIBRARY): rust/Cargo.toml rust/Cargo.lock rust/src/lib.rs rust/src/generate.rs
 	R_INCLUDE_DIR="$$(Rscript -e 'cat(R.home("include"))')" \
-		cargo build --release --offline --manifest-path rust/Cargo.toml
+		cargo build --release --offline --manifest-path rust/Cargo.toml --target-dir "$(CARGO_TARGET_DIR)"
 
 clean:
 	rm -f $(OBJECTS) $(SHLIB)
-

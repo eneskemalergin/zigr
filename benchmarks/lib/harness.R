@@ -58,7 +58,7 @@ timed_call <- function(prepare_call) {
     list(ok = FALSE, error = conditionMessage(error))
   })
   if (!isTRUE(prepared$ok)) {
-    return(list(wall_ms = NA_real_, peak_rss_kb = NA_integer_, error = paste("cold input preparation failed:", prepared$error)))
+    return(list(wall_ms = NA_real_, rss_delta_kb = NA_integer_, error = paste("cold input preparation failed:", prepared$error)))
   }
   error <- NA_character_
   wall_start <- get_nanotime()
@@ -68,7 +68,7 @@ timed_call <- function(prepare_call) {
   rss_after <- current_rss_kb()
   list(
     wall_ms     = (wall_end - wall_start) / 1e6,
-    peak_rss_kb = max(0, rss_after - rss_before, na.rm = TRUE),
+    rss_delta_kb = max(0, rss_after - rss_before, na.rm = TRUE),
     error       = error
   )
 }
@@ -172,7 +172,7 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
     timer_noise_floor_ms = timer_noise_floor_ms,
     timer_noise_status = if (median_ms < timer_noise_floor_ms) "below_floor" else "above_floor",
     rss_metric = rss_metric,
-    peak_rss   = rss_delta,
+    rss_delta_kb = rss_delta,
     error      = NA_character_
   )
 }

@@ -1,10 +1,54 @@
 {
-  "schema_version": 2,
+  "schema_version": "benchmark-acceptance-receipt-v1",
+  "record_kind": "migrated_promotion_record",
   "run_id": "20260715T040721Z-pid2",
-  "source_run_dir": "/home/eneskemalergin/github/Personal/zigr/benchmarks/results/runs/20260715T040721Z-pid2",
-  "canonical_dir": "/home/eneskemalergin/github/Personal/zigr/benchmarks/results/canonical",
-  "durable_publication_dir": "/home/eneskemalergin/github/Personal/zigr/benchmarks/results/published",
+  "accepted_at": "2026-07-15T04:35:45.054Z",
+  "receipt_created_at": "2026-07-15T15:57:42.803Z",
+  "origin": {
+    "schema_version": "benchmark-promotion-v1",
+    "promotion_manifest_md5": "cd6b3f60c547af5ac3599b21574699fd"
+  },
+  "source_tree_digest": "df2f33ddae0892d595518c99b50e477f",
+  "source_ledger_identity_digest": "03025696395a901c1719e15dfb3f4791",
   "completion_contract_digest": "5510219e9ef161869e9a0ef23a601edc",
   "completion_artifact_digest": "7d9e3e612042642091b9c8a514bcd41f",
-  "promoted_at": "2026-07-15T04:35:45.054Z"
+  "report_manifest_md5": "a13d3c48d5a26db5d12d3ce1f5becb82",
+  "report_code_identity_digest": "84054d96719cf843b581b843b4e7c5a2",
+  "correctness": {
+    "task_rows": 581,
+    "fixture_rows": 86,
+    "task_artifact_digest": "a0bff7c824d851bf221866864d2c1baa",
+    "fixture_artifact_digest": "f59029ec9d73ea82120e56c7a80412e0"
+  },
+  "coverage": {
+    "runners": 7,
+    "tasks": 83,
+    "task_dispositions": 581,
+    "fixture_dispositions": 84,
+    "sealed_artifacts": 478,
+    "analysis_rows": 581,
+    "boundary_rows": 13
+  },
+  "acceptance": {
+    "boundary_budget_rows": 7,
+    "boundary_budgets_pass": true,
+    "representation_budget_rows": 11,
+    "representation_budgets_pass": true,
+    "lifecycle_rows": 7,
+    "lifecycle_pass": true
+  },
+  "reports": [
+    {"role": "product", "file": "product_metrics.csv", "rows": 63, "md5": "4a986b8a65bc4fdfc7452a98f4179cf6"},
+    {"role": "strategy", "file": "strategy_metrics.csv", "rows": 119, "md5": "8066f3606bad2066e75937badce30745"},
+    {"role": "r_baseline", "file": "r_baseline_metrics.csv", "rows": 97, "md5": "412054602e967f00c97bfb483ce570e2"},
+    {"role": "control", "file": "control_metrics.csv", "rows": 284, "md5": "a0749d49326ea2135b604cc5722011b3"},
+    {"role": "diagnostic", "file": "diagnostic_metrics.csv", "rows": 585, "md5": "08962853d8346a8e2d6187daecf86405"},
+    {"role": "capability", "file": "capability_matrix.csv", "rows": 84, "md5": "33cd1d0daf0ab5b5ea85a3d120c70a92"},
+    {"role": "safety", "file": "safety_results.csv", "rows": 7, "md5": "48e2dbc18b0e7a4cbdd67d1391f684a0"},
+    {"role": "boundary", "file": "boundary_metrics.csv", "rows": 13, "md5": "fa4d93734eed11bd5be475cfe1930d1f"},
+    {"role": "boundary_budget", "file": "boundary_budgets.csv", "rows": 7, "md5": "4eac84760eeef1169fb1df2fe7a25113"},
+    {"role": "representation_budget", "file": "representation_budgets.csv", "rows": 11, "md5": "2948cfb4a9e59dbe896a8a8475a78312"},
+    {"role": "analysis", "file": "analysis_summary.csv", "rows": 581, "md5": "255bf2a93fdda74435070926861e5124"}
+  ],
+  "receipt_digest": "c557717a4c7797c8c710b0ac21972eba"
 }

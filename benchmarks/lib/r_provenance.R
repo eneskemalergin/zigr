@@ -1,4 +1,4 @@
-r_provenance_schema_version <- function() "p4.5-r-provenance-v3"
+r_provenance_schema_version <- function() "r-provenance-v3"
 
 r_reference_map <- function(config) {
   exports <- config$exports

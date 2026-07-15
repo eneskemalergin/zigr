@@ -8,6 +8,43 @@ run_manifest_values <- function(value) {
   if (is.null(value)) character(0) else as.character(unlist(value, use.names = FALSE))
 }
 
+load_retained_correctness <- function(
+    path, expected_path, runner, run_id, id_field, expected_ids, passing_ids = character(0),
+    expected_identity = list()) {
+  supplied <- normalizePath(path, mustWork = TRUE)
+  expected <- normalizePath(expected_path, mustWork = TRUE)
+  if (!identical(supplied, expected)) stop("retained correctness path differs from the run")
+  rows <- read.csv(supplied, stringsAsFactors = FALSE)
+  required <- c(
+    "run_id", "runner", id_field, "status", "correctness_status", "correctness_message",
+    names(expected_identity)
+  )
+  missing <- setdiff(required, names(rows))
+  if (length(missing) > 0L) {
+    stop(sprintf("retained correctness is missing columns: %s", paste(missing, collapse = ", ")))
+  }
+  ids <- as.character(rows[[id_field]])
+  if (!identical(sort(ids), sort(as.character(expected_ids))) || anyDuplicated(ids) ||
+      any(as.character(rows$runner) != runner) || any(as.character(rows$run_id) != run_id) ||
+      any(as.character(rows$status) == "FAIL")) {
+    stop("retained correctness does not match the selected run cells")
+  }
+  passing <- rows[ids %in% as.character(passing_ids), , drop = FALSE]
+  if (nrow(passing) != length(passing_ids) || any(as.character(passing$status) != "PASS") ||
+      any(!(as.character(passing$correctness_status) %in% c("PASS", "REFERENCE")))) {
+    stop("retained correctness is not passing for every executable cell")
+  }
+  for (field in names(expected_identity)) {
+    expected <- as.character(expected_identity[[field]])
+    actual <- as.character(rows[[field]])
+    if (length(expected) != 1L || is.na(expected) || !nzchar(expected) ||
+        anyNA(actual) || any(!nzchar(actual)) || any(actual != expected)) {
+      stop(sprintf("retained correctness %s differs from the selected run", field))
+    }
+  }
+  rows
+}
+
 run_manifest_disposition <- function(metadata, runner, task) {
   runner_records <- metadata$runner_dispositions[[runner]]
   if (is.null(runner_records)) stop(sprintf("run manifest has no dispositions for runner %s", runner))
@@ -381,6 +418,47 @@ reconcile_running_runs <- function(results_root, replacement_run_id, stale_after
     reconciled <- c(reconciled, basename(run_dir))
   }
   reconciled
+}
+
+prune_local_runs <- function(results_root, keep, protected_run_ids = character(0), dry_run = FALSE) {
+  keep_text <- as.character(keep)
+  if (length(keep_text) != 1L || is.na(keep_text) || !grepl("^[0-9]+$", keep_text)) {
+    stop("run retention count must be a non-negative integer")
+  }
+  keep <- suppressWarnings(as.integer(keep_text))
+  if (is.na(keep)) stop("run retention count must be a non-negative integer")
+  runs_root <- normalizePath(file.path(results_root, "runs"), mustWork = FALSE)
+  if (!dir.exists(runs_root)) return(character(0))
+  run_dirs <- list.dirs(runs_root, full.names = TRUE, recursive = FALSE)
+  records <- lapply(run_dirs, function(run_dir) {
+    manifest_path <- run_manifest_path(run_dir)
+    if (!file.exists(manifest_path)) return(NULL)
+    metadata <- tryCatch(jsonlite::fromJSON(manifest_path, simplifyVector = FALSE), error = function(error) NULL)
+    if (is.null(metadata) || length(metadata$run_id) != 1L || length(metadata$status) != 1L ||
+        !identical(as.character(metadata$run_id), basename(run_dir))) return(NULL)
+    list(
+      run_id = as.character(metadata$run_id),
+      status = as.character(metadata$status),
+      path = normalizePath(run_dir, mustWork = TRUE),
+      modified = unname(file.info(run_dir)$mtime)
+    )
+  })
+  records <- Filter(Negate(is.null), records)
+  eligible <- Filter(function(record) {
+    record$status %in% c("complete", "incomplete", "correctness_complete") &&
+      !(record$run_id %in% as.character(protected_run_ids))
+  }, records)
+  if (length(eligible) <= keep) return(character(0))
+  order_index <- order(vapply(eligible, function(record) as.numeric(record$modified), numeric(1)), decreasing = TRUE)
+  remove <- eligible[order_index][seq.int(keep + 1L, length(eligible))]
+  paths <- vapply(remove, function(record) record$path, character(1))
+  expected_prefix <- paste0(runs_root, .Platform$file.sep)
+  if (any(!startsWith(paths, expected_prefix))) stop("run pruning candidate escapes the local runs directory")
+  if (!dry_run) {
+    unlink(paths, recursive = TRUE)
+    if (any(dir.exists(paths))) stop("run pruning could not remove every selected directory")
+  }
+  vapply(remove, function(record) record$run_id, character(1))
 }
 
 validate_environment_manifest <- function(environment) {
