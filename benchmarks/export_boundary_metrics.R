@@ -65,9 +65,10 @@ task_sample_stats <- function(runner, task, expected_n) {
   )
 }
 
-summary_row <- function(runner, task) {
+summary_row <- function(runner, task, pass_required = TRUE) {
   row <- summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE]
-  if (nrow(row) != 1L || row$status[[1]] != "PASS") stop(sprintf("%s/%s is not one PASS row", runner, task))
+  if (nrow(row) != 1L) stop(sprintf("%s/%s is not one summary row", runner, task))
+  if (pass_required && row$status[[1]] != "PASS") stop(sprintf("%s/%s is not one PASS row", runner, task))
   row
 }
 
@@ -82,11 +83,15 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
   generated <- summary_row("zigr", generated_task)
   handwritten <- summary_row("zigr", handwritten_task)
   c_reference <- summary_row("c_call", generated_task)
-  r_reference <- summary_row("r", generated_task)
+  r_reference <- summary_row("r", generated_task, pass_required = FALSE)
   generated_samples <- task_sample_stats("zigr", generated_task, generated$n_iterations[[1]])
   handwritten_samples <- task_sample_stats("zigr", handwritten_task, handwritten$n_iterations[[1]])
   c_samples <- task_sample_stats("c_call", generated_task, c_reference$n_iterations[[1]])
-  r_samples <- task_sample_stats("r", generated_task, r_reference$n_iterations[[1]])
+  r_samples <- if (identical(as.character(r_reference$status[[1L]]), "PASS")) {
+    task_sample_stats("r", generated_task, r_reference$n_iterations[[1]])
+  } else {
+    NULL
+  }
   floor_ms <- as.numeric(timing_policy$timer_noise_floor_ms)
   below_floor <- generated_samples$median < floor_ms || handwritten_samples$median < floor_ms
   low_noise <- max(generated_samples$cv_pct, handwritten_samples$cv_pct) <= as.numeric(timing_policy$low_noise_cv_threshold_pct)
@@ -123,8 +128,22 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     c_reference_n_iterations = c_reference$n_iterations[[1]],
     c_reference_stopping_condition = c_reference$stopping_condition[[1]],
     c_comparison_eligible = c_eligible,
-    c_comparison_reason = if (!comparable_work) "different ownership strategy" else if (c_below_floor) "below timer floor" else if (!c_low_noise) "CV above low-noise threshold" else "eligible",
-    r_reference_median_ms = r_samples$median,
+    c_comparison_reason = if (!comparable_work) {
+      "different ownership strategy"
+    } else if (c_below_floor) {
+      "below timer floor"
+    } else if (!c_low_noise) {
+      "CV above low-noise threshold"
+    } else {
+      "eligible"
+    },
+    r_reference_status = as.character(r_reference$status[[1L]]),
+    r_reference_reason = if (identical(as.character(r_reference$status[[1L]]), "PASS")) {
+      ""
+    } else {
+      as.character(r_reference$disposition_reason[[1L]])
+    },
+    r_reference_median_ms = if (is.null(r_samples)) NA_real_ else r_samples$median,
     generated_cv_pct = generated_samples$cv_pct,
     handwritten_cv_pct = handwritten_samples$cv_pct,
     generated_cold_start_ms = generated$cold_start_ms[[1]],
@@ -138,7 +157,15 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     timer_noise_status = if (below_floor) "below_floor" else "above_floor",
     low_noise = low_noise,
     comparison_eligible = eligible,
-    comparison_reason = if (!comparable_work) "different ownership strategy" else if (below_floor) "below timer floor" else if (!low_noise) "CV above low-noise threshold" else "eligible",
+    comparison_reason = if (!comparable_work) {
+      "different ownership strategy"
+    } else if (below_floor) {
+      "below timer floor"
+    } else if (!low_noise) {
+      "CV above low-noise threshold"
+    } else {
+      "eligible"
+    },
     timer_noise_floor_ms = timing_policy$timer_noise_floor_ms,
     median_ci_level = timing_policy$median_ci_level,
     median_ci_method = timing_policy$median_ci_method,

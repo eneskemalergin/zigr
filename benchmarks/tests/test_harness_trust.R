@@ -295,6 +295,140 @@ expect_error(
   "generated-glue drift detected"
 )
 
+sealed_run <- tempfile("sealed-run-")
+dir.create(file.path(sealed_run, "r"), recursive = TRUE)
+dir.create(file.path(sealed_run, "fixtures", "r"), recursive = TRUE)
+dir.create(file.path(sealed_run, "correctness", "tasks"), recursive = TRUE)
+dir.create(file.path(sealed_run, "correctness", "fixtures"), recursive = TRUE)
+writeLines("input", file.path(sealed_run, "input_manifest.json"))
+sealed_task_summary <- data.frame(task = "fixture_task", status = "PASS", stringsAsFactors = FALSE)
+sealed_fixture_summary <- data.frame(row_id = "F01", status = "PASS", stringsAsFactors = FALSE)
+write.csv(sealed_task_summary, file.path(sealed_run, "r_summary.csv"), row.names = FALSE)
+write.csv(sealed_fixture_summary, file.path(sealed_run, "fixture_r_summary.csv"), row.names = FALSE)
+write.csv(data.frame(wall_ms = 1), file.path(sealed_run, "r", "task_fixture_task.csv"), row.names = FALSE)
+write.csv(
+  data.frame(runner = "r", task = "fixture_task", wall_ms = 1, run_id = "sealed"),
+  file.path(sealed_run, "r", "cold_start.csv"),
+  row.names = FALSE
+)
+write.csv(data.frame(wall_ms = 1), file.path(sealed_run, "fixtures", "r", "F01.csv"), row.names = FALSE)
+writeLines("task correctness", file.path(sealed_run, "correctness", "tasks", "r.csv"))
+writeLines("fixture correctness", file.path(sealed_run, "correctness", "fixtures", "r.csv"))
+sealed_metadata <- list(
+  schema_version = 2L,
+  run_id = "sealed",
+  status = "complete",
+  started_at = "2026-07-15T00:00:00.000Z",
+  finished_at = "2026-07-15T00:01:00.000Z",
+  runners = list("r"),
+  tasks = list("fixture_task"),
+  master_seed = 1L,
+  input_manifest = list(relative_path = "input_manifest.json", digest = "input"),
+  runner_dispositions = list(r = list(list(task = "fixture_task", status = "applicable"))),
+  r_provenance = list(schema_version = "test"),
+  timing_policy = benchmark_timing_policy(),
+  boundary_budget_policy_version = boundary_budget_policy_version(),
+  full_matrix = TRUE,
+  measurement_mode = "timed",
+  environment = list(identity = "test"),
+  task_inputs = list(list(task = "fixture_task")),
+  correctness_stage = list(status = "complete")
+)
+sealed_metadata$completion_artifacts <- capture_run_completion_artifacts(sealed_run, sealed_metadata)
+sealed_metadata$completion_contract <- capture_run_completion_contract(sealed_metadata)
+validate_run_completion_contract(sealed_metadata)
+validate_run_completion_artifacts(sealed_run, sealed_metadata)
+
+drifted_status <- unserialize(serialize(sealed_metadata, NULL))
+drifted_status$status <- "incomplete"
+expect_error(
+  "completed manifest status drift",
+  validate_run_completion_contract(drifted_status),
+  "requires complete status"
+)
+
+edited_summary <- sealed_task_summary
+edited_summary$extra <- "tampered"
+write.csv(edited_summary, file.path(sealed_run, "r_summary.csv"), row.names = FALSE)
+expect_error(
+  "edited completed summary",
+  validate_run_completion_artifacts(sealed_run, sealed_metadata),
+  "completion artifacts differ"
+)
+write.csv(sealed_task_summary, file.path(sealed_run, "r_summary.csv"), row.names = FALSE)
+
+unlink(file.path(sealed_run, "fixtures", "r", "F01.csv"))
+expect_error(
+  "missing completed fixture sample",
+  validate_run_completion_artifacts(sealed_run, sealed_metadata),
+  "completion artifacts are missing"
+)
+write.csv(data.frame(wall_ms = 1), file.path(sealed_run, "fixtures", "r", "F01.csv"), row.names = FALSE)
+
+drifted_completion <- unserialize(serialize(sealed_metadata, NULL))
+drifted_completion$timing_policy$max_iterations <- drifted_completion$timing_policy$max_iterations + 1L
+expect_error(
+  "completed manifest contract drift",
+  validate_run_completion_contract(drifted_completion),
+  "completion contract differs"
+)
+drifted_seal <- unserialize(serialize(sealed_metadata, NULL))
+drifted_seal$completion_artifacts$files[[1L]]$md5 <- "00000000000000000000000000000000"
+drifted_seal$completion_artifacts$digest <- run_manifest_object_digest(drifted_seal$completion_artifacts$files)
+expect_error(
+  "rewritten completion artifact seal",
+  validate_run_completion_contract(drifted_seal),
+  "completion contract differs"
+)
+drifted_disposition <- unserialize(serialize(sealed_metadata$runner_dispositions, NULL))
+drifted_disposition$r[[1L]]$status <- "product_gap"
+expect_error(
+  "newly unsupported completed disposition",
+  validate_run_disposition_identity(sealed_metadata, drifted_disposition),
+  "current task dispositions differ"
+)
+expect_error(
+  "unsafe completion artifact path",
+  run_manifest_relative_artifact_path("..", "copied-run.csv"),
+  "artifact path is unsafe"
+)
+unsafe_input_metadata <- unserialize(serialize(sealed_metadata, NULL))
+unsafe_input_metadata$input_manifest$relative_path <- file.path("..", "input_manifest.json")
+expect_error(
+  "unsafe input artifact path reaches completion capture",
+  capture_run_completion_artifacts(sealed_run, unsafe_input_metadata),
+  "artifact path is unsafe"
+)
+unsafe_copy_dir <- tempfile("unsafe-copy-")
+dir.create(unsafe_copy_dir)
+expect_error(
+  "unsafe sealed path reaches promotion copy",
+  copy_run_artifact_set(sealed_run, unsafe_copy_dir, file.path("..", "input_manifest.json")),
+  "artifact path is unsafe"
+)
+unlink(unsafe_copy_dir, recursive = TRUE)
+atomic_record_dir <- tempfile("atomic-record-")
+atomic_record_path <- file.path(atomic_record_dir, "record.json")
+write_run_manifest_json_atomic(list(version = 1L), atomic_record_path)
+write_run_manifest_json_atomic(list(version = 2L), atomic_record_path)
+atomic_record <- jsonlite::fromJSON(atomic_record_path, simplifyVector = FALSE)
+expect_true(
+  identical(as.integer(atomic_record$version), 2L) &&
+    length(list.files(atomic_record_dir, all.files = TRUE, no.. = TRUE)) == 1L,
+  "atomic JSON replacement leaves only the current record"
+)
+sealed_receipt <- seal_run_promotion_receipt(list(schema_version = "test", run_id = "sealed"))
+validate_run_promotion_receipt(sealed_receipt)
+tampered_receipt <- unserialize(serialize(sealed_receipt, NULL))
+tampered_receipt$run_id <- "tampered"
+expect_error(
+  "tampered compact promotion receipt",
+  validate_run_promotion_receipt(tampered_receipt),
+  "receipt digest differs"
+)
+unlink(atomic_record_dir, recursive = TRUE)
+unlink(sealed_run, recursive = TRUE)
+
 validate_forced_registration(FALSE, "registered fixture")
 expect_true(
   identical(evaluate_prepared_call(function() 42L), 42L) &&

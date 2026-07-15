@@ -306,7 +306,14 @@ validate_source_tree_identity(normalizePath(".."), run_metadata$environment$sour
 validate_run_artifacts(run_dir, run_metadata)
 validate_fixture_measurement_artifacts(run_dir, run_metadata, evidence)
 validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
-update_run_manifest(run_dir, "complete")
+run_metadata$completion_artifacts <- capture_run_completion_artifacts(run_dir, run_metadata)
+run_metadata$status <- "complete"
+run_metadata$finished_at <- run_manifest_timestamp()
+run_metadata$status_message <- NULL
+run_metadata$completion_contract <- capture_run_completion_contract(run_metadata)
+write_run_manifest(run_dir, run_metadata)
+validate_run_completion_contract(run_metadata)
+validate_run_completion_artifacts(run_dir, run_metadata)
 run_complete <- TRUE
 options(error = previous_error_handler)
 cat("Report generation is deferred to the separate P4.7 stage.\n")

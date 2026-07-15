@@ -23,8 +23,9 @@ benchmarks/**/*.obj
 benchmarks/task47_alloc_count*
 benchmarks/task47_test*
 
-# Per-iteration benchmark data (large, regenerated every run)
-benchmarks/results/
+# Benchmark data is local and regenerated. Only the compact acceptance receipt is tracked.
+benchmarks/results/*
+!benchmarks/results/CANONICAL_RUN.json
 benchmarks/results/**/task_*.csv
 benchmarks/results/**/cold_start.csv
 benchmarks/results/**/error_*.csv

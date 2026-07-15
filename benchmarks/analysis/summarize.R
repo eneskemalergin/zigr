@@ -35,6 +35,7 @@ for (runner_dir in runner_dirs) {
   manifest_rows <- match(summary$task, manifest$task)
   if (anyNA(manifest_rows)) stop(sprintf("summary for %s contains an unknown task", runner))
   rows[[length(rows) + 1L]] <- data.frame(
+    run_id = as.character(run_metadata$run_id),
     runner = runner,
     task = as.character(summary$task),
     call_type = summary_column(summary, "call_type", NA_character_),

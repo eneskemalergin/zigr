@@ -33,6 +33,203 @@ run_manifest_artifact_digest <- function(paths) {
   unname(as.character(tools::md5sum(identity_file))[[1L]])
 }
 
+run_manifest_object_digest <- function(value) {
+  temporary <- tempfile("run-manifest-object-")
+  on.exit(unlink(temporary), add = TRUE)
+  jsonlite::write_json(value, temporary, auto_unbox = TRUE, null = "null", digits = NA)
+  unname(as.character(tools::md5sum(temporary))[[1L]])
+}
+
+run_manifest_completion_contract <- function(metadata) {
+  required <- c(
+    "schema_version", "run_id", "status", "started_at", "finished_at", "runners", "tasks",
+    "master_seed", "input_manifest", "runner_dispositions", "r_provenance", "timing_policy",
+    "boundary_budget_policy_version", "full_matrix", "measurement_mode", "environment",
+    "task_inputs", "correctness_stage", "completion_artifacts"
+  )
+  missing <- required[vapply(required, function(field) is.null(metadata[[field]]), logical(1))]
+  if (length(missing) > 0L) {
+    stop(sprintf("run completion contract is missing fields: %s", paste(missing, collapse = ", ")))
+  }
+  if (!identical(as.character(metadata$status), "complete")) {
+    stop("run completion contract requires complete status")
+  }
+  fields <- sort(setdiff(names(metadata), "completion_contract"))
+  metadata[fields]
+}
+
+capture_run_completion_contract <- function(metadata) {
+  list(
+    schema_version = "run-completion-contract-v1",
+    digest = run_manifest_object_digest(run_manifest_completion_contract(metadata))
+  )
+}
+
+validate_run_completion_contract <- function(metadata) {
+  recorded <- metadata$completion_contract
+  if (is.null(recorded) ||
+      !identical(as.character(recorded$schema_version), "run-completion-contract-v1") ||
+      is.null(recorded$digest) || !nzchar(as.character(recorded$digest))) {
+    stop("run has no supported completion contract; collect a fresh run")
+  }
+  actual <- capture_run_completion_contract(metadata)
+  if (!identical(as.character(actual$digest), as.character(recorded$digest))) {
+    stop("run completion contract differs from the completed run")
+  }
+  invisible(actual)
+}
+
+run_manifest_relative_artifact_path <- function(...) {
+  path <- gsub("\\\\", "/", do.call(file.path, list(...)))
+  absolute <- grepl("^(/|[A-Za-z]:/|//)", path)
+  if (length(path) != 1L || is.na(path) || !nzchar(path) || absolute ||
+      grepl("(^|/)\\.\\.(/|$)", path)) {
+    stop(sprintf("run completion artifact path is unsafe: %s", path))
+  }
+  path
+}
+
+run_manifest_relative_artifact_paths <- function(paths) {
+  paths <- as.character(paths)
+  if (length(paths) == 0L) return(character(0))
+  vapply(paths, run_manifest_relative_artifact_path, character(1), USE.NAMES = FALSE)
+}
+
+copy_run_artifact_set <- function(source_dir, destination_dir, relative_paths) {
+  source_root <- normalizePath(source_dir, mustWork = TRUE)
+  source_prefix <- paste0(source_root, .Platform$file.sep)
+  relative_paths <- sort(unique(run_manifest_relative_artifact_paths(relative_paths)))
+  for (relative_path in relative_paths) {
+    source <- file.path(source_root, relative_path)
+    if (!file.exists(source)) stop(sprintf("promotion source file is missing: %s", source))
+    resolved_source <- normalizePath(source, mustWork = TRUE)
+    if (!startsWith(resolved_source, source_prefix)) {
+      stop(sprintf("promotion source file escapes the completed run: %s", relative_path))
+    }
+    destination <- file.path(destination_dir, relative_path)
+    dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
+    if (!file.copy(source, destination, overwrite = TRUE, copy.mode = TRUE, copy.date = TRUE)) {
+      stop(sprintf("cannot stage promotion file: %s", relative_path))
+    }
+  }
+  invisible(relative_paths)
+}
+
+write_run_manifest_json_atomic <- function(value, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  staged <- tempfile("run-manifest-json-", tmpdir = dirname(path))
+  backup <- NULL
+  on.exit({
+    if (file.exists(staged)) unlink(staged)
+    if (!is.null(backup) && file.exists(backup)) unlink(backup)
+  }, add = TRUE)
+  jsonlite::write_json(value, staged, auto_unbox = TRUE, pretty = TRUE, null = "null", digits = NA)
+  if (file.exists(path)) {
+    backup <- tempfile("run-manifest-backup-", tmpdir = dirname(path))
+    if (!file.rename(path, backup)) stop(sprintf("cannot stage existing JSON record: %s", path))
+  }
+  if (!file.rename(staged, path)) {
+    if (!is.null(backup) && file.exists(backup)) file.rename(backup, path)
+    stop(sprintf("cannot install JSON record: %s", path))
+  }
+  if (!is.null(backup)) unlink(backup)
+  invisible(path)
+}
+
+seal_run_promotion_receipt <- function(receipt) {
+  if (!is.null(receipt$receipt_digest)) stop("promotion receipt is already sealed")
+  receipt$receipt_digest <- run_manifest_object_digest(receipt)
+  receipt
+}
+
+validate_run_promotion_receipt <- function(receipt) {
+  recorded <- receipt$receipt_digest
+  if (is.null(recorded) || !nzchar(as.character(recorded))) stop("promotion receipt has no digest")
+  receipt$receipt_digest <- NULL
+  actual <- run_manifest_object_digest(receipt)
+  if (!identical(as.character(recorded), actual)) stop("promotion receipt digest differs")
+  invisible(receipt)
+}
+
+run_completion_artifact_paths <- function(run_dir, metadata) {
+  runners <- sort(run_manifest_values(metadata$runners))
+  paths <- c(
+    as.character(metadata$input_manifest$relative_path),
+    paste0(runners, "_summary.csv"),
+    paste0("fixture_", runners, "_summary.csv"),
+    file.path("correctness", "tasks", paste0(runners, ".csv")),
+    file.path("correctness", "fixtures", paste0(runners, ".csv"))
+  )
+  for (runner in runners) {
+    task_summary_path <- file.path(run_dir, paste0(runner, "_summary.csv"))
+    fixture_summary_path <- file.path(run_dir, paste0("fixture_", runner, "_summary.csv"))
+    if (!file.exists(task_summary_path) || !file.exists(fixture_summary_path)) {
+      stop(sprintf("run completion summaries are missing for %s", runner))
+    }
+    task_summary <- read.csv(task_summary_path, stringsAsFactors = FALSE)
+    task_ids <- as.character(task_summary$task[task_summary$status == "PASS"])
+    paths <- c(paths, vapply(
+      task_ids,
+      function(task) run_manifest_relative_artifact_path(runner, paste0("task_", task, ".csv")),
+      character(1)
+    ))
+    if (length(task_ids) > 0L) paths <- c(paths, file.path(runner, "cold_start.csv"))
+
+    fixture_summary <- read.csv(fixture_summary_path, stringsAsFactors = FALSE)
+    fixture_rows <- as.character(fixture_summary$row_id[fixture_summary$status == "PASS"])
+    paths <- c(paths, vapply(
+      fixture_rows,
+      function(row_id) run_manifest_relative_artifact_path("fixtures", runner, paste0(row_id, ".csv")),
+      character(1)
+    ))
+  }
+  sort(unique(run_manifest_relative_artifact_paths(paths)))
+}
+
+capture_run_completion_artifacts <- function(run_dir, metadata) {
+  relative_paths <- run_completion_artifact_paths(run_dir, metadata)
+  paths <- file.path(run_dir, relative_paths)
+  missing <- relative_paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(sprintf("run completion artifacts are missing: %s", paste(missing, collapse = ", ")))
+  }
+  records <- lapply(seq_along(paths), function(index) list(
+    path = relative_paths[[index]],
+    size = unname(file.info(paths[[index]])$size),
+    md5 = unname(as.character(tools::md5sum(paths[[index]]))[[1L]])
+  ))
+  list(
+    schema_version = "run-completion-artifacts-v1",
+    digest = run_manifest_object_digest(records),
+    files = records
+  )
+}
+
+validate_run_completion_artifacts <- function(run_dir, metadata) {
+  recorded <- metadata$completion_artifacts
+  if (is.null(recorded) ||
+      !identical(as.character(recorded$schema_version), "run-completion-artifacts-v1") ||
+      is.null(recorded$digest) || !nzchar(as.character(recorded$digest)) ||
+      is.null(recorded$files) || length(recorded$files) == 0L) {
+    stop("run has no supported completion artifact seal; collect a fresh run")
+  }
+  actual <- capture_run_completion_artifacts(run_dir, metadata)
+  if (!identical(as.character(actual$digest), as.character(recorded$digest))) {
+    stop("run completion artifacts differ from the completed run")
+  }
+  invisible(actual)
+}
+
+validate_run_disposition_identity <- function(metadata, current_dispositions) {
+  if (!identical(
+    run_manifest_object_digest(metadata$runner_dispositions),
+    run_manifest_object_digest(current_dispositions)
+  )) {
+    stop("current task dispositions differ from the completed run; collect a fresh run")
+  }
+  invisible(current_dispositions)
+}
+
 run_manifest_r_provenance_records <- function(metadata, field) {
   provenance <- metadata$r_provenance
   if (is.null(provenance) || !identical(as.character(provenance$schema_version), r_provenance_schema_version())) {
@@ -627,11 +824,22 @@ validate_run_artifacts <- function(run_dir, metadata) {
       if (nrow(summary_row) != 1L || nrow(raw) != summary_row$n_iterations[[1]]) {
         stop(sprintf("raw result sample count differs from summary: %s", raw_file))
       }
-      if (!is.null(metadata$boundary_budget_policy_version)) {
-        raw_median <- median(raw$wall_ms)
+      if (!is.null(metadata$timing_policy)) {
         raw_mean <- mean(raw$wall_ms)
-        raw_cv <- if (raw_mean > 0) sd(raw$wall_ms) / raw_mean * 100 else 0
-        if (summary_row$median_ms[[1]] != round(raw_median, 4) || summary_row$cv_pct[[1]] != round(raw_cv, 2)) {
+        raw_median <- median(raw$wall_ms)
+        raw_min <- min(raw$wall_ms)
+        raw_max <- max(raw$wall_ms)
+        raw_sd <- sd(raw$wall_ms)
+        raw_cv <- if (raw_mean > 0) raw_sd / raw_mean * 100 else 0
+        expected_statistics <- c(
+          mean_ms = round(raw_mean, 4), median_ms = round(raw_median, 4),
+          min_ms = round(raw_min, 4), max_ms = round(raw_max, 4),
+          sd_ms = round(raw_sd, 4), cv_pct = round(raw_cv, 2)
+        )
+        actual_statistics <- vapply(names(expected_statistics), function(field) {
+          as.numeric(summary_row[[field]][[1L]])
+        }, numeric(1))
+        if (!identical(unname(actual_statistics), unname(expected_statistics))) {
           stop(sprintf("raw result statistics differ from summary: %s", raw_file))
         }
         expected_noise <- if (raw_median < as.numeric(metadata$timing_policy$timer_noise_floor_ms)) "below_floor" else "above_floor"

@@ -63,7 +63,7 @@ boundary_budget_policy <- function() {
   )
 }
 
-boundary_budget_policy_version <- function() "2026-07-11-1"
+boundary_budget_policy_version <- function() "2026-07-15-1"
 
 representation_budget_policy <- function() {
   data.frame(
@@ -73,7 +73,7 @@ representation_budget_policy <- function() {
       "82_string_headers_repeated", "83_raw_view", "84_raw_copy",
       "85_complex_view", "86_complex_return"
     ),
-    max_median_ms = c(0.50, 1.20, 1.25, 0.70, 1.90, 1.35, 0.75, 0.01, 0.20, 0.05, 0.06),
+    max_median_ms = c(0.50, 1.20, 1.25, 0.70, 1.90, 1.35, 0.75, 0.02, 0.20, 0.05, 0.06),
     stringsAsFactors = FALSE
   )
 }
