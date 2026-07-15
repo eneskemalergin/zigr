@@ -1321,6 +1321,14 @@ separated_report_files <- function() {
   )
 }
 
+boundary_report_files <- function() c(
+  boundary = "boundary_metrics.csv",
+  boundary_budget = "boundary_budgets.csv",
+  representation_budget = "representation_budgets.csv"
+)
+
+declared_report_files <- function() c(separated_report_files(), boundary_report_files())
+
 comparative_report_schema_version <- function() "separated-report-v4"
 
 report_measurement_columns <- function() c(

@@ -105,7 +105,7 @@ run_task_worker <- function(cli) {
     if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
       stop(sprintf("runner %s is not declared by run manifest %s", runner_name, run_manifest_path(results_dir)))
     }
-    staging_results_dir <- if (is.null(timing_options)) file.path(results_dir, ".staging") else timing_options$output
+    staging_results_dir <- if (validation_only) dirname(validation_output_arg) else timing_options$output
     dir.create(file.path(staging_results_dir, runner_name), recursive = TRUE, showWarnings = FALSE)
     unlink(file.path(staging_results_dir, runner_name, "errors.csv"))
   }
@@ -1162,29 +1162,8 @@ run_task_worker <- function(cli) {
       runner_name, n_fail
     ))
   }
-  if (!is.null(timing_options)) {
-    cat(sprintf("  Batch output: %s\n", timing_options$output))
-    return(invisible(summary))
-  }
-  final_runner_dir <- file.path(results_dir, runner_name)
-  final_summary <- file.path(results_dir, sprintf("%s_summary.csv", runner_name))
-  if (dir.exists(final_runner_dir) || file.exists(final_summary)) {
-    stop(sprintf("final result path already exists for runner %s", runner_name))
-  }
-  if (!file.rename(file.path(staging_results_dir, runner_name), final_runner_dir)) {
-    stop(sprintf("cannot promote staged results for runner %s", runner_name))
-  }
-  if (!file.rename(staged_summary, final_summary)) {
-    stop(sprintf("cannot promote staged summary for runner %s", runner_name))
-  }
-  
-  cat(sprintf("  Results: %d PASS, %d FAIL, %d N/A\n", n_pass, n_fail, n_na))
-  for (i in seq_len(nrow(summary))) {
-    s <- summary[i, ]
-    cat(sprintf("  %-14s %8.4f %7.4f %8.4f %5.2f %8s %5d  %s\n",
-                s$task, s$mean_ms, s$median_ms, s$sd_ms, s$cv_pct,
-                as.character(s$rss_endpoint_delta_kb), s$n_iterations, s$status))
-  }
+  cat(sprintf("  Batch output: %s\n", timing_options$output))
+  invisible(summary)
 }
 
 run_fixture_worker <- function(args) {
@@ -1461,7 +1440,7 @@ run_fixture_worker <- function(args) {
     quit(save = "no", status = 0L, runLast = FALSE)
   }
 
-  staging_root <- if (is.null(timing_options)) file.path(run_dir, ".staging", "fixtures") else timing_options$output
+  staging_root <- timing_options$output
   staging_runner <- file.path(staging_root, runner)
   dir.create(staging_runner, recursive = TRUE, showWarnings = FALSE)
   unlink(list.files(staging_runner, full.names = TRUE, all.files = TRUE, no.. = TRUE), recursive = TRUE)
@@ -1642,20 +1621,8 @@ run_fixture_worker <- function(args) {
   summary <- do.call(rbind, summaries)
   staged_summary <- file.path(staging_root, paste0("fixture_", runner, "_summary.csv"))
   write_csv(summary, staged_summary)
-  if (!is.null(timing_options)) {
-    cat(sprintf("Fixture batch output: %s\n", timing_options$output))
-    return(invisible(summary))
-  }
-  final_root <- file.path(run_dir, "fixtures")
-  dir.create(final_root, recursive = TRUE, showWarnings = FALSE)
-  final_runner <- file.path(final_root, runner)
-  final_summary <- file.path(run_dir, paste0("fixture_", runner, "_summary.csv"))
-  if (dir.exists(final_runner) || file.exists(final_summary)) {
-    stop(sprintf("final fixture result path already exists for %s", runner))
-  }
-  if (!file.rename(staging_runner, final_runner)) stop(sprintf("cannot promote fixture raw results for %s", runner))
-  if (!file.rename(staged_summary, final_summary)) stop(sprintf("cannot promote fixture summary for %s", runner))
-  cat(sprintf("Fixture measurement completed for %s: %d rows.\n", runner, nrow(summary)))
+  cat(sprintf("Fixture batch output: %s\n", timing_options$output))
+  invisible(summary)
 }
 
 worker_args <- commandArgs(trailingOnly = TRUE)

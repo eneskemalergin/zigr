@@ -1005,8 +1005,52 @@ sealed_metadata <- list(
 )
 sealed_metadata$completion_artifacts <- capture_run_completion_artifacts(sealed_run, sealed_metadata)
 sealed_metadata$completion_contract <- capture_run_completion_contract(sealed_metadata)
+write_run_manifest(sealed_run, sealed_metadata)
 validate_run_completion_contract(sealed_metadata)
 validate_run_completion_artifacts(sealed_run, sealed_metadata)
+validate_run_core_artifact_set(sealed_run, sealed_metadata)
+cache_root <- tempfile("retained-cache-")
+validate_run_cache_paths(sealed_run, c(cache_root, paste0(cache_root, "-global")))
+expect_error(
+  "cache nested in published run",
+  validate_run_cache_paths(sealed_run, file.path(sealed_run, ".zig-cache")),
+  "caches must be outside"
+)
+writeLines("undeclared", file.path(sealed_run, "undeclared.txt"))
+expect_error(
+  "extra completed core artifact",
+  validate_run_core_artifact_set(sealed_run, sealed_metadata),
+  "extra: undeclared.txt"
+)
+unlink(file.path(sealed_run, "undeclared.txt"))
+report_names <- unname(declared_report_files())
+for (name in report_names) writeLines(name, file.path(sealed_run, name))
+report_records <- lapply(seq_along(report_names), function(index) list(
+  role = names(declared_report_files())[[index]], file = report_names[[index]], rows = 1L,
+  md5 = unname(as.character(tools::md5sum(file.path(sealed_run, report_names[[index]]))[[1L]]))
+))
+report_manifest <- list(
+  declared_report_files = as.list(report_names), reports = report_records
+)
+jsonlite::write_json(
+  report_manifest, file.path(sealed_run, "report_manifest.json"), auto_unbox = TRUE
+)
+validate_report_artifact_set(sealed_run, sealed_metadata, report_manifest)
+writeLines("undeclared derived output", file.path(sealed_run, "debug_report.csv"))
+expect_error(
+  "undeclared derived report",
+  validate_report_artifact_set(sealed_run, sealed_metadata, report_manifest),
+  "extra: debug_report.csv"
+)
+unlink(file.path(sealed_run, "debug_report.csv"))
+missing_declaration <- unserialize(serialize(report_manifest, NULL))
+missing_declaration$declared_report_files <- missing_declaration$declared_report_files[-1L]
+expect_error(
+  "incomplete report declaration",
+  validate_report_artifact_set(sealed_run, sealed_metadata, missing_declaration),
+  "declared filenames differ"
+)
+unlink(file.path(sealed_run, c("report_manifest.json", report_names)))
 
 task_suite_metadata <- unserialize(serialize(sealed_metadata, NULL))
 task_suite_metadata$suite <- "tasks"
@@ -1100,6 +1144,44 @@ expect_error(
   "artifact path is unsafe"
 )
 unlink(unsafe_copy_dir, recursive = TRUE)
+failure_run <- tempfile("failed-run-")
+dir.create(file.path(failure_run, ".staging", "timing", "runner"), recursive = TRUE)
+failure_metadata <- list(
+  schema_version = 3L, artifact_layout = "grouped-v1", run_id = basename(failure_run),
+  status = "running", started_at = "2026-07-15T00:00:00.000Z"
+)
+write_run_manifest(failure_run, failure_metadata)
+write.csv(
+  data.frame(runner = "zigr", task = "fixture_task", error = "worker detail"),
+  file.path(failure_run, ".staging", "timing", "runner", "errors.csv"), row.names = FALSE
+)
+writeLines("partial", file.path(failure_run, "task_summary.csv"))
+record_run_failure(failure_run, "batch failed")
+failure_record <- read_run_manifest(failure_run)
+expect_true(
+  identical(run_relative_files(failure_run), "run_manifest.json") &&
+    identical(as.character(failure_record$status), "incomplete") &&
+    grepl("batch failed", failure_record$status_message, fixed = TRUE) &&
+    grepl("worker detail", failure_record$status_message, fixed = TRUE),
+  "failed run removes partial publication and retains one compact failure record"
+)
+unlink(failure_run, recursive = TRUE)
+stale_root <- tempfile("stale-runs-")
+stale_run <- file.path(stale_root, "runs", "stale")
+dir.create(file.path(stale_run, ".staging"), recursive = TRUE)
+write_run_manifest(stale_run, list(
+  schema_version = 3L, artifact_layout = "grouped-v1", run_id = "stale",
+  status = "running", started_at = "2026-01-01T00:00:00.000Z"
+))
+writeLines("partial", file.path(stale_run, ".staging", "partial.csv"))
+reconciled <- reconcile_running_runs(stale_root, "replacement", stale_after_seconds = 0)
+stale_record <- read_run_manifest(stale_run)
+expect_true(
+  identical(reconciled, "stale") && identical(run_relative_files(stale_run), "run_manifest.json") &&
+    identical(as.character(stale_record$status), "incomplete"),
+  "stale run reconciliation retains only one compact failure record"
+)
+unlink(stale_root, recursive = TRUE)
 atomic_record_dir <- tempfile("atomic-record-")
 atomic_record_path <- file.path(atomic_record_dir, "record.json")
 write_run_manifest_json_atomic(list(version = 1L), atomic_record_path)

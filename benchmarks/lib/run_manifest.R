@@ -175,10 +175,17 @@ write_run_manifest_json_atomic <- function(value, path) {
   backup <- NULL
   on.exit({
     if (file.exists(staged)) unlink(staged)
-    if (!is.null(backup) && file.exists(backup)) unlink(backup)
+    if (!is.null(backup) && file.exists(backup)) {
+      if (!file.exists(path)) {
+        file.rename(backup, path)
+      } else {
+        unlink(backup)
+      }
+    }
   }, add = TRUE)
   jsonlite::write_json(value, staged, auto_unbox = TRUE, pretty = TRUE, null = "null", digits = NA)
   if (file.exists(path)) {
+    if (file.rename(staged, path)) return(invisible(path))
     backup <- tempfile("run-manifest-backup-", tmpdir = dirname(path))
     if (!file.rename(path, backup)) stop(sprintf("cannot stage existing JSON record: %s", path))
   }
@@ -188,6 +195,117 @@ write_run_manifest_json_atomic <- function(value, path) {
   }
   if (!is.null(backup)) unlink(backup)
   invisible(path)
+}
+
+run_relative_files <- function(root) {
+  if (!dir.exists(root)) return(character(0))
+  sort(gsub("\\\\", "/", list.files(
+    root, recursive = TRUE, all.files = TRUE, no.. = TRUE,
+    full.names = FALSE, include.dirs = FALSE
+  )))
+}
+
+validate_run_cache_paths <- function(run_dir, paths) {
+  run_root <- normalizePath(run_dir, mustWork = FALSE)
+  prefix <- paste0(run_root, .Platform$file.sep)
+  resolved <- vapply(paths, normalizePath, character(1), mustWork = FALSE)
+  if (any(resolved == run_root | startsWith(resolved, prefix))) {
+    stop("build caches must be outside the benchmark run directory")
+  }
+  invisible(resolved)
+}
+
+run_core_artifact_paths <- function(run_dir, metadata) {
+  sort(unique(c("run_manifest.json", run_completion_artifact_paths(run_dir, metadata))))
+}
+
+validate_run_core_artifact_set <- function(run_dir, metadata) {
+  expected <- run_core_artifact_paths(run_dir, metadata)
+  actual <- run_relative_files(run_dir)
+  missing <- setdiff(expected, actual)
+  extra <- setdiff(actual, expected)
+  if (length(missing) > 0L || length(extra) > 0L) {
+    stop(sprintf(
+      "run core artifact set differs; missing: %s; extra: %s",
+      if (length(missing) == 0L) "none" else paste(missing, collapse = ", "),
+      if (length(extra) == 0L) "none" else paste(extra, collapse = ", ")
+    ))
+  }
+  invisible(expected)
+}
+
+validate_report_artifact_set <- function(run_dir, metadata, report_manifest) {
+  declared <- sort(unique(run_manifest_relative_artifact_paths(
+    run_manifest_values(report_manifest$declared_report_files)
+  )))
+  expected_declared <- sort(unname(declared_report_files()))
+  if (length(declared) == 0L || anyDuplicated(run_manifest_values(report_manifest$declared_report_files)) ||
+      !identical(declared, expected_declared)) {
+    stop("report manifest declared filenames differ from the report contract")
+  }
+  records <- report_manifest$reports
+  if (is.null(records) || length(records) != length(declared)) {
+    stop("report manifest records do not cover every declared report")
+  }
+  recorded <- vapply(records, function(record) as.character(record$file), character(1))
+  if (anyDuplicated(recorded) || !setequal(recorded, declared)) {
+    stop("report manifest records differ from its declared filenames")
+  }
+  for (record in records) {
+    relative <- run_manifest_relative_artifact_path(as.character(record$file))
+    path <- file.path(run_dir, relative)
+    actual <- if (file.exists(path)) unname(as.character(tools::md5sum(path)[[1L]])) else ""
+    if (!identical(actual, as.character(record$md5))) {
+      stop(sprintf("declared report digest differs for %s", relative))
+    }
+  }
+  expected <- sort(c(run_core_artifact_paths(run_dir, metadata), "report_manifest.json", declared))
+  actual <- run_relative_files(run_dir)
+  missing <- setdiff(expected, actual)
+  extra <- setdiff(actual, expected)
+  if (length(missing) > 0L || length(extra) > 0L) {
+    stop(sprintf(
+      "published report artifact set differs; missing: %s; extra: %s",
+      if (length(missing) == 0L) "none" else paste(missing, collapse = ", "),
+      if (length(extra) == 0L) "none" else paste(extra, collapse = ", ")
+    ))
+  }
+  invisible(declared)
+}
+
+record_run_failure <- function(run_dir, message) {
+  metadata <- tryCatch(read_run_manifest(run_dir), error = function(error) NULL)
+  if (is.null(metadata)) return(invisible(NULL))
+  worker_errors <- character(0)
+  staging <- file.path(run_dir, ".staging")
+  if (dir.exists(staging)) {
+    error_files <- list.files(
+      staging, pattern = "^errors\\.csv$", recursive = TRUE, full.names = TRUE
+    )
+    for (path in error_files) {
+      rows <- tryCatch(read.csv(path, stringsAsFactors = FALSE), error = function(error) NULL)
+      if (!is.null(rows) && "error" %in% names(rows)) {
+        worker_errors <- c(worker_errors, as.character(rows$error))
+      }
+    }
+  }
+  worker_errors <- unique(worker_errors[!is.na(worker_errors) & nzchar(worker_errors)])
+  detail <- paste(c(as.character(message), head(worker_errors, 20L)), collapse = "; ")
+  if (!nzchar(detail)) detail <- "benchmark run did not complete"
+  if (nchar(detail, type = "bytes") > 4000L) detail <- substr(detail, 1L, 4000L)
+  failure <- list(
+    schema_version = as.integer(metadata$schema_version),
+    artifact_layout = as.character(metadata$artifact_layout),
+    run_id = as.character(metadata$run_id),
+    status = "incomplete",
+    started_at = as.character(metadata$started_at),
+    finished_at = run_manifest_timestamp(),
+    status_message = detail
+  )
+  entries <- list.files(run_dir, all.files = TRUE, no.. = TRUE, full.names = TRUE)
+  unlink(entries, recursive = TRUE)
+  write_run_manifest_json_atomic(failure, run_manifest_path(run_dir))
+  invisible(failure)
 }
 
 seal_run_promotion_receipt <- function(receipt) {
@@ -586,14 +704,7 @@ validate_timing_execution <- function(execution, metadata) {
 }
 
 write_run_manifest <- function(run_dir, metadata) {
-  dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
-  path <- run_manifest_path(run_dir)
-  temporary <- tempfile("run_manifest-", tmpdir = run_dir)
-  on.exit(unlink(temporary), add = TRUE)
-  jsonlite::write_json(metadata, temporary, auto_unbox = TRUE, pretty = TRUE)
-  if (file.exists(path) && !file.remove(path)) stop(sprintf("cannot replace run manifest: %s", path))
-  if (!file.rename(temporary, path)) stop(sprintf("cannot install run manifest: %s", path))
-  invisible(path)
+  write_run_manifest_json_atomic(metadata, run_manifest_path(run_dir))
 }
 
 read_run_manifest <- function(run_dir) {
@@ -608,18 +719,6 @@ read_run_manifest <- function(run_dir) {
   }
   benchmark_artifact_layout(metadata)
   metadata
-}
-
-update_run_manifest <- function(run_dir, status, message = NULL) {
-  metadata <- read_run_manifest(run_dir)
-  metadata$status <- status
-  if (status %in% c("complete", "incomplete")) metadata$finished_at <- run_manifest_timestamp()
-  if (is.null(message) || !nzchar(message)) {
-    metadata$status_message <- NULL
-  } else {
-    metadata$status_message <- message
-  }
-  write_run_manifest(run_dir, metadata)
 }
 
 reconcile_running_runs <- function(results_root, replacement_run_id, stale_after_seconds = 6 * 60 * 60) {
@@ -640,10 +739,9 @@ reconcile_running_runs <- function(results_root, replacement_run_id, stale_after
     age_seconds <- as.numeric(difftime(Sys.time(), started, units = "secs"))
     if (is.na(age_seconds) || age_seconds < stale_after_seconds) next
 
-    update_run_manifest(
+    record_run_failure(
       run_dir,
-      "incomplete",
-      sprintf("stale running run superseded by %s; artifacts retained", replacement_run_id)
+      sprintf("stale running run superseded by %s", replacement_run_id)
     )
     reconciled <- c(reconciled, basename(run_dir))
   }

@@ -160,7 +160,7 @@ previous_error_handler <- getOption("error")
 mark_run_incomplete <- function() {
   if (!run_complete) {
     message <- if (is.null(run_error)) geterrmessage() else run_error
-    try(update_run_manifest(run_dir, "incomplete", message), silent = TRUE)
+    try(record_run_failure(run_dir, message), silent = TRUE)
   }
 }
 options(error = function() {
@@ -193,7 +193,21 @@ write_run_manifest(run_dir, run_metadata)
 
 cat(sprintf("Runners: %s\n\n", paste(names(all_runners), collapse = ", ")))
 cat(sprintf("Run: %s\n\n", run_id))
-runner_failures <- character(0)
+
+zig_cache_dir <- normalizePath(
+  Sys.getenv("ZIG_CACHE_DIR", unset = file.path(root_dir, ".zig-cache")), mustWork = FALSE
+)
+zig_global_cache_dir <- normalizePath(
+  Sys.getenv("ZIG_GLOBAL_CACHE_DIR", unset = file.path(root_dir, ".zig-global-cache")), mustWork = FALSE
+)
+cargo_target_dir <- normalizePath(
+  Sys.getenv("CARGO_TARGET_DIR", unset = file.path(root_dir, "tmp", "cargo-target")), mustWork = FALSE
+)
+cargo_home <- Sys.getenv("CARGO_HOME", unset = path.expand("~/.cargo"))
+if (!nzchar(cargo_home)) cargo_home <- path.expand("~/.cargo")
+cargo_home <- normalizePath(cargo_home, mustWork = FALSE)
+cache_paths <- c(zig_cache_dir, zig_global_cache_dir, cargo_target_dir, cargo_home)
+validate_run_cache_paths(run_dir, cache_paths)
 
 if (do_build) {
   cat("Building runners\n")
@@ -212,14 +226,8 @@ build_settings <- list(
   target = Sys.getenv("ZIGR_TARGET", unset = "native"),
   cpu_features = Sys.getenv("ZIGR_CPU_FEATURES", unset = "default"),
   checked_sexp = checked_sexp_value %in% c("1", "true", "yes", "on"),
-  cache_dir = normalizePath(
-    Sys.getenv("ZIG_CACHE_DIR", unset = file.path(root_dir, ".zig-cache")),
-    mustWork = FALSE
-  ),
-  global_cache_dir = normalizePath(
-    Sys.getenv("ZIG_GLOBAL_CACHE_DIR", unset = file.path(root_dir, ".zig-global-cache")),
-    mustWork = FALSE
-  ),
+  cache_dir = zig_cache_dir,
+  global_cache_dir = zig_global_cache_dir,
   command = if (do_build) "bash build_all.sh" else "prebuilt runner libraries",
   requested_rebuild = do_build
 )
@@ -670,7 +678,6 @@ if (run_tasks) write_timing_samples("task")
 if (run_fixtures) write_timing_samples("fixture")
 
 if (length(timing_failures) > 0L) {
-  unlink(timing_root, recursive = TRUE)
   run_error <- paste(
     "bounded timing left incomplete batches after continuing the queue:",
     paste(names(timing_failures), collapse = ", ")
@@ -678,7 +685,9 @@ if (length(timing_failures) > 0L) {
   stop(run_error)
 }
 
-consolidate_timing <- function(universe, plan) {
+consolidate_timing <- function(universe, plan, output = run_summary_artifact_paths(
+    run_dir, run_metadata, universe
+  )) {
   pilot_files <- stage_files(universe, "pilot", "_summary\\.csv$")
   confirmation_files <- stage_files(universe, "confirmation", "_summary\\.csv$")
   pilot <- do.call(rbind, lapply(pilot_files, read.csv, stringsAsFactors = FALSE))
@@ -694,18 +703,19 @@ consolidate_timing <- function(universe, plan) {
   key_fields <- if (identical(universe, "task")) c("runner", "task") else c("runner", "row_id")
   keys <- do.call(paste, c(summary[key_fields], sep = "\r"))
   if (anyDuplicated(keys)) stop(sprintf("%s staged summaries contain duplicate rows", universe))
-  write_csv_once(summary, run_summary_artifact_paths(run_dir, run_metadata, universe), paste(universe, "summary"))
+  write_csv_once(summary, output, paste(universe, "summary"))
 }
 
 if (run_tasks) consolidate_timing("task", task_plan)
-if (run_fixtures) consolidate_timing("fixture", fixture_plan)
+memory_root <- file.path(run_dir, ".staging", "memory")
+fixture_summary_staging <- file.path(memory_root, "fixture_summary.csv")
+if (run_fixtures) consolidate_timing("fixture", fixture_plan, fixture_summary_staging)
 unlink(timing_root, recursive = TRUE)
 
 if (run_fixtures) {
   fixture_summary_path <- run_summary_artifact_paths(run_dir, run_metadata, "fixture")
-  fixture_summary <- read.csv(fixture_summary_path, stringsAsFactors = FALSE)
+  fixture_summary <- read.csv(fixture_summary_staging, stringsAsFactors = FALSE)
   host_support <- peak_rss_host_support()
-  memory_root <- file.path(run_dir, ".staging", "memory")
   memory_results <- NULL
   eligible <- peak_rss_fixture_eligible(
     fixture_summary$fixture, fixture_summary$variant, fixture_summary$status, run_metadata$timing_policy
@@ -736,7 +746,6 @@ if (run_fixtures) {
   fixture_summary <- apply_peak_rss_results(
     fixture_summary, memory_results, run_metadata$timing_policy, host_support
   )
-  unlink(fixture_summary_path)
   write_csv_once(fixture_summary, fixture_summary_path, "fixture summary with peak RSS")
   unlink(memory_root, recursive = TRUE)
 }
@@ -756,9 +765,14 @@ run_metadata$status <- "complete"
 run_metadata$finished_at <- run_manifest_timestamp()
 run_metadata$status_message <- NULL
 run_metadata$completion_contract <- capture_run_completion_contract(run_metadata)
-write_run_manifest(run_dir, run_metadata)
 validate_run_completion_contract(run_metadata)
 validate_run_completion_artifacts(run_dir, run_metadata)
+validate_run_core_artifact_set(run_dir, run_metadata)
+write_run_manifest(run_dir, run_metadata)
+published_metadata <- read_run_manifest(run_dir)
+validate_run_completion_contract(published_metadata)
+validate_run_completion_artifacts(run_dir, published_metadata)
+validate_run_core_artifact_set(run_dir, published_metadata)
 run_complete <- TRUE
 options(error = previous_error_handler)
 cat("Report generation is a separate explicit command.\n")

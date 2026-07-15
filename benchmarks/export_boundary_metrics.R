@@ -249,10 +249,72 @@ if (any(!grepl("^PASS", boundary_budgets$status)) || any(representation_metrics$
   stop("one or more performance budgets failed")
 }
 
-write.csv(boundary_metrics, file.path(run_dir, "boundary_metrics.csv"), row.names = FALSE)
-write.csv(boundary_budgets, file.path(run_dir, "boundary_budgets.csv"), row.names = FALSE)
-write.csv(representation_metrics, file.path(run_dir, "representation_budgets.csv"), row.names = FALSE)
+local({
+report_manifest_path <- file.path(run_dir, "report_manifest.json")
+if (!file.exists(report_manifest_path)) {
+  stop("boundary export requires the comparative report manifest")
+}
+report_manifest <- jsonlite::fromJSON(report_manifest_path, simplifyVector = FALSE)
+if (!identical(as.character(report_manifest$schema_version), comparative_report_schema_version()) ||
+    !identical(as.character(report_manifest$run_id), as.character(metadata$run_id)) ||
+    !setequal(run_manifest_values(report_manifest$declared_report_files), unname(declared_report_files()))) {
+  stop("comparative report manifest does not declare the current report set")
+}
+files <- boundary_report_files()
+final_paths <- file.path(run_dir, unname(files))
+existing <- final_paths[file.exists(final_paths)]
+if (length(existing) > 0L) {
+  stop(sprintf("boundary report output already exists: %s", paste(basename(existing), collapse = ", ")))
+}
+outputs <- list(
+  boundary = boundary_metrics,
+  boundary_budget = boundary_budgets,
+  representation_budget = representation_metrics
+)
+staging <- tempfile("boundary-reports-", tmpdir = run_dir)
+dir.create(staging)
+on.exit(unlink(staging, recursive = TRUE), add = TRUE)
+staged_paths <- file.path(staging, unname(files))
+for (index in seq_along(outputs)) write_csv(outputs[[index]], staged_paths[[index]])
+boundary_records <- lapply(seq_along(files), function(index) list(
+  role = names(files)[[index]], file = unname(files[[index]]),
+  rows = nrow(outputs[[index]]),
+  md5 = unname(as.character(tools::md5sum(staged_paths[[index]])[[1L]]))
+))
+report_manifest$reports <- c(report_manifest$reports, boundary_records)
+boundary_source <- "export_boundary_metrics.R"
+report_manifest$report_code_sources <- c(
+  report_manifest$report_code_sources,
+  list(list(
+    path = boundary_source,
+    md5 = unname(as.character(tools::md5sum(file.path(root_dir, boundary_source))[[1L]]))
+  ))
+)
+recorded_files <- vapply(report_manifest$reports, function(record) as.character(record$file), character(1))
+if (anyDuplicated(recorded_files) ||
+    !setequal(recorded_files, run_manifest_values(report_manifest$declared_report_files))) {
+  stop("report records do not cover the declared report set")
+}
+published <- character(0)
+publication_complete <- FALSE
+on.exit({
+  if (!publication_complete) unlink(published)
+}, add = TRUE)
+for (index in seq_along(final_paths)) {
+  if (!file.rename(staged_paths[[index]], final_paths[[index]])) {
+    unlink(published)
+    stop(sprintf("cannot publish boundary report: %s", final_paths[[index]]))
+  }
+  published <- c(published, final_paths[[index]])
+}
+tryCatch(
+  write_run_manifest_json_atomic(report_manifest, report_manifest_path),
+  error = function(error) {
+    unlink(published)
+    stop(error)
+  }
+)
+publication_complete <- TRUE
 
-cat(sprintf("Wrote %s\n", file.path(run_dir, "boundary_metrics.csv")))
-cat(sprintf("Wrote %s\n", file.path(run_dir, "boundary_budgets.csv")))
-cat(sprintf("Wrote %s\n", file.path(run_dir, "representation_budgets.csv")))
+cat(sprintf("Wrote %s\n", paste(final_paths, collapse = ", ")))
+})

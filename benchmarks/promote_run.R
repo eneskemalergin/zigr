@@ -74,6 +74,7 @@ correctness_identity <- validate_correctness_artifacts(run_dir, metadata, eviden
 validate_fixture_measurement_artifacts(run_dir, metadata, evidence)
 invisible(verify_fixture_source_paths(root_dir, evidence))
 
+local({
 stage_dir <- tempfile("zigr-benchmark-promotion-")
 dir.create(stage_dir, recursive = TRUE)
 on.exit(unlink(stage_dir, recursive = TRUE), add = TRUE)
@@ -105,10 +106,7 @@ run_exporter("export_comparative_metrics.R")
 run_exporter("export_boundary_metrics.R")
 
 report_files <- separated_report_files()
-required_reports <- c(
-  unname(report_files), "report_manifest.json", "boundary_metrics.csv", "boundary_budgets.csv",
-  "representation_budgets.csv"
-)
+required_reports <- c(unname(declared_report_files()), "report_manifest.json")
 missing_reports <- required_reports[!file.exists(file.path(stage_dir, required_reports))]
 if (length(missing_reports) > 0L) {
   stop(sprintf("promotion report regeneration is incomplete: %s", paste(missing_reports, collapse = ", ")))
@@ -122,6 +120,7 @@ if (!identical(as.character(report_manifest$schema_version), comparative_report_
     !identical(as.character(report_manifest$fixture_correctness_artifact_digest), as.character(correctness_identity$fixture_artifact_digest))) {
   stop("regenerated report manifest identity differs from the completed run")
 }
+validate_report_artifact_set(stage_dir, staged_metadata, report_manifest)
 for (record in report_manifest$report_code_sources) {
   path <- as.character(record$path)
   actual <- unname(as.character(tools::md5sum(file.path(root_dir, path))[[1L]]))
@@ -185,20 +184,7 @@ task_correctness_files <- run_correctness_artifact_paths(stage_dir, staged_metad
 fixture_correctness_files <- run_correctness_artifact_paths(stage_dir, staged_metadata, "fixture", expected_runners)
 task_correctness_rows <- sum(vapply(task_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
 fixture_correctness_rows <- sum(vapply(fixture_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
-derived_report_record <- function(role, file) list(
-  role = role,
-  file = file,
-  rows = nrow(read.csv(file.path(stage_dir, file), stringsAsFactors = FALSE)),
-  md5 = unname(as.character(tools::md5sum(file.path(stage_dir, file))[[1L]]))
-)
-derived_reports <- c(
-  report_manifest$reports,
-  list(
-    derived_report_record("boundary", "boundary_metrics.csv"),
-    derived_report_record("boundary_budget", "boundary_budgets.csv"),
-    derived_report_record("representation_budget", "representation_budgets.csv")
-  )
-)
+derived_reports <- report_manifest$reports
 receipt <- list(
   schema_version = "benchmark-promotion-v2",
   run_id = as.character(metadata$run_id),
@@ -251,8 +237,8 @@ if (dry_run) {
     metadata$run_id,
     length(metadata$completion_artifacts$files)
   ))
-  quit(save = "no", status = 0L, runLast = FALSE)
+} else {
+  write_run_manifest_json_atomic(receipt, receipt_path)
+  cat(sprintf("Promoted run %s with compact receipt %s\n", metadata$run_id, receipt_path))
 }
-
-write_run_manifest_json_atomic(receipt, receipt_path)
-cat(sprintf("Promoted run %s with compact receipt %s\n", metadata$run_id, receipt_path))
+})

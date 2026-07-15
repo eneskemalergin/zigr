@@ -569,11 +569,16 @@ export_separated_metrics <- function() {
       "lib/measurement.R", "lib/provenance.R", "lib/run_manifest.R", "lib/product_fixtures.R", "task_manifest.csv",
       "evidence_manifest.json", "source_ledger.json"
     ), function(path) list(path = path, md5 = unname(as.character(tools::md5sum(file.path(root_dir, path)))[[1L]]))),
+    declared_report_files = as.list(unname(declared_report_files())),
     reports = report_records
   )
   staged_manifest <- file.path(staging, "report_manifest.json")
   jsonlite::write_json(manifest_record, staged_manifest, auto_unbox = TRUE, pretty = TRUE)
   published <- character(0)
+  publication_complete <- FALSE
+  on.exit({
+    if (!publication_complete) unlink(published)
+  }, add = TRUE)
   for (index in seq_along(final_reports)) {
     if (!file.rename(staged_reports[[index]], final_reports[[index]])) {
       unlink(published)
@@ -581,7 +586,8 @@ export_separated_metrics <- function() {
     }
     published <- c(published, final_reports[[index]])
   }
-  if (!file.rename(staged_manifest, manifest_path)) {
+  publication_complete <- file.rename(staged_manifest, manifest_path)
+  if (!publication_complete) {
     unlink(published)
     stop("cannot publish separated report manifest")
   }

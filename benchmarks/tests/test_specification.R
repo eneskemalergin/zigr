@@ -692,6 +692,35 @@ expect_true(
   identical(unname(separated_report_files()[["analysis"]]), "analysis_summary.csv"),
   "analysis summary belongs to the comparative report set"
 )
+expect_true(
+  length(declared_report_files()) == 11L &&
+    setequal(unname(boundary_report_files()), c(
+      "boundary_metrics.csv", "boundary_budgets.csv", "representation_budgets.csv"
+    )),
+  "report contract declares every comparative and boundary output"
+)
+contains_call <- function(expression, name) {
+  if (is.call(expression) && identical(expression[[1L]], as.name(name))) return(TRUE)
+  if (!is.recursive(expression)) return(FALSE)
+  any(vapply(as.list(expression), contains_call, logical(1), name = name))
+}
+for (script in c("export_boundary_metrics.R", "promote_run.R")) {
+  expressions <- as.list(parse(file.path(root_dir, script)))
+  top_level_on_exit <- vapply(expressions, function(expression) {
+    is.call(expression) && identical(expression[[1L]], as.name("on.exit"))
+  }, logical(1))
+  scoped_on_exit <- any(vapply(expressions, contains_call, logical(1), name = "on.exit"))
+  expect_true(
+    scoped_on_exit && !any(top_level_on_exit),
+    sprintf("%s registers staging cleanup inside an execution scope", script)
+  )
+  if (identical(script, "promote_run.R")) {
+    expect_true(
+      !any(vapply(expressions, contains_call, logical(1), name = "quit")),
+      "promotion dry-run returns through staging cleanup"
+    )
+  }
+}
 analysis_input <- data.frame(
   runner = "zigr", task = manifest$task[[1L]], call_type = ".Call",
   mean_ms = 1, median_ms = 1, min_ms = 1, max_ms = 1, sd_ms = 0, cv_pct = 0,

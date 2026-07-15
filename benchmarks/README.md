@@ -141,11 +141,13 @@ Rscript promote_run.R --run-dir=results/runs/<run_id>
 
 Comparative export requires the current complete runner and task matrix. It writes separate product, strategy, R-baseline, control, diagnostic, capability, safety, and analysis reports. Boundary export writes boundary measurements and regression-budget decisions.
 
-Promotion accepts only an unfiltered timed run collected under the current source tree, evidence, timing policy, and boundary budget policy. It regenerates reports in isolation, reruns safety proof, and updates only `results/CANONICAL_RUN.json`.
+Promotion accepts only an unfiltered timed run collected under the current source tree, evidence, timing policy, and boundary budget policy. The comparative manifest declares all 11 derived filenames, boundary export completes their digest records, and promotion rejects missing or undeclared output. Promotion regenerates reports in isolation, reruns safety proof, and updates only `results/CANONICAL_RUN.json`.
 
 ## Result retention
 
-Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest: eight core files regardless of runner, task, fixture, phase, or iteration count. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and first-call observations are rows in the suite sample tables rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
+Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains up to two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest. A sample table is absent only when its suite has no passing timed row. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and first-call observations are rows in the suite sample tables rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
+
+Workers write validation, timing, memory, and error batches only under the run's replaceable `.staging` tree. The parent writes each grouped artifact once, validates the exact core filename set, and atomically commits completion through `run_manifest.json`. Failed, interrupted, stale, or timed-out runs remove partial output and retain only one compact incomplete manifest. Zig and Cargo caches must resolve outside the run directory and are never deleted by run publication or failure cleanup.
 
 Run manifests retain execution-critical dispositions and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record.
 
