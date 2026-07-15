@@ -65,12 +65,12 @@ These files intentionally remain separate: execution configuration, comparison p
 | File | Responsibility |
 | --- | --- |
 | `lib/specification.R` | Task recipes, manifests, evidence expansion, budgets, and report contracts |
-| `lib/measurement.R` | Deterministic inputs, timing, raw samples, RSS, and fixture measurement validation |
+| `lib/measurement.R` | Deterministic inputs, bounded pilot sizing, fixed timing, raw samples, RSS, and fixture validation |
 | `lib/provenance.R` | Source verification, toolchains, generated glue, environment, and artifact identity |
 | `lib/run_manifest.R` | Run state, completion seals, retention, and artifact validation |
 | `lib/product_fixtures.R` | Product package gates, semantic cases, lifecycle checks, and capability gaps |
-| `run_benchmarks.R` | Parent orchestration and run-state transitions |
-| `benchmark_worker.R` | Isolated task or fixture execution selected with `--kind` |
+| `run_benchmarks.R` | Correctness, bounded batch scheduling, timeouts, consolidation, and run-state transitions |
+| `benchmark_worker.R` | Fixed-count task or fixture batch execution selected with `--kind` |
 | `export_comparative_metrics.R` | Current full-matrix evidence reports |
 | `export_boundary_metrics.R` | Boundary and representation regression budgets |
 | `promote_run.R` | Acceptance validation and compact receipt creation |
@@ -109,6 +109,8 @@ Rscript run_benchmarks.R --runners=r,zigr --tasks=48,49
 ```
 
 Every selected task receives a deterministic seed derived from the run seed, task ID, and fixture version. Correctness, cold-start, warmup, and timed phases receive isolated inputs. Mutation, RNG, external state, ALTREP intent, and input fingerprints are enforced by policy.
+
+Timed collection uses one equal-floor pilot for every eligible comparison group, then freezes one symmetric fixed-count confirmation stage. Group and tool order are reproducible, batches and the total run have declared limits, and a timed-out group receives at most one smaller retry while later batches continue. Pilot evidence remains diagnostic and cannot produce a comparative claim.
 
 Filtered runs are diagnostic and cannot produce the full comparative report or be promoted.
 

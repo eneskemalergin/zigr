@@ -75,12 +75,12 @@ export_separated_metrics <- function() {
   validate_fixture_measurement_artifacts(results_dir, run_metadata, evidence)
   source_bundle <- verify_fixture_source_paths(root_dir, evidence)
 
-  raw_ci <- function(universe, runner, item_id, row_id, status, n_iterations) {
+  raw_ci <- function(universe, runner, item_id, row_id, status, n_iterations, sample_stage) {
     if (!identical(as.character(status), "PASS")) return(c(low = NA_real_, high = NA_real_))
     id <- if (identical(universe, "task")) item_id else row_id
     values <- read_run_wall_time_samples(
       results_dir, run_metadata, universe, runner, id,
-      expected_n = as.integer(n_iterations)
+      expected_n = as.integer(n_iterations), stage = as.character(sample_stage)
     )
     median_confidence_interval(values, as.numeric(timing_policy$median_ci_level))
   }
@@ -95,7 +95,9 @@ export_separated_metrics <- function() {
   task_index <- match(task_keys, task_evidence_keys)
   if (anyNA(task_index)) stop("task summaries cannot be joined to the evidence matrix")
   task_manifest_index <- match(summaries$task, manifest$task)
-  task_sample_stage <- rep("legacy_adaptive", nrow(summaries))
+  task_sample_stage <- if ("sample_stage" %in% names(summaries)) {
+    as.character(summaries$sample_stage)
+  } else rep("legacy_adaptive", nrow(summaries))
   task_cells <- data.frame(
     run_id = as.character(summaries$run_id), universe = "task",
     item_id = as.character(summaries$task), row_id = as.character(summaries$task),
@@ -143,7 +145,9 @@ export_separated_metrics <- function() {
   fixture_tier[fixture_optimized] <- "tier_c"
   fixture_group <- as.character(evidence$fixture_rows$comparison_group[fixture_index])
   fixture_group[fixture_optimized] <- paste0("normalized:", fixture_summaries$fixture[fixture_optimized], ":optimized-base-r")
-  fixture_sample_stage <- rep("legacy_adaptive", nrow(fixture_summaries))
+  fixture_sample_stage <- if ("sample_stage" %in% names(fixture_summaries)) {
+    as.character(fixture_summaries$sample_stage)
+  } else rep("legacy_adaptive", nrow(fixture_summaries))
   fixture_backend <- rep("not_applicable", nrow(fixture_summaries))
   for (index in which(fixture_summaries$runner == "r")) {
     fixture <- as.character(fixture_summaries$fixture[[index]])
@@ -193,7 +197,8 @@ export_separated_metrics <- function() {
   for (index in which(cells$status == "PASS")) {
     interval <- raw_ci(
       cells$universe[[index]], cells$runner[[index]], cells$item_id[[index]],
-      cells$row_id[[index]], cells$status[[index]], cells$n_iterations[[index]]
+      cells$row_id[[index]], cells$status[[index]], cells$n_iterations[[index]],
+      cells$sample_stage[[index]]
     )
     cells$median_ci_low_ms[[index]] <- interval[["low"]]
     cells$median_ci_high_ms[[index]] <- interval[["high"]]

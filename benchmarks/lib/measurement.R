@@ -380,10 +380,38 @@ get_nanotime <- function() {
   microbenchmark::get_nanotime()
 }
 
-benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_size = 10L,
-                           max_iter = 500L, cv_threshold = 1.0, convergence_blocks = 5L,
+benchmark_timing_policy <- function() {
+  list(
+    policy_version = "bounded-pilot-confirmation-v1",
+    warmup_iterations = 10L,
+    pilot_iterations = 20L,
+    confirmation_min_iterations = 20L,
+    confirmation_max_iterations = 500L,
+    confirmation_target_cv_pct = 5.0,
+    group_time_cap_ms = 15000,
+    batch_time_cap_ms = 60000,
+    batch_group_cap = 8L,
+    batch_timeout_seconds = 90L,
+    total_run_budget_seconds = 7200L,
+    timer_noise_floor_ms = 0.01,
+    timer_noise_floor_method = "fixed 0.01 ms floor rounded above empty-eval p99 calibration",
+    low_noise_cv_threshold_pct = 20.0,
+    meaningful_margin_ratio = 1.05,
+    median_ci_level = 0.95,
+    median_ci_method = "exact order-statistic interval",
+    rss_metric = "post_gc_endpoint_delta_kb",
+    gc_policy = "full before first call/warmup and both RSS endpoints; no forced GC between timed samples"
+  )
+}
+
+benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 10L,
                            timer_noise_floor_ms = 0.01,
                            rss_metric = "post_gc_endpoint_delta_kb") {
+
+  iterations <- as.integer(iterations)
+  if (length(iterations) != 1L || is.na(iterations) || iterations < 1L) {
+    stop("fixed timing iteration count must be a positive integer")
+  }
 
   gc(full = TRUE)
   rss_before <- current_rss_kb()
@@ -402,44 +430,20 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
     if (!call_ok) return(list(error = "warmup failed"))
   }
 
-  all_times <- numeric()
-  n_blocks <- 0L
-  convergence_cv_pct <- NA_real_
-  stopping_condition <- "max_iterations"
-  repeat {
-    block_times <- numeric(block_size)
-    for (sample_index in seq_len(block_size)) {
-      prepared <- tryCatch(list(ok = TRUE, expression = prepare_timed()), error = function(error) {
-        list(ok = FALSE, error = conditionMessage(error))
-      })
-      if (!isTRUE(prepared$ok)) return(list(error = paste("timed input preparation failed:", prepared$error)))
-      call_error <- NULL
-      t0 <- get_nanotime()
-      tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
-        call_error <<- conditionMessage(error)
-      })
-      t1 <- get_nanotime()
-      if (!is.null(call_error)) return(list(error = call_error))
-      block_times[[sample_index]] <- (t1 - t0) / 1e6
-    }
-    all_times <- c(all_times, block_times)
-    n_blocks <- n_blocks + 1L
-    n <- length(all_times)
-
-    if (n >= block_size * convergence_blocks) {
-      window <- tail(all_times, block_size * convergence_blocks)
-      window_mean <- mean(window)
-      convergence_cv_pct <- if (window_mean > 0) sd(window) / window_mean * 100 else 0
-      if (convergence_cv_pct < cv_threshold) {
-        stopping_condition <- "rolling_cv"
-        break
-      }
-    }
-
-    if (n >= max_iter) {
-      stopping_condition <- "max_iterations"
-      break
-    }
+  all_times <- numeric(iterations)
+  for (sample_index in seq_len(iterations)) {
+    prepared <- tryCatch(list(ok = TRUE, expression = prepare_timed()), error = function(error) {
+      list(ok = FALSE, error = conditionMessage(error))
+    })
+    if (!isTRUE(prepared$ok)) return(list(error = paste("timed input preparation failed:", prepared$error)))
+    call_error <- NULL
+    t0 <- get_nanotime()
+    tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
+      call_error <<- conditionMessage(error)
+    })
+    t1 <- get_nanotime()
+    if (!is.null(call_error)) return(list(error = call_error))
+    all_times[[sample_index]] <- (t1 - t0) / 1e6
   }
 
   n <- length(all_times)
@@ -456,16 +460,9 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
 
   list(
     times      = all_times,
-    converged  = identical(stopping_condition, "rolling_cv"),
     n_runs     = n,
-    n_blocks   = n_blocks,
     warmup_iterations = warmup,
-    block_size = block_size,
-    max_iterations = max_iter,
-    convergence_window_blocks = convergence_blocks,
-    convergence_cv_threshold_pct = cv_threshold,
-    convergence_cv_pct = convergence_cv_pct,
-    stopping_condition = stopping_condition,
+    fixed_iterations = iterations,
     mean_ms    = mean_ms,
     median_ms  = median_ms,
     min_ms     = min_ms,
@@ -478,6 +475,223 @@ benchmark_call <- function(prepare_warmup, prepare_timed, warmup = 10L, block_si
     rss_delta_kb = rss_delta,
     error      = NA_character_
   )
+}
+
+ordered_selection <- function(available, selected, label) {
+  indices <- match(as.character(selected), as.character(available))
+  if (anyNA(indices) || anyDuplicated(indices)) stop(sprintf("%s differs from available IDs", label))
+  indices
+}
+
+timing_group_schedule <- function(group_ids, seed) {
+  group_ids <- as.character(group_ids)
+  if (anyNA(group_ids) || any(!nzchar(group_ids)) || anyDuplicated(group_ids)) {
+    stop("timing group IDs must be unique non-empty values")
+  }
+  seed <- input_scalar_integer(seed, "timing schedule seed")
+  prior_seed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  } else NULL
+  on.exit({
+    if (is.null(prior_seed)) {
+      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+    } else assign(".Random.seed", prior_seed, envir = .GlobalEnv)
+  }, add = TRUE)
+  set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+  realized <- if (length(group_ids) > 1L) sample(group_ids, length(group_ids)) else group_ids
+  data.frame(group_id = realized, group_order = seq_along(realized), stringsAsFactors = FALSE)
+}
+
+timing_batch_schedule <- function(batches, runners) {
+  runners <- as.character(runners)
+  if (length(runners) < 1L || anyNA(runners) || any(!nzchar(runners)) || anyDuplicated(runners)) {
+    stop("timing runners must be unique non-empty values")
+  }
+  do.call(rbind, lapply(seq_len(nrow(batches)), function(index) {
+    batch <- as.integer(batches$batch[[index]])
+    offset <- (batch - 1L) %% length(runners)
+    order <- runners[((seq_along(runners) - 1L + offset) %% length(runners)) + 1L]
+    data.frame(
+      group_id = as.character(batches$group_id[[index]]),
+      group_order = as.integer(batches$group_order[[index]]), batch = batch,
+      runner = order, member_order = seq_along(order), stringsAsFactors = FALSE
+    )
+  }))
+}
+
+pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
+  required <- c("group_id", "member_id", "iteration", "wall_ms")
+  missing <- setdiff(required, names(samples))
+  if (length(missing) > 0L) stop(sprintf("pilot samples missing fields: %s", paste(missing, collapse = ", ")))
+  if (nrow(samples) == 0L) return(data.frame())
+  samples$group_id <- as.character(samples$group_id)
+  samples$member_id <- as.character(samples$member_id)
+  samples$iteration <- as.integer(samples$iteration)
+  samples$wall_ms <- as.numeric(samples$wall_ms)
+  if (anyNA(samples[c("group_id", "member_id", "iteration", "wall_ms")]) ||
+      any(!nzchar(samples$group_id)) || any(!nzchar(samples$member_id)) ||
+      any(!is.finite(samples$wall_ms)) || any(samples$wall_ms < 0)) {
+    stop("pilot samples contain invalid values")
+  }
+  keys <- paste(samples$group_id, samples$member_id, sep = "\r")
+  split_rows <- split(seq_len(nrow(samples)), keys)
+  members <- do.call(rbind, lapply(split_rows, function(indices) {
+    values <- samples$wall_ms[indices]
+    iterations <- sort(samples$iteration[indices])
+    data.frame(
+      group_id = samples$group_id[indices[[1L]]], member_id = samples$member_id[indices[[1L]]],
+      n = length(values),
+      complete = identical(iterations, seq_len(as.integer(policy$pilot_iterations))),
+      median_ms = median(values),
+      cv_pct = if (mean(values) > 0) sd(values) / mean(values) * 100 else 0,
+      drift_pct = if (length(values) >= 4L) {
+        half <- floor(length(values) / 2L)
+        first <- median(values[seq_len(half)])
+        second <- median(tail(values, half))
+        if (first > 0) abs(second / first - 1) * 100 else 0
+      } else NA_real_, stringsAsFactors = FALSE
+    )
+  }))
+  groups <- split(seq_len(nrow(members)), members$group_id)
+  do.call(rbind, lapply(groups, function(indices) {
+    rows <- members[indices, , drop = FALSE]
+    complete <- all(rows$complete)
+    above_floor <- all(rows$median_ms >= as.numeric(policy$timer_noise_floor_ms))
+    group_cost <- sum(rows$median_ms)
+    worst_cv <- max(rows$cv_pct, na.rm = TRUE)
+    desired <- ceiling(as.integer(policy$confirmation_min_iterations) *
+      max(1, (worst_cv / as.numeric(policy$confirmation_target_cv_pct)) ^ 2))
+    affordable <- if (group_cost > 0) floor(as.numeric(policy$group_time_cap_ms) / group_cost) else 0L
+    count <- min(as.integer(policy$confirmation_max_iterations), desired, affordable)
+    status <- if (!complete) "incomplete" else if (!above_floor) "below_timer_floor" else if (
+      count < as.integer(policy$confirmation_min_iterations)
+    ) "incomplete" else "confirmation"
+    data.frame(
+      group_id = rows$group_id[[1L]], pilot_complete = complete,
+      pilot_median_group_ms = group_cost, pilot_max_cv_pct = worst_cv,
+      pilot_max_drift_pct = max(rows$drift_pct, na.rm = TRUE),
+      confirmation_iterations = if (identical(status, "confirmation")) as.integer(count) else NA_integer_,
+      estimated_confirmation_ms = if (identical(status, "confirmation")) count * group_cost else NA_real_,
+      status = status, stringsAsFactors = FALSE
+    )
+  }))
+}
+
+pack_timing_batches <- function(groups, policy = benchmark_timing_policy()) {
+  required <- c("group_id", "group_order", "estimated_ms")
+  missing <- setdiff(required, names(groups))
+  if (length(missing) > 0L) stop(sprintf("timing groups missing fields: %s", paste(missing, collapse = ", ")))
+  if (nrow(groups) == 0L) return(transform(groups, batch = integer()))
+  groups <- groups[order(as.integer(groups$group_order)), , drop = FALSE]
+  batch <- integer(nrow(groups))
+  batch_id <- 1L
+  batch_count <- 0L
+  batch_ms <- 0
+  for (index in seq_len(nrow(groups))) {
+    cost <- as.numeric(groups$estimated_ms[[index]])
+    if (!is.finite(cost) || cost < 0) stop("timing group estimate must be finite and non-negative")
+    would_overflow <- batch_count > 0L && (
+      batch_count >= as.integer(policy$batch_group_cap) ||
+      batch_ms + cost > as.numeric(policy$batch_time_cap_ms)
+    )
+    if (would_overflow) {
+      batch_id <- batch_id + 1L
+      batch_count <- 0L
+      batch_ms <- 0
+    }
+    batch[[index]] <- batch_id
+    batch_count <- batch_count + 1L
+    batch_ms <- batch_ms + cost
+  }
+  groups$batch <- batch
+  groups
+}
+
+admit_timing_budget <- function(groups, budget_ms) {
+  required <- c("universe", "group_id", "estimated_ms")
+  missing <- setdiff(required, names(groups))
+  if (length(missing) > 0L) stop(sprintf("timing budget groups missing fields: %s", paste(missing, collapse = ", ")))
+  budget_ms <- as.numeric(budget_ms)
+  if (length(budget_ms) != 1L || !is.finite(budget_ms) || budget_ms < 0) {
+    stop("timing budget must be one finite non-negative value")
+  }
+  if (nrow(groups) == 0L) {
+    groups$admitted <- logical()
+    groups$remaining_after_ms <- numeric()
+    return(groups)
+  }
+  estimates <- as.numeric(groups$estimated_ms)
+  if (any(!is.finite(estimates)) || any(estimates < 0)) {
+    stop("timing budget estimates must be finite and non-negative")
+  }
+  remaining <- budget_ms
+  admitted <- logical(nrow(groups))
+  remaining_after <- numeric(nrow(groups))
+  for (index in seq_len(nrow(groups))) {
+    admitted[[index]] <- estimates[[index]] <= remaining
+    if (admitted[[index]]) remaining <- remaining - estimates[[index]]
+    remaining_after[[index]] <- remaining
+  }
+  groups$admitted <- admitted
+  groups$remaining_after_ms <- remaining_after
+  groups
+}
+
+run_timing_batches <- function(batches, execute, timeout_seconds, total_budget_seconds,
+                               started_at = proc.time()[["elapsed"]]) {
+  required <- c("batch", "group_id")
+  missing <- setdiff(required, names(batches))
+  if (length(missing) > 0L) stop(sprintf("timing batches missing fields: %s", paste(missing, collapse = ", ")))
+  outcomes <- list()
+  batch_epoch <- 0L
+  run_one <- function(rows, attempt) {
+    batch_epoch <<- batch_epoch + 1L
+    elapsed <- proc.time()[["elapsed"]] - started_at
+    remaining <- total_budget_seconds - elapsed
+    if (remaining <= 0) {
+      return(list(ok = FALSE, timed_out = FALSE, budget_exhausted = TRUE, batch_epoch = batch_epoch))
+    }
+    result <- execute(rows, min(timeout_seconds, remaining), attempt, batch_epoch)
+    if (!is.list(result) || is.null(result$ok) || is.null(result$timed_out)) {
+      stop("timing batch executor returned an invalid result")
+    }
+    result$budget_exhausted <- FALSE
+    result$batch_epoch <- batch_epoch
+    result
+  }
+  for (batch_id in unique(as.integer(batches$batch))) {
+    rows <- batches[as.integer(batches$batch) == batch_id, , drop = FALSE]
+    first <- run_one(rows, 1L)
+    if (isTRUE(first$ok)) {
+      outcomes[[length(outcomes) + 1L]] <- data.frame(
+        group_id = rows$group_id, batch = batch_id, attempt = 1L,
+        batch_epoch = first$batch_epoch, status = "complete", stringsAsFactors = FALSE
+      )
+      next
+    }
+    if (!isTRUE(first$timed_out) || isTRUE(first$budget_exhausted)) {
+      outcomes[[length(outcomes) + 1L]] <- data.frame(
+        group_id = rows$group_id, batch = batch_id, attempt = 1L,
+        batch_epoch = first$batch_epoch,
+        status = if (isTRUE(first$budget_exhausted)) "incomplete_budget" else "failed",
+        stringsAsFactors = FALSE
+      )
+      next
+    }
+    splits <- as.list(seq_len(nrow(rows)))
+    for (indices in splits) {
+      retry <- run_one(rows[indices, , drop = FALSE], 2L)
+      outcomes[[length(outcomes) + 1L]] <- data.frame(
+        group_id = rows$group_id[indices], batch = batch_id, attempt = 2L,
+        batch_epoch = retry$batch_epoch,
+        status = if (isTRUE(retry$ok)) "complete" else if (isTRUE(retry$budget_exhausted)) {
+          "incomplete_budget"
+        } else if (isTRUE(retry$timed_out)) "incomplete_timeout" else "failed",
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  if (length(outcomes) == 0L) data.frame() else do.call(rbind, outcomes)
 }
 
 write_csv <- function(df, path, append = FALSE) {
@@ -594,11 +808,25 @@ read_run_sample_table <- function(run_dir, metadata, universe, runner, ids) {
 }
 
 read_run_wall_time_samples <- function(
-    run_dir, metadata, universe, runner, id, expected_n = NULL, minimum_n = 2L) {
+    run_dir, metadata, universe, runner, id, expected_n = NULL, minimum_n = 2L, stage = NULL) {
   paths <- run_sample_artifact_paths(run_dir, metadata, universe, runner, id)
   filters <- if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
     if (identical(universe, "task")) list(runner = runner, task = id, phase = "timed") else list(runner = runner, row_id = id)
   } else NULL
+  if (!is.null(filters) && is.null(stage)) {
+    header <- read.csv(paths[[1L]], stringsAsFactors = FALSE)
+    if ("stage" %in% names(header)) {
+      keep <- rep(TRUE, nrow(header))
+      for (field in names(filters)) keep <- keep & as.character(header[[field]]) == as.character(filters[[field]])
+      stages <- unique(as.character(header$stage[keep]))
+      stage <- if ("confirmation" %in% stages) "confirmation" else if ("pilot" %in% stages) "pilot" else NULL
+    }
+  }
+  if (!is.null(filters)) {
+    header_names <- names(read.csv(paths[[1L]], nrows = 1L, stringsAsFactors = FALSE))
+    if (!is.null(stage) && "stage" %in% header_names) filters$stage <- stage
+    if ("excluded" %in% header_names) filters$excluded <- FALSE
+  }
   read_wall_time_samples(paths[[1L]], expected_n = expected_n, minimum_n = minimum_n, filters = filters)
 }
 
@@ -950,15 +1178,16 @@ validate_fixture_raw_statistics <- function(summary, raw, policy, label) {
     stop(sprintf("fixture raw statistics differ for %s", label))
   }
   expected_noise <- if (median_ms < as.numeric(policy$timer_noise_floor_ms)) "below_floor" else "above_floor"
-  window_size <- as.integer(policy$block_size) * as.integer(policy$convergence_window_blocks)
-  convergence_window <- tail(raw$wall_ms, window_size)
-  convergence_mean <- mean(convergence_window)
-  convergence_cv <- if (convergence_mean > 0) {
-    sd(convergence_window) / convergence_mean * 100
-  } else 0
-  if (!identical(as.character(summary$timer_noise_status), expected_noise) ||
-      !isTRUE(all.equal(as.numeric(summary$convergence_cv_pct), convergence_cv, tolerance = 1e-12))) {
-    stop(sprintf("fixture convergence or timer-noise evidence differs for %s", label))
+  if (!identical(as.character(summary$timer_noise_status), expected_noise)) {
+    stop(sprintf("fixture timer-noise evidence differs for %s", label))
+  }
+  if (!is_bounded_timing_policy(policy)) {
+    window <- tail(raw$wall_ms, as.integer(policy$block_size) * as.integer(policy$convergence_window_blocks))
+    window_mean <- mean(window)
+    expected_cv <- if (window_mean > 0) sd(window) / window_mean * 100 else 0
+    if (!isTRUE(all.equal(as.numeric(summary$convergence_cv_pct), expected_cv, tolerance = 1e-12))) {
+      stop(sprintf("fixture convergence evidence differs for %s", label))
+    }
   }
   invisible(TRUE)
 }
@@ -974,11 +1203,17 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
     "fixture_source_digest", "fixture_build_digest", "fixture_generated_glue_kind",
     "fixture_generated_glue_digest", "fixture_artifact_digest", "fixture_dependency_digest",
     "fixture_artifact_dependency_digest", "source_ledger_identity_digest", "mean_ms", "median_ms",
-    "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms", "n_iterations",
+    "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms", "n_iterations"
+  )
+  timing_required <- if (is_bounded_timing_policy(metadata$timing_policy)) c(
+    "warmup_iterations", "sample_stage", "fixed_iterations", "timer_noise_floor_ms",
+    "timer_noise_status", "rss_metric", "gc_policy"
+  ) else c(
     "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
     "convergence_cv_threshold_pct", "convergence_cv_pct", "stopping_condition", "converged",
     "timer_noise_floor_ms", "timer_noise_status", "rss_metric", "gc_policy"
   )
+  required <- c(required, timing_required)
   missing <- setdiff(required, names(summaries))
   if (length(missing) > 0L) stop(sprintf("fixture summaries missing columns: %s", paste(missing, collapse = ", ")))
   if (!all(as.character(summaries$run_id) == as.character(metadata$run_id))) {
@@ -1061,50 +1296,51 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
   }
   pass <- summaries[summaries$status == "PASS", , drop = FALSE]
   policy <- metadata$timing_policy
-  if (any(as.integer(pass$warmup_iterations) != as.integer(policy$warmup_iterations)) ||
-      any(as.integer(pass$block_size) != as.integer(policy$block_size)) ||
-      any(as.integer(pass$max_iterations) != as.integer(policy$max_iterations)) ||
-      any(as.integer(pass$convergence_window_blocks) != as.integer(policy$convergence_window_blocks)) ||
-      any(as.numeric(pass$convergence_cv_threshold_pct) != as.numeric(policy$convergence_cv_threshold_pct)) ||
+  bounded <- is_bounded_timing_policy(policy)
+  policy_mismatch <- any(as.integer(pass$warmup_iterations) != as.integer(policy$warmup_iterations)) ||
       any(as.numeric(pass$timer_noise_floor_ms) != as.numeric(policy$timer_noise_floor_ms)) ||
       any(as.character(pass$rss_metric) != as.character(policy$rss_metric)) ||
-      any(as.character(pass$gc_policy) != as.character(policy$gc_policy))) {
+      any(as.character(pass$gc_policy) != as.character(policy$gc_policy))
+  if (!bounded) policy_mismatch <- policy_mismatch ||
+    any(as.integer(pass$block_size) != as.integer(policy$block_size)) ||
+    any(as.integer(pass$max_iterations) != as.integer(policy$max_iterations)) ||
+    any(as.integer(pass$convergence_window_blocks) != as.integer(policy$convergence_window_blocks)) ||
+    any(as.numeric(pass$convergence_cv_threshold_pct) != as.numeric(policy$convergence_cv_threshold_pct))
+  if (policy_mismatch) {
     stop("fixture summaries disagree with the timing policy")
   }
   numeric_fields <- c(
-    "mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms",
-    "convergence_cv_pct"
+    "mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms"
   )
   if (any(!vapply(pass[numeric_fields], function(values) all(is.finite(values) & values >= 0), logical(1)))) {
     stop("fixture PASS summaries contain invalid timing statistics")
   }
-  if (any(pass$n_iterations < 1L |
-          pass$n_iterations > as.integer(policy$max_iterations) |
-          pass$n_iterations %% as.integer(policy$block_size) != 0L)) {
-    stop("fixture PASS summaries contain an invalid measured sample count")
-  }
-  if (any(!(pass$stopping_condition %in% c("rolling_cv", "max_iterations")))) {
-    stop("fixture PASS summaries contain an invalid stopping condition")
-  }
-  max_rows <- pass$stopping_condition == "max_iterations"
-  if (any(pass$n_iterations[max_rows] != as.integer(policy$max_iterations)) ||
-      any(pass$converged[max_rows])) {
-    stop("fixture max-iteration summaries disagree with the timing policy")
-  }
-  converged_rows <- pass$stopping_condition == "rolling_cv"
-  if (any(!pass$converged[converged_rows])) {
-    stop("fixture rolling-CV summaries are not marked converged")
+  if (bounded) {
+    if (any(!(pass$sample_stage %in% c("pilot", "confirmation"))) ||
+        any(as.integer(pass$n_iterations) != as.integer(pass$fixed_iterations))) {
+      stop("fixture PASS summaries contain an invalid measured sample count")
+    }
+    pilot_rows <- pass$sample_stage == "pilot"
+    confirmation_rows <- pass$sample_stage == "confirmation"
+    if (any(pass$n_iterations[pilot_rows] != as.integer(policy$pilot_iterations)) ||
+        any(pass$n_iterations[confirmation_rows] < as.integer(policy$confirmation_min_iterations)) ||
+        any(pass$n_iterations[confirmation_rows] > as.integer(policy$confirmation_max_iterations))) {
+      stop("fixture PASS summaries disagree with bounded timing policy")
+    }
+  } else if (any(!(pass$stopping_condition %in% c("rolling_cv", "max_iterations"))) ||
+             any(pass$n_iterations < 1L | pass$n_iterations > as.integer(policy$max_iterations) |
+                 pass$n_iterations %% as.integer(policy$block_size) != 0L)) {
+    stop("legacy fixture PASS summaries contain invalid adaptive timing evidence")
   }
   not_measured <- summaries$status != "PASS"
   not_measured_numeric <- c(
     "mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms",
-    "n_iterations", "convergence_cv_pct"
+    "n_iterations", if (bounded) "fixed_iterations" else "convergence_cv_pct"
   )
   if (any(!vapply(summaries[not_measured, not_measured_numeric, drop = FALSE], function(values) {
     all(is.na(values))
   }, logical(1))) ||
-      any(as.character(summaries$stopping_condition[not_measured]) != "not_measured") ||
-      any(!is.na(summaries$converged[not_measured])) ||
+      any(as.character(summaries[[if (bounded) "sample_stage" else "stopping_condition"]][not_measured]) != "not_measured") ||
       any(as.character(summaries$timer_noise_status[not_measured]) != "not_measured")) {
     stop("untimed fixture summaries contain measurement evidence")
   }
@@ -1135,12 +1371,38 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
       stop(sprintf("fixture raw timing coverage differs for %s", runner))
     }
     required_raw <- c("run_id", "runner", "fixture", "variant", "row_id", "iteration", "wall_ms")
+    if (bounded) required_raw <- c(
+      required_raw, "stage", "process_epoch", "batch", "attempt", "group_order", "member_order",
+      "excluded", "exclusion_reason"
+    )
     if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
       stop(sprintf("fixture raw timing columns differ for %s", runner))
     }
+    if (bounded && nrow(raw_samples) > 0L && (
+        any(!(as.character(raw_samples$stage) %in% c("pilot", "confirmation"))) ||
+        any(as.integer(raw_samples$process_epoch) < 1L) || any(as.integer(raw_samples$batch) < 1L) ||
+        any(!(as.integer(raw_samples$attempt) %in% 1:2)) ||
+        any(as.integer(raw_samples$group_order) < 1L) || any(as.integer(raw_samples$member_order) < 1L))) {
+      stop(sprintf("fixture raw timing metadata differs for %s", runner))
+    }
+    if (bounded) {
+      excluded <- as.logical(raw_samples$excluded) %in% TRUE
+      if (anyNA(as.logical(raw_samples$excluded)) ||
+          any(excluded & (is.na(raw_samples$exclusion_reason) | !nzchar(as.character(raw_samples$exclusion_reason)))) ||
+          any(!excluded & !is.na(raw_samples$exclusion_reason) & nzchar(as.character(raw_samples$exclusion_reason)))) {
+        stop(sprintf("fixture raw timing exclusions differ for %s", runner))
+      }
+    }
     for (row_id in expected_raw) {
-      raw <- raw_samples[as.character(raw_samples$row_id) == row_id, , drop = FALSE]
       summary <- runner_rows[runner_rows$row_id == row_id, , drop = FALSE]
+      raw <- raw_samples[
+        as.character(raw_samples$row_id) == row_id,
+        , drop = FALSE
+      ]
+      if (bounded) raw <- raw[
+        !(as.logical(raw$excluded) %in% TRUE) &
+          as.character(raw$stage) == as.character(summary$sample_stage[[1L]]), , drop = FALSE
+      ]
       identity_matches <- nrow(summary) == 1L &&
         all(as.character(raw$run_id) == as.character(metadata$run_id)) &&
         all(as.character(raw$runner) == runner) &&
@@ -1153,6 +1415,13 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
         stop(sprintf("fixture raw sample count differs for %s/%s", runner, row_id))
       }
       validate_fixture_raw_statistics(summary, raw, policy, paste(runner, row_id, sep = "/"))
+    }
+  }
+  confirmation <- if (bounded) pass[pass$sample_stage == "confirmation", , drop = FALSE] else pass[0, , drop = FALSE]
+  if (nrow(confirmation) > 0L) {
+    counts <- split(as.integer(confirmation$n_iterations), as.character(confirmation$fixture))
+    if (any(vapply(counts, function(value) length(unique(value)) != 1L, logical(1)))) {
+      stop("confirmation fixture groups do not use symmetric frozen sample counts")
     }
   }
   invisible(TRUE)

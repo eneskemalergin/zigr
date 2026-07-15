@@ -60,6 +60,9 @@ summary_row <- function(runner, task, pass_required = TRUE) {
   row <- summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE]
   if (nrow(row) != 1L) stop(sprintf("%s/%s is not one summary row", runner, task))
   if (pass_required && row$status[[1]] != "PASS") stop(sprintf("%s/%s is not one PASS row", runner, task))
+  if (pass_required && row$sample_stage[[1]] != "confirmation") {
+    stop(sprintf("%s/%s has no fixed confirmation sample", runner, task))
+  }
   row
 }
 
@@ -117,7 +120,7 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     c_reference_cold_start_ms = c_reference$cold_start_ms[[1]],
     c_reference_rss_kb = c_reference$rss_kb[[1]],
     c_reference_n_iterations = c_reference$n_iterations[[1]],
-    c_reference_stopping_condition = c_reference$stopping_condition[[1]],
+    c_reference_sample_stage = c_reference$sample_stage[[1]],
     c_comparison_eligible = c_eligible,
     c_comparison_reason = if (!comparable_work) {
       "different ownership strategy"
@@ -143,8 +146,8 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     handwritten_rss_kb = handwritten$rss_kb[[1]],
     generated_n_iterations = generated_samples$n,
     handwritten_n_iterations = handwritten_samples$n,
-    generated_stopping_condition = generated$stopping_condition[[1]],
-    handwritten_stopping_condition = handwritten$stopping_condition[[1]],
+    generated_sample_stage = generated$sample_stage[[1]],
+    handwritten_sample_stage = handwritten$sample_stage[[1]],
     timer_noise_status = if (below_floor) "below_floor" else "above_floor",
     low_noise = low_noise,
     comparison_eligible = eligible,
@@ -222,7 +225,7 @@ representation_rows <- lapply(representation_tasks, function(task) {
     cold_start_ms = row$cold_start_ms[[1]],
     rss_kb = row$rss_kb[[1]],
     n_iterations = samples$n,
-    stopping_condition = row$stopping_condition[[1]],
+    sample_stage = row$sample_stage[[1]],
     timer_noise_floor_ms = timing_policy$timer_noise_floor_ms,
     median_ci_level = timing_policy$median_ci_level,
     median_ci_method = timing_policy$median_ci_method,

@@ -27,6 +27,256 @@ expect_error <- function(label, expression, pattern) {
   invisible(error)
 }
 
+timing_policy <- benchmark_timing_policy()
+validate_timing_policy(timing_policy)
+legacy_timing_policy <- list(
+  warmup_iterations = 10L, block_size = 10L, max_iterations = 500L,
+  convergence_window_blocks = 5L, convergence_cv_threshold_pct = 1,
+  timer_noise_floor_ms = 0.01, timer_noise_floor_method = "legacy calibration",
+  low_noise_cv_threshold_pct = 20, meaningful_margin_ratio = 1.05,
+  median_ci_level = 0.95, median_ci_method = "exact order-statistic interval",
+  rss_metric = "post_gc_endpoint_delta_kb", gc_policy = "legacy"
+)
+validate_timing_policy(legacy_timing_policy)
+expect_error(
+  "unknown timing policy version",
+  validate_timing_policy(within(timing_policy, policy_version <- "future-policy")),
+  "unsupported timing policy version"
+)
+group_order_a <- timing_group_schedule(sprintf("G%02d", 1:8), 771L)
+group_order_b <- timing_group_schedule(sprintf("G%02d", 1:8), 771L)
+order_batches <- transform(group_order_a, estimated_ms = 1, batch = rep(1:3, length.out = 8L))
+schedule_a <- timing_batch_schedule(order_batches, c("zigr", "r", "c_call"))
+schedule_b <- timing_batch_schedule(order_batches, c("zigr", "r", "c_call"))
+expect_true(
+  identical(group_order_a, group_order_b) && identical(schedule_a, schedule_b) &&
+    identical(sort(unique(group_order_a$group_order)), 1:8) &&
+    all(vapply(split(schedule_a$runner, schedule_a$group_order), function(order) {
+      length(unique(order)) == 3L
+    }, logical(1))) &&
+    length(unique(vapply(split(schedule_a$runner, schedule_a$group_order), paste, collapse = ":", character(1)))) == 3L,
+  "timing schedule deterministically randomizes groups and rotates member order"
+)
+expect_true(
+  identical(ordered_selection(c("a", "b", "c"), c("c", "a"), "test selection"), c(3L, 1L)),
+  "worker selections preserve the scheduler's declared order"
+)
+expect_error(
+  "worker selection rejects an unknown ID",
+  ordered_selection(c("a", "b"), c("a", "missing"), "test selection"),
+  "differs from available IDs"
+)
+
+synthetic_pilot <- function(group, member, values) data.frame(
+  group_id = group, member_id = member, iteration = seq_along(values), wall_ms = values,
+  stringsAsFactors = FALSE
+)
+stable <- rep(1, timing_policy$pilot_iterations)
+noisy <- rep(c(0.25, 1.75), length.out = timing_policy$pilot_iterations)
+drifting <- seq(0.5, 1.5, length.out = timing_policy$pilot_iterations)
+floor_bound <- rep(timing_policy$timer_noise_floor_ms / 2, timing_policy$pilot_iterations)
+slow <- rep(timing_policy$group_time_cap_ms, timing_policy$pilot_iterations)
+pilot_samples <- do.call(rbind, list(
+  synthetic_pilot("stable", "a", stable), synthetic_pilot("stable", "b", stable),
+  synthetic_pilot("noisy", "a", noisy), synthetic_pilot("noisy", "b", noisy),
+  synthetic_pilot("drifting", "a", drifting), synthetic_pilot("drifting", "b", drifting),
+  synthetic_pilot("floor", "a", floor_bound), synthetic_pilot("floor", "b", floor_bound),
+  synthetic_pilot("slow", "a", slow), synthetic_pilot("slow", "b", slow)
+))
+pilot_plan <- pilot_group_plan(pilot_samples, timing_policy)
+pilot_by_group <- split(pilot_plan, pilot_plan$group_id)
+expect_true(
+  pilot_by_group$stable$status == "confirmation" &&
+    pilot_by_group$stable$confirmation_iterations == timing_policy$confirmation_min_iterations &&
+    pilot_by_group$noisy$confirmation_iterations > pilot_by_group$stable$confirmation_iterations &&
+    pilot_by_group$drifting$pilot_max_drift_pct > pilot_by_group$stable$pilot_max_drift_pct &&
+    pilot_by_group$floor$status == "below_timer_floor" &&
+    pilot_by_group$slow$status == "incomplete",
+  "pilot sizing handles stable, noisy, drifting, timer-floor, and slow groups within declared bounds"
+)
+expect_true(
+  all(vapply(split(pilot_samples$iteration, paste(pilot_samples$group_id, pilot_samples$member_id)), length, integer(1)) ==
+        timing_policy$pilot_iterations),
+  "every eligible pilot member receives the same bounded floor"
+)
+duplicate_iteration <- pilot_samples[pilot_samples$group_id == "stable", , drop = FALSE]
+duplicate_iteration$iteration[duplicate_iteration$member_id == "a" & duplicate_iteration$iteration == 2L] <- 1L
+expect_true(
+  identical(pilot_group_plan(duplicate_iteration, timing_policy)$status, "incomplete"),
+  "a pilot with duplicated iteration numbers is incomplete even when its row count matches"
+)
+
+packed <- pack_timing_batches(data.frame(
+  group_id = sprintf("G%02d", 1:5), group_order = 1:5,
+  estimated_ms = rep(timing_policy$batch_time_cap_ms / 3, 5L)
+), timing_policy)
+packed_cost <- tapply(packed$estimated_ms, packed$batch, sum)
+packed_count <- table(packed$batch)
+expect_true(
+  all(packed_cost <= timing_policy$batch_time_cap_ms) &&
+    all(packed_count <= timing_policy$batch_group_cap),
+  "batch packing respects declared time and group caps"
+)
+budget_admission <- admit_timing_budget(data.frame(
+  universe = c("task", "task", "fixture"), group_id = c("a", "b", "c"),
+  estimated_ms = c(60, 50, 30), stringsAsFactors = FALSE
+), 100)
+expect_true(
+  identical(budget_admission$admitted, c(TRUE, FALSE, TRUE)) &&
+    identical(budget_admission$remaining_after_ms, c(40, 40, 10)),
+  "confirmation budget admission is ordered, bounded, and can admit later work that fits"
+)
+attempts <- new.env(parent = emptyenv())
+executor <- function(rows, timeout_seconds, attempt, batch_epoch) {
+  key <- paste(rows$group_id, collapse = "+")
+  attempts[[key]] <- if (is.null(attempts[[key]])) 1L else attempts[[key]] + 1L
+  stalled <- "G01" %in% rows$group_id
+  list(ok = !stalled, timed_out = stalled)
+}
+queue_result <- run_timing_batches(
+  packed, executor, timing_policy$batch_timeout_seconds, timing_policy$total_run_budget_seconds
+)
+expect_true(
+  any(queue_result$group_id == "G01" & queue_result$status == "incomplete_timeout") &&
+    all(queue_result$status[queue_result$group_id != "G01"] == "complete") &&
+    max(queue_result$batch_epoch) > 1L && sum(grepl("G01", ls(attempts, all.names = TRUE))) == 2L,
+  "a stalled batch receives one reduced retry and later batches still complete"
+)
+budget_executor_called <- FALSE
+budget_result <- run_timing_batches(
+  packed[1L, , drop = FALSE],
+  function(...) {
+    budget_executor_called <<- TRUE
+    list(ok = TRUE, timed_out = FALSE)
+  },
+  timing_policy$batch_timeout_seconds, 1,
+  started_at = proc.time()[["elapsed"]] - 2
+)
+expect_true(
+  !budget_executor_called && identical(budget_result$status, "incomplete_budget"),
+  "an exhausted total timing budget marks work incomplete without launching another worker"
+)
+received_timeout <- NA_real_
+invisible(run_timing_batches(
+  packed[1L, , drop = FALSE],
+  function(rows, timeout_seconds, attempt, batch_epoch) {
+    received_timeout <<- timeout_seconds
+    list(ok = TRUE, timed_out = FALSE)
+  },
+  timing_policy$batch_timeout_seconds, 10,
+  started_at = proc.time()[["elapsed"]] - 8
+))
+expect_true(
+  is.finite(received_timeout) && received_timeout > 0 && received_timeout <= 2.1,
+  "a batch timeout is capped by the remaining total timing budget"
+)
+
+execution_plan <- data.frame(
+  group_id = c("G01", "G02"), pilot_complete = TRUE,
+  pilot_median_group_ms = c(2, 0.001), pilot_max_cv_pct = c(1, 1),
+  pilot_max_drift_pct = c(0, 0), confirmation_iterations = c(20L, NA_integer_),
+  estimated_confirmation_ms = c(40, NA_real_),
+  status = c("confirmation", "below_timer_floor"), stringsAsFactors = FALSE
+)
+pilot_schedule <- data.frame(
+  group_id = rep(c("G01", "G02"), each = 2L), group_order = rep(1:2, each = 2L),
+  batch = rep(1:2, each = 2L), runner = c("r", "zigr", "zigr", "r"),
+  member_order = rep(1:2, 2L), stringsAsFactors = FALSE
+)
+confirmation_schedule <- pilot_schedule[pilot_schedule$group_id == "G01", , drop = FALSE]
+confirmation_batches <- data.frame(
+  group_id = "G01", group_order = 1L, estimated_ms = 40, batch = 1L,
+  stringsAsFactors = FALSE
+)
+pilot_batches <- data.frame(
+  group_id = c("G01", "G02"), group_order = 1:2, estimated_ms = 0,
+  batch = 1:2, stringsAsFactors = FALSE
+)
+timing_execution <- list(
+  schedule_seeds = list(task = 1L, fixture = 2L),
+  packing_hint_run_ids = list(),
+  confirmation_budget = list(
+    available_ms = 100,
+    decisions = data.frame(
+      universe = c("task", "fixture"), group_id = "G01", group_order = 1L,
+      estimated_ms = 40, budget_order = 1:2, admitted = TRUE,
+      remaining_after_ms = c(60, 20), stringsAsFactors = FALSE
+    )
+  ),
+  task_plan = execution_plan, fixture_plan = execution_plan,
+  task_pilot_schedule = pilot_schedule, fixture_pilot_schedule = pilot_schedule,
+  task_pilot_batches = pilot_batches, fixture_pilot_batches = pilot_batches,
+  task_confirmation_schedule = confirmation_schedule,
+  fixture_confirmation_schedule = confirmation_schedule,
+  task_confirmation_batches = confirmation_batches,
+  fixture_confirmation_batches = confirmation_batches,
+  frozen_at = "2026-07-15T00:00:00.000Z",
+  outcomes = list(
+    task_pilot = data.frame(
+      group_id = c("G01", "G02"), batch = 1:2, attempt = 1L, batch_epoch = 1:2,
+      status = "complete"
+    ),
+    fixture_pilot = data.frame(
+      group_id = c("G01", "G02"), batch = 1:2, attempt = 1L, batch_epoch = 3:4,
+      status = "complete"
+    ),
+    task_confirmation = data.frame(
+      group_id = "G01", batch = 1L, attempt = 1L, batch_epoch = 5L, status = "complete"
+    ),
+    fixture_confirmation = data.frame(
+      group_id = "G01", batch = 1L, attempt = 1L, batch_epoch = 6L, status = "complete"
+    )
+  ),
+  finished_at = "2026-07-15T00:01:00.000Z"
+)
+timing_metadata <- list(
+  tasks = as.list(c("G01", "G02")), runners = as.list(c("r", "zigr")),
+  timing_policy = timing_policy
+)
+validate_timing_execution(timing_execution, timing_metadata)
+serialized_execution <- jsonlite::fromJSON(
+  jsonlite::toJSON(timing_execution, auto_unbox = TRUE), simplifyVector = FALSE
+)
+validate_timing_execution(serialized_execution, timing_metadata)
+asymmetric_execution <- unserialize(serialize(timing_execution, NULL))
+asymmetric_execution$task_confirmation_schedule <-
+  asymmetric_execution$task_confirmation_schedule[-1L, , drop = FALSE]
+expect_error(
+  "asymmetric frozen confirmation schedule",
+  validate_timing_execution(asymmetric_execution, timing_metadata),
+  "not complete and symmetric"
+)
+invalid_order <- unserialize(serialize(timing_execution, NULL))
+invalid_order$task_pilot_schedule$member_order[[2L]] <- 1L
+expect_error(
+  "invalid frozen member order",
+  validate_timing_execution(invalid_order, timing_metadata),
+  "tool order does not match"
+)
+tampered_budget <- unserialize(serialize(timing_execution, NULL))
+tampered_budget$confirmation_budget$decisions$admitted[[1L]] <- FALSE
+expect_error(
+  "tampered confirmation budget admission",
+  validate_timing_execution(tampered_budget, timing_metadata),
+  "differ from the declared budget"
+)
+
+fixed_calls <- 0L
+fixed_result <- benchmark_call(
+  function() function() NULL,
+  function() function() fixed_calls <<- fixed_calls + 1L,
+  iterations = 7L, warmup = 2L
+)
+expect_true(
+  fixed_calls == 7L && fixed_result$n_runs == 7L && fixed_result$fixed_iterations == 7L,
+  "fixed timing takes exactly the predeclared confirmation count"
+)
+expect_error(
+  "invalid fixed timing count",
+  benchmark_call(function() function() NULL, function() function() NULL, iterations = 0L),
+  "positive integer"
+)
+
 sample_file <- tempfile("wall-time-samples-", fileext = ".csv")
 write.csv(data.frame(iteration = 1:5, wall_ms = c(0, 0.1, 0.2, 0.3, 0.4)), sample_file, row.names = FALSE)
 sample_values <- read_wall_time_samples(sample_file, expected_n = 5L)
@@ -484,7 +734,8 @@ expect_error(
 write.csv(data.frame(runner = "r", row_id = "F01", wall_ms = 1), file.path(sealed_run, "fixture_samples.csv"), row.names = FALSE)
 
 drifted_completion <- unserialize(serialize(sealed_metadata, NULL))
-drifted_completion$timing_policy$max_iterations <- drifted_completion$timing_policy$max_iterations + 1L
+drifted_completion$timing_policy$confirmation_max_iterations <-
+  drifted_completion$timing_policy$confirmation_max_iterations + 1L
 expect_error(
   "completed manifest contract drift",
   validate_run_completion_contract(drifted_completion),
@@ -892,7 +1143,7 @@ raw_summary <- data.frame(
   mean_ms = round(raw_mean, 4), median_ms = round(median(raw_times$wall_ms), 4),
   min_ms = round(min(raw_times$wall_ms), 4), max_ms = round(max(raw_times$wall_ms), 4),
   sd_ms = round(sd(raw_times$wall_ms), 4), cv_pct = round(raw_window_cv, 2),
-  timer_noise_status = "above_floor", convergence_cv_pct = raw_window_cv,
+  timer_noise_status = "above_floor",
   stringsAsFactors = FALSE
 )
 validate_fixture_raw_statistics(raw_summary, raw_times, timing_policy, "synthetic/F01")

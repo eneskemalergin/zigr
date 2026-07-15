@@ -10,7 +10,44 @@ source(file.path(root_dir, "lib", "provenance.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "product_fixtures.R"))
 
+parse_named_integer_map <- function(value, label) {
+  entries <- strsplit(as.character(value), ",", fixed = TRUE)[[1L]]
+  parts <- strsplit(entries, "=", fixed = TRUE)
+  if (length(parts) == 0L || any(lengths(parts) != 2L)) stop(sprintf("%s must use id=integer entries", label))
+  ids <- vapply(parts, `[[`, character(1), 1L)
+  values <- suppressWarnings(as.integer(vapply(parts, `[[`, character(1), 2L)))
+  if (any(!nzchar(ids)) || anyDuplicated(ids) || anyNA(values) || any(values < 1L)) {
+    stop(sprintf("%s contains an invalid entry", label))
+  }
+  stats::setNames(values, ids)
+}
+
+timing_worker_options <- function(args) {
+  value <- function(name) {
+    matches <- grep(paste0("^--", name, "="), args, value = TRUE)
+    if (length(matches) == 0L) return(NULL)
+    sub(paste0("^--", name, "="), "", matches[[1L]])
+  }
+  stage <- value("timing-stage")
+  counts <- value("timing-counts")
+  output <- value("batch-output")
+  if (sum(vapply(list(stage, counts, output), is.null, logical(1))) %in% c(1L, 2L)) {
+    stop("timing-stage, timing-counts, and batch-output must be supplied together")
+  }
+  if (is.null(stage)) return(NULL)
+  if (!(stage %in% c("pilot", "confirmation"))) stop("timing stage must be pilot or confirmation")
+  scalar_integer <- function(name) input_scalar_integer(value(name), name)
+  list(
+    stage = stage, counts = parse_named_integer_map(counts, "timing counts"),
+    output = normalizePath(output, mustWork = FALSE), batch = scalar_integer("batch"),
+    attempt = scalar_integer("attempt"), process_epoch = scalar_integer("process-epoch"),
+    member_order = scalar_integer("member-order"),
+    group_orders = parse_named_integer_map(value("group-orders"), "group orders")
+  )
+}
+
 run_task_worker <- function(cli) {
+  timing_options <- timing_worker_options(cli)
   runner_name <- NA
   task_filter <- NULL
   check_only <- FALSE
@@ -45,6 +82,9 @@ run_task_worker <- function(cli) {
   if (validation_only && !is.null(validated_correctness_arg)) {
     stop("validation-only mode cannot reuse retained correctness")
   }
+  if (!check_only && !validation_only && is.null(prepare_inputs_arg) && is.null(timing_options)) {
+    stop("timed task execution requires bounded timing options")
+  }
   
   runner_configs <- load_runner_configs(root_dir)
   if (!(runner_name %in% names(runner_configs))) stop(sprintf("runner config not found: %s", runner_name))
@@ -65,7 +105,7 @@ run_task_worker <- function(cli) {
     if (!(runner_name %in% run_manifest_values(run_metadata$runners))) {
       stop(sprintf("runner %s is not declared by run manifest %s", runner_name, run_manifest_path(results_dir)))
     }
-    staging_results_dir <- file.path(results_dir, ".staging")
+    staging_results_dir <- if (is.null(timing_options)) file.path(results_dir, ".staging") else timing_options$output
     dir.create(file.path(staging_results_dir, runner_name), recursive = TRUE, showWarnings = FALSE)
     unlink(file.path(staging_results_dir, runner_name, "errors.csv"))
   }
@@ -81,10 +121,11 @@ run_task_worker <- function(cli) {
     task_numbers <- vapply(
       all_tasks,
       function(task) as.integer(sub("([0-9]+).*", "\\1", task$id)),
-    integer(1))
-  all_tasks <- all_tasks[task_numbers %in% task_filter]
-  if (length(all_tasks) == 0L) stop("task filter selected no manifest tasks")
-}
+      integer(1)
+    )
+    all_tasks <- all_tasks[ordered_selection(task_numbers, task_filter, "task filter")]
+    if (length(all_tasks) == 0L) stop("task filter selected no manifest tasks")
+  }
   
   if (!is.null(prepare_inputs_arg)) {
     master_seed <- if (is.null(master_seed_arg)) benchmark_master_seed() else input_scalar_integer(master_seed_arg, "master seed")
@@ -121,7 +162,7 @@ run_task_worker <- function(cli) {
     if (!identical(master_seed, input_scalar_integer(input_recipes$master_seed, "canonical input master seed"))) {
       stop("master seed differs from the canonical input manifest")
     }
-    selected_ids <- vapply(all_tasks, function(task) task$id, character(1))
+    selected_ids <- run_manifest_values(run_metadata$tasks)
     if (!identical(sort(names(input_recipes$tasks)), sort(selected_ids))) {
       stop("canonical input task set differs from the runner task set")
     }
@@ -136,7 +177,7 @@ run_task_worker <- function(cli) {
       run_correctness_artifact_paths(results_dir, run_metadata, "task", runner_name),
       mustWork = TRUE
     )
-    expected_tasks <- vapply(all_tasks, function(task) task$id, character(1))
+    expected_tasks <- run_manifest_values(run_metadata$tasks)
     executable_tasks <- expected_tasks[vapply(expected_tasks, function(task) {
       isTRUE(run_manifest_disposition(run_metadata, runner_name, task)$executable)
     }, logical(1))]
@@ -160,13 +201,8 @@ run_task_worker <- function(cli) {
     if (is.null(bm)) {
       return(list(
         warmup_iterations = as.integer(timing_policy$warmup_iterations),
-        block_size = as.integer(timing_policy$block_size),
-        max_iterations = as.integer(timing_policy$max_iterations),
-        convergence_window_blocks = as.integer(timing_policy$convergence_window_blocks),
-        convergence_cv_threshold_pct = as.numeric(timing_policy$convergence_cv_threshold_pct),
-        convergence_cv_pct = NA_real_,
-        stopping_condition = "not_measured",
-        converged = NA,
+        sample_stage = "not_measured",
+        fixed_iterations = NA_integer_,
         timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
         timer_noise_status = "not_measured",
         rss_metric = as.character(timing_policy$rss_metric),
@@ -175,13 +211,8 @@ run_task_worker <- function(cli) {
     }
     list(
       warmup_iterations = as.integer(bm$warmup_iterations),
-      block_size = as.integer(bm$block_size),
-      max_iterations = as.integer(bm$max_iterations),
-      convergence_window_blocks = as.integer(bm$convergence_window_blocks),
-      convergence_cv_threshold_pct = as.numeric(bm$convergence_cv_threshold_pct),
-      convergence_cv_pct = as.numeric(bm$convergence_cv_pct),
-      stopping_condition = as.character(bm$stopping_condition),
-      converged = isTRUE(bm$converged),
+      sample_stage = as.character(timing_options$stage),
+      fixed_iterations = as.integer(bm$fixed_iterations),
       timer_noise_floor_ms = as.numeric(bm$timer_noise_floor_ms),
       timer_noise_status = as.character(bm$timer_noise_status),
       rss_metric = as.character(bm$rss_metric),
@@ -213,6 +244,10 @@ run_task_worker <- function(cli) {
   if (!check_only) {
     expected_runner_provenance <- named_r_provenance_records(run_metadata$r_provenance, "runner_rows")
     expected_reference_provenance <- named_r_provenance_records(run_metadata$r_provenance, "reference_rows")
+    expected_runner_provenance <- expected_runner_provenance[selected_task_ids]
+    expected_reference_provenance <- expected_reference_provenance[intersect(
+      names(expected_reference_provenance), selected_task_ids
+    )]
     if (!identical(sort(names(expected_runner_provenance)), sort(names(r_runner_provenance))) ||
         !identical(sort(names(expected_reference_provenance)), sort(names(r_reference_provenance)))) {
       stop("R provenance task sets differ from the run manifest")
@@ -887,6 +922,14 @@ run_task_worker <- function(cli) {
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
       correctness_message = correctness_message,
+      stage = timing_options$stage,
+      process_epoch = timing_options$process_epoch,
+      batch = timing_options$batch,
+      attempt = timing_options$attempt,
+      group_order = timing_options$group_orders[[tid]],
+      member_order = timing_options$member_order,
+      excluded = FALSE,
+      exclusion_reason = NA_character_,
       stringsAsFactors = FALSE
     )
     if (!is.na(cs$error)) {
@@ -923,11 +966,8 @@ run_task_worker <- function(cli) {
     bm <- benchmark_call(
       prepare_warmup,
       prepare_timed,
+      iterations = as.integer(timing_options$counts[[tid]]),
       warmup = as.integer(timing_policy$warmup_iterations),
-      block_size = as.integer(timing_policy$block_size),
-      max_iter = as.integer(timing_policy$max_iterations),
-      cv_threshold = as.numeric(timing_policy$convergence_cv_threshold_pct),
-      convergence_blocks = as.integer(timing_policy$convergence_window_blocks),
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
       rss_metric = as.character(timing_policy$rss_metric)
     )
@@ -971,6 +1011,14 @@ run_task_worker <- function(cli) {
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
       correctness_message = correctness_message,
+      stage = timing_options$stage,
+      process_epoch = timing_options$process_epoch,
+      batch = timing_options$batch,
+      attempt = timing_options$attempt,
+      group_order = timing_options$group_orders[[tid]],
+      member_order = timing_options$member_order,
+      excluded = FALSE,
+      exclusion_reason = NA_character_,
       stringsAsFactors = FALSE
     )
     raw_results[[length(raw_results) + 1L]] <- runs_df
@@ -1090,6 +1138,10 @@ run_task_worker <- function(cli) {
       runner_name, n_fail
     ))
   }
+  if (!is.null(timing_options)) {
+    cat(sprintf("  Batch output: %s\n", timing_options$output))
+    return(invisible(summary))
+  }
   final_runner_dir <- file.path(results_dir, runner_name)
   final_summary <- file.path(results_dir, sprintf("%s_summary.csv", runner_name))
   if (dir.exists(final_runner_dir) || file.exists(final_summary)) {
@@ -1111,6 +1163,7 @@ run_task_worker <- function(cli) {
 }
 
 run_fixture_worker <- function(args) {
+  timing_options <- timing_worker_options(args)
   runner <- NULL
   run_dir <- NULL
   validation_only <- FALSE
@@ -1118,6 +1171,7 @@ run_fixture_worker <- function(args) {
   validated_correctness <- NULL
   proof_only <- FALSE
   proof_output <- NULL
+  fixture_filter <- NULL
   for (arg in args) {
     if (grepl("^--runner=", arg)) runner <- sub("^--runner=", "", arg)
     if (grepl("^--run-dir=", arg)) run_dir <- sub("^--run-dir=", "", arg)
@@ -1128,6 +1182,7 @@ run_fixture_worker <- function(args) {
     }
     if (identical(arg, "--proof-only")) proof_only <- TRUE
     if (grepl("^--proof-output=", arg)) proof_output <- sub("^--proof-output=", "", arg)
+    if (grepl("^--fixtures=", arg)) fixture_filter <- parse_csv_option(sub("^--fixtures=", "", arg), "fixture filter")
   }
   if (is.null(runner)) stop("--runner= is required")
   if (is.null(run_dir)) stop("--run-dir= is required")
@@ -1137,6 +1192,9 @@ run_fixture_worker <- function(args) {
   }
   if (proof_only && is.null(proof_output)) stop("--proof-output= is required with --proof-only")
   if (validation_only && proof_only) stop("validation-only and proof-only modes are mutually exclusive")
+  if (!validation_only && !proof_only && is.null(timing_options)) {
+    stop("timed fixture execution requires bounded timing options")
+  }
   
   run_dir <- normalizePath(run_dir, mustWork = TRUE)
   source(file.path(root_dir, "src", "r", "run_all.R"))
@@ -1234,6 +1292,9 @@ run_fixture_worker <- function(args) {
       )
     )
   }
+  if (!is.null(fixture_filter)) {
+    rows <- rows[ordered_selection(rows$fixture, fixture_filter, "fixture filter"), , drop = FALSE]
+  }
   
   if (is.null(retained_correctness_rows)) {
     for (index in seq_len(nrow(rows))) {
@@ -1296,7 +1357,7 @@ run_fixture_worker <- function(args) {
   
   timing_policy <- metadata$timing_policy
   validate_timing_policy(timing_policy)
-  staging_root <- file.path(run_dir, ".staging", "fixtures")
+  staging_root <- if (is.null(timing_options)) file.path(run_dir, ".staging", "fixtures") else timing_options$output
   staging_runner <- file.path(staging_root, runner)
   dir.create(staging_runner, recursive = TRUE, showWarnings = FALSE)
   unlink(list.files(staging_runner, full.names = TRUE, all.files = TRUE, no.. = TRUE), recursive = TRUE)
@@ -1305,22 +1366,14 @@ run_fixture_worker <- function(args) {
   timing_fields <- function(bm = NULL) {
     if (is.null(bm)) return(list(
       warmup_iterations = as.integer(timing_policy$warmup_iterations),
-      block_size = as.integer(timing_policy$block_size),
-      max_iterations = as.integer(timing_policy$max_iterations),
-      convergence_window_blocks = as.integer(timing_policy$convergence_window_blocks),
-      convergence_cv_threshold_pct = as.numeric(timing_policy$convergence_cv_threshold_pct),
-      convergence_cv_pct = NA_real_, stopping_condition = "not_measured", converged = NA,
+      sample_stage = "not_measured", fixed_iterations = NA_integer_,
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
       timer_noise_status = "not_measured", rss_metric = as.character(timing_policy$rss_metric),
       gc_policy = as.character(timing_policy$gc_policy)
     ))
     list(
-      warmup_iterations = as.integer(bm$warmup_iterations), block_size = as.integer(bm$block_size),
-      max_iterations = as.integer(bm$max_iterations),
-      convergence_window_blocks = as.integer(bm$convergence_window_blocks),
-      convergence_cv_threshold_pct = as.numeric(bm$convergence_cv_threshold_pct),
-      convergence_cv_pct = as.numeric(bm$convergence_cv_pct),
-      stopping_condition = as.character(bm$stopping_condition), converged = isTRUE(bm$converged),
+      warmup_iterations = as.integer(bm$warmup_iterations),
+      sample_stage = as.character(timing_options$stage), fixed_iterations = as.integer(bm$fixed_iterations),
       timer_noise_floor_ms = as.numeric(bm$timer_noise_floor_ms),
       timer_noise_status = as.character(bm$timer_noise_status), rss_metric = as.character(bm$rss_metric),
       gc_policy = as.character(timing_policy$gc_policy)
@@ -1392,11 +1445,8 @@ run_fixture_worker <- function(args) {
     }
     bm <- benchmark_call(
       prepare_warmup, prepare_timed,
+      iterations = as.integer(timing_options$counts[[fixture]]),
       warmup = as.integer(timing_policy$warmup_iterations),
-      block_size = as.integer(timing_policy$block_size),
-      max_iter = as.integer(timing_policy$max_iterations),
-      cv_threshold = as.numeric(timing_policy$convergence_cv_threshold_pct),
-      convergence_blocks = as.integer(timing_policy$convergence_window_blocks),
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
       rss_metric = as.character(timing_policy$rss_metric)
     )
@@ -1408,7 +1458,11 @@ run_fixture_worker <- function(args) {
     raw <- data.frame(
       run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
       variant = variant, row_id = fields$row_id, iteration = seq_along(bm$times),
-      wall_ms = bm$times, stringsAsFactors = FALSE
+      wall_ms = bm$times, stage = timing_options$stage,
+      process_epoch = timing_options$process_epoch, batch = timing_options$batch,
+      attempt = timing_options$attempt, group_order = timing_options$group_orders[[fixture]],
+      member_order = timing_options$member_order, excluded = FALSE,
+      exclusion_reason = NA_character_, stringsAsFactors = FALSE
     )
     raw_results[[length(raw_results) + 1L]] <<- raw
     data.frame(
@@ -1450,7 +1504,7 @@ run_fixture_worker <- function(args) {
     }
   }
   if (identical(runner, "r")) {
-    for (fixture in names(fixture_measurement_optimized_specs())) {
+    for (fixture in intersect(names(fixture_measurement_optimized_specs()), as.character(rows$fixture))) {
       row <- rows[rows$fixture == fixture, , drop = FALSE]
       summaries[[length(summaries) + 1L]] <- measure(row, fixture, variant = "optimized_base_r")
     }
@@ -1463,6 +1517,10 @@ run_fixture_worker <- function(args) {
   summary <- do.call(rbind, summaries)
   staged_summary <- file.path(staging_root, paste0("fixture_", runner, "_summary.csv"))
   write_csv(summary, staged_summary)
+  if (!is.null(timing_options)) {
+    cat(sprintf("Fixture batch output: %s\n", timing_options$output))
+    return(invisible(summary))
+  }
   final_root <- file.path(run_dir, "fixtures")
   dir.create(final_root, recursive = TRUE, showWarnings = FALSE)
   final_runner <- file.path(final_root, runner)
@@ -1486,7 +1544,9 @@ if (identical(kind, "task")) {
     worker_args,
     value_options = c(
       "runner", "tasks", "validation-output", "validated-correctness", "results-dir",
-      "prepare-inputs", "input-manifest", "expected-input-manifest-digest", "master-seed"
+      "prepare-inputs", "input-manifest", "expected-input-manifest-digest", "master-seed",
+      "timing-stage", "timing-counts", "batch-output", "batch", "attempt", "process-epoch",
+      "member-order", "group-orders"
     ),
     flag_options = c("check-only", "validation-only"),
     label = "task worker"
@@ -1495,7 +1555,11 @@ if (identical(kind, "task")) {
 } else {
   validate_cli_arguments(
     worker_args,
-    value_options = c("runner", "run-dir", "validation-output", "validated-correctness", "proof-output"),
+    value_options = c(
+      "runner", "run-dir", "validation-output", "validated-correctness", "proof-output", "fixtures",
+      "timing-stage", "timing-counts", "batch-output", "batch", "attempt", "process-epoch",
+      "member-order", "group-orders"
+    ),
     flag_options = c("validation-only", "proof-only"),
     label = "fixture worker"
   )
