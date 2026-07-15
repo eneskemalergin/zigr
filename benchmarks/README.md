@@ -65,7 +65,7 @@ These files intentionally remain separate: execution configuration, comparison p
 | File | Responsibility |
 | --- | --- |
 | `lib/specification.R` | Task recipes, manifests, evidence expansion, budgets, and report contracts |
-| `lib/measurement.R` | Deterministic inputs, bounded pilot sizing, fixed timing, raw samples, RSS, and fixture validation |
+| `lib/measurement.R` | Deterministic inputs, bounded pilot sizing, fixed timing, process-memory metrics, and fixture validation |
 | `lib/provenance.R` | Source verification, toolchains, generated glue, environment, and artifact identity |
 | `lib/run_manifest.R` | Run state, completion seals, retention, and artifact validation |
 | `lib/product_fixtures.R` | Product package gates, semantic cases, lifecycle checks, and capability gaps |
@@ -114,11 +114,21 @@ Rscript run_benchmarks.R --suite=tasks --runners=r,zigr --tasks=48,49
 Rscript run_benchmarks.R --suite=fixtures --runners=r,zigr
 ```
 
-Every selected task receives a deterministic seed derived from the run seed, task ID, and fixture version. Correctness, cold-start, warmup, and timed phases receive isolated inputs. Mutation, RNG, external state, ALTREP intent, and input fingerprints are enforced by policy.
+Every selected task receives a deterministic seed derived from the run seed, task ID, and fixture version. Correctness, first-call, warmup, and timed phases receive isolated inputs. Mutation, RNG, external state, ALTREP intent, and input fingerprints are enforced by policy.
 
 Timed collection uses one equal-floor pilot for every eligible comparison group, then freezes one symmetric fixed-count confirmation stage. Group and tool order are reproducible, batches and the total run have declared limits, and a timed-out group receives at most one smaller retry while later batches continue. Pilot evidence remains diagnostic and cannot produce a comparative claim. `--suite=tasks`, `--suite=fixtures`, and the default `--suite=all` use the same workers, timing policy, and artifact validators.
 
 Single-suite, runner-filtered, task-filtered, and correctness-only runs are diagnostic evidence and record `promotion_eligible` as `false`. Promotion requires an unfiltered timed `--suite=all` run with the complete runner and task matrix.
+
+## Metric semantics
+
+- `wall_ms` records one declared benchmark call in milliseconds. Summary timing statistics use the fixed pilot or confirmation sample declared by `sample_stage`.
+- `first_call_ms` records the first measured call after the runner library or package is already loaded. It is not process startup, package load time, or a cold system start.
+- `wall_ms` and `first_call_ms` are supported only for `PASS` measurement rows. Untimed rows retain `NA`; their row status explains why no timing exists.
+- `rss_endpoint_delta_kb` is the non-negative difference between post-GC current process RSS before warmup and after the timed sequence. `rss_endpoint_metric`, `rss_endpoint_support`, and `rss_endpoint_support_reason` identify the method and whether the reading exists. This diagnostic is not peak memory or allocation.
+- `peak_rss_kb` is gross process high-water RSS from Linux `/proc/self/status` `VmHWM`. `loaded_process_rss_kb` is current RSS from `VmRSS` after the runner is loaded and a full GC completes. The harness reports both values and never calls their difference allocation.
+- Every `_kb` memory value uses the Linux `/proc` kB unit of 1024 bytes. Peak RSS uses three fixed calls in a fresh invocation of the existing worker for normalized F03, F04, and F06 rows. `peak_rss_repetitions` records that count. Other workloads use `not_eligible`; hosts without the validated Linux `/proc` method use `unsupported`, retain `NA`, and record the reason.
+- Allocation, copy, and ALTREP callback or materialization counts come only from fixtures with explicit instrumentation. They remain safety or strategy diagnostics with `claim_eligible` set to `false`.
 
 ## Export and promotion
 
@@ -135,7 +145,7 @@ Promotion accepts only an unfiltered timed run collected under the current sourc
 
 ## Result retention
 
-Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest: eight core files regardless of runner, task, fixture, phase, or iteration count. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and cold-start observations are rows in the task samples rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
+Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest: eight core files regardless of runner, task, fixture, phase, or iteration count. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and first-call observations are rows in the suite sample tables rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
 
 Run manifests retain execution-critical dispositions and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record.
 
@@ -159,4 +169,4 @@ A benchmark failure, missing artifact, source drift, invalid disposition, input 
 
 ## Platform boundary
 
-Exact linked-library identity currently uses Linux `ldd`. Unsupported hosts fail closed instead of emitting partial provenance.
+Exact linked-library identity currently uses Linux `ldd`. Gross peak RSS uses Linux `/proc/self/status`. Unsupported hosts fail closed for provenance and preserve unsupported memory as `NA` with a reason.

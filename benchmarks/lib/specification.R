@@ -1321,7 +1321,14 @@ separated_report_files <- function() {
   )
 }
 
-comparative_report_schema_version <- function() "separated-report-v3"
+comparative_report_schema_version <- function() "separated-report-v4"
+
+report_measurement_columns <- function() c(
+  "first_call_ms", "rss_endpoint_delta_kb", "rss_endpoint_metric",
+  "rss_endpoint_support", "rss_endpoint_support_reason", "peak_rss_kb",
+  "loaded_process_rss_kb", "peak_rss_metric", "peak_rss_support",
+  "peak_rss_support_reason", "peak_rss_repetitions"
+)
 
 build_analysis_summary <- function(summaries, manifest, run_id) {
   summary_column <- function(name, default = NA) {
@@ -1346,10 +1353,12 @@ build_analysis_summary <- function(summaries, manifest, run_id) {
     max_ms = summaries$max_ms,
     sd_ms = summaries$sd_ms,
     cv_pct = summaries$cv_pct,
-    mean_rss_kb = summaries$rss_kb,
-    rss_metric = summary_column("rss_metric", "legacy_endpoint_delta_kb"),
+    rss_endpoint_delta_kb = summaries$rss_endpoint_delta_kb,
+    rss_endpoint_metric = summary_column("rss_endpoint_metric"),
+    rss_endpoint_support = summary_column("rss_endpoint_support"),
+    rss_endpoint_support_reason = summary_column("rss_endpoint_support_reason"),
     gc_policy = summary_column("gc_policy", "legacy"),
-    cold_start_ms = summaries$cold_start_ms,
+    first_call_ms = summaries$first_call_ms,
     n_runs = summaries$n_iterations,
     warmup_iterations = summary_column("warmup_iterations"),
     sample_stage = summary_column("sample_stage", "legacy_adaptive"),
@@ -1593,7 +1602,7 @@ validate_product_metrics <- function(rows, policy = benchmark_timing_policy()) {
     "row_relative_to_zigr", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
     "zigr_n_iterations", "zigr_sample_stage", "timer_noise_status", "zigr_timer_noise_status"
   )
-  report_require_columns(rows, required, label)
+  report_require_columns(rows, c(required, report_measurement_columns()), label)
   report_require_unique(rows, c("group_id", "runner"), label)
   report_require_one_value(rows, "run_id", label)
   linked <- report_linked_runners()
@@ -1651,7 +1660,7 @@ validate_strategy_metrics <- function(rows, policy = benchmark_timing_policy()) 
     "row_relative_to_zigr", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
     "zigr_n_iterations", "zigr_sample_stage", "timer_noise_status", "zigr_timer_noise_status"
   )
-  report_require_columns(rows, required, label)
+  report_require_columns(rows, c(required, report_measurement_columns()), label)
   report_require_unique(rows, c("group_id", "runner"), label)
   report_require_one_value(rows, "run_id", label)
   for (group in unique(as.character(rows$group_id))) {
@@ -1691,7 +1700,7 @@ validate_r_baseline_metrics <- function(
     "comparison_reason", "n_iterations", "sample_stage", "zigr_n_iterations", "zigr_sample_stage",
     "zigr_timer_noise_status"
   )
-  report_require_columns(rows, required, label)
+  report_require_columns(rows, c(required, report_measurement_columns()), label)
   report_require_unique(rows, c("universe", "item_id", "baseline_class"), label)
   report_require_one_value(rows, "run_id", label)
   task_ids <- as.character(rows$item_id[rows$universe == "task"])
@@ -1726,7 +1735,7 @@ validate_control_metrics <- function(rows, policy = benchmark_timing_policy()) {
     "timer_noise_status", "noise_status", "comparison_reason", "n_iterations", "sample_stage",
     "zigr_n_iterations", "zigr_sample_stage", "zigr_timer_noise_status"
   )
-  report_require_columns(rows, required, label)
+  report_require_columns(rows, c(required, report_measurement_columns()), label)
   report_require_unique(rows, c("universe", "item_id", "runner", "control_role"), label)
   report_require_one_value(rows, "run_id", label)
   if (any(!(rows$control_role %in% c("c_control", "language_control")))) {
@@ -1750,7 +1759,7 @@ validate_diagnostic_metrics <- function(rows, expected_task_keys) {
     "run_id", "universe", "item_id", "runner", "measurement_status", "claim_eligible", "source_label",
     "exclusion_reason", "owner", "timer_noise_status", "noise_status"
   )
-  report_require_columns(rows, required, label)
+  report_require_columns(rows, c(required, report_measurement_columns()), label)
   report_require_unique(rows, c("universe", "item_id", "runner"), label)
   report_require_one_value(rows, "run_id", label)
   if (any(rows$universe != "task")) stop("diagnostic metrics contain a non-task row")

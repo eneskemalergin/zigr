@@ -210,7 +210,14 @@ run_task_worker <- function(cli) {
         fixed_iterations = NA_integer_,
         timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
         timer_noise_status = "not_measured",
-        rss_metric = as.character(timing_policy$rss_metric),
+        rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric),
+        rss_endpoint_support = "not_measured",
+        rss_endpoint_support_reason = "timing not measured",
+        peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
+        peak_rss_metric = as.character(timing_policy$peak_rss_metric),
+        peak_rss_support = "not_eligible",
+        peak_rss_support_reason = "historical task is not declared memory eligible",
+        peak_rss_repetitions = NA_integer_,
         gc_policy = as.character(timing_policy$gc_policy)
       ))
     }
@@ -220,7 +227,14 @@ run_task_worker <- function(cli) {
       fixed_iterations = as.integer(bm$fixed_iterations),
       timer_noise_floor_ms = as.numeric(bm$timer_noise_floor_ms),
       timer_noise_status = as.character(bm$timer_noise_status),
-      rss_metric = as.character(bm$rss_metric),
+      rss_endpoint_metric = as.character(bm$rss_endpoint_metric),
+      rss_endpoint_support = as.character(bm$rss_endpoint_support),
+      rss_endpoint_support_reason = as.character(bm$rss_endpoint_support_reason),
+      peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
+      peak_rss_metric = as.character(timing_policy$peak_rss_metric),
+      peak_rss_support = "not_eligible",
+      peak_rss_support_reason = "historical task is not declared memory eligible",
+      peak_rss_repetitions = NA_integer_,
       gc_policy = as.character(timing_policy$gc_policy)
     )
   }
@@ -698,8 +712,8 @@ run_task_worker <- function(cli) {
         runner = runner_name, task = tid, status = "N/A",
         call_type = task_call_type,
         mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-        sd_ms = NA, cv_pct = NA, rss_kb = NA,
-        cold_start_ms = NA, n_iterations = NA, error = NA_character_,
+        sd_ms = NA, cv_pct = NA, rss_endpoint_delta_kb = NA,
+        first_call_ms = NA, n_iterations = NA, error = NA_character_,
         correctness_status = "NOT_APPLICABLE",
         correctness_policy = correctness_policy,
         correctness_message = if (na_allowed) as.character(disposition$reason) else correctness_message,
@@ -876,8 +890,8 @@ run_task_worker <- function(cli) {
         runner = runner_name, task = tid, status = "FAIL",
         call_type = task_call_type,
         mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-        sd_ms = NA, cv_pct = NA, rss_kb = NA,
-        cold_start_ms = NA, n_iterations = NA, error = correctness_message,
+        sd_ms = NA, cv_pct = NA, rss_endpoint_delta_kb = NA,
+        first_call_ms = NA, n_iterations = NA, error = correctness_message,
         correctness_status = correctness_status,
         correctness_policy = correctness_policy,
         correctness_message = correctness_message,
@@ -893,8 +907,8 @@ run_task_worker <- function(cli) {
         runner = runner_name, task = tid, status = "PASS",
         call_type = task_call_type,
         mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-        sd_ms = NA, cv_pct = NA, rss_kb = NA,
-        cold_start_ms = NA, n_iterations = NA, error = NA_character_,
+        sd_ms = NA, cv_pct = NA, rss_endpoint_delta_kb = NA,
+        first_call_ms = NA, n_iterations = NA, error = NA_character_,
         correctness_status = correctness_status,
         correctness_policy = correctness_policy,
         correctness_message = correctness_message,
@@ -912,17 +926,17 @@ run_task_worker <- function(cli) {
     ref_contract <- NULL
     comparison <- NULL
   
-    cold_prepare <- function() expression_for_arguments(new_phase_arguments())
-    cs <- timed_call(cold_prepare)
+    first_call_prepare <- function() expression_for_arguments(new_phase_arguments())
+    first_call <- measure_first_call(first_call_prepare)
     raw_results[[length(raw_results) + 1L]] <- data.frame(
       runner = runner_name,
       task = tid,
       call_type = task_call_type,
-      phase = "cold",
+      phase = "first_call",
       iteration = 1L,
-      wall_ms = cs$wall_ms,
+      wall_ms = first_call$wall_ms,
       rss_endpoint_delta_kb = NA_integer_,
-      error = cs$error,
+      error = first_call$error,
       run_id = run_id,
       correctness_status = correctness_status,
       correctness_policy = correctness_policy,
@@ -937,17 +951,17 @@ run_task_worker <- function(cli) {
       exclusion_reason = NA_character_,
       stringsAsFactors = FALSE
     )
-    if (!is.na(cs$error)) {
+    if (!is.na(first_call$error)) {
       n_fail <- n_fail + 1
-      cat(sprintf("  %-14s [FAIL] %s\n", tid, cs$error))
-      log_error(runner_name, tid, cs$error, dir = staging_results_dir)
+      cat(sprintf("  %-14s [FAIL] %s\n", tid, first_call$error))
+      log_error(runner_name, tid, first_call$error, dir = staging_results_dir)
       results_list[[length(results_list) + 1]] <- data.frame(
         runner = runner_name, task = tid, status = "FAIL",
         call_type = task_call_type,
         mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-        sd_ms = NA, cv_pct = NA, rss_kb = NA,
-        cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
-        error = cs$error,
+        sd_ms = NA, cv_pct = NA, rss_endpoint_delta_kb = NA,
+        first_call_ms = round(first_call$wall_ms, 3), n_iterations = NA,
+        error = first_call$error,
         correctness_status = correctness_status,
         correctness_policy = correctness_policy,
         correctness_message = correctness_message,
@@ -974,7 +988,7 @@ run_task_worker <- function(cli) {
       iterations = as.integer(timing_options$counts[[tid]]),
       warmup = as.integer(timing_policy$warmup_iterations),
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
-      rss_metric = as.character(timing_policy$rss_metric)
+      rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric)
     )
     if (!is.na(bm$error)) {
       n_fail <- n_fail + 1
@@ -984,8 +998,8 @@ run_task_worker <- function(cli) {
         runner = runner_name, task = tid, status = "FAIL",
         call_type = task_call_type,
         mean_ms = NA, median_ms = NA, min_ms = NA, max_ms = NA,
-        sd_ms = NA, cv_pct = NA, rss_kb = NA,
-        cold_start_ms = round(cs$wall_ms, 3), n_iterations = NA,
+        sd_ms = NA, cv_pct = NA, rss_endpoint_delta_kb = NA,
+        first_call_ms = round(first_call$wall_ms, 3), n_iterations = NA,
         error = bm$error,
         correctness_status = correctness_status,
         correctness_policy = correctness_policy,
@@ -1000,8 +1014,9 @@ run_task_worker <- function(cli) {
     }
   
     n_pass <- n_pass + 1
-    cat(sprintf("  %-14s mean=%8.4fms median=%8.4fms sd=%7.4fms cv=%5.2f%% rss=%dKB runs=%d\n",
-                tid, bm$mean_ms, bm$median_ms, bm$sd_ms, bm$cv_pct, bm$rss_delta_kb, bm$n_runs))
+    cat(sprintf("  %-14s mean=%8.4fms median=%8.4fms sd=%7.4fms cv=%5.2f%% endpoint-rss=%sKB runs=%d\n",
+                tid, bm$mean_ms, bm$median_ms, bm$sd_ms, bm$cv_pct,
+                as.character(bm$rss_endpoint_delta_kb), bm$n_runs))
   
     runs_df <- data.frame(
       runner      = runner_name,
@@ -1010,7 +1025,7 @@ run_task_worker <- function(cli) {
       phase       = "timed",
       iteration   = seq_len(length(bm$times)),
       wall_ms     = bm$times,
-      rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$rss_delta_kb),
+      rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$rss_endpoint_delta_kb),
       error       = NA_character_,
       run_id      = run_id,
       correctness_status = correctness_status,
@@ -1039,8 +1054,8 @@ run_task_worker <- function(cli) {
       max_ms        = round(bm$max_ms, 4),
       sd_ms         = round(bm$sd_ms, 4),
       cv_pct        = round(bm$cv_pct, 2),
-      rss_kb        = bm$rss_delta_kb,
-      cold_start_ms = round(cs$wall_ms, 3),
+      rss_endpoint_delta_kb = bm$rss_endpoint_delta_kb,
+      first_call_ms = round(first_call$wall_ms, 3),
       n_iterations  = bm$n_runs,
       error         = NA_character_,
       correctness_status = correctness_status,
@@ -1166,8 +1181,9 @@ run_task_worker <- function(cli) {
   cat(sprintf("  Results: %d PASS, %d FAIL, %d N/A\n", n_pass, n_fail, n_na))
   for (i in seq_len(nrow(summary))) {
     s <- summary[i, ]
-    cat(sprintf("  %-14s %8.4f %7.4f %8.4f %5.2f %8d %5d  %s\n",
-                s$task, s$mean_ms, s$median_ms, s$sd_ms, s$cv_pct, s$rss_kb, s$n_iterations, s$status))
+    cat(sprintf("  %-14s %8.4f %7.4f %8.4f %5.2f %8s %5d  %s\n",
+                s$task, s$mean_ms, s$median_ms, s$sd_ms, s$cv_pct,
+                as.character(s$rss_endpoint_delta_kb), s$n_iterations, s$status))
   }
 }
 
@@ -1180,6 +1196,8 @@ run_fixture_worker <- function(args) {
   validated_correctness <- NULL
   proof_only <- FALSE
   proof_output <- NULL
+  memory_row <- NULL
+  memory_output <- NULL
   fixture_filter <- NULL
   for (arg in args) {
     if (grepl("^--runner=", arg)) runner <- sub("^--runner=", "", arg)
@@ -1191,6 +1209,8 @@ run_fixture_worker <- function(args) {
     }
     if (identical(arg, "--proof-only")) proof_only <- TRUE
     if (grepl("^--proof-output=", arg)) proof_output <- sub("^--proof-output=", "", arg)
+    if (grepl("^--memory-row=", arg)) memory_row <- sub("^--memory-row=", "", arg)
+    if (grepl("^--memory-output=", arg)) memory_output <- sub("^--memory-output=", "", arg)
     if (grepl("^--fixtures=", arg)) fixture_filter <- parse_csv_option(sub("^--fixtures=", "", arg), "fixture filter")
   }
   if (is.null(runner)) stop("--runner= is required")
@@ -1200,11 +1220,17 @@ run_fixture_worker <- function(args) {
     stop("validation-only mode cannot reuse retained correctness")
   }
   if (proof_only && is.null(proof_output)) stop("--proof-output= is required with --proof-only")
-  if (validation_only && proof_only) stop("validation-only and proof-only modes are mutually exclusive")
-  if (!validation_only && !proof_only && is.null(timing_options)) {
-    stop("timed fixture execution requires bounded timing options")
+  memory_only <- !is.null(memory_row) || !is.null(memory_output)
+  if (memory_only && (is.null(memory_row) || is.null(memory_output))) {
+    stop("--memory-row= and --memory-output= must be supplied together")
   }
-  
+  if (sum(c(validation_only, proof_only, memory_only, !is.null(timing_options))) != 1L) {
+    stop("fixture worker modes are mutually exclusive")
+  }
+  if (memory_only && (is.null(validated_correctness) || !is.null(fixture_filter))) {
+    stop("memory measurement requires retained correctness and one --memory-row without --fixtures")
+  }
+
   run_dir <- normalizePath(run_dir, mustWork = TRUE)
   source(file.path(root_dir, "src", "r", "run_all.R"))
   metadata <- read_run_manifest(run_dir)
@@ -1385,6 +1411,56 @@ run_fixture_worker <- function(args) {
   
   timing_policy <- metadata$timing_policy
   validate_timing_policy(timing_policy)
+
+  fixture_prepare_fresh <- function(fixture, variant = "public", functions = context$functions) {
+    spec <- specs[[fixture]]
+    if (identical(variant, "optimized_base_r")) {
+      fn <- context$optimized[[fixture]]
+      return(function() {
+        arguments <- spec$arguments()
+        function() do.call(fn, arguments)
+      })
+    }
+    function() fixture_measurement_prepare(functions, fixture, spec)
+  }
+
+  if (memory_only) {
+    optimized <- grepl("_optimized_base_r$", memory_row)
+    fixture <- sub("_optimized_base_r$", "", memory_row)
+    variant <- if (optimized) "optimized_base_r" else "public"
+    row <- rows[rows$fixture == fixture, , drop = FALSE]
+    if (nrow(row) != 1L || (optimized && !identical(runner, "r")) ||
+        !isTRUE(row$timing_eligible) ||
+        !peak_rss_fixture_eligible(fixture, variant, "PASS", timing_policy)) {
+      stop(sprintf("fixture row %s is not declared memory eligible for %s", memory_row, runner))
+    }
+    retained <- retained_correctness_rows[
+      retained_correctness_rows$runner == runner & retained_correctness_rows$row_id == memory_row,
+      , drop = FALSE
+    ]
+    if (nrow(retained) != 1L || !identical(as.character(retained$status), "PASS")) {
+      stop(sprintf("fixture row %s lacks retained passing correctness for %s", memory_row, runner))
+    }
+    memory <- measure_peak_process_rss(
+      fixture_prepare_fresh(fixture, variant),
+      as.integer(timing_policy$peak_rss_repetitions)
+    )
+    result <- data.frame(
+      run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
+      variant = variant, row_id = memory_row,
+      peak_rss_kb = memory$peak_rss_kb,
+      loaded_process_rss_kb = memory$loaded_process_rss_kb,
+      peak_rss_metric = as.character(timing_policy$peak_rss_metric),
+      peak_rss_support = as.character(memory$peak_rss_support),
+      peak_rss_support_reason = as.character(memory$peak_rss_support_reason),
+      peak_rss_repetitions = as.integer(memory$peak_rss_repetitions),
+      stringsAsFactors = FALSE
+    )
+    write_csv_once(result, normalizePath(memory_output, mustWork = FALSE), "peak RSS output")
+    cat(sprintf("Peak RSS measurement completed for %s/%s.\n", runner, memory_row))
+    quit(save = "no", status = 0L, runLast = FALSE)
+  }
+
   staging_root <- if (is.null(timing_options)) file.path(run_dir, ".staging", "fixtures") else timing_options$output
   staging_runner <- file.path(staging_root, runner)
   dir.create(staging_runner, recursive = TRUE, showWarnings = FALSE)
@@ -1396,14 +1472,30 @@ run_fixture_worker <- function(args) {
       warmup_iterations = as.integer(timing_policy$warmup_iterations),
       sample_stage = "not_measured", fixed_iterations = NA_integer_,
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
-      timer_noise_status = "not_measured", rss_metric = as.character(timing_policy$rss_metric),
+      timer_noise_status = "not_measured",
+      rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric),
+      rss_endpoint_support = "not_measured",
+      rss_endpoint_support_reason = "timing not measured",
+      peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
+      peak_rss_metric = as.character(timing_policy$peak_rss_metric),
+      peak_rss_support = "not_eligible",
+      peak_rss_support_reason = "workload is not declared memory eligible",
+      peak_rss_repetitions = NA_integer_,
       gc_policy = as.character(timing_policy$gc_policy)
     ))
     list(
       warmup_iterations = as.integer(bm$warmup_iterations),
       sample_stage = as.character(timing_options$stage), fixed_iterations = as.integer(bm$fixed_iterations),
       timer_noise_floor_ms = as.numeric(bm$timer_noise_floor_ms),
-      timer_noise_status = as.character(bm$timer_noise_status), rss_metric = as.character(bm$rss_metric),
+      timer_noise_status = as.character(bm$timer_noise_status),
+      rss_endpoint_metric = as.character(bm$rss_endpoint_metric),
+      rss_endpoint_support = as.character(bm$rss_endpoint_support),
+      rss_endpoint_support_reason = as.character(bm$rss_endpoint_support_reason),
+      peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
+      peak_rss_metric = as.character(timing_policy$peak_rss_metric),
+      peak_rss_support = "not_eligible",
+      peak_rss_support_reason = "workload is not declared memory eligible",
+      peak_rss_repetitions = NA_integer_,
       gc_policy = as.character(timing_policy$gc_policy)
     )
   }
@@ -1440,17 +1532,11 @@ run_fixture_worker <- function(args) {
     spec <- specs[[fixture]]
     fingerprint <- fixture_measurement_input_fingerprint(fixture, spec)
     fields <- identity_fields(row, fixture, variant, fingerprint)
-    prepare_fresh <- if (identical(variant, "optimized_base_r")) {
-      fn <- context$optimized[[fixture]]
-      function() {
-        arguments <- spec$arguments()
-        function() do.call(fn, arguments)
-      }
-    } else {
-      function() fixture_measurement_prepare(functions, fixture, spec)
+    prepare_fresh <- fixture_prepare_fresh(fixture, variant, functions)
+    first_call <- measure_first_call(prepare_fresh)
+    if (!is.na(first_call$error)) {
+      stop(sprintf("fixture first call failed for %s/%s: %s", runner, fields$row_id, first_call$error))
     }
-    cold <- timed_call(prepare_fresh)
-    if (!is.na(cold$error)) stop(sprintf("fixture cold call failed for %s/%s: %s", runner, fields$row_id, cold$error))
   
     reusable <- !fixture_measurement_requires_fresh_input(spec)
     if (reusable) {
@@ -1476,31 +1562,42 @@ run_fixture_worker <- function(args) {
       iterations = as.integer(timing_options$counts[[fixture]]),
       warmup = as.integer(timing_policy$warmup_iterations),
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
-      rss_metric = as.character(timing_policy$rss_metric)
+      rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric)
     )
     if (!is.na(bm$error)) stop(sprintf("fixture timing failed for %s/%s: %s", runner, fields$row_id, bm$error))
     if (reusable) {
       assert_immutable_input(paste0("fixture:", fixture), warmup_arguments, warmup_before, intent)
       assert_immutable_input(paste0("fixture:", fixture), timed_arguments, timed_before, intent)
     }
-    raw <- data.frame(
+    first_call_raw <- data.frame(
       run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
-      variant = variant, row_id = fields$row_id, iteration = seq_along(bm$times),
-      wall_ms = bm$times, stage = timing_options$stage,
+      variant = variant, row_id = fields$row_id, phase = "first_call", iteration = 1L,
+      wall_ms = first_call$wall_ms, rss_endpoint_delta_kb = NA_integer_, stage = timing_options$stage,
       process_epoch = timing_options$process_epoch, batch = timing_options$batch,
       attempt = timing_options$attempt, group_order = timing_options$group_orders[[fixture]],
       member_order = timing_options$member_order, excluded = FALSE,
       exclusion_reason = NA_character_, stringsAsFactors = FALSE
     )
-    raw_results[[length(raw_results) + 1L]] <<- raw
+    timed_raw <- data.frame(
+      run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
+      variant = variant, row_id = fields$row_id, phase = "timed", iteration = seq_along(bm$times),
+      wall_ms = bm$times,
+      rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1L), bm$rss_endpoint_delta_kb),
+      stage = timing_options$stage,
+      process_epoch = timing_options$process_epoch, batch = timing_options$batch,
+      attempt = timing_options$attempt, group_order = timing_options$group_orders[[fixture]],
+      member_order = timing_options$member_order, excluded = FALSE,
+      exclusion_reason = NA_character_, stringsAsFactors = FALSE
+    )
+    raw_results[[length(raw_results) + 1L]] <<- rbind(first_call_raw, timed_raw)
     data.frame(
       as.data.frame(fields, stringsAsFactors = FALSE), status = "PASS",
       correctness_status = if (identical(runner, "r") && !identical(variant, "optimized_base_r")) "REFERENCE" else "PASS",
       correctness_message = "validated by the complete fixture semantic and lifecycle gate",
       mean_ms = round(bm$mean_ms, 4), median_ms = round(bm$median_ms, 4),
       min_ms = round(bm$min_ms, 4), max_ms = round(bm$max_ms, 4), sd_ms = round(bm$sd_ms, 4),
-      cv_pct = round(bm$cv_pct, 2), rss_kb = bm$rss_delta_kb,
-      cold_start_ms = round(cold$wall_ms, 3), n_iterations = bm$n_runs,
+      cv_pct = round(bm$cv_pct, 2), rss_endpoint_delta_kb = bm$rss_endpoint_delta_kb,
+      first_call_ms = round(first_call$wall_ms, 3), n_iterations = bm$n_runs,
       stringsAsFactors = FALSE, as.data.frame(timing_fields(bm), stringsAsFactors = FALSE)
     )
   }
@@ -1525,7 +1622,7 @@ run_fixture_worker <- function(args) {
         } else "NOT_APPLICABLE",
         correctness_message = as.character(row$reason),
         mean_ms = NA_real_, median_ms = NA_real_, min_ms = NA_real_, max_ms = NA_real_,
-        sd_ms = NA_real_, cv_pct = NA_real_, rss_kb = NA_integer_, cold_start_ms = NA_real_,
+        sd_ms = NA_real_, cv_pct = NA_real_, rss_endpoint_delta_kb = NA_integer_, first_call_ms = NA_real_,
         n_iterations = NA_integer_, stringsAsFactors = FALSE,
         as.data.frame(timing_fields(), stringsAsFactors = FALSE)
       )
@@ -1585,6 +1682,7 @@ if (identical(kind, "task")) {
     worker_args,
     value_options = c(
       "runner", "run-dir", "validation-output", "validated-correctness", "proof-output", "fixtures",
+      "memory-row", "memory-output",
       "timing-stage", "timing-counts", "batch-output", "batch", "attempt", "process-epoch",
       "member-order", "group-orders"
     ),

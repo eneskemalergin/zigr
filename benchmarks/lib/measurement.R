@@ -319,18 +319,24 @@ assert_immutable_input <- function(task_id, arguments, before_fingerprint, altre
   invisible(after)
 }
 
-# Prepared-call timing, RSS observation, and result logging.
+# Prepared-call timing, process-memory observation, and result logging.
 
 library(microbenchmark)
 
 current_rss_kb <- function() {
-  if (.Platform$OS.type != "unix") return(NA_integer_)
+  if (.Platform$OS.type != "unix" || !file.exists("/proc/self/status")) return(NA_integer_)
   tryCatch({
     lines <- readLines("/proc/self/status")
     line  <- grep("^VmRSS:", lines, value = TRUE)
     if (length(line) == 0) return(NA_integer_)
     as.integer(sub(".*?([0-9]+).*", "\\1", line[1]))
   }, error = function(e) NA_integer_)
+}
+
+rss_endpoint_support_reason <- function() {
+  if (.Platform$OS.type != "unix") return("current process RSS is unsupported outside Unix hosts")
+  if (!file.exists("/proc/self/status")) return("current process RSS requires Linux /proc/self/status")
+  "available"
 }
 
 validate_forced_registration <- function(dynamic_lookup, label) {
@@ -354,25 +360,21 @@ evaluate_prepared_call <- function(prepared) {
   if (is.function(prepared)) prepared() else eval(prepared, envir = parent.frame())
 }
 
-timed_call <- function(prepare_call) {
+measure_first_call <- function(prepare_call) {
   gc(full = TRUE)
-  rss_before <- current_rss_kb()
   prepared <- tryCatch(list(ok = TRUE, expression = prepare_call()), error = function(error) {
     list(ok = FALSE, error = conditionMessage(error))
   })
   if (!isTRUE(prepared$ok)) {
-    return(list(wall_ms = NA_real_, rss_delta_kb = NA_integer_, error = paste("cold input preparation failed:", prepared$error)))
+    return(list(wall_ms = NA_real_, error = paste("first-call input preparation failed:", prepared$error)))
   }
   error <- NA_character_
   wall_start <- get_nanotime()
   tryCatch(evaluate_prepared_call(prepared$expression), error = function(e) { error <<- conditionMessage(e) })
   wall_end <- get_nanotime()
-  gc(full = TRUE)
-  rss_after <- current_rss_kb()
   list(
-    wall_ms     = (wall_end - wall_start) / 1e6,
-    rss_delta_kb = max(0, rss_after - rss_before, na.rm = TRUE),
-    error       = error
+    wall_ms = (wall_end - wall_start) / 1e6,
+    error = error
   )
 }
 
@@ -382,7 +384,7 @@ get_nanotime <- function() {
 
 benchmark_timing_policy <- function() {
   list(
-    policy_version = "bounded-pilot-confirmation-v1",
+    policy_version = "bounded-pilot-confirmation-v2",
     warmup_iterations = 10L,
     pilot_iterations = 20L,
     confirmation_min_iterations = 20L,
@@ -399,14 +401,18 @@ benchmark_timing_policy <- function() {
     meaningful_margin_ratio = 1.05,
     median_ci_level = 0.95,
     median_ci_method = "exact order-statistic interval",
-    rss_metric = "post_gc_endpoint_delta_kb",
-    gc_policy = "full before first call/warmup and both RSS endpoints; no forced GC between timed samples"
+    rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb",
+    peak_rss_metric = "linux_proc_status_vmhwm_kb",
+    peak_rss_repetitions = 3L,
+    peak_rss_timeout_seconds = 60L,
+    peak_rss_fixture_ids = c("F03", "F04", "F06"),
+    gc_policy = "full before first call and timed sequence; full after timed sequence before endpoint RSS; no forced GC between timed samples"
   )
 }
 
 benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 10L,
                            timer_noise_floor_ms = 0.01,
-                           rss_metric = "post_gc_endpoint_delta_kb") {
+                           rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb") {
 
   iterations <- as.integer(iterations)
   if (length(iterations) != 1L || is.na(iterations) || iterations < 1L) {
@@ -456,7 +462,14 @@ benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 1
 
   gc(full = TRUE)
   rss_after <- current_rss_kb()
-  rss_delta <- max(0, rss_after - rss_before, na.rm = TRUE)
+  rss_supported <- !is.na(rss_before) && !is.na(rss_after)
+  rss_delta <- if (rss_supported) max(0L, rss_after - rss_before) else NA_integer_
+  rss_reason <- if (rss_supported) {
+    "available"
+  } else {
+    reason <- rss_endpoint_support_reason()
+    if (identical(reason, "available")) "current process RSS reading failed" else reason
+  }
 
   list(
     times      = all_times,
@@ -471,10 +484,266 @@ benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 1
     cv_pct     = cv_pct,
     timer_noise_floor_ms = timer_noise_floor_ms,
     timer_noise_status = if (median_ms < timer_noise_floor_ms) "below_floor" else "above_floor",
-    rss_metric = rss_metric,
-    rss_delta_kb = rss_delta,
+    rss_endpoint_metric = rss_endpoint_metric,
+    rss_endpoint_delta_kb = rss_delta,
+    rss_endpoint_support = if (rss_supported) "supported" else "unsupported",
+    rss_endpoint_support_reason = rss_reason,
     error      = NA_character_
   )
+}
+
+validate_rss_endpoint_support <- function(rows, measured, policy, label) {
+  required <- c(
+    "rss_endpoint_delta_kb", "rss_endpoint_metric", "rss_endpoint_support",
+    "rss_endpoint_support_reason"
+  )
+  missing <- setdiff(required, names(rows))
+  if (length(missing) > 0L) stop(sprintf("%s lacks endpoint RSS columns", label))
+  metrics <- as.character(rows$rss_endpoint_metric)
+  if (anyNA(metrics) || any(metrics != as.character(policy$rss_endpoint_metric))) {
+    stop(sprintf("%s endpoint RSS metric differs from policy", label))
+  }
+  measured <- as.logical(measured)
+  states <- as.character(rows$rss_endpoint_support)
+  if (length(measured) != nrow(rows) || anyNA(measured) || anyNA(states)) {
+    stop(sprintf("%s has an invalid endpoint RSS support state", label))
+  }
+  supported <- measured & states == "supported"
+  unsupported <- measured & states == "unsupported"
+  if (any(measured & !(supported | unsupported)) ||
+      any(!measured & states != "not_measured")) {
+    stop(sprintf("%s has an invalid endpoint RSS support state", label))
+  }
+  values <- strict_metric_numeric(rows$rss_endpoint_delta_kb, paste(label, "endpoint RSS"))
+  reasons <- as.character(rows$rss_endpoint_support_reason)
+  if (anyNA(reasons) || any(!nzchar(reasons)) ||
+      any(!is.finite(values[supported]) | values[supported] < 0) ||
+      any(!is.na(values[unsupported | !measured])) ||
+      any(reasons[supported] != "available") ||
+      any(reasons[unsupported | !measured] == "available") ||
+      any(!nzchar(reasons[unsupported | !measured]))) {
+    stop(sprintf("%s endpoint RSS value disagrees with its support state", label))
+  }
+  invisible(rows)
+}
+
+strict_metric_numeric <- function(values, label) {
+  missing <- is.na(values)
+  numeric <- suppressWarnings(as.numeric(as.character(values)))
+  if (any(!missing & is.na(numeric))) stop(sprintf("%s contains a non-numeric value", label))
+  numeric
+}
+
+validate_rss_endpoint_raw <- function(summary, raw, label) {
+  if (nrow(summary) != 1L || !("rss_endpoint_delta_kb" %in% names(raw))) {
+    stop(sprintf("%s lacks endpoint RSS evidence", label))
+  }
+  raw_values <- strict_metric_numeric(raw$rss_endpoint_delta_kb, paste(label, "raw endpoint RSS"))
+  summary_value <- strict_metric_numeric(summary$rss_endpoint_delta_kb, paste(label, "summary endpoint RSS"))
+  supported <- identical(as.character(summary$rss_endpoint_support[[1L]]), "supported")
+  unsupported <- identical(as.character(summary$rss_endpoint_support[[1L]]), "unsupported")
+  observed <- which(!is.na(raw_values))
+  valid <- if (supported) {
+    length(observed) == 1L && observed[[1L]] == nrow(raw) &&
+      identical(raw_values[[observed]], summary_value[[1L]])
+  } else {
+    unsupported && length(observed) == 0L && is.na(summary_value[[1L]])
+  }
+  if (!isTRUE(valid)) stop(sprintf("%s raw endpoint RSS differs from its summary", label))
+  invisible(raw)
+}
+
+validate_first_call_raw <- function(summary, raw, label) {
+  required <- c("iteration", "wall_ms")
+  if (nrow(summary) != 1L || nrow(raw) != 1L || length(setdiff(required, names(raw))) > 0L ||
+      as.integer(raw$iteration[[1L]]) != 1L || !is.finite(as.numeric(raw$wall_ms[[1L]])) ||
+      round(as.numeric(raw$wall_ms[[1L]]), 3) != as.numeric(summary$first_call_ms[[1L]]) ||
+      ("error" %in% names(raw) && !is.na(raw$error[[1L]]))) {
+    stop(sprintf("%s raw first-call timing differs from its summary", label))
+  }
+  invisible(raw)
+}
+
+validate_first_call_metric <- function(rows, measured, label) {
+  if (!("first_call_ms" %in% names(rows))) stop(sprintf("%s lacks first_call_ms", label))
+  measured <- as.logical(measured)
+  if (length(measured) != nrow(rows) || anyNA(measured)) {
+    stop(sprintf("%s has an invalid first-call measurement", label))
+  }
+  values <- as.numeric(rows$first_call_ms)
+  if (any(!is.finite(values[measured]) | values[measured] < 0) || any(!is.na(values[!measured]))) {
+    stop(sprintf("%s has an invalid first-call measurement", label))
+  }
+  invisible(rows)
+}
+
+parse_proc_status_memory <- function(lines) {
+  value <- function(name) {
+    match <- grep(paste0("^", name, ":"), lines, value = TRUE)
+    if (length(match) != 1L || !grepl("^[^:]+:[[:space:]]*[0-9]+[[:space:]]+kB[[:space:]]*$", match)) {
+      return(NA_integer_)
+    }
+    as.integer(sub("^[^:]+:[[:space:]]*([0-9]+)[[:space:]]+kB[[:space:]]*$", "\\1", match))
+  }
+  list(loaded_process_rss_kb = value("VmRSS"), peak_rss_kb = value("VmHWM"))
+}
+
+peak_rss_host_support <- function(status_path = "/proc/self/status") {
+  linux <- .Platform$OS.type == "unix" && identical(unname(Sys.info()[["sysname"]]), "Linux")
+  if (!linux) {
+    return(list(supported = FALSE, reason = "gross peak RSS is supported only on Linux /proc"))
+  }
+  if (!file.exists(status_path)) {
+    return(list(supported = FALSE, reason = "gross peak RSS requires /proc/self/status"))
+  }
+  snapshot <- tryCatch(parse_proc_status_memory(readLines(status_path)), error = function(error) NULL)
+  supported <- !is.null(snapshot) && !is.na(snapshot$loaded_process_rss_kb) && !is.na(snapshot$peak_rss_kb)
+  list(
+    supported = supported,
+    reason = if (supported) "available" else "Linux /proc/self/status lacks VmRSS or VmHWM"
+  )
+}
+
+measure_peak_process_rss <- function(prepare_call, repetitions, status_path = "/proc/self/status") {
+  repetitions <- as.integer(repetitions)
+  if (length(repetitions) != 1L || is.na(repetitions) || repetitions < 1L) {
+    stop("peak RSS repetition count must be a positive integer")
+  }
+  support <- peak_rss_host_support(status_path)
+  if (!isTRUE(support$supported)) {
+    return(list(
+      peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
+      peak_rss_support = "unsupported", peak_rss_support_reason = as.character(support$reason),
+      peak_rss_repetitions = repetitions
+    ))
+  }
+  gc(full = TRUE)
+  loaded <- parse_proc_status_memory(readLines(status_path))$loaded_process_rss_kb
+  retained <- vector("list", repetitions)
+  for (index in seq_len(repetitions)) {
+    prepared <- prepare_call()
+    retained[[index]] <- evaluate_prepared_call(prepared)
+  }
+  peak <- parse_proc_status_memory(readLines(status_path))$peak_rss_kb
+  if (is.na(loaded) || is.na(peak) || peak < loaded) {
+    stop("peak RSS reading is invalid")
+  }
+  list(
+    peak_rss_kb = peak, loaded_process_rss_kb = loaded,
+    peak_rss_support = "supported", peak_rss_support_reason = "available",
+    peak_rss_repetitions = repetitions
+  )
+}
+
+peak_rss_fixture_eligible <- function(fixture, variant, status, policy) {
+  fixture <- as.character(fixture)
+  variant <- as.character(variant)
+  eligible_variant <- variant == "public" |
+    (variant == "optimized_base_r" & fixture %in% names(fixture_measurement_optimized_specs()))
+  as.character(status) == "PASS" & fixture %in% as.character(policy$peak_rss_fixture_ids) & eligible_variant
+}
+
+apply_peak_rss_results <- function(summaries, results, policy, host_support) {
+  required_summary <- c("run_id", "runner", "fixture", "variant", "row_id", "status")
+  if (length(setdiff(required_summary, names(summaries))) > 0L) stop("fixture summaries lack peak RSS identity columns")
+  eligible <- peak_rss_fixture_eligible(summaries$fixture, summaries$variant, summaries$status, policy)
+  summaries$peak_rss_kb <- NA_integer_
+  summaries$loaded_process_rss_kb <- NA_integer_
+  summaries$peak_rss_metric <- as.character(policy$peak_rss_metric)
+  summaries$peak_rss_support <- "not_eligible"
+  summaries$peak_rss_support_reason <- "workload is not declared memory eligible"
+  summaries$peak_rss_repetitions <- NA_integer_
+  if (!isTRUE(host_support$supported)) {
+    if (!is.null(results) && nrow(results) > 0L) stop("unsupported host produced peak RSS results")
+    summaries$peak_rss_support[eligible] <- "unsupported"
+    summaries$peak_rss_support_reason[eligible] <- as.character(host_support$reason)
+    summaries$peak_rss_repetitions[eligible] <- as.integer(policy$peak_rss_repetitions)
+    return(summaries)
+  }
+  expected_keys <- paste(summaries$runner[eligible], summaries$row_id[eligible], sep = "\r")
+  if (length(expected_keys) == 0L) {
+    if (!is.null(results) && nrow(results) > 0L) stop("peak RSS results exist without eligible rows")
+    return(summaries)
+  }
+  required_results <- c(
+    "run_id", "runner", "fixture", "variant", "row_id", "peak_rss_kb", "loaded_process_rss_kb",
+    "peak_rss_metric", "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions"
+  )
+  if (is.null(results) || length(setdiff(required_results, names(results))) > 0L) {
+    stop("peak RSS results are missing required columns")
+  }
+  result_keys <- paste(results$runner, results$row_id, sep = "\r")
+  if (!setequal(expected_keys, result_keys) || anyDuplicated(result_keys)) {
+    stop("peak RSS result coverage differs from declared memory-eligible rows")
+  }
+  results <- results[match(expected_keys, result_keys), , drop = FALSE]
+  identity_valid <- as.character(results$run_id) == as.character(summaries$run_id[eligible]) &
+    as.character(results$fixture) == as.character(summaries$fixture[eligible]) &
+    as.character(results$variant) == as.character(summaries$variant[eligible]) &
+    as.character(results$peak_rss_metric) == as.character(policy$peak_rss_metric) &
+    as.integer(results$peak_rss_repetitions) == as.integer(policy$peak_rss_repetitions)
+  supported <- as.character(results$peak_rss_support) == "supported" &
+    as.character(results$peak_rss_support_reason) == "available" &
+    is.finite(as.numeric(results$peak_rss_kb)) & as.numeric(results$peak_rss_kb) > 0 &
+    is.finite(as.numeric(results$loaded_process_rss_kb)) & as.numeric(results$loaded_process_rss_kb) > 0 &
+    as.numeric(results$peak_rss_kb) >= as.numeric(results$loaded_process_rss_kb)
+  unsupported <- as.character(results$peak_rss_support) == "unsupported" &
+    is.na(results$peak_rss_kb) & is.na(results$loaded_process_rss_kb) &
+    !is.na(results$peak_rss_support_reason) & nzchar(as.character(results$peak_rss_support_reason)) &
+    as.character(results$peak_rss_support_reason) != "available"
+  identity_valid[is.na(identity_valid)] <- FALSE
+  supported[is.na(supported)] <- FALSE
+  unsupported[is.na(unsupported)] <- FALSE
+  if (any(!identity_valid | !(supported | unsupported))) {
+    stop("peak RSS result value or identity is invalid")
+  }
+  summaries$peak_rss_kb[eligible] <- as.integer(results$peak_rss_kb)
+  summaries$loaded_process_rss_kb[eligible] <- as.integer(results$loaded_process_rss_kb)
+  summaries$peak_rss_support[eligible] <- as.character(results$peak_rss_support)
+  summaries$peak_rss_support_reason[eligible] <- as.character(results$peak_rss_support_reason)
+  summaries$peak_rss_repetitions[eligible] <- as.integer(results$peak_rss_repetitions)
+  summaries
+}
+
+validate_peak_rss_support <- function(rows, policy, universe, label) {
+  required <- c(
+    "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_metric", "peak_rss_support",
+    "peak_rss_support_reason", "peak_rss_repetitions"
+  )
+  if (length(setdiff(required, names(rows))) > 0L) stop(sprintf("%s lacks peak RSS columns", label))
+  metrics <- as.character(rows$peak_rss_metric)
+  if (anyNA(metrics) || any(metrics != as.character(policy$peak_rss_metric))) {
+    stop(sprintf("%s peak RSS metric differs from policy", label))
+  }
+  eligible <- if (identical(universe, "fixture")) {
+    peak_rss_fixture_eligible(rows$fixture, rows$variant, rows$status, policy)
+  } else {
+    rep(FALSE, nrow(rows))
+  }
+  states <- as.character(rows$peak_rss_support)
+  if (anyNA(states)) stop(sprintf("%s has an invalid peak RSS support state", label))
+  supported <- eligible & states == "supported"
+  unsupported <- eligible & states == "unsupported"
+  not_eligible <- !eligible & states == "not_eligible"
+  if (any(!(supported | unsupported | not_eligible))) {
+    stop(sprintf("%s has an invalid peak RSS support state", label))
+  }
+  peak <- strict_metric_numeric(rows$peak_rss_kb, paste(label, "peak RSS"))
+  loaded <- strict_metric_numeric(rows$loaded_process_rss_kb, paste(label, "loaded-process RSS"))
+  repetitions <- strict_metric_numeric(rows$peak_rss_repetitions, paste(label, "peak RSS repetitions"))
+  reasons <- as.character(rows$peak_rss_support_reason)
+  if (anyNA(reasons) || any(!nzchar(reasons)) ||
+      any(!is.finite(peak[supported]) | !is.finite(loaded[supported]) |
+          peak[supported] < loaded[supported] | loaded[supported] <= 0) ||
+      anyNA(repetitions[supported | unsupported]) ||
+      any(repetitions[supported | unsupported] != as.integer(policy$peak_rss_repetitions)) ||
+      any(!is.na(peak[unsupported | not_eligible]) | !is.na(loaded[unsupported | not_eligible])) ||
+      any(!is.na(repetitions[not_eligible])) || any(reasons[supported] != "available") ||
+      any(reasons[unsupported | not_eligible] == "available") ||
+      any(!nzchar(reasons[unsupported | not_eligible]))) {
+    stop(sprintf("%s peak RSS value disagrees with its support state", label))
+  }
+  invisible(rows)
 }
 
 ordered_selection <- function(available, selected, label) {
@@ -811,11 +1080,15 @@ read_run_wall_time_samples <- function(
     run_dir, metadata, universe, runner, id, expected_n = NULL, minimum_n = 2L, stage = NULL) {
   paths <- run_sample_artifact_paths(run_dir, metadata, universe, runner, id)
   filters <- if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    if (identical(universe, "task")) list(runner = runner, task = id, phase = "timed") else list(runner = runner, row_id = id)
+    if (identical(universe, "task")) list(runner = runner, task = id) else list(runner = runner, row_id = id)
   } else NULL
+  header_names <- if (is.null(filters)) character(0) else {
+    names(read.csv(paths[[1L]], nrows = 0L, stringsAsFactors = FALSE))
+  }
+  if ("phase" %in% header_names) filters$phase <- "timed"
   if (!is.null(filters) && is.null(stage)) {
-    header <- read.csv(paths[[1L]], stringsAsFactors = FALSE)
-    if ("stage" %in% names(header)) {
+    if ("stage" %in% header_names) {
+      header <- read.csv(paths[[1L]], stringsAsFactors = FALSE)
       keep <- rep(TRUE, nrow(header))
       for (field in names(filters)) keep <- keep & as.character(header[[field]]) == as.character(filters[[field]])
       stages <- unique(as.character(header$stage[keep]))
@@ -823,7 +1096,6 @@ read_run_wall_time_samples <- function(
     }
   }
   if (!is.null(filters)) {
-    header_names <- names(read.csv(paths[[1L]], nrows = 1L, stringsAsFactors = FALSE))
     if (!is.null(stage) && "stage" %in% header_names) filters$stage <- stage
     if ("excluded" %in% header_names) filters$excluded <- FALSE
   }
@@ -1221,6 +1493,7 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
   }
   expected_runners <- sort(run_manifest_values(metadata$runners))
   summaries <- read_run_summary_table(run_dir, metadata, "fixture", expected_runners)
+  bounded <- is_bounded_timing_policy(metadata$timing_policy)
   required <- c(
     "run_id", "runner", "fixture", "variant", "row_id", "status", "correctness_status",
     "correctness_message", "input_fingerprint", "implementation_role", "evidence_use",
@@ -1229,12 +1502,16 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
     "fixture_source_digest", "fixture_build_digest", "fixture_generated_glue_kind",
     "fixture_generated_glue_digest", "fixture_artifact_digest", "fixture_dependency_digest",
     "fixture_artifact_dependency_digest", "source_ledger_identity_digest", "mean_ms", "median_ms",
-    "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms", "n_iterations"
+    "min_ms", "max_ms", "sd_ms", "cv_pct", "n_iterations"
   )
-  timing_required <- if (is_bounded_timing_policy(metadata$timing_policy)) c(
+  timing_required <- if (bounded) c(
+    "rss_endpoint_delta_kb", "first_call_ms", "peak_rss_kb", "loaded_process_rss_kb",
+    "peak_rss_metric", "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions",
     "warmup_iterations", "sample_stage", "fixed_iterations", "timer_noise_floor_ms",
-    "timer_noise_status", "rss_metric", "gc_policy"
+    "timer_noise_status", "rss_endpoint_metric", "rss_endpoint_support",
+    "rss_endpoint_support_reason", "gc_policy"
   ) else c(
+    "rss_kb", "cold_start_ms",
     "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
     "convergence_cv_threshold_pct", "convergence_cv_pct", "stopping_condition", "converged",
     "timer_noise_floor_ms", "timer_noise_status", "rss_metric", "gc_policy"
@@ -1322,12 +1599,11 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
   }
   pass <- summaries[summaries$status == "PASS", , drop = FALSE]
   policy <- metadata$timing_policy
-  bounded <- is_bounded_timing_policy(policy)
   policy_mismatch <- any(as.integer(pass$warmup_iterations) != as.integer(policy$warmup_iterations)) ||
       any(as.numeric(pass$timer_noise_floor_ms) != as.numeric(policy$timer_noise_floor_ms)) ||
-      any(as.character(pass$rss_metric) != as.character(policy$rss_metric)) ||
       any(as.character(pass$gc_policy) != as.character(policy$gc_policy))
   if (!bounded) policy_mismatch <- policy_mismatch ||
+    any(as.character(pass$rss_metric) != as.character(policy$rss_metric)) ||
     any(as.integer(pass$block_size) != as.integer(policy$block_size)) ||
     any(as.integer(pass$max_iterations) != as.integer(policy$max_iterations)) ||
     any(as.integer(pass$convergence_window_blocks) != as.integer(policy$convergence_window_blocks)) ||
@@ -1335,13 +1611,15 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
   if (policy_mismatch) {
     stop("fixture summaries disagree with the timing policy")
   }
-  numeric_fields <- c(
-    "mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms"
-  )
+  numeric_fields <- c("mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct")
+  if (!bounded) numeric_fields <- c(numeric_fields, "rss_kb", "cold_start_ms")
   if (any(!vapply(pass[numeric_fields], function(values) all(is.finite(values) & values >= 0), logical(1)))) {
     stop("fixture PASS summaries contain invalid timing statistics")
   }
   if (bounded) {
+    validate_rss_endpoint_support(summaries, summaries$status == "PASS", policy, "fixture summaries")
+    validate_first_call_metric(summaries, summaries$status == "PASS", "fixture summaries")
+    validate_peak_rss_support(summaries, policy, "fixture", "fixture summaries")
     if (any(!(pass$sample_stage %in% c("pilot", "confirmation"))) ||
         any(as.integer(pass$n_iterations) != as.integer(pass$fixed_iterations))) {
       stop("fixture PASS summaries contain an invalid measured sample count")
@@ -1359,9 +1637,13 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
     stop("legacy fixture PASS summaries contain invalid adaptive timing evidence")
   }
   not_measured <- summaries$status != "PASS"
+  not_measured_numeric <- c("mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct")
   not_measured_numeric <- c(
-    "mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct", "rss_kb", "cold_start_ms",
-    "n_iterations", if (bounded) "fixed_iterations" else "convergence_cv_pct"
+    not_measured_numeric,
+    if (bounded) c(
+      "rss_endpoint_delta_kb", "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_repetitions",
+      "n_iterations", "fixed_iterations"
+    ) else c("rss_kb", "cold_start_ms", "n_iterations", "convergence_cv_pct")
   )
   if (any(!vapply(summaries[not_measured, not_measured_numeric, drop = FALSE], function(values) {
     all(is.na(values))
@@ -1399,7 +1681,7 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
     required_raw <- c("run_id", "runner", "fixture", "variant", "row_id", "iteration", "wall_ms")
     if (bounded) required_raw <- c(
       required_raw, "stage", "process_epoch", "batch", "attempt", "group_order", "member_order",
-      "excluded", "exclusion_reason"
+      "excluded", "exclusion_reason", "phase", "rss_endpoint_delta_kb"
     )
     if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
       stop(sprintf("fixture raw timing columns differ for %s", runner))
@@ -1418,6 +1700,10 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
           any(!excluded & !is.na(raw_samples$exclusion_reason) & nzchar(as.character(raw_samples$exclusion_reason)))) {
         stop(sprintf("fixture raw timing exclusions differ for %s", runner))
       }
+      if (nrow(raw_samples) > 0L &&
+          !setequal(unique(as.character(raw_samples$phase)), c("first_call", "timed"))) {
+        stop(sprintf("fixture raw timing phases differ for %s", runner))
+      }
     }
     for (row_id in expected_raw) {
       summary <- runner_rows[runner_rows$row_id == row_id, , drop = FALSE]
@@ -1429,6 +1715,8 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
         !(as.logical(raw$excluded) %in% TRUE) &
           as.character(raw$stage) == as.character(summary$sample_stage[[1L]]), , drop = FALSE
       ]
+      first_call_raw <- if (bounded) raw[as.character(raw$phase) == "first_call", , drop = FALSE] else NULL
+      if (bounded) raw <- raw[as.character(raw$phase) == "timed", , drop = FALSE]
       identity_matches <- nrow(summary) == 1L &&
         all(as.character(raw$run_id) == as.character(metadata$run_id)) &&
         all(as.character(raw$runner) == runner) &&
@@ -1439,6 +1727,11 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
           !identical(as.integer(raw$iteration), seq_len(nrow(raw))) ||
           any(!is.finite(raw$wall_ms) | raw$wall_ms < 0)) {
         stop(sprintf("fixture raw sample count differs for %s/%s", runner, row_id))
+      }
+      if (bounded) {
+        label <- paste(runner, row_id, sep = "/")
+        validate_first_call_raw(summary, first_call_raw, label)
+        validate_rss_endpoint_raw(summary, raw, label)
       }
       validate_fixture_raw_statistics(summary, raw, policy, paste(runner, row_id, sep = "/"))
     }

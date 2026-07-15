@@ -35,13 +35,33 @@ legacy_timing_policy <- list(
   timer_noise_floor_ms = 0.01, timer_noise_floor_method = "legacy calibration",
   low_noise_cv_threshold_pct = 20, meaningful_margin_ratio = 1.05,
   median_ci_level = 0.95, median_ci_method = "exact order-statistic interval",
-  rss_metric = "post_gc_endpoint_delta_kb", gc_policy = "legacy"
+  rss_metric = "post_gc_rss_delta_kb", gc_policy = "legacy"
 )
 validate_timing_policy(legacy_timing_policy)
 expect_error(
   "unknown timing policy version",
   validate_timing_policy(within(timing_policy, policy_version <- "future-policy")),
   "unsupported timing policy version"
+)
+expect_error(
+  "invalid peak RSS timeout",
+  validate_timing_policy(within(timing_policy, peak_rss_timeout_seconds <- 0L)),
+  "invalid peak_rss_timeout_seconds"
+)
+expect_error(
+  "invalid peak RSS repetition policy",
+  validate_timing_policy(within(timing_policy, peak_rss_repetitions <- 0L)),
+  "invalid peak_rss_repetitions"
+)
+expect_error(
+  "misnamed peak RSS metric",
+  validate_timing_policy(within(timing_policy, peak_rss_metric <- "peak_memory_kb")),
+  "invalid process-memory metric"
+)
+expect_error(
+  "unknown peak RSS fixture",
+  validate_timing_policy(within(timing_policy, peak_rss_fixture_ids <- c("F03", "F04", "F99"))),
+  "invalid peak_rss_fixture_ids"
 )
 group_order_a <- timing_group_schedule(sprintf("G%02d", 1:8), 771L)
 group_order_b <- timing_group_schedule(sprintf("G%02d", 1:8), 771L)
@@ -307,10 +327,236 @@ expect_true(
   fixed_calls == 7L && fixed_result$n_runs == 7L && fixed_result$fixed_iterations == 7L,
   "fixed timing takes exactly the predeclared confirmation count"
 )
+original_current_rss_kb <- current_rss_kb
+current_rss_kb <- function() NA_integer_
+unsupported_endpoint <- benchmark_call(
+  function() function() NULL,
+  function() function() NULL,
+  iterations = 2L,
+  warmup = 0L
+)
+current_rss_kb <- original_current_rss_kb
+expect_true(
+  is.na(unsupported_endpoint$rss_endpoint_delta_kb) &&
+    identical(unsupported_endpoint$rss_endpoint_support, "unsupported") &&
+    nzchar(unsupported_endpoint$rss_endpoint_support_reason),
+  "unsupported endpoint RSS remains NA with a support reason"
+)
+metric_rows <- data.frame(
+  first_call_ms = c(1, NA_real_), rss_endpoint_delta_kb = c(NA_integer_, NA_integer_),
+  rss_endpoint_metric = timing_policy$rss_endpoint_metric,
+  rss_endpoint_support = c("unsupported", "not_measured"),
+  rss_endpoint_support_reason = c("unsupported test host", "timing not measured"),
+  stringsAsFactors = FALSE
+)
+validate_first_call_metric(metric_rows, c(TRUE, FALSE), "synthetic metrics")
+validate_rss_endpoint_support(metric_rows, c(TRUE, FALSE), timing_policy, "synthetic metrics")
+bad_first_call <- metric_rows
+bad_first_call$first_call_ms[[1L]] <- -1
+expect_error(
+  "negative first-call measurement",
+  validate_first_call_metric(bad_first_call, c(TRUE, FALSE), "synthetic metrics"),
+  "invalid first-call"
+)
+bad_endpoint_support <- metric_rows
+bad_endpoint_support$rss_endpoint_delta_kb[[1L]] <- 0L
+expect_error(
+  "unsupported endpoint RSS cannot become zero",
+  validate_rss_endpoint_support(bad_endpoint_support, c(TRUE, FALSE), timing_policy, "synthetic metrics"),
+  "disagrees with its support state"
+)
+bad_endpoint_state <- metric_rows
+bad_endpoint_state$rss_endpoint_support[[1L]] <- NA_character_
+expect_error(
+  "missing endpoint RSS support state",
+  validate_rss_endpoint_support(bad_endpoint_state, c(TRUE, FALSE), timing_policy, "synthetic metrics"),
+  "invalid endpoint RSS support state"
+)
+bad_endpoint_reason <- metric_rows
+bad_endpoint_reason$rss_endpoint_support_reason[[1L]] <- "available"
+expect_error(
+  "unsupported endpoint RSS cannot claim availability",
+  validate_rss_endpoint_support(bad_endpoint_reason, c(TRUE, FALSE), timing_policy, "synthetic metrics"),
+  "disagrees with its support state"
+)
+bad_endpoint_text <- metric_rows
+bad_endpoint_text$rss_endpoint_delta_kb[[1L]] <- "missing"
+expect_error(
+  "endpoint RSS rejects non-numeric missing placeholders",
+  validate_rss_endpoint_support(bad_endpoint_text, c(TRUE, FALSE), timing_policy, "synthetic metrics"),
+  "non-numeric value"
+)
+raw_metric_summary <- data.frame(
+  rss_endpoint_delta_kb = 12, rss_endpoint_support = "supported", first_call_ms = 1,
+  stringsAsFactors = FALSE
+)
+raw_metric_samples <- data.frame(
+  iteration = 1:2, wall_ms = c(1, 1), rss_endpoint_delta_kb = c(NA, 12),
+  stringsAsFactors = FALSE
+)
+validate_rss_endpoint_raw(raw_metric_summary, raw_metric_samples, "synthetic raw metrics")
+validate_first_call_raw(
+  raw_metric_summary,
+  data.frame(iteration = 1L, wall_ms = 1, stringsAsFactors = FALSE),
+  "synthetic raw metrics"
+)
+bad_raw_metric <- raw_metric_samples
+bad_raw_metric$rss_endpoint_delta_kb <- c(12, NA)
+expect_error(
+  "endpoint RSS must occupy the final timed sample",
+  validate_rss_endpoint_raw(raw_metric_summary, bad_raw_metric, "synthetic raw metrics"),
+  "differs from its summary"
+)
+expect_error(
+  "first-call raw timing must match its summary",
+  validate_first_call_raw(
+    raw_metric_summary,
+    data.frame(iteration = 1L, wall_ms = 2, stringsAsFactors = FALSE),
+    "synthetic raw metrics"
+  ),
+  "differs from its summary"
+)
 expect_error(
   "invalid fixed timing count",
   benchmark_call(function() function() NULL, function() function() NULL, iterations = 0L),
   "positive integer"
+)
+
+proc_snapshot <- parse_proc_status_memory(c(
+  "Name:\tR", "VmHWM:\t 4096 kB", "VmRSS:\t 2048 kB"
+))
+expect_true(
+  identical(proc_snapshot, list(loaded_process_rss_kb = 2048L, peak_rss_kb = 4096L)),
+  "Linux process status parser keeps loaded and gross peak RSS separate"
+)
+malformed_snapshot <- parse_proc_status_memory(c("VmHWM: unknown", "VmRSS: 1 MB"))
+expect_true(
+  is.na(malformed_snapshot$loaded_process_rss_kb) && is.na(malformed_snapshot$peak_rss_kb),
+  "malformed process memory readings remain unsupported"
+)
+peak_probe_calls <- 0L
+peak_probe <- measure_peak_process_rss(function() {
+  peak_probe_calls <<- peak_probe_calls + 1L
+  function() raw(1024L * 1024L)
+}, repetitions = 2L)
+if (identical(peak_probe$peak_rss_support, "supported")) {
+  expect_true(
+    peak_probe_calls == 2L && is.finite(peak_probe$peak_rss_kb) &&
+      peak_probe$peak_rss_kb >= peak_probe$loaded_process_rss_kb,
+    "supported peak RSS uses the fixed repetition count and reports gross peak above loaded baseline"
+  )
+} else {
+  expect_true(
+    peak_probe_calls == 0L && is.na(peak_probe$peak_rss_kb) &&
+      is.na(peak_probe$loaded_process_rss_kb) && nzchar(peak_probe$peak_rss_support_reason),
+    "unsupported peak RSS does not run the workload and preserves NA with a reason"
+  )
+}
+
+memory_summaries <- data.frame(
+  run_id = "run", runner = c("zigr", "zigr"), fixture = c("F03", "F01"),
+  variant = "public", row_id = c("F03", "F01"), status = "PASS",
+  stringsAsFactors = FALSE
+)
+memory_results <- data.frame(
+  run_id = "run", runner = "zigr", fixture = "F03", variant = "public", row_id = "F03",
+  peak_rss_kb = 4096L, loaded_process_rss_kb = 2048L,
+  peak_rss_metric = timing_policy$peak_rss_metric,
+  peak_rss_support = "supported", peak_rss_support_reason = "available",
+  peak_rss_repetitions = timing_policy$peak_rss_repetitions,
+  stringsAsFactors = FALSE
+)
+supported_memory <- apply_peak_rss_results(
+  memory_summaries, memory_results, timing_policy, list(supported = TRUE, reason = "available")
+)
+expect_true(
+  supported_memory$peak_rss_kb[[1L]] == 4096L &&
+    identical(supported_memory$peak_rss_support, c("supported", "not_eligible")),
+  "declared memory fixture receives gross peak and non-eligible rows stay explicit"
+)
+validate_peak_rss_support(supported_memory, timing_policy, "fixture", "synthetic fixture metrics")
+unsupported_memory <- apply_peak_rss_results(
+  memory_summaries, data.frame(), timing_policy,
+  list(supported = FALSE, reason = "unsupported test host")
+)
+expect_true(
+  is.na(unsupported_memory$peak_rss_kb[[1L]]) &&
+    identical(unsupported_memory$peak_rss_support[[1L]], "unsupported") &&
+    identical(unsupported_memory$peak_rss_support_reason[[1L]], "unsupported test host"),
+  "unsupported gross peak RSS remains NA with the host reason"
+)
+validate_peak_rss_support(unsupported_memory, timing_policy, "fixture", "synthetic fixture metrics")
+unsupported_worker_result <- memory_results
+unsupported_worker_result$peak_rss_kb <- NA_integer_
+unsupported_worker_result$loaded_process_rss_kb <- NA_integer_
+unsupported_worker_result$peak_rss_support <- "unsupported"
+unsupported_worker_result$peak_rss_support_reason <- "worker /proc reading unavailable"
+unsupported_worker_memory <- apply_peak_rss_results(
+  memory_summaries, unsupported_worker_result, timing_policy,
+  list(supported = TRUE, reason = "available")
+)
+expect_true(
+  is.na(unsupported_worker_memory$peak_rss_kb[[1L]]) &&
+    identical(unsupported_worker_memory$peak_rss_support[[1L]], "unsupported") &&
+    identical(unsupported_worker_memory$peak_rss_support_reason[[1L]], "worker /proc reading unavailable"),
+  "worker-level peak RSS support loss remains NA even on a supported host"
+)
+invalid_memory_results <- memory_results
+invalid_memory_results$loaded_process_rss_kb <- 5000L
+expect_error(
+  "gross peak RSS below loaded baseline",
+  apply_peak_rss_results(
+    memory_summaries, invalid_memory_results, timing_policy,
+    list(supported = TRUE, reason = "available")
+  ),
+  "value or identity is invalid"
+)
+zero_memory_results <- memory_results
+zero_memory_results$peak_rss_kb <- 0L
+zero_memory_results$loaded_process_rss_kb <- 0L
+expect_error(
+  "supported process RSS cannot be zero",
+  apply_peak_rss_results(
+    memory_summaries, zero_memory_results, timing_policy,
+    list(supported = TRUE, reason = "available")
+  ),
+  "value or identity is invalid"
+)
+available_unsupported_memory <- unsupported_worker_result
+available_unsupported_memory$peak_rss_support_reason <- "available"
+expect_error(
+  "unsupported peak RSS cannot claim availability",
+  apply_peak_rss_results(
+    memory_summaries, available_unsupported_memory, timing_policy,
+    list(supported = TRUE, reason = "available")
+  ),
+  "value or identity is invalid"
+)
+invalid_unsupported_memory <- unsupported_worker_result
+invalid_unsupported_memory$peak_rss_kb <- 0L
+expect_error(
+  "unsupported gross peak RSS cannot become zero",
+  apply_peak_rss_results(
+    memory_summaries, invalid_unsupported_memory, timing_policy,
+    list(supported = TRUE, reason = "available")
+  ),
+  "value or identity is invalid"
+)
+no_memory_rows <- memory_summaries[2L, , drop = FALSE]
+no_memory_result <- apply_peak_rss_results(
+  no_memory_rows, NULL, timing_policy, list(supported = TRUE, reason = "available")
+)
+expect_true(
+  identical(no_memory_result$peak_rss_support, "not_eligible") && is.na(no_memory_result$peak_rss_kb),
+  "a supported host accepts a filtered suite with no memory-eligible fixture"
+)
+expect_error(
+  "missing declared peak RSS row",
+  apply_peak_rss_results(
+    memory_summaries, memory_results[0, ], timing_policy,
+    list(supported = TRUE, reason = "available")
+  ),
+  "coverage differs"
 )
 
 sample_file <- tempfile("wall-time-samples-", fileext = ".csv")
@@ -322,6 +568,23 @@ expect_true(
     sample_interval[["low"]] <= median(sample_values) && sample_interval[["high"]] >= median(sample_values),
   "shared report sample reader preserves valid zero-duration samples and interval coverage"
 )
+grouped_sample_dir <- tempfile("grouped-fixture-samples-")
+dir.create(grouped_sample_dir)
+grouped_metadata <- list(schema_version = 3L, artifact_layout = "grouped-v1")
+write.csv(data.frame(
+  runner = "zigr", row_id = "F03", phase = c("first_call", "timed", "timed"),
+  stage = "confirmation", excluded = FALSE, iteration = c(1L, 1L, 2L),
+  wall_ms = c(9, 1, 2), stringsAsFactors = FALSE
+), file.path(grouped_sample_dir, "fixture_samples.csv"), row.names = FALSE)
+grouped_fixture_values <- read_run_wall_time_samples(
+  grouped_sample_dir, grouped_metadata, "fixture", "zigr", "F03",
+  expected_n = 2L, stage = "confirmation"
+)
+expect_true(
+  identical(grouped_fixture_values, c(1L, 2L)),
+  "grouped fixture sample reads exclude first-call observations"
+)
+unlink(grouped_sample_dir, recursive = TRUE)
 atomic_csv <- tempfile("atomic-csv-", fileext = ".csv")
 write_csv_once(data.frame(value = 1L), atomic_csv, "test output")
 expect_true(identical(read.csv(atomic_csv)$value, 1L), "atomic CSV output is promoted once")
@@ -711,7 +974,7 @@ sealed_fixture_summary <- data.frame(runner = "r", row_id = "F01", status = "PAS
 write.csv(sealed_task_summary, file.path(sealed_run, "task_summary.csv"), row.names = FALSE)
 write.csv(sealed_fixture_summary, file.path(sealed_run, "fixture_summary.csv"), row.names = FALSE)
 write.csv(
-  data.frame(runner = "r", task = "fixture_task", phase = c("cold", "timed"), wall_ms = 1, run_id = "sealed"),
+  data.frame(runner = "r", task = "fixture_task", phase = c("first_call", "timed"), wall_ms = 1, run_id = "sealed"),
   file.path(sealed_run, "task_samples.csv"),
   row.names = FALSE
 )

@@ -236,7 +236,7 @@ validate_environment_manifest(run_metadata$environment)
 write_run_manifest(run_dir, run_metadata)
 
 worker_process_args <- function(kind, runner_name, validation_only = FALSE, validation_output = NULL,
-                                timing = NULL) {
+                                timing = NULL, memory = NULL) {
   if (!(kind %in% c("task", "fixture"))) stop("worker kind must be task or fixture")
   worker_args <- c(
     "benchmark_worker.R", sprintf("--kind=%s", kind),
@@ -282,6 +282,14 @@ worker_process_args <- function(kind, runner_name, validation_only = FALSE, vali
       sprintf("--process-epoch=%d", timing$process_epoch),
       sprintf("--member-order=%d", timing$member_order),
       sprintf("--group-orders=%s", paste(paste(ids, group_orders, sep = "="), collapse = ","))
+    )
+  }
+  if (!is.null(memory)) {
+    if (!identical(kind, "fixture") || !is.null(timing)) stop("memory work requires one fixture row outside timing")
+    worker_args <- c(
+      worker_args,
+      sprintf("--memory-row=%s", memory$row_id),
+      sprintf("--memory-output=%s", memory$output)
     )
   }
   worker_args
@@ -511,7 +519,7 @@ pilot_plan_for <- function(universe, groups, eligible_groups) {
     ))
   }
   if ("excluded" %in% names(raw)) raw <- raw[!as.logical(raw$excluded), , drop = FALSE]
-  if (identical(universe, "task")) raw <- raw[raw$phase == "timed", , drop = FALSE]
+  if ("phase" %in% names(raw)) raw <- raw[raw$phase == "timed", , drop = FALSE]
   raw$group_id <- if (identical(universe, "task")) as.character(raw$task) else as.character(raw$fixture)
   raw$member_id <- if (identical(universe, "task")) {
     as.character(raw$runner)
@@ -692,6 +700,46 @@ consolidate_timing <- function(universe, plan) {
 if (run_tasks) consolidate_timing("task", task_plan)
 if (run_fixtures) consolidate_timing("fixture", fixture_plan)
 unlink(timing_root, recursive = TRUE)
+
+if (run_fixtures) {
+  fixture_summary_path <- run_summary_artifact_paths(run_dir, run_metadata, "fixture")
+  fixture_summary <- read.csv(fixture_summary_path, stringsAsFactors = FALSE)
+  host_support <- peak_rss_host_support()
+  memory_root <- file.path(run_dir, ".staging", "memory")
+  memory_results <- NULL
+  eligible <- peak_rss_fixture_eligible(
+    fixture_summary$fixture, fixture_summary$variant, fixture_summary$status, run_metadata$timing_policy
+  )
+  if (isTRUE(host_support$supported) && any(eligible)) {
+    output_paths <- character(sum(eligible))
+    eligible_rows <- which(eligible)
+    for (output_index in seq_along(eligible_rows)) {
+      row <- fixture_summary[eligible_rows[[output_index]], , drop = FALSE]
+      output <- file.path(memory_root, paste0(row$runner, "-", row$row_id, ".csv"))
+      output_paths[[output_index]] <- output
+      code <- system2(
+        "Rscript",
+        args = worker_process_args(
+          "fixture", as.character(row$runner),
+          memory = list(row_id = as.character(row$row_id), output = output)
+        ),
+        env = blas_env, stdout = "", stderr = "",
+        timeout = as.integer(run_metadata$timing_policy$peak_rss_timeout_seconds)
+      )
+      if (!identical(code, 0L)) {
+        unlink(memory_root, recursive = TRUE)
+        stop(sprintf("peak RSS worker failed for %s/%s with exit code %d", row$runner, row$row_id, code))
+      }
+    }
+    memory_results <- do.call(rbind, lapply(output_paths, read.csv, stringsAsFactors = FALSE))
+  }
+  fixture_summary <- apply_peak_rss_results(
+    fixture_summary, memory_results, run_metadata$timing_policy, host_support
+  )
+  unlink(fixture_summary_path)
+  write_csv_once(fixture_summary, fixture_summary_path, "fixture summary with peak RSS")
+  unlink(memory_root, recursive = TRUE)
+}
 
 final_correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
 if (!identical(final_correctness_evidence, correctness_evidence)) {

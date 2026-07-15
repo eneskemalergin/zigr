@@ -364,7 +364,7 @@ validate_timing_policy <- function(policy) {
     if (as.numeric(policy$median_ci_level) >= 1) stop("legacy timing policy median CI level must be below 1")
     return(invisible(policy))
   }
-  if (!identical(as.character(policy$policy_version), "bounded-pilot-confirmation-v1")) {
+  if (!identical(as.character(policy$policy_version), "bounded-pilot-confirmation-v2")) {
     stop("run manifest has an unsupported timing policy version")
   }
   required <- c(
@@ -373,13 +373,16 @@ validate_timing_policy <- function(policy) {
     "batch_time_cap_ms", "batch_group_cap", "batch_timeout_seconds", "total_run_budget_seconds",
     "timer_noise_floor_ms", "timer_noise_floor_method",
     "low_noise_cv_threshold_pct",
-    "meaningful_margin_ratio", "median_ci_level", "median_ci_method", "rss_metric", "gc_policy"
+    "meaningful_margin_ratio", "median_ci_level", "median_ci_method", "rss_endpoint_metric",
+    "peak_rss_metric", "peak_rss_repetitions", "peak_rss_timeout_seconds",
+    "peak_rss_fixture_ids", "gc_policy"
   )
   missing <- required[vapply(required, function(name) is.null(policy[[name]]), logical(1))]
   if (length(missing) > 0L) stop(sprintf("timing policy missing fields: %s", paste(missing, collapse = ", ")))
   integer_fields <- c(
     "warmup_iterations", "pilot_iterations", "confirmation_min_iterations",
-    "confirmation_max_iterations", "batch_group_cap", "batch_timeout_seconds", "total_run_budget_seconds"
+    "confirmation_max_iterations", "batch_group_cap", "batch_timeout_seconds", "total_run_budget_seconds",
+    "peak_rss_repetitions", "peak_rss_timeout_seconds"
   )
   for (name in integer_fields) {
     value <- as.numeric(policy[[name]])
@@ -402,17 +405,28 @@ validate_timing_policy <- function(policy) {
   if (as.integer(policy$confirmation_min_iterations) > as.integer(policy$confirmation_max_iterations)) {
     stop("timing policy confirmation bounds are inverted")
   }
-  for (name in c("policy_version", "timer_noise_floor_method", "median_ci_method", "rss_metric", "gc_policy")) {
+  for (name in c(
+    "policy_version", "timer_noise_floor_method", "median_ci_method", "rss_endpoint_metric",
+    "peak_rss_metric", "gc_policy"
+  )) {
     if (length(policy[[name]]) != 1L || !nzchar(as.character(policy[[name]]))) {
       stop(sprintf("timing policy has invalid %s", name))
     }
+  }
+  fixture_ids <- as.character(unlist(policy$peak_rss_fixture_ids, use.names = FALSE))
+  if (!identical(fixture_ids, c("F03", "F04", "F06"))) {
+    stop("timing policy has invalid peak_rss_fixture_ids")
+  }
+  if (!identical(as.character(policy$rss_endpoint_metric), "post_gc_current_rss_endpoint_delta_kb") ||
+      !identical(as.character(policy$peak_rss_metric), "linux_proc_status_vmhwm_kb")) {
+    stop("timing policy has an invalid process-memory metric")
   }
   invisible(policy)
 }
 
 is_bounded_timing_policy <- function(policy) {
   !is.null(policy$policy_version) &&
-    identical(as.character(policy$policy_version), "bounded-pilot-confirmation-v1")
+    identical(as.character(policy$policy_version), "bounded-pilot-confirmation-v2")
 }
 
 timing_records_frame <- function(records, label) {
@@ -792,7 +806,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
   }
   if (!is.null(metadata$timing_policy)) validate_timing_policy(metadata$timing_policy)
   if (!is.null(metadata$timing_policy) &&
-      identical(as.character(metadata$timing_policy$policy_version), "bounded-pilot-confirmation-v1")) {
+      identical(as.character(metadata$timing_policy$policy_version), "bounded-pilot-confirmation-v2")) {
     if (is.null(metadata$timing_execution)) stop("run manifest has no frozen timing execution")
     validate_timing_execution(metadata$timing_execution, metadata)
   }
@@ -987,7 +1001,9 @@ validate_run_artifacts <- function(run_dir, metadata) {
   if (!is.null(metadata$timing_policy)) {
     timing_required <- if (is_bounded_timing_policy(metadata$timing_policy)) c(
       "warmup_iterations", "sample_stage", "fixed_iterations", "timer_noise_floor_ms",
-      "timer_noise_status", "rss_metric", "gc_policy"
+      "timer_noise_status", "rss_endpoint_metric", "rss_endpoint_support",
+      "rss_endpoint_support_reason", "gc_policy", "peak_rss_kb", "loaded_process_rss_kb",
+      "peak_rss_metric", "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions"
     ) else c(
       "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
       "convergence_cv_threshold_pct", "convergence_cv_pct", "stopping_condition", "converged",
@@ -1011,13 +1027,17 @@ validate_run_artifacts <- function(run_dir, metadata) {
         stop(sprintf("run summaries disagree with timing policy field %s", name))
       }
     }
-    for (name in c("rss_metric", "gc_policy")) {
+    exact_policy_fields <- if (bounded) "gc_policy" else c("rss_metric", "gc_policy")
+    for (name in exact_policy_fields) {
       if (any(as.character(summaries[[name]]) != as.character(policy[[name]]))) {
         stop(sprintf("run summaries disagree with timing policy field %s", name))
       }
     }
     pass_rows <- summaries$status == "PASS"
     if (bounded) {
+      validate_rss_endpoint_support(summaries, pass_rows, policy, "task summaries")
+      validate_first_call_metric(summaries, pass_rows, "task summaries")
+      validate_peak_rss_support(summaries, policy, "task", "task summaries")
       if (any(!summaries$sample_stage[pass_rows] %in% c("pilot", "confirmation")) ||
           any(as.integer(summaries$n_iterations[pass_rows]) != as.integer(summaries$fixed_iterations[pass_rows]))) {
         stop("PASS summaries contain an invalid measured sample count")
@@ -1172,14 +1192,14 @@ validate_run_artifacts <- function(run_dir, metadata) {
     required_raw <- c("run_id", "runner", "task", "iteration", "wall_ms")
     if (is_bounded_timing_policy(metadata$timing_policy)) required_raw <- c(
       required_raw, "stage", "process_epoch", "batch", "attempt", "group_order", "member_order",
-      "excluded", "exclusion_reason"
+      "excluded", "exclusion_reason", "rss_endpoint_delta_kb"
     )
     if (identical(layout, "grouped-v1")) required_raw <- c(required_raw, "phase")
     if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
       stop(sprintf("raw timing samples have missing columns for %s", runner))
     }
     if (identical(layout, "grouped-v1") && nrow(raw_samples) > 0L &&
-        !setequal(unique(as.character(raw_samples$phase)), c("cold", "timed"))) {
+        !setequal(unique(as.character(raw_samples$phase)), c("first_call", "timed"))) {
       stop(sprintf("raw timing samples have invalid phases for %s", runner))
     }
     actual_raw_tasks <- sort(unique(as.character(raw_samples$task)))
@@ -1248,29 +1268,30 @@ validate_run_artifacts <- function(run_dir, metadata) {
         if (summary_row$timer_noise_status[[1]] != expected_noise) {
           stop(sprintf("raw result disagrees with timer-noise policy: %s/%s", runner, task))
         }
+        if (is_bounded_timing_policy(metadata$timing_policy)) {
+          validate_rss_endpoint_raw(summary_row, raw, paste(runner, task, sep = "/"))
+        }
       }
     }
     if (!is.null(metadata$timing_policy)) {
       if (identical(layout, "grouped-v1")) {
-        cold <- raw_samples[as.character(raw_samples$phase) == "cold", , drop = FALSE]
-        if (is_bounded_timing_policy(metadata$timing_policy)) cold <- cold[
-          !(as.logical(cold$excluded) %in% TRUE) &
-            as.character(cold$stage) == as.character(summaries$sample_stage[
-              match(paste(cold$runner, cold$task, sep = "\r"), paste(summaries$runner, summaries$task, sep = "\r"))
+        first_call <- raw_samples[as.character(raw_samples$phase) == "first_call", , drop = FALSE]
+        if (is_bounded_timing_policy(metadata$timing_policy)) first_call <- first_call[
+          !(as.logical(first_call$excluded) %in% TRUE) &
+            as.character(first_call$stage) == as.character(summaries$sample_stage[
+              match(paste(first_call$runner, first_call$task, sep = "\r"), paste(summaries$runner, summaries$task, sep = "\r"))
             ]), , drop = FALSE
         ]
-        actual_cold_tasks <- sort(as.character(cold$task))
-        if (!identical(expected_raw_tasks, actual_cold_tasks) ||
-            any(as.integer(cold$iteration) != 1L) || any(!is.na(cold$error))) {
-          stop(sprintf("cold-start samples differ from PASS summaries for %s", runner))
+        actual_first_call_tasks <- sort(as.character(first_call$task))
+        if (!identical(expected_raw_tasks, actual_first_call_tasks)) {
+          stop(sprintf("first-call samples differ from PASS summaries for %s", runner))
         }
-        cold_summary <- summaries[
-          summaries$runner == runner & summaries$task %in% expected_raw_tasks,
-          c("task", "cold_start_ms"), drop = FALSE
-        ]
-        cold_summary <- cold_summary[match(as.character(cold$task), as.character(cold_summary$task)), , drop = FALSE]
-        if (any(round(as.numeric(cold$wall_ms), 3) != as.numeric(cold_summary$cold_start_ms))) {
-          stop(sprintf("cold-start timing differs from summaries for %s", runner))
+        for (task in expected_raw_tasks) {
+          validate_first_call_raw(
+            summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE],
+            first_call[as.character(first_call$task) == task, , drop = FALSE],
+            paste(runner, task, sep = "/")
+          )
         }
         next
       }
@@ -1282,7 +1303,9 @@ validate_run_artifacts <- function(run_dir, metadata) {
       if (!file.exists(cold_file)) stop(sprintf("cold-start results missing for %s", runner))
       cold <- read.csv(cold_file, stringsAsFactors = FALSE)
       missing_cold <- setdiff(c("runner", "task", "wall_ms", "run_id"), names(cold))
-      if (length(missing_cold) > 0L) stop(sprintf("cold-start results missing columns: %s", paste(missing_cold, collapse = ", ")))
+      if (length(missing_cold) > 0L) {
+        stop(sprintf("cold-start results missing columns: %s", paste(missing_cold, collapse = ", ")))
+      }
       if (!all(as.character(cold$run_id) == expected_run_id)) stop("cold-start results contain mixed run IDs")
       actual_cold_tasks <- sort(as.character(cold$task))
       if (!identical(expected_raw_tasks, actual_cold_tasks)) {

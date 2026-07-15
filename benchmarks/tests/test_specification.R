@@ -675,6 +675,19 @@ expect_error(
 )
 
 linked <- report_linked_runners()
+metric_names <- c(
+  "first_call_ms", "rss_endpoint_delta_kb", "rss_endpoint_metric", "rss_endpoint_support",
+  "rss_endpoint_support_reason", "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_metric",
+  "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions"
+)
+add_report_metrics <- function(rows) {
+  rows[metric_names] <- list(
+    1, 0, "post_gc_current_rss_endpoint_delta_kb", "supported", "available",
+    NA_real_, NA_real_, "linux_proc_status_vmhwm_kb", "not_eligible",
+    "workload is not declared memory eligible", NA_integer_
+  )
+  rows
+}
 expect_true(
   identical(unname(separated_report_files()[["analysis"]]), "analysis_summary.csv"),
   "analysis summary belongs to the comparative report set"
@@ -682,7 +695,9 @@ expect_true(
 analysis_input <- data.frame(
   runner = "zigr", task = manifest$task[[1L]], call_type = ".Call",
   mean_ms = 1, median_ms = 1, min_ms = 1, max_ms = 1, sd_ms = 0, cv_pct = 0,
-  rss_kb = 0, cold_start_ms = 1, n_iterations = 10L, status = "PASS",
+  rss_endpoint_delta_kb = 0, rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb",
+  rss_endpoint_support = "supported", rss_endpoint_support_reason = "available",
+  first_call_ms = 1, n_iterations = 10L, status = "PASS",
   stringsAsFactors = FALSE
 )
 analysis_report <- build_analysis_summary(analysis_input, manifest, "run")
@@ -714,7 +729,7 @@ expect_true(
   "complete low-noise confirmation interval can produce a tie"
 )
 expect_true(
-  identical(comparative_report_schema_version(), "separated-report-v3"),
+  identical(comparative_report_schema_version(), "separated-report-v4"),
   "comparative report schema records the fail-closed contract"
 )
 legacy_evidence <- comparison_evidence
@@ -794,7 +809,15 @@ product_report <- data.frame(
   timer_noise_status = "above_floor", zigr_timer_noise_status = "above_floor",
   stringsAsFactors = FALSE
 )
+product_report <- add_report_metrics(product_report)
 expect_true(is.data.frame(validate_product_metrics(product_report)), "valid product report")
+bad_report <- product_report
+bad_report$peak_rss_support <- NULL
+expect_error(
+  "product report missing process-memory support",
+  validate_product_metrics(bad_report),
+  "missing columns: peak_rss_support"
+)
 wide_margin_policy <- benchmark_timing_policy()
 wide_margin_policy$meaningful_margin_ratio <- 1.10
 wide_margin_report <- product_report
@@ -909,6 +932,7 @@ r_report <- data.frame(
   zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
   stringsAsFactors = FALSE
 )
+r_report <- add_report_metrics(r_report)
 expect_true(
   is.data.frame(validate_r_baseline_metrics(r_report, "task", "fixture")),
   "valid R baseline report"
@@ -931,6 +955,7 @@ control_report <- data.frame(
   zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
   stringsAsFactors = FALSE
 )
+control_report <- add_report_metrics(control_report)
 expect_true(is.data.frame(validate_control_metrics(control_report)), "valid control report")
 bad_report <- control_report
 bad_report$report_status <- "PRODUCT_PASS"
@@ -947,6 +972,7 @@ diagnostic_report <- data.frame(
   exclusion_reason = "diagnostic only", owner = "portability", timer_noise_status = "not_measured",
   noise_status = "not_measured", stringsAsFactors = FALSE
 )
+diagnostic_report <- add_report_metrics(diagnostic_report)
 expect_true(
   is.data.frame(validate_diagnostic_metrics(diagnostic_report, paste("zigr", "task", sep = "\r"))),
   "valid diagnostic report"
@@ -1173,6 +1199,10 @@ appears_before <- function(source, first, second) {
   second_position <- regexpr(second, source, fixed = TRUE)[[1L]]
   first_position > 0L && second_position > 0L && first_position < second_position
 }
+expect_true(
+  identical(report_measurement_columns(), metric_names),
+  "comparative report contract retains first-call and process-memory metrics"
+)
 c_tasks_source <- read_source("src/c_call/tasks.c")
 zigr_tasks_source <- read_source("src/zig/tasks.zig")
 c_task41 <- source_region(c_tasks_source, "/* Task 41_serialize_roundtrip */", "/* Task 42_external_ptr */")
