@@ -435,7 +435,7 @@ compare_r_provenance_records <- function(expected, actual, label) {
 
 # Repository sources, toolchains, builds, and dependency identity.
 
-source_ledger_schema_version <- function() "tool-source-ledger-v3"
+source_ledger_schema_version <- function() "tool-source-ledger-v4"
 
 source_ledger_fixture_artifact_paths <- function(root_dir, runner, must_work = TRUE) {
   extension <- .Platform$dynlib.ext
@@ -553,12 +553,42 @@ load_source_ledger_spec <- function(root_dir) {
   if (is.null(names(spec)) || any(!nzchar(names(spec))) || anyDuplicated(names(spec))) {
     stop("source ledger specification must be a uniquely named object")
   }
-  if (!setequal(names(spec), c("schema_version", "vocabulary_version", "runners", "fixture_runners"))) {
+  if (!setequal(names(spec), c("schema_version", "vocabulary_version", "admission", "runners", "fixture_runners"))) {
     stop("source ledger specification fields differ from the schema")
   }
-  if (!identical(as.integer(spec$schema_version), 2L)) stop("unsupported source ledger schema version")
-  if (!identical(as.character(spec$vocabulary_version), "source-ledger-v1")) {
+  if (!identical(as.integer(spec$schema_version), 3L)) stop("unsupported source ledger schema version")
+  if (!identical(as.character(spec$vocabulary_version), "source-ledger-v2")) {
     stop("unsupported source ledger vocabulary version")
+  }
+  admission <- spec$admission
+  if (!is.list(admission) || is.null(names(admission)) || any(!nzchar(names(admission))) ||
+      anyDuplicated(names(admission)) || !setequal(
+        names(admission),
+        c("zig_version", "r_version", "r_packages", "cargo_packages", "zigr_access_modes")
+      )) {
+    stop("source ledger admission fields differ from the schema")
+  }
+  for (field in c("zig_version", "r_version")) {
+    value <- admission[[field]]
+    if (length(value) != 1L || is.na(value) || !nzchar(as.character(value))) {
+      stop(sprintf("source ledger admission field %s must be one nonblank string", field))
+    }
+  }
+  expected_package_names <- list(
+    r_packages = c("Rcpp", "cpp11"),
+    cargo_packages = c("extendr-api", "savvy")
+  )
+  for (field in names(expected_package_names)) {
+    values <- unlist(admission[[field]], use.names = TRUE)
+    if (is.null(names(values)) || any(!nzchar(names(values))) || anyDuplicated(names(values)) ||
+        anyNA(values) || any(!nzchar(as.character(values))) ||
+        !identical(sort(names(values)), sort(expected_package_names[[field]]))) {
+      stop(sprintf("source ledger admission field %s has an invalid package map", field))
+    }
+  }
+  access_modes <- as.character(unlist(admission$zigr_access_modes, use.names = FALSE))
+  if (!identical(access_modes, c("r4_6_x86_64", "checked_r_api"))) {
+    stop("source ledger zigr access modes differ from the frozen mode set")
   }
   expected_runners <- c("c_call", "cpp11", "extendr", "r", "rcpp", "savvy", "zigr")
   if (is.null(spec$runners) || !identical(sort(names(spec$runners)), expected_runners)) {
@@ -1146,6 +1176,50 @@ source_ledger_command_executable <- function(command_line) {
   normalizePath(resolved)
 }
 
+source_ledger_command_arguments <- function(command_line) {
+  words <- strsplit(trimws(command_line), "[[:space:]]+", perl = TRUE)[[1L]]
+  if (length(words) < 2L) character(0) else words[-1L]
+}
+
+source_ledger_c_standard <- function(command_line) {
+  input <- tempfile("source-ledger-c-standard-")
+  stderr_file <- tempfile("source-ledger-c-standard-stderr-")
+  on.exit(unlink(c(input, stderr_file)), add = TRUE)
+  writeLines(character(0), input)
+  executable <- source_ledger_command_executable(command_line)
+  output <- system2(
+    executable,
+    c(source_ledger_command_arguments(command_line), "-dM", "-E", "-x", "c", "-"),
+    stdout = TRUE,
+    stderr = stderr_file,
+    stdin = input
+  )
+  status <- attr(output, "status")
+  if (!is.null(status) && status != 0L) {
+    detail <- paste(readLines(stderr_file, warn = FALSE), collapse = " ")
+    stop(sprintf("cannot capture effective C standard: %s", detail))
+  }
+  definition <- grep("^#define __STDC_VERSION__ ", output, value = TRUE)
+  macro <- if (length(definition) == 1L) sub("^#define __STDC_VERSION__ ", "", definition) else "not_defined"
+  normalized <- sub("[lL]$", "", macro)
+  standard <- switch(normalized,
+    `199409` = "C95", `199901` = "C99", `201112` = "C11",
+    `201710` = "C17", `202311` = "C23", "pre-C95-or-implementation-defined"
+  )
+  list(macro = macro, standard = standard)
+}
+
+source_ledger_r_header_version <- function(path = file.path(R.home("include"), "Rversion.h")) {
+  lines <- readLines(path, warn = FALSE)
+  value <- function(name) {
+    matches <- regmatches(lines, regexec(sprintf('^#define[[:space:]]+%s[[:space:]]+"([^"]*)"', name), lines))
+    captures <- Filter(function(record) length(record) == 2L, matches)
+    if (length(captures) != 1L) stop(sprintf("cannot capture %s from Rversion.h", name))
+    captures[[1L]][[2L]]
+  }
+  paste0(value("R_MAJOR"), ".", value("R_MINOR"))
+}
+
 source_ledger_resolve_command <- function(name, environment_name = "", fallback = "") {
   configured <- if (nzchar(environment_name)) Sys.getenv(environment_name, unset = "") else ""
   candidate <- source_ledger_scalar(configured, name)
@@ -1204,6 +1278,8 @@ capture_r_build_identity <- function() {
   lib_r_candidates <- lib_r_candidates[file.exists(lib_r_candidates)]
   if (length(lib_r_candidates) == 0L) stop("R shared library could not be located")
   list(
+    runtime_version = paste0(R.version$major, ".", R.version$minor),
+    header_version = source_ledger_r_header_version(),
     r_home = normalizePath(R.home()),
     r_include = normalizePath(R.home("include")),
     r_header_tree = source_ledger_directory_identity(R.home("include"), "R header tree"),
@@ -1243,21 +1319,28 @@ capture_r_build_identity <- function() {
 }
 
 capture_c_control_identity <- function(r_build) {
-  cc <- source_ledger_scalar(Sys.getenv("CC", unset = ""), "cc")
+  cc <- as.character(r_build$cc$command)
   cc_executable <- source_ledger_command_executable(cc)
   r_include <- source_ledger_effective_build_path("R_INCLUDE", R.home("include"))
   r_library <- source_ledger_effective_build_path("R_LIB", R.home("lib"))
-  r_cflags <- source_ledger_scalar(Sys.getenv("R_CFLAGS", unset = ""), r_build$cc$flags)
+  r_cflags <- as.character(r_build$cc$flags)
+  c_standard <- source_ledger_c_standard(paste(cc, r_cflags))
+  package_cflags <- paste(paste0("-I", r_include), r_cflags)
+  package_libs <- paste(paste0("-L", r_library), "-lR -lpthread -lblas")
   list(
     command = cc,
     executable = cc_executable,
     version = source_ledger_command(cc_executable, "--version", "C control compiler version"),
+    effective_standard = c_standard$standard,
+    stdc_version = c_standard$macro,
     r_include = r_include,
     r_library = r_library,
     r_cflags = r_cflags,
-    package_cflags = paste(paste0("-I", r_include), r_cflags),
+    package_cflags = package_cflags,
     compile_and_shared_link_flags = "-fPIC -shared",
-    package_libs = paste(paste0("-L", r_library), "-lR -lpthread -lblas")
+    package_libs = package_libs,
+    link_command = paste(cc, package_cflags, "-fPIC -shared -o bench.so ./tasks.c ./register.c", package_libs),
+    linked_libraries = as.list(c("R", "pthread", "blas"))
   )
 }
 
@@ -1439,6 +1522,12 @@ capture_artifact_dependency_closure <- function(paths) {
   list(artifacts = artifacts, digest = source_ledger_object_digest(artifacts))
 }
 
+source_ledger_zigr_access_mode <- function(checked_sexp, effective_target, r_header_version) {
+  direct <- !isTRUE(checked_sexp) && startsWith(as.character(effective_target), "x86_64") &&
+    startsWith(as.character(r_header_version), "4.6.")
+  if (direct) "r4_6_x86_64" else "checked_r_api"
+}
+
 capture_zig_identity <- function(root_dir, build_settings) {
   zig <- source_ledger_resolve_zig_executable(root_dir)
   env <- source_ledger_command(zig, "env", "Zig environment")
@@ -1459,6 +1548,9 @@ capture_zig_identity <- function(root_dir, build_settings) {
     resolved_host_target = resolved_host_target,
     optimization = source_ledger_scalar(build_settings$optimization),
     checked_sexp = isTRUE(build_settings$checked_sexp),
+    r_access_mode = source_ledger_zigr_access_mode(
+      build_settings$checked_sexp, effective_target, source_ledger_r_header_version()
+    ),
     requested_cpu_features = source_ledger_scalar(build_settings$cpu_features, "default"),
     host_cpu_flags = cpu_flags,
     lto = if (grepl("linux", effective_target, fixed = TRUE)) "full" else "build default",
@@ -1482,14 +1574,19 @@ source_ledger_build_invocation <- function(root_dir, runner, build_settings) {
   if (nzchar(make_executable)) make_executable <- normalizePath(make_executable)
   r_include <- source_ledger_effective_build_path("R_INCLUDE", R.home("include"))
   r_library <- source_ledger_effective_build_path("R_LIB", R.home("lib"))
+  r_cc <- source_ledger_r_config("CC")
+  r_cflags <- source_ledger_r_config("CFLAGS")
   executed <- isTRUE(build_settings$requested_rebuild)
   inherited_environment <- function(names) as.list(Sys.getenv(names, unset = ""))
   invocation <- switch(runner,
     c_call = list(
       executable = make_executable,
-      arguments = as.list(c("-f", "Makefile", paste0("R_INCLUDE=", r_include), paste0("R_LIB=", r_library))),
+      arguments = as.list(c(
+        "-f", "Makefile", paste0("R_INCLUDE=", r_include), paste0("R_LIB=", r_library),
+        paste0("CC=", r_cc), paste0("R_CFLAGS=", r_cflags)
+      )),
       working_directory = normalizePath(file.path(root_dir, "src", "c_call")),
-      environment = inherited_environment(c("CC", "R_CFLAGS"))
+      environment = list()
     ),
     cpp11 = list(
       executable = r_executable,
@@ -1649,16 +1746,69 @@ source_ledger_tool_label <- function(record) {
       as.character(record$toolchain$lock_digest)
     ),
     zig = sprintf(
-      "Zig %s target %s optimize %s checked-SEXP %s",
+      "Zig %s target %s optimize %s R access %s",
       record$toolchain$version,
       record$toolchain$target,
       record$toolchain$optimization,
-      if (isTRUE(record$toolchain$checked_sexp)) "true" else "false"
+      record$toolchain$r_access_mode
     ),
     c = sprintf("C control via %s", sub("\n.*$", "", as.character(record$toolchain$version))),
     r = as.character(record$toolchain$version),
     stop(sprintf("unsupported tool label kind: %s", record$tool_kind))
   )
+}
+
+source_ledger_validate_admission <- function(spec, r_build, runner_records, require_rebuilt = FALSE) {
+  admission <- spec$admission
+  require_version <- function(actual, expected, label) {
+    if (!identical(as.character(actual), as.character(expected))) {
+      stop(sprintf("%s version %s is not admitted; expected %s", label, actual, expected))
+    }
+  }
+  require_version(r_build$runtime_version, admission$r_version, "R runtime")
+  require_version(r_build$header_version, admission$r_version, "R headers")
+  records <- setNames(runner_records, vapply(runner_records, function(record) as.character(record$name), character(1)))
+  require_version(records$zigr$toolchain$version, admission$zig_version, "Zig")
+  access_mode <- as.character(records$zigr$toolchain$r_access_mode)
+  if (!(access_mode %in%
+        as.character(unlist(admission$zigr_access_modes, use.names = FALSE)))) {
+    stop(sprintf("zigr R access mode %s is not admitted", access_mode))
+  }
+  resolved_access_mode <- source_ledger_zigr_access_mode(
+    records$zigr$toolchain$checked_sexp,
+    records$zigr$toolchain$effective_target,
+    r_build$header_version
+  )
+  if (!identical(access_mode, resolved_access_mode)) {
+    stop(sprintf("zigr R access mode %s differs from resolved mode %s", access_mode, resolved_access_mode))
+  }
+  r_package_map <- c(rcpp = "Rcpp", cpp11 = "cpp11")
+  for (runner in names(r_package_map)) {
+    package <- unname(r_package_map[[runner]])
+    require_version(records[[runner]]$toolchain$version, admission$r_packages[[package]], package)
+  }
+  cargo_package_map <- c(extendr = "extendr-api", savvy = "savvy")
+  for (runner in names(cargo_package_map)) {
+    package <- unname(cargo_package_map[[runner]])
+    packages <- records[[runner]]$toolchain$packages
+    matches <- Filter(function(record) identical(record$name, package) && isTRUE(record$selected), packages)
+    if (length(matches) != 1L) stop(sprintf("%s has no unique selected Cargo package", package))
+    require_version(matches[[1L]]$version, admission$cargo_packages[[package]], package)
+  }
+  if (isTRUE(require_rebuilt)) {
+    native_records <- records[setdiff(names(records), "r")]
+    rebuilt <- vapply(native_records, function(record) {
+      isTRUE(record$build_invocation$executed_in_run) &&
+        length(record$fixture$build_invocations) > 0L &&
+        all(vapply(record$fixture$build_invocations, function(invocation) {
+          isTRUE(invocation$executed_in_run)
+        }, logical(1)))
+    }, logical(1))
+    if (any(!rebuilt)) {
+      stop(sprintf("promotion requires rebuilt runner and fixture artifacts: %s", paste(names(rebuilt)[!rebuilt], collapse = ", ")))
+    }
+  }
+  invisible(TRUE)
 }
 
 capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance, build_settings) {
@@ -1755,6 +1905,7 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
     record$dependency_digest <- source_ledger_object_digest(list(toolchain, artifact_dependencies))
     record
   })
+  source_ledger_validate_admission(spec, r_build, runner_records)
   ledger <- list(
     schema_version = source_ledger_schema_version(),
     captured_at = run_manifest_timestamp(),
@@ -1763,6 +1914,7 @@ capture_tool_source_ledger <- function(root_dir, configs, evidence, r_provenance
       path = "source_ledger.json",
       digest = unname(as.character(tools::md5sum(attr(spec, "path")))[[1L]])
     ),
+    admission = spec$admission,
     r_build = r_build,
     runners = runner_records,
     source_verification = verification_snapshot,
@@ -1779,6 +1931,8 @@ validate_tool_source_ledger <- function(root_dir, ledger, runner = NULL) {
   spec <- load_source_ledger_spec(root_dir)
   actual_spec_digest <- unname(as.character(tools::md5sum(attr(spec, "path")))[[1L]])
   source_ledger_require_digest(actual_spec_digest, ledger$specification$digest, "source ledger specification")
+  if (!identical(ledger$admission, spec$admission)) stop("tool source ledger admission contract differs")
+  source_ledger_validate_admission(spec, ledger$r_build, ledger$runners)
   verification_keys <- vapply(ledger$source_verification, function(record) {
     required <- c("runner", "task", "source_class", "verification_digest")
     missing <- required[vapply(required, function(field) {

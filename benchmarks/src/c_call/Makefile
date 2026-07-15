@@ -1,6 +1,7 @@
 
 R_INCLUDE ?= $(shell Rscript -e 'cat(R.home("include"))')
 R_LIB ?= $(shell Rscript -e 'cat(R.home("lib"))')
+CC = $(shell R CMD config CC)
 R_CFLAGS ?= $(shell R CMD config CFLAGS)
 PKG_CFLAGS = -I$(R_INCLUDE) $(R_CFLAGS)
 PKG_LIBS = -L$(R_LIB) -lR -lpthread -lblas

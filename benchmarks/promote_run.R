@@ -57,6 +57,13 @@ if (!identical(
 
 validate_run_completion_contract(metadata)
 validate_run_completion_artifacts(run_dir, metadata)
+source_ledger <- metadata$environment$tool_source_ledger
+source_ledger_validate_admission(
+  load_source_ledger_spec(as.character(source_ledger$benchmark_root)),
+  source_ledger$r_build,
+  source_ledger$runners,
+  require_rebuilt = TRUE
+)
 validate_run_disposition_identity(
   metadata,
   run_disposition_records(evidence, expected_runners, as.character(manifest$task))

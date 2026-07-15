@@ -1,6 +1,19 @@
 {
-  "schema_version": 2,
-  "vocabulary_version": "source-ledger-v1",
+  "schema_version": 3,
+  "vocabulary_version": "source-ledger-v2",
+  "admission": {
+    "zig_version": "0.16.0",
+    "r_version": "4.6.1",
+    "r_packages": {
+      "Rcpp": "1.1.2",
+      "cpp11": "0.5.5"
+    },
+    "cargo_packages": {
+      "extendr-api": "0.9.0",
+      "savvy": "0.10.2"
+    },
+    "zigr_access_modes": ["r4_6_x86_64", "checked_r_api"]
+  },
   "runners": {
     "c_call": {
       "role": "c_control",
@@ -8,7 +21,7 @@
       "verifier_kind": "registered_c",
       "source_globs": ["src/c_call/*.c"],
       "build_files": ["build_all.sh", "src/c_call/Makefile"],
-      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library>",
+      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library> CC=<R configured CC> R_CFLAGS=<R configured CFLAGS>",
       "generated_glue": {
         "kind": "handwritten_registration_control",
         "retained_output": true,
@@ -121,7 +134,7 @@
       "verifier_kind": "registered_c_fixture",
       "source_globs": ["src/c_call/register.c"],
       "build_files": ["build_all.sh", "src/c_call/Makefile"],
-      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library>",
+      "build_recipe": "make -f src/c_call/Makefile R_INCLUDE=<R include> R_LIB=<R library> CC=<R configured CC> R_CFLAGS=<R configured CFLAGS>",
       "generated_glue": {
         "kind": "handwritten_registration_control",
         "retained_output": true,

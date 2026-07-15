@@ -83,7 +83,9 @@ echo "=== Zig (zigR) ==="
 R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB "$ZIG_BIN" build "${ZIG_ARGS[@]}" "${ZIG_CACHE_ARGS[@]}"
 
 echo "=== C (.Call) ==="
-cd src/c_call && make -f Makefile R_INCLUDE=$R_INCLUDE R_LIB=$R_LIB && cd ../..
+R_CC=$(R CMD config CC)
+R_CFLAGS=$(R CMD config CFLAGS)
+cd src/c_call && make -f Makefile R_INCLUDE="$R_INCLUDE" R_LIB="$R_LIB" CC="$R_CC" R_CFLAGS="$R_CFLAGS" && cd ../..
 
 echo "=== Rcpp (C++) ==="
 PKG_CPPFLAGS=$(Rscript -e 'cat(paste0("-I", system.file("include", package="Rcpp")))') \

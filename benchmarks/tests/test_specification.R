@@ -1250,6 +1250,19 @@ expect_error(
 )
 
 spec <- load_source_ledger_spec(root_dir)
+expect_true(
+  identical(as.character(spec$admission$zig_version), "0.16.0") &&
+    identical(as.character(spec$admission$r_version), "4.6.1") &&
+    identical(as.character(spec$admission$r_packages$Rcpp), "1.1.2") &&
+    identical(as.character(spec$admission$r_packages$cpp11), "0.5.5") &&
+    identical(as.character(spec$admission$cargo_packages[["extendr-api"]]), "0.9.0") &&
+    identical(as.character(spec$admission$cargo_packages$savvy), "0.10.2") &&
+    identical(
+      as.character(unlist(spec$admission$zigr_access_modes, use.names = FALSE)),
+      c("r4_6_x86_64", "checked_r_api")
+    ),
+  "source ledger freezes the declared next-run version and R access-mode set"
+)
 fixture_artifacts <- lapply(
   evidence_schema_vocabulary()$runners,
   function(runner) source_ledger_fixture_artifact_paths(root_dir, runner, must_work = FALSE)
@@ -1283,6 +1296,15 @@ expect_error(
   "unexpected source ledger field",
   load_source_ledger_spec(spec_test_root),
   "specification fields differ from the schema"
+)
+bad_spec <- spec
+bad_spec$admission$r_packages$not_rcpp <- bad_spec$admission$r_packages$Rcpp
+bad_spec$admission$r_packages$Rcpp <- NULL
+write_spec(bad_spec)
+expect_error(
+  "unknown admission package",
+  load_source_ledger_spec(spec_test_root),
+  "r_packages has an invalid package map"
 )
 bad_spec <- spec
 bad_spec$runners$c_call$source_globs <- list("")
@@ -1352,6 +1374,143 @@ for (runner in names(spec$runners)) {
 expect_true(
   all(invocation_checks),
   sprintf("prebuilt build and fixture invocations resolve without claiming execution; failed: %s", paste(names(invocation_checks)[!invocation_checks], collapse = ", "))
+)
+c_invocation <- source_ledger_build_invocation(root_dir, "c_call", build_settings)
+expect_true(
+  all(c(
+    paste0("CC=", source_ledger_r_config("CC")),
+    paste0("R_CFLAGS=", source_ledger_r_config("CFLAGS"))
+  ) %in% as.character(unlist(c_invocation$arguments, use.names = FALSE))) &&
+    length(c_invocation$environment) == 0L,
+  "C control invocation pins the compiler command and flags recorded from R"
+)
+c_identity <- capture_c_control_identity(list(cc = list(
+  command = source_ledger_r_config("CC"),
+  flags = source_ledger_r_config("CFLAGS")
+)))
+expect_true(
+  identical(c_identity$command, source_ledger_r_config("CC")) &&
+    nzchar(c_identity$effective_standard) && nzchar(c_identity$stdc_version) &&
+    identical(
+      c_identity$link_command,
+      paste(
+        c_identity$command, c_identity$package_cflags,
+        "-fPIC -shared -o bench.so ./tasks.c ./register.c", c_identity$package_libs
+      )
+    ) &&
+    identical(as.character(unlist(c_identity$linked_libraries, use.names = FALSE)), c("R", "pthread", "blas")),
+  "C control provenance records its actual compiler, standard, link command, and libraries"
+)
+admitted_records <- list(
+  list(name = "zigr", toolchain = list(
+    version = "0.16.0", checked_sexp = FALSE,
+    r_access_mode = "r4_6_x86_64", effective_target = "x86_64-linux-gnu"
+  )),
+  list(name = "rcpp", toolchain = list(version = "1.1.2")),
+  list(name = "cpp11", toolchain = list(version = "0.5.5")),
+  list(name = "extendr", toolchain = list(packages = list(
+    list(name = "extendr-api", version = "0.9.0", selected = TRUE)
+  ))),
+  list(name = "savvy", toolchain = list(packages = list(
+    list(name = "savvy", version = "0.10.2", selected = TRUE)
+  )))
+)
+rebuilt_records <- lapply(admitted_records, function(record) {
+  record$build_invocation <- list(executed_in_run = TRUE)
+  record$fixture <- list(build_invocations = list(list(executed_in_run = TRUE)))
+  record
+})
+expect_true(
+  isTRUE(source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), admitted_records
+  )),
+  "the frozen tool, API, dependency, and R access-mode set is admitted"
+)
+checked_records <- clone(admitted_records)
+checked_records[[1L]]$toolchain$checked_sexp <- TRUE
+checked_records[[1L]]$toolchain$r_access_mode <- "checked_r_api"
+expect_true(
+  isTRUE(source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), checked_records
+  )),
+  "the checked R access mode remains a distinct admitted identity"
+)
+expect_true(
+  isTRUE(source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), rebuilt_records,
+    require_rebuilt = TRUE
+  )),
+  "promotion admission accepts source-matched runner and fixture rebuilds"
+)
+prebuilt_records <- clone(rebuilt_records)
+prebuilt_records[[2L]]$build_invocation$executed_in_run <- FALSE
+expect_error(
+  "prebuilt artifact promotion",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), prebuilt_records,
+    require_rebuilt = TRUE
+  ),
+  "promotion requires rebuilt runner and fixture artifacts: rcpp"
+)
+prebuilt_records <- clone(rebuilt_records)
+prebuilt_records[[2L]]$fixture$build_invocations[[1L]]$executed_in_run <- FALSE
+expect_error(
+  "prebuilt fixture promotion",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), prebuilt_records,
+    require_rebuilt = TRUE
+  ),
+  "promotion requires rebuilt runner and fixture artifacts: rcpp"
+)
+drifted_records <- clone(admitted_records)
+drifted_records[[1L]]$toolchain$version <- "0.16.1"
+expect_error(
+  "resolved Zig drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), drifted_records
+  ),
+  "Zig version 0.16.1 is not admitted"
+)
+drifted_records <- clone(admitted_records)
+drifted_records[[2L]]$toolchain$version <- "1.1.1"
+expect_error(
+  "resolved dependency drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), drifted_records
+  ),
+  "Rcpp version 1.1.1 is not admitted"
+)
+drifted_records <- clone(admitted_records)
+drifted_records[[5L]]$toolchain$packages[[1L]]$version <- "0.10.1"
+expect_error(
+  "resolved Cargo dependency drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), drifted_records
+  ),
+  "savvy version 0.10.1 is not admitted"
+)
+drifted_records <- clone(admitted_records)
+drifted_records[[1L]]$toolchain$effective_target <- "aarch64-linux-gnu"
+expect_error(
+  "direct access target drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), drifted_records
+  ),
+  "R access mode r4_6_x86_64 differs from resolved mode checked_r_api"
+)
+expect_error(
+  "R header drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.0"), admitted_records
+  ),
+  "R headers version 4.6.0 is not admitted"
+)
+expect_error(
+  "R runtime drift",
+  source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.0", header_version = "4.6.1"), admitted_records
+  ),
+  "R runtime version 4.6.0 is not admitted"
 )
 zigr_invocation <- source_ledger_build_invocation(root_dir, "zigr", build_settings)
 expect_true(
