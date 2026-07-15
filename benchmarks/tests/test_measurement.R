@@ -238,6 +238,42 @@ serialized_execution <- jsonlite::fromJSON(
   jsonlite::toJSON(timing_execution, auto_unbox = TRUE), simplifyVector = FALSE
 )
 validate_timing_execution(serialized_execution, timing_metadata)
+task_only_execution <- unserialize(serialize(timing_execution, NULL))
+task_only_execution$fixture_plan <- data.frame()
+task_only_execution$fixture_pilot_schedule <- data.frame()
+task_only_execution$fixture_pilot_batches <- data.frame()
+task_only_execution$fixture_confirmation_schedule <- data.frame()
+task_only_execution$fixture_confirmation_batches <- data.frame()
+task_only_execution$outcomes$fixture_pilot <- data.frame()
+task_only_execution$outcomes$fixture_confirmation <- data.frame()
+task_only_execution$confirmation_budget$decisions <-
+  task_only_execution$confirmation_budget$decisions[1L, , drop = FALSE]
+task_only_execution$confirmation_budget$decisions$budget_order <- 1L
+task_only_metadata <- timing_metadata
+task_only_metadata$suite <- "tasks"
+validate_timing_execution(
+  jsonlite::fromJSON(jsonlite::toJSON(task_only_execution, auto_unbox = TRUE), simplifyVector = FALSE),
+  task_only_metadata
+)
+fixture_only_execution <- unserialize(serialize(timing_execution, NULL))
+fixture_only_execution$task_plan <- data.frame()
+fixture_only_execution$task_pilot_schedule <- data.frame()
+fixture_only_execution$task_pilot_batches <- data.frame()
+fixture_only_execution$task_confirmation_schedule <- data.frame()
+fixture_only_execution$task_confirmation_batches <- data.frame()
+fixture_only_execution$outcomes$task_pilot <- data.frame()
+fixture_only_execution$outcomes$task_confirmation <- data.frame()
+fixture_only_execution$confirmation_budget$decisions <-
+  fixture_only_execution$confirmation_budget$decisions[2L, , drop = FALSE]
+fixture_only_execution$confirmation_budget$decisions$budget_order <- 1L
+fixture_only_execution$confirmation_budget$decisions$remaining_after_ms <- 60
+fixture_only_metadata <- timing_metadata
+fixture_only_metadata$suite <- "fixtures"
+fixture_only_metadata$tasks <- list()
+validate_timing_execution(
+  jsonlite::fromJSON(jsonlite::toJSON(fixture_only_execution, auto_unbox = TRUE), simplifyVector = FALSE),
+  fixture_only_metadata
+)
 asymmetric_execution <- unserialize(serialize(timing_execution, NULL))
 asymmetric_execution$task_confirmation_schedule <-
   asymmetric_execution$task_confirmation_schedule[-1L, , drop = FALSE]
@@ -697,7 +733,9 @@ sealed_metadata <- list(
   r_provenance = list(schema_version = "test"),
   timing_policy = benchmark_timing_policy(),
   boundary_budget_policy_version = boundary_budget_policy_version(),
+  suite = "all",
   full_matrix = TRUE,
+  promotion_eligible = TRUE,
   measurement_mode = "timed",
   environment = list(identity = "test"),
   correctness_stage = list(status = "complete")
@@ -706,6 +744,29 @@ sealed_metadata$completion_artifacts <- capture_run_completion_artifacts(sealed_
 sealed_metadata$completion_contract <- capture_run_completion_contract(sealed_metadata)
 validate_run_completion_contract(sealed_metadata)
 validate_run_completion_artifacts(sealed_run, sealed_metadata)
+
+task_suite_metadata <- unserialize(serialize(sealed_metadata, NULL))
+task_suite_metadata$suite <- "tasks"
+task_suite_metadata$full_matrix <- FALSE
+task_suite_metadata$promotion_eligible <- FALSE
+task_suite_paths <- run_completion_artifact_paths(sealed_run, task_suite_metadata)
+fixture_suite_metadata <- unserialize(serialize(sealed_metadata, NULL))
+fixture_suite_metadata$suite <- "fixtures"
+fixture_suite_metadata$tasks <- list()
+fixture_suite_metadata$input_manifest <- list(relative_path = "not_applicable", digest = "not_applicable")
+fixture_suite_metadata$runner_dispositions <- list(r = list())
+fixture_suite_metadata$full_matrix <- FALSE
+fixture_suite_metadata$promotion_eligible <- FALSE
+fixture_suite_paths <- run_completion_artifact_paths(sealed_run, fixture_suite_metadata)
+expect_true(
+  setequal(task_suite_paths, c(
+    "correctness/tasks.csv", "input_manifest.json", "task_samples.csv", "task_summary.csv"
+  )) &&
+    setequal(fixture_suite_paths, c(
+      "correctness/fixtures.csv", "fixture_samples.csv", "fixture_summary.csv"
+    )),
+  "suite completion seals include only the selected universe artifacts"
+)
 
 drifted_status <- unserialize(serialize(sealed_metadata, NULL))
 drifted_status$status <- "incomplete"
@@ -1011,12 +1072,14 @@ test_metadata <- list(
   schema_version = 3L,
   artifact_layout = "grouped-v1",
   run_id = "correctness-test",
+  suite = "all",
   runners = list("zigr"),
   tasks = as.list(c("task_gap", "task_pass")),
+  timing_policy = timing_policy,
   input_manifest = list(digest = "input-digest"),
   runner_dispositions = list(zigr = list(
-    list(task = "task_gap", executable = FALSE, reason = "declared task gap"),
-    list(task = "task_pass", executable = TRUE, reason = "")
+    list(task = "task_gap", executable = FALSE, reason = "declared task gap", contract_version = "gap-v1"),
+    list(task = "task_pass", executable = TRUE, reason = "", contract_version = "pass-v1")
   )),
   environment = list(
     source_tree = list(digest = "source-digest"),
@@ -1031,6 +1094,7 @@ test_evidence <- list(
   fixture_rows = data.frame(
     runner = rep("zigr", 3L), fixture = c("F01", "F08", "F11"),
     executable = c(TRUE, FALSE, TRUE), reason = c("", "declared fixture gap", ""),
+    contract_version = c("f01-v1", "f08-v1", "f11-v1"),
     stringsAsFactors = FALSE
   )
 )
@@ -1042,6 +1106,8 @@ task_correctness <- data.frame(
   source_tree_digest = rep("source-digest", 2L),
   source_ledger_identity_digest = rep("ledger-digest", 2L),
   artifact_digest = rep("task-artifact", 2L), input_manifest_digest = rep("input-digest", 2L),
+  contract_version = c("gap-v1", "pass-v1"),
+  timing_policy_digest = rep(run_manifest_object_digest(timing_policy), 2L),
   stringsAsFactors = FALSE
 )
 fixture_correctness <- data.frame(
@@ -1052,7 +1118,14 @@ fixture_correctness <- data.frame(
   correctness_message = c("validated", "declared fixture gap", "validated"),
   source_tree_digest = rep("source-digest", 3L),
   source_ledger_identity_digest = rep("ledger-digest", 3L),
-  artifact_digest = rep("fixture-artifact", 3L), stringsAsFactors = FALSE
+  artifact_digest = rep("fixture-artifact", 3L),
+  input_fingerprint = vapply(c("F01", "F08", "F11"), function(fixture) {
+    spec <- fixture_measurement_specs()[[fixture]]
+    if (is.null(spec)) "not_applicable" else fixture_measurement_input_fingerprint(fixture, spec)
+  }, character(1)),
+  contract_version = c("f01-v1", "f08-v1", "f11-v1"),
+  timing_policy_digest = rep(run_manifest_object_digest(timing_policy), 3L),
+  stringsAsFactors = FALSE
 )
 task_path <- file.path(correctness_root, "correctness", "tasks.csv")
 fixture_path <- file.path(correctness_root, "correctness", "fixtures.csv")
@@ -1069,12 +1142,52 @@ retained <- load_retained_correctness(
   list(
     source_tree_digest = "source-digest",
     source_ledger_identity_digest = "ledger-digest",
-    artifact_digest = "fixture-artifact"
+    artifact_digest = "fixture-artifact",
+    input_fingerprint = stats::setNames(fixture_correctness$input_fingerprint, fixture_correctness$row_id),
+    contract_version = stats::setNames(fixture_correctness$contract_version, fixture_correctness$row_id),
+    timing_policy_digest = run_manifest_object_digest(timing_policy)
   )
 )
 expect_true(nrow(retained) == 3L, "retained correctness is reusable by measurement subprocesses")
+expect_error(
+  "retained correctness rejects timing policy drift",
+  load_retained_correctness(
+    fixture_path, fixture_path, "zigr", "correctness-test", "row_id",
+    c("F01", "F08", "F11"), c("F01", "F11"),
+    list(timing_policy_digest = "different-policy")
+  ),
+  "timing_policy_digest differs"
+)
 validated <- validate_correctness_artifacts(correctness_root, test_metadata, test_evidence)
 expect_true(validated$task_rows == 2L && validated$fixture_rows == 3L, "structured correctness evidence validates")
+
+unlink(fixture_path)
+task_only_metadata <- unserialize(serialize(test_metadata, NULL))
+task_only_metadata$suite <- "tasks"
+task_only <- validate_correctness_artifacts(correctness_root, task_only_metadata, test_evidence)
+write.csv(fixture_correctness, fixture_path, row.names = FALSE, na = "")
+expect_error(
+  "task-only correctness rejects fixture evidence",
+  validate_correctness_artifacts(correctness_root, task_only_metadata, test_evidence),
+  "unselected suite"
+)
+unlink(task_path)
+fixture_only_metadata <- unserialize(serialize(test_metadata, NULL))
+fixture_only_metadata$suite <- "fixtures"
+fixture_only_metadata$tasks <- list()
+fixture_only_metadata$runner_dispositions <- list(zigr = list())
+fixture_only <- validate_correctness_artifacts(correctness_root, fixture_only_metadata, test_evidence)
+write.csv(task_correctness, task_path, row.names = FALSE, na = "")
+expect_error(
+  "fixture-only correctness rejects task evidence",
+  validate_correctness_artifacts(correctness_root, fixture_only_metadata, test_evidence),
+  "unselected suite"
+)
+expect_true(
+  task_only$task_rows == 2L && task_only$fixture_rows == 0L &&
+    fixture_only$task_rows == 0L && fixture_only$fixture_rows == 3L,
+  "correctness validation requires only the selected suite and does not reuse the other suite"
+)
 
 drifted_task <- task_correctness
 drifted_task$source_tree_digest[[2L]] <- "changed-source"
@@ -1085,6 +1198,24 @@ expect_error(
   "source_tree_digest differs"
 )
 write.csv(task_correctness, task_path, row.names = FALSE, na = "")
+drifted_contract <- task_correctness
+drifted_contract$contract_version[[2L]] <- "changed-contract"
+write.csv(drifted_contract, task_path, row.names = FALSE, na = "")
+expect_error(
+  "correctness contract identity drift",
+  validate_correctness_artifacts(correctness_root, test_metadata, test_evidence),
+  "contract_version differs"
+)
+write.csv(task_correctness, task_path, row.names = FALSE, na = "")
+drifted_fixture_input <- fixture_correctness
+drifted_fixture_input$input_fingerprint[[1L]] <- "changed-input"
+write.csv(drifted_fixture_input, fixture_path, row.names = FALSE, na = "")
+expect_error(
+  "correctness fixture input identity drift",
+  validate_correctness_artifacts(correctness_root, test_metadata, test_evidence),
+  "input_fingerprint differs"
+)
+write.csv(fixture_correctness, fixture_path, row.names = FALSE, na = "")
 identity_drifted_fixture <- fixture_correctness
 identity_drifted_fixture$source_tree_digest[[2L]] <- "changed-source"
 write.csv(identity_drifted_fixture, fixture_path, row.names = FALSE, na = "")

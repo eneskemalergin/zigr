@@ -29,6 +29,9 @@ run_metadata <- read_run_manifest(results_dir)
 if (!identical(as.character(run_metadata$status), "complete")) {
   stop(sprintf("run %s is not complete; comparative export is refused", run_metadata$run_id))
 }
+if (!identical(benchmark_run_suite(run_metadata), "all")) {
+  stop("comparative export requires a run containing both benchmark suites")
+}
 validate_run_artifacts(results_dir, run_metadata)
 timing_policy <- if (is.null(run_metadata$timing_policy)) benchmark_timing_policy() else run_metadata$timing_policy
 validate_timing_policy(timing_policy)

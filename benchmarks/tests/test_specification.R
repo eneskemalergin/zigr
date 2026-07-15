@@ -76,6 +76,19 @@ expect_error(
   "requires a value"
 )
 expect_true(identical(parse_task_filter("1,7,86"), c(1L, 7L, 86L)), "task filter parses exact positive integers")
+expect_true(
+  identical(unname(vapply(c("tasks", "fixtures", "all"), parse_benchmark_suite, character(1))), c("tasks", "fixtures", "all")) &&
+    benchmark_run_includes(list(suite = "tasks"), "task") &&
+    !benchmark_run_includes(list(suite = "tasks"), "fixture") &&
+    benchmark_run_promotion_eligible(list(suite = "all", full_matrix = TRUE, measurement_mode = "timed")) &&
+    !benchmark_run_promotion_eligible(list(suite = "fixtures", full_matrix = TRUE, measurement_mode = "timed")),
+  "suite selection admits only its declared benchmark universe"
+)
+expect_error(
+  "suite selection rejects an unknown value",
+  parse_benchmark_suite("task"),
+  "must be tasks, fixtures, or all"
+)
 for (case in list(
   list(label = "task filter rejects text", value = "1,no", pattern = "positive integers"),
   list(label = "task filter rejects empty item", value = "1,,2", pattern = "empty or padded"),

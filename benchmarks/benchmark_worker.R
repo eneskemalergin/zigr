@@ -181,13 +181,18 @@ run_task_worker <- function(cli) {
     executable_tasks <- expected_tasks[vapply(expected_tasks, function(task) {
       isTRUE(run_manifest_disposition(run_metadata, runner_name, task)$executable)
     }, logical(1))]
+    contract_versions <- stats::setNames(vapply(expected_tasks, function(task) {
+      as.character(run_manifest_disposition(run_metadata, runner_name, task)$contract_version)
+    }, character(1)), expected_tasks)
     retained_correctness <- load_retained_correctness(
       validated_correctness_arg, expected_path, runner_name, run_id, "task", expected_tasks, executable_tasks,
       expected_identity = list(
         source_tree_digest = as.character(run_metadata$environment$source_tree$digest),
         source_ledger_identity_digest = as.character(runner_environment$source_ledger_identity_digest),
         artifact_digest = as.character(runner_environment$artifact_digest),
-        input_manifest_digest = as.character(run_metadata$input_manifest$digest)
+        input_manifest_digest = as.character(run_metadata$input_manifest$digest),
+        contract_version = contract_versions,
+        timing_policy_digest = run_manifest_object_digest(run_metadata$timing_policy)
       )
     )
   }
@@ -1055,10 +1060,14 @@ run_task_worker <- function(cli) {
     )
     correctness$artifact_digest <- as.character(runner_environment$artifact_digest)
     correctness$input_manifest_digest <- as.character(run_metadata$input_manifest$digest)
+    correctness$contract_version <- vapply(correctness$task, function(task) {
+      as.character(run_manifest_disposition(run_metadata, runner_name, task)$contract_version)
+    }, character(1))
+    correctness$timing_policy_digest <- run_manifest_object_digest(run_metadata$timing_policy)
     correctness <- correctness[, c(
       "run_id", "runner", "task", "status", "correctness_status", "correctness_policy",
       "correctness_message", "source_tree_digest", "source_ledger_identity_digest",
-      "artifact_digest", "input_manifest_digest"
+      "artifact_digest", "input_manifest_digest", "contract_version", "timing_policy_digest"
     )]
     output_path <- normalizePath(validation_output_arg, mustWork = FALSE)
     write_csv_once(correctness, output_path, "validation output")
@@ -1279,6 +1288,14 @@ run_fixture_worker <- function(args) {
       evidence$fixtures,
       if (identical(runner, "r")) c("F03_optimized_base_r", "F04_optimized_base_r") else character(0)
     )
+    expected_fixtures <- sub("_optimized_base_r$", "", expected_row_ids)
+    contract_versions <- stats::setNames(vapply(expected_fixtures, function(fixture) {
+      as.character(rows$contract_version[match(fixture, rows$fixture)])
+    }, character(1)), expected_row_ids)
+    input_fingerprints <- stats::setNames(vapply(expected_fixtures, function(fixture) {
+      spec <- specs[[fixture]]
+      if (is.null(spec)) "not_applicable" else fixture_measurement_input_fingerprint(fixture, spec)
+    }, character(1)), expected_row_ids)
     retained_correctness_rows <- load_retained_correctness(
       validated_correctness, expected_path, runner, as.character(metadata$run_id), "row_id", expected_row_ids,
       c(
@@ -1288,7 +1305,10 @@ run_fixture_worker <- function(args) {
       list(
         source_tree_digest = as.character(metadata$environment$source_tree$digest),
         source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-        artifact_digest = as.character(environment$fixture_artifact_digest)
+        artifact_digest = as.character(environment$fixture_artifact_digest),
+        input_fingerprint = input_fingerprints,
+        contract_version = contract_versions,
+        timing_policy_digest = run_manifest_object_digest(metadata$timing_policy)
       )
     )
   }
@@ -1349,6 +1369,14 @@ run_fixture_worker <- function(args) {
       }))
       correctness <- rbind(correctness, optimized)
     }
+    correctness$input_fingerprint <- vapply(correctness$fixture, function(fixture) {
+      spec <- specs[[fixture]]
+      if (is.null(spec)) "not_applicable" else fixture_measurement_input_fingerprint(fixture, spec)
+    }, character(1))
+    correctness$contract_version <- vapply(correctness$fixture, function(fixture) {
+      as.character(rows$contract_version[match(fixture, rows$fixture)])
+    }, character(1))
+    correctness$timing_policy_digest <- run_manifest_object_digest(metadata$timing_policy)
     output_path <- normalizePath(validation_output, mustWork = FALSE)
     write_csv_once(correctness, output_path, "fixture validation output")
     cat(sprintf("Fixture correctness preflight passed for %s.\n", runner))

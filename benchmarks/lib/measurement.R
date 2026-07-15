@@ -1045,111 +1045,134 @@ correctness_artifact_set_digest <- function(paths) {
 validate_correctness_artifacts <- function(run_dir, metadata, evidence) {
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
+  task_selected <- benchmark_run_includes(metadata, "task")
+  fixture_selected <- benchmark_run_includes(metadata, "fixture")
   task_files <- run_correctness_artifact_paths(run_dir, metadata, "task", expected_runners)
   fixture_files <- run_correctness_artifact_paths(run_dir, metadata, "fixture", expected_runners)
-  if (any(!file.exists(task_files)) || any(!file.exists(fixture_files))) {
+  if ((task_selected && any(!file.exists(task_files))) ||
+      (fixture_selected && any(!file.exists(fixture_files)))) {
     stop("correctness evidence files are incomplete")
   }
-
-  tasks <- do.call(rbind, lapply(task_files, read.csv, stringsAsFactors = FALSE))
-  task_required <- c(
-    "run_id", "runner", "task", "status", "correctness_status", "correctness_policy",
-    "correctness_message", "source_tree_digest", "source_ledger_identity_digest",
-    "artifact_digest", "input_manifest_digest"
-  )
-  if (length(setdiff(task_required, names(tasks))) > 0L) stop("task correctness evidence columns differ")
-  task_keys <- paste(tasks$runner, tasks$task, sep = "\r")
-  expected_task_keys <- unlist(lapply(expected_runners, function(runner) {
-    paste(runner, expected_tasks, sep = "\r")
-  }), use.names = FALSE)
-  if (!setequal(task_keys, expected_task_keys) || anyDuplicated(task_keys)) {
-    stop("task correctness evidence coverage differs from the run manifest")
+  if ((!task_selected && any(file.exists(task_files))) ||
+      (!fixture_selected && any(file.exists(fixture_files)))) {
+    stop("correctness evidence exists for an unselected suite")
   }
-  for (index in seq_len(nrow(tasks))) {
-    row <- tasks[index, , drop = FALSE]
-    runner <- as.character(row$runner)
-    task <- as.character(row$task)
-    disposition <- run_manifest_disposition(metadata, runner, task)
-    environment <- runner_environment_record(metadata$environment, runner)
-    expected_status <- if (isTRUE(disposition$executable)) "PASS" else "N/A"
-    expected_correctness <- if (isTRUE(disposition$executable)) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
-    if (!identical(as.character(row$status), expected_status) ||
-        !(as.character(row$correctness_status) %in% expected_correctness) ||
-        !nzchar(as.character(row$correctness_message))) {
-      stop(sprintf("task correctness evidence failed for %s/%s", runner, task))
-    }
-    if (!isTRUE(disposition$executable) &&
-        !identical(as.character(row$correctness_message), as.character(disposition$reason))) {
-      stop(sprintf("task correctness gap reason differs for %s/%s", runner, task))
-    }
-    exact <- list(
-      run_id = as.character(metadata$run_id),
-      source_tree_digest = as.character(metadata$environment$source_tree$digest),
-      source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-      artifact_digest = as.character(environment$artifact_digest),
-      input_manifest_digest = as.character(metadata$input_manifest$digest)
+
+  tasks <- data.frame()
+  if (task_selected) {
+    tasks <- do.call(rbind, lapply(task_files, read.csv, stringsAsFactors = FALSE))
+    task_required <- c(
+      "run_id", "runner", "task", "status", "correctness_status", "correctness_policy",
+      "correctness_message", "source_tree_digest", "source_ledger_identity_digest",
+      "artifact_digest", "input_manifest_digest", "contract_version", "timing_policy_digest"
     )
-    for (field in names(exact)) {
-      if (!identical(as.character(row[[field]]), exact[[field]])) {
-        stop(sprintf("task correctness identity field %s differs for %s/%s", field, runner, task))
+    if (length(setdiff(task_required, names(tasks))) > 0L) stop("task correctness evidence columns differ")
+    task_keys <- paste(tasks$runner, tasks$task, sep = "\r")
+    expected_task_keys <- unlist(lapply(expected_runners, function(runner) {
+      paste(runner, expected_tasks, sep = "\r")
+    }), use.names = FALSE)
+    if (!setequal(task_keys, expected_task_keys) || anyDuplicated(task_keys)) {
+      stop("task correctness evidence coverage differs from the run manifest")
+    }
+    for (index in seq_len(nrow(tasks))) {
+      row <- tasks[index, , drop = FALSE]
+      runner <- as.character(row$runner)
+      task <- as.character(row$task)
+      disposition <- run_manifest_disposition(metadata, runner, task)
+      environment <- runner_environment_record(metadata$environment, runner)
+      expected_status <- if (isTRUE(disposition$executable)) "PASS" else "N/A"
+      expected_correctness <- if (isTRUE(disposition$executable)) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
+      if (!identical(as.character(row$status), expected_status) ||
+          !(as.character(row$correctness_status) %in% expected_correctness) ||
+          !nzchar(as.character(row$correctness_message))) {
+        stop(sprintf("task correctness evidence failed for %s/%s", runner, task))
+      }
+      if (!isTRUE(disposition$executable) &&
+          !identical(as.character(row$correctness_message), as.character(disposition$reason))) {
+        stop(sprintf("task correctness gap reason differs for %s/%s", runner, task))
+      }
+      exact <- list(
+        run_id = as.character(metadata$run_id),
+        source_tree_digest = as.character(metadata$environment$source_tree$digest),
+        source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
+        artifact_digest = as.character(environment$artifact_digest),
+        input_manifest_digest = as.character(metadata$input_manifest$digest),
+        contract_version = as.character(disposition$contract_version),
+        timing_policy_digest = run_manifest_object_digest(metadata$timing_policy)
+      )
+      for (field in names(exact)) {
+        if (!identical(as.character(row[[field]]), exact[[field]])) {
+          stop(sprintf("task correctness identity field %s differs for %s/%s", field, runner, task))
+        }
       }
     }
   }
 
-  fixtures <- do.call(rbind, lapply(fixture_files, read.csv, stringsAsFactors = FALSE))
-  fixture_required <- c(
-    "run_id", "runner", "fixture", "variant", "row_id", "status", "correctness_status",
-    "correctness_message", "source_tree_digest", "source_ledger_identity_digest", "artifact_digest"
-  )
-  if (length(setdiff(fixture_required, names(fixtures))) > 0L) {
-    stop("fixture correctness evidence columns differ")
-  }
-  fixture_keys <- paste(fixtures$runner, fixtures$row_id, sep = "\r")
-  expected_fixture_keys <- unlist(lapply(expected_runners, function(runner) {
-    base <- paste(runner, evidence$fixtures, sep = "\r")
-    if (identical(runner, "r")) {
-      c(base, paste(runner, paste0(c("F03", "F04"), "_optimized_base_r"), sep = "\r"))
-    } else base
-  }), use.names = FALSE)
-  if (!setequal(fixture_keys, expected_fixture_keys) || anyDuplicated(fixture_keys)) {
-    stop("fixture correctness evidence coverage differs from the normalized matrix")
-  }
-  for (index in seq_len(nrow(fixtures))) {
-    row <- fixtures[index, , drop = FALSE]
-    runner <- as.character(row$runner)
-    fixture <- as.character(row$fixture)
-    optimized <- identical(as.character(row$variant), "optimized_base_r")
-    evidence_row <- evidence$fixture_rows[
-      evidence$fixture_rows$runner == runner & evidence$fixture_rows$fixture == fixture,
-      , drop = FALSE
-    ]
-    if (nrow(evidence_row) != 1L) stop(sprintf("fixture correctness evidence is missing for %s/%s", runner, fixture))
-    environment <- runner_environment_record(metadata$environment, runner)
-    executable <- optimized || isTRUE(evidence_row$executable)
-    expected_status <- if (executable) "PASS" else "N/A"
-    expected_correctness <- if (executable) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
-    expected_variant <- if (optimized) "optimized_base_r" else "public"
-    expected_row_id <- if (optimized) paste0(fixture, "_optimized_base_r") else fixture
-    if (!identical(as.character(row$variant), expected_variant) ||
-        !identical(as.character(row$row_id), expected_row_id) ||
-        !identical(as.character(row$status), expected_status) ||
-        !(as.character(row$correctness_status) %in% expected_correctness) ||
-        !nzchar(as.character(row$correctness_message))) {
-      stop(sprintf("fixture correctness evidence failed for %s/%s", runner, row$row_id))
-    }
-    if (!executable &&
-        !identical(as.character(row$correctness_message), as.character(evidence_row$reason))) {
-      stop(sprintf("fixture correctness gap reason differs for %s/%s", runner, fixture))
-    }
-    exact <- list(
-      run_id = as.character(metadata$run_id),
-      source_tree_digest = as.character(metadata$environment$source_tree$digest),
-      source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-      artifact_digest = as.character(environment$fixture_artifact_digest)
+  fixtures <- data.frame()
+  if (fixture_selected) {
+    fixtures <- do.call(rbind, lapply(fixture_files, read.csv, stringsAsFactors = FALSE))
+    fixture_required <- c(
+      "run_id", "runner", "fixture", "variant", "row_id", "status", "correctness_status",
+      "correctness_message", "source_tree_digest", "source_ledger_identity_digest", "artifact_digest",
+      "input_fingerprint", "contract_version", "timing_policy_digest"
     )
-    for (field in names(exact)) {
-      if (!identical(as.character(row[[field]]), exact[[field]])) {
-        stop(sprintf("fixture correctness identity field %s differs for %s/%s", field, runner, row$row_id))
+    if (length(setdiff(fixture_required, names(fixtures))) > 0L) {
+      stop("fixture correctness evidence columns differ")
+    }
+    fixture_keys <- paste(fixtures$runner, fixtures$row_id, sep = "\r")
+    expected_fixture_keys <- unlist(lapply(expected_runners, function(runner) {
+      base <- paste(runner, evidence$fixtures, sep = "\r")
+      if (identical(runner, "r")) {
+        c(base, paste(runner, paste0(c("F03", "F04"), "_optimized_base_r"), sep = "\r"))
+      } else base
+    }), use.names = FALSE)
+    if (!setequal(fixture_keys, expected_fixture_keys) || anyDuplicated(fixture_keys)) {
+      stop("fixture correctness evidence coverage differs from the normalized matrix")
+    }
+    fixture_specs <- fixture_measurement_specs()
+    for (index in seq_len(nrow(fixtures))) {
+      row <- fixtures[index, , drop = FALSE]
+      runner <- as.character(row$runner)
+      fixture <- as.character(row$fixture)
+      optimized <- identical(as.character(row$variant), "optimized_base_r")
+      evidence_row <- evidence$fixture_rows[
+        evidence$fixture_rows$runner == runner & evidence$fixture_rows$fixture == fixture,
+        , drop = FALSE
+      ]
+      if (nrow(evidence_row) != 1L) stop(sprintf("fixture correctness evidence is missing for %s/%s", runner, fixture))
+      environment <- runner_environment_record(metadata$environment, runner)
+      executable <- optimized || isTRUE(evidence_row$executable)
+      expected_status <- if (executable) "PASS" else "N/A"
+      expected_correctness <- if (executable) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
+      expected_variant <- if (optimized) "optimized_base_r" else "public"
+      expected_row_id <- if (optimized) paste0(fixture, "_optimized_base_r") else fixture
+      spec <- fixture_specs[[fixture]]
+      if (!identical(as.character(row$variant), expected_variant) ||
+          !identical(as.character(row$row_id), expected_row_id) ||
+          !identical(as.character(row$status), expected_status) ||
+          !(as.character(row$correctness_status) %in% expected_correctness) ||
+          !nzchar(as.character(row$correctness_message))) {
+        stop(sprintf("fixture correctness evidence failed for %s/%s", runner, row$row_id))
+      }
+      if (!executable &&
+          !identical(as.character(row$correctness_message), as.character(evidence_row$reason))) {
+        stop(sprintf("fixture correctness gap reason differs for %s/%s", runner, fixture))
+      }
+      exact <- list(
+        run_id = as.character(metadata$run_id),
+        source_tree_digest = as.character(metadata$environment$source_tree$digest),
+        source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
+        artifact_digest = as.character(environment$fixture_artifact_digest),
+        input_fingerprint = if (is.null(spec)) {
+          "not_applicable"
+        } else fixture_measurement_input_fingerprint(fixture, spec),
+        contract_version = as.character(evidence_row$contract_version),
+        timing_policy_digest = run_manifest_object_digest(metadata$timing_policy)
+      )
+      for (field in names(exact)) {
+        if (!identical(as.character(row[[field]]), exact[[field]])) {
+          stop(sprintf("fixture correctness identity field %s differs for %s/%s", field, runner, row$row_id))
+        }
       }
     }
   }
@@ -1157,8 +1180,8 @@ validate_correctness_artifacts <- function(run_dir, metadata, evidence) {
   list(
     task_rows = nrow(tasks),
     fixture_rows = nrow(fixtures),
-    task_artifact_digest = correctness_artifact_set_digest(task_files),
-    fixture_artifact_digest = correctness_artifact_set_digest(fixture_files)
+    task_artifact_digest = if (task_selected) correctness_artifact_set_digest(task_files) else "not_selected",
+    fixture_artifact_digest = if (fixture_selected) correctness_artifact_set_digest(fixture_files) else "not_selected"
   )
 }
 
@@ -1193,6 +1216,9 @@ validate_fixture_raw_statistics <- function(summary, raw, policy, label) {
 }
 
 validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) {
+  if (!benchmark_run_includes(metadata, "fixture")) {
+    stop("fixture measurement validation requires the fixture suite")
+  }
   expected_runners <- sort(run_manifest_values(metadata$runners))
   summaries <- read_run_summary_table(run_dir, metadata, "fixture", expected_runners)
   required <- c(

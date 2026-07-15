@@ -106,13 +106,19 @@ Rscript run_benchmarks.R --correctness-only
 
 # Focused diagnostic run
 Rscript run_benchmarks.R --runners=r,zigr --tasks=48,49
+
+# Historical tasks only
+Rscript run_benchmarks.R --suite=tasks --runners=r,zigr --tasks=48,49
+
+# Normalized product fixtures only
+Rscript run_benchmarks.R --suite=fixtures --runners=r,zigr
 ```
 
 Every selected task receives a deterministic seed derived from the run seed, task ID, and fixture version. Correctness, cold-start, warmup, and timed phases receive isolated inputs. Mutation, RNG, external state, ALTREP intent, and input fingerprints are enforced by policy.
 
-Timed collection uses one equal-floor pilot for every eligible comparison group, then freezes one symmetric fixed-count confirmation stage. Group and tool order are reproducible, batches and the total run have declared limits, and a timed-out group receives at most one smaller retry while later batches continue. Pilot evidence remains diagnostic and cannot produce a comparative claim.
+Timed collection uses one equal-floor pilot for every eligible comparison group, then freezes one symmetric fixed-count confirmation stage. Group and tool order are reproducible, batches and the total run have declared limits, and a timed-out group receives at most one smaller retry while later batches continue. Pilot evidence remains diagnostic and cannot produce a comparative claim. `--suite=tasks`, `--suite=fixtures`, and the default `--suite=all` use the same workers, timing policy, and artifact validators.
 
-Filtered runs are diagnostic and cannot produce the full comparative report or be promoted.
+Single-suite, runner-filtered, task-filtered, and correctness-only runs are diagnostic evidence and record `promotion_eligible` as `false`. Promotion requires an unfiltered timed `--suite=all` run with the complete runner and task matrix.
 
 ## Export and promotion
 
@@ -129,7 +135,7 @@ Promotion accepts only an unfiltered timed run collected under the current sourc
 
 ## Result retention
 
-Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. Every run retains two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest: eight core files regardless of runner, task, fixture, phase, or iteration count. Runner, task, and fixture identities are columns, and cold-start observations are rows in the task samples rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
+Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest: eight core files regardless of runner, task, fixture, phase, or iteration count. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and cold-start observations are rows in the task samples rather than separate files. Schema-2 runs remain readable through their original per-cell layout.
 
 Run manifests retain execution-critical dispositions and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record.
 

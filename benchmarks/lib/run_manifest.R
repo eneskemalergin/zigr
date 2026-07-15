@@ -36,9 +36,18 @@ load_retained_correctness <- function(
     stop("retained correctness is not passing for every executable cell")
   }
   for (field in names(expected_identity)) {
-    expected <- as.character(expected_identity[[field]])
+    expected_value <- expected_identity[[field]]
+    expected <- as.character(expected_value)
+    names(expected) <- names(expected_value)
     actual <- as.character(rows[[field]])
-    if (length(expected) != 1L || is.na(expected) || !nzchar(expected) ||
+    if (length(expected) == 1L) {
+      expected <- rep(expected, length(ids))
+    } else if (is.null(names(expected)) || !setequal(names(expected), expected_ids)) {
+      stop(sprintf("retained correctness expected %s identity is not keyed by selected cells", field))
+    } else {
+      expected <- expected[match(ids, names(expected))]
+    }
+    if (anyNA(expected) || any(!nzchar(expected)) ||
         anyNA(actual) || any(!nzchar(actual)) || any(actual != expected)) {
       stop(sprintf("retained correctness %s differs from the selected run", field))
     }
@@ -82,7 +91,7 @@ run_manifest_completion_contract <- function(metadata) {
   required <- c(
     "schema_version", "run_id", "status", "started_at", "finished_at", "runners", "tasks",
     "master_seed", "input_manifest", "runner_dispositions", "r_provenance", "timing_policy",
-    "boundary_budget_policy_version", "full_matrix", "measurement_mode", "environment",
+    "boundary_budget_policy_version", "suite", "full_matrix", "promotion_eligible", "measurement_mode", "environment",
     "correctness_stage", "completion_artifacts"
   )
   if (!is.null(metadata$schema_version) && as.integer(metadata$schema_version) < 3L) {
@@ -198,32 +207,46 @@ validate_run_promotion_receipt <- function(receipt) {
 
 run_completion_artifact_paths <- function(run_dir, metadata) {
   runners <- sort(run_manifest_values(metadata$runners))
-  paths <- c(
-    as.character(metadata$input_manifest$relative_path),
-    run_summary_artifact_paths("", metadata, "task", runners),
-    run_summary_artifact_paths("", metadata, "fixture", runners),
-    run_correctness_artifact_paths("", metadata, "task", runners),
-    run_correctness_artifact_paths("", metadata, "fixture", runners)
-  )
-  task_summaries <- read_run_summary_table(run_dir, metadata, "task", runners)
-  fixture_summaries <- read_run_summary_table(run_dir, metadata, "fixture", runners)
+  paths <- character(0)
+  task_summaries <- data.frame()
+  fixture_summaries <- data.frame()
+  if (benchmark_run_includes(metadata, "task")) {
+    paths <- c(
+      paths,
+      as.character(metadata$input_manifest$relative_path),
+      run_summary_artifact_paths("", metadata, "task", runners),
+      run_correctness_artifact_paths("", metadata, "task", runners)
+    )
+    task_summaries <- read_run_summary_table(run_dir, metadata, "task", runners)
+  }
+  if (benchmark_run_includes(metadata, "fixture")) {
+    paths <- c(
+      paths,
+      run_summary_artifact_paths("", metadata, "fixture", runners),
+      run_correctness_artifact_paths("", metadata, "fixture", runners)
+    )
+    fixture_summaries <- read_run_summary_table(run_dir, metadata, "fixture", runners)
+  }
   for (runner in runners) {
-    task_summary <- task_summaries[as.character(task_summaries$runner) == runner, , drop = FALSE]
-    task_ids <- as.character(task_summary$task[task_summary$status == "PASS"])
-    if (length(task_ids) > 0L) paths <- c(
-      paths,
-      run_sample_artifact_paths("", metadata, "task", runner, task_ids)
-    )
-    if (length(task_ids) > 0L && identical(benchmark_artifact_layout(metadata), "per-cell-v1")) {
-      paths <- c(paths, file.path(runner, "cold_start.csv"))
+    if (benchmark_run_includes(metadata, "task")) {
+      task_summary <- task_summaries[as.character(task_summaries$runner) == runner, , drop = FALSE]
+      task_ids <- as.character(task_summary$task[task_summary$status == "PASS"])
+      if (length(task_ids) > 0L) paths <- c(
+        paths,
+        run_sample_artifact_paths("", metadata, "task", runner, task_ids)
+      )
+      if (length(task_ids) > 0L && identical(benchmark_artifact_layout(metadata), "per-cell-v1")) {
+        paths <- c(paths, file.path(runner, "cold_start.csv"))
+      }
     }
-
-    fixture_summary <- fixture_summaries[as.character(fixture_summaries$runner) == runner, , drop = FALSE]
-    fixture_rows <- as.character(fixture_summary$row_id[fixture_summary$status == "PASS"])
-    if (length(fixture_rows) > 0L) paths <- c(
-      paths,
-      run_sample_artifact_paths("", metadata, "fixture", runner, fixture_rows)
-    )
+    if (benchmark_run_includes(metadata, "fixture")) {
+      fixture_summary <- fixture_summaries[as.character(fixture_summaries$runner) == runner, , drop = FALSE]
+      fixture_rows <- as.character(fixture_summary$row_id[fixture_summary$status == "PASS"])
+      if (length(fixture_rows) > 0L) paths <- c(
+        paths,
+        run_sample_artifact_paths("", metadata, "fixture", runner, fixture_rows)
+      )
+    }
   }
   sort(unique(run_manifest_relative_artifact_paths(paths)))
 }
@@ -450,7 +473,10 @@ validate_timing_execution <- function(execution, metadata) {
       "group_id", "pilot_complete", "pilot_median_group_ms", "pilot_max_cv_pct",
       "pilot_max_drift_pct", "confirmation_iterations", "estimated_confirmation_ms", "status"
     )
-    if (length(setdiff(required_plan, names(plan))) > 0L || anyDuplicated(as.character(plan$group_id)) ||
+    selected <- benchmark_run_includes(metadata, universe)
+    if ((!selected && nrow(plan) > 0L) ||
+        (selected && length(setdiff(required_plan, names(plan))) > 0L) ||
+        anyDuplicated(as.character(plan$group_id)) ||
         any(!(as.character(plan$status) %in% c("confirmation", "below_timer_floor", "unsupported", "incomplete")))) {
       stop(sprintf("%s timing plan is invalid", universe))
     }
@@ -758,6 +784,12 @@ validate_run_artifacts <- function(run_dir, metadata) {
   expected_run_id <- as.character(metadata$run_id)
   expected_runners <- sort(run_manifest_values(metadata$runners))
   expected_tasks <- sort(run_manifest_values(metadata$tasks))
+  suite <- benchmark_run_suite(metadata)
+  task_selected <- benchmark_run_includes(metadata, "task")
+  promotion_eligible <- benchmark_run_promotion_eligible(metadata)
+  if (!is.null(metadata$promotion_eligible) && !identical(isTRUE(metadata$promotion_eligible), promotion_eligible)) {
+    stop("run promotion eligibility differs from its suite, matrix, or measurement mode")
+  }
   if (!is.null(metadata$timing_policy)) validate_timing_policy(metadata$timing_policy)
   if (!is.null(metadata$timing_policy) &&
       identical(as.character(metadata$timing_policy$policy_version), "bounded-pilot-confirmation-v1")) {
@@ -765,26 +797,31 @@ validate_run_artifacts <- function(run_dir, metadata) {
     validate_timing_execution(metadata$timing_execution, metadata)
   }
   if (length(expected_runners) == 0L) stop("run manifest has no runners")
-  if (length(expected_tasks) == 0L) stop("run manifest has no tasks")
+  if (task_selected && length(expected_tasks) == 0L) stop("task suite run manifest has no tasks")
+  if (!task_selected && length(expected_tasks) > 0L) stop("fixture-only run manifest declares task work")
   master_seed <- suppressWarnings(as.integer(metadata$master_seed))
   if (length(master_seed) != 1L || is.na(master_seed) || master_seed < 1L) stop("run manifest has an invalid master seed")
   input_relative_path <- if (is.null(metadata$input_manifest)) NULL else metadata$input_manifest$relative_path
   input_digest <- if (is.null(metadata$input_manifest)) NULL else metadata$input_manifest$digest
-  if (is.null(input_relative_path) || length(input_relative_path) != 1L || !nzchar(as.character(input_relative_path)) ||
-      is.null(input_digest) || length(input_digest) != 1L || !nzchar(as.character(input_digest))) {
-    stop("run manifest has no canonical input identity")
+  input_payload_records <- list()
+  input_payload_tasks <- character(0)
+  if (task_selected) {
+    if (is.null(input_relative_path) || length(input_relative_path) != 1L || !nzchar(as.character(input_relative_path)) ||
+        is.null(input_digest) || length(input_digest) != 1L || !nzchar(as.character(input_digest))) {
+      stop("run manifest has no canonical input identity")
+    }
+    input_path <- file.path(run_dir, as.character(input_relative_path))
+    if (!file.exists(input_path)) stop("run canonical input manifest is missing")
+    actual_input_digest <- unname(as.character(tools::md5sum(input_path))[[1L]])
+    if (!identical(actual_input_digest, as.character(input_digest))) stop("run canonical input manifest digest differs")
+    input_payload <- jsonlite::fromJSON(input_path, simplifyVector = FALSE)
+    input_payload_records <- input_payload$tasks
+    input_payload_tasks <- vapply(input_payload_records, function(record) as.character(record$task), character(1))
+    if (!identical(sort(input_payload_tasks), expected_tasks) || anyDuplicated(input_payload_tasks)) {
+      stop("canonical input manifest task set differs from the run manifest")
+    }
   }
-  input_path <- file.path(run_dir, as.character(input_relative_path))
-  if (!file.exists(input_path)) stop("run canonical input manifest is missing")
-  actual_input_digest <- unname(as.character(tools::md5sum(input_path))[[1L]])
-  if (!identical(actual_input_digest, as.character(input_digest))) stop("run canonical input manifest digest differs")
-  input_payload <- jsonlite::fromJSON(input_path, simplifyVector = FALSE)
-  input_payload_records <- input_payload$tasks
-  input_payload_tasks <- vapply(input_payload_records, function(record) as.character(record$task), character(1))
-  if (!identical(sort(input_payload_tasks), expected_tasks) || anyDuplicated(input_payload_tasks)) {
-    stop("canonical input manifest task set differs from the run manifest")
-  }
-  if (as.integer(metadata$schema_version) < 3L) {
+  if (task_selected && as.integer(metadata$schema_version) < 3L) {
     input_tasks <- vapply(metadata$task_inputs, function(record) as.character(record$task), character(1))
     if (!identical(sort(input_tasks), expected_tasks) || anyDuplicated(input_tasks)) {
       stop("run task input records differ from the declared task set")
@@ -909,6 +946,17 @@ validate_run_artifacts <- function(run_dir, metadata) {
   if (dir.exists(staging_dir) && length(list.files(staging_dir, all.files = TRUE, no.. = TRUE, recursive = TRUE)) > 0L) {
     stop("run contains unpromoted staging artifacts")
   }
+  suite_artifacts <- function(universe) c(
+    run_summary_artifact_paths(run_dir, metadata, universe, expected_runners),
+    run_correctness_artifact_paths(run_dir, metadata, universe, expected_runners),
+    run_sample_artifact_paths(run_dir, metadata, universe, expected_runners[[1L]], ".")
+  )
+  for (universe in c("task", "fixture")) {
+    if (!benchmark_run_includes(metadata, universe) && any(file.exists(suite_artifacts(universe)))) {
+      stop(sprintf("run contains artifacts for unselected %s suite", universe))
+    }
+  }
+  if (!task_selected) return(invisible(TRUE))
 
   all_summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
   expected_files <- run_summary_artifact_paths(run_dir, metadata, "task", expected_runners)

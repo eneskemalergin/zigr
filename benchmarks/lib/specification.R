@@ -506,6 +506,31 @@ parse_task_filter <- function(value) {
   tasks
 }
 
+parse_benchmark_suite <- function(value) {
+  value <- as.character(value)
+  if (length(value) != 1L || is.na(value) || !(value %in% c("tasks", "fixtures", "all"))) {
+    stop("benchmark suite must be tasks, fixtures, or all")
+  }
+  value
+}
+
+benchmark_run_suite <- function(metadata) {
+  if (is.null(metadata$suite)) return("all")
+  parse_benchmark_suite(metadata$suite)
+}
+
+benchmark_run_includes <- function(metadata, universe) {
+  if (!(universe %in% c("task", "fixture"))) stop("benchmark universe must be task or fixture")
+  suite <- benchmark_run_suite(metadata)
+  identical(suite, "all") || identical(suite, paste0(universe, "s"))
+}
+
+benchmark_run_promotion_eligible <- function(metadata) {
+  isTRUE(metadata$full_matrix) &&
+    identical(benchmark_run_suite(metadata), "all") &&
+    identical(as.character(metadata$measurement_mode), "timed")
+}
+
 evidence_task_contract_version <- function(task_id) {
   revision <- if (task_id %in% c(
     "17_string_concat", "18_string_nchar", "19_string_encoding", "20_factor_ops",

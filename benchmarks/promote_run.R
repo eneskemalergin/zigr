@@ -34,7 +34,7 @@ receipt_path <- file.path(root_dir, "results", "CANONICAL_RUN.json")
 
 metadata <- read_run_manifest(run_dir)
 if (!identical(as.character(metadata$status), "complete")) stop("only complete runs can be promoted")
-if (!isTRUE(metadata$full_matrix) || !identical(as.character(metadata$measurement_mode), "timed")) {
+if (!isTRUE(metadata$promotion_eligible) || !benchmark_run_promotion_eligible(metadata)) {
   stop("only an unfiltered timed full-matrix run can be promoted")
 }
 manifest <- load_task_manifest(root_dir)
