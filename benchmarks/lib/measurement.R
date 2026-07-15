@@ -1004,12 +1004,19 @@ log_error <- function(runner, task, msg, dir = "results") {
   write_csv(df, path, append = !header)
 }
 
+legacy_run_manifest_id <- function() "20260715T040721Z-pid2"
+
 benchmark_artifact_layout <- function(metadata) {
   schema <- suppressWarnings(as.integer(metadata$schema_version))
   if (length(schema) != 1L || is.na(schema) || !(schema %in% c(2L, 3L))) {
     stop("unsupported run manifest schema version")
   }
-  if (schema == 2L) return("per-cell-v1")
+  if (schema == 2L) {
+    if (is.null(metadata$run_id) || !identical(as.character(metadata$run_id), legacy_run_manifest_id())) {
+      stop("schema-2 artifact compatibility is retained only for the named accepted historical run")
+    }
+    return("per-cell-v1")
+  }
   layout <- as.character(metadata$artifact_layout)
   if (length(layout) != 1L || is.na(layout) || !identical(layout, "grouped-v1")) {
     stop("run manifest has no supported artifact layout")

@@ -81,18 +81,21 @@ representation_budget_policy <- function() {
 }
 
 validate_task_manifest <- function(manifest) {
-  required <- c("task", "workload_group", "display_name", "category", "input_factory", "input_arity",
+  required <- c("task", "workload_group", "display_name", "category", "input_arity",
                 "expected_return", "correctness_policy", "comparison_policy",
-                "aggregate", "comparison_note")
+                "comparison_note")
   missing <- setdiff(required, names(manifest))
   if (length(missing) > 0L) {
     stop(sprintf("task manifest missing columns: %s", paste(missing, collapse = ", ")))
+  }
+  unsupported <- setdiff(names(manifest), required)
+  if (length(unsupported) > 0L) {
+    stop(sprintf("task manifest contains unsupported columns: %s", paste(unsupported, collapse = ", ")))
   }
   if (nrow(manifest) != 83L) stop(sprintf("task manifest must contain 83 rows, got %d", nrow(manifest)))
   if (anyDuplicated(manifest$task)) stop("task manifest contains duplicate task IDs")
   if (any(!nzchar(manifest$task)) || any(!nzchar(manifest$display_name))) stop("task manifest contains blank identity fields")
   if (any(!grepl("^([0-9]{2}_[A-Za-z0-9_]+|07[ab]_[A-Za-z0-9_]+)$", manifest$task))) stop("task manifest contains an invalid task ID")
-  if (!all(manifest$input_factory == "task_spec.args")) stop("task manifest has an unsupported input factory")
   if (!is.numeric(manifest$input_arity) || anyNA(manifest$input_arity) || any(manifest$input_arity < 0) || any(manifest$input_arity != as.integer(manifest$input_arity))) stop("task manifest has an invalid input arity")
   groups <- c("core_compute", "api_boundary", "objects_and_strings", "numerical", "altrep", "runtime_services")
   if (!all(manifest$workload_group %in% groups)) stop("task manifest has an invalid workload group")
@@ -100,8 +103,6 @@ validate_task_manifest <- function(manifest) {
   task_report_category(manifest$category)
   if (!all(manifest$correctness_policy %in% c("r_reference", "native_invariant", "nondeterministic"))) stop("task manifest has an invalid correctness policy")
   if (!all(manifest$comparison_policy %in% c("comparable", "non_comparable"))) stop("task manifest has an invalid comparison policy")
-  if (!is.logical(manifest$aggregate)) stop("task manifest aggregate column must be logical")
-  if (any(manifest$aggregate != (manifest$comparison_policy == "comparable"))) stop("aggregate policy must match comparison policy")
   if (any(manifest$comparison_policy == "comparable" & nzchar(manifest$comparison_note))) stop("comparable tasks must not have exclusion notes")
   if (any(manifest$comparison_policy == "non_comparable" & !nzchar(manifest$comparison_note))) stop("non-comparable tasks need exclusion notes")
   required_special <- c("07a_protect_shallow", "07b_protect_scaling", "42_external_ptr", "43_rng_stress", "48_weakref_lifecycle", "49_owned_altrep_create")
@@ -1308,28 +1309,57 @@ run_disposition_records <- function(evidence, runners, tasks) {
   records
 }
 
-separated_report_files <- function() {
+comparative_report_files <- function() {
   c(
-    product = "product_metrics.csv",
-    strategy = "strategy_metrics.csv",
-    r_baseline = "r_baseline_metrics.csv",
-    control = "control_metrics.csv",
-    diagnostic = "diagnostic_metrics.csv",
+    comparative = "comparative_metrics.csv",
     capability = "capability_matrix.csv",
-    safety = "safety_results.csv",
-    analysis = "analysis_summary.csv"
+    safety = "safety_results.csv"
   )
 }
 
-boundary_report_files <- function() c(
-  boundary = "boundary_metrics.csv",
-  boundary_budget = "boundary_budgets.csv",
-  representation_budget = "representation_budgets.csv"
-)
+budget_report_files <- function() c(budget = "budget_results.csv")
 
-declared_report_files <- function() c(separated_report_files(), boundary_report_files())
+declared_report_files <- function() c(comparative_report_files(), budget_report_files())
 
-comparative_report_schema_version <- function() "separated-report-v4"
+comparative_report_schema_version <- function() "benchmark-report-v5"
+
+combine_report_tracks <- function(outputs) {
+  if (!is.list(outputs) || length(outputs) == 0L || is.null(names(outputs)) ||
+      any(!nzchar(names(outputs))) || anyDuplicated(names(outputs))) {
+    stop("report tracks must be a non-empty uniquely named list")
+  }
+  if (any(!vapply(outputs, is.data.frame, logical(1)))) stop("every report track must be a data frame")
+  if (any(vapply(outputs, function(rows) "report_track" %in% names(rows), logical(1)))) {
+    stop("report track inputs must not define report_track")
+  }
+  columns <- unique(unlist(lapply(outputs, names), use.names = FALSE))
+  combined <- lapply(seq_along(outputs), function(index) {
+    rows <- outputs[[index]]
+    missing <- setdiff(columns, names(rows))
+    for (column in missing) rows[[column]] <- NA
+    rows <- rows[, columns, drop = FALSE]
+    data.frame(report_track = names(outputs)[[index]], rows, check.names = FALSE, stringsAsFactors = FALSE)
+  })
+  do.call(rbind, combined)
+}
+
+split_report_tracks <- function(rows, required_tracks, label) {
+  if (!is.data.frame(rows) || !"report_track" %in% names(rows)) {
+    stop(sprintf("%s has no report_track column", label))
+  }
+  required_tracks <- as.character(required_tracks)
+  actual <- unique(as.character(rows$report_track))
+  if (anyNA(actual) || any(!nzchar(actual)) || !setequal(actual, required_tracks)) {
+    stop(sprintf("%s track coverage differs", label))
+  }
+  tracks <- lapply(required_tracks, function(track) {
+    selected <- rows[as.character(rows$report_track) == track, , drop = FALSE]
+    if (nrow(selected) == 0L) stop(sprintf("%s track %s is empty", label, track))
+    selected
+  })
+  names(tracks) <- required_tracks
+  tracks
+}
 
 report_measurement_columns <- function() c(
   "first_call_ms", "rss_endpoint_delta_kb", "rss_endpoint_metric",
@@ -1337,46 +1367,6 @@ report_measurement_columns <- function() c(
   "loaded_process_rss_kb", "peak_rss_metric", "peak_rss_support",
   "peak_rss_support_reason", "peak_rss_repetitions"
 )
-
-build_analysis_summary <- function(summaries, manifest, run_id) {
-  summary_column <- function(name, default = NA) {
-    if (name %in% names(summaries)) summaries[[name]] else rep(default, nrow(summaries))
-  }
-  manifest_rows <- match(summaries$task, manifest$task)
-  if (anyNA(manifest_rows)) stop("runner summaries contain an unknown task")
-  data.frame(
-    run_id = as.character(run_id),
-    runner = as.character(summaries$runner),
-    task = as.character(summaries$task),
-    call_type = summary_column("call_type", NA_character_),
-    matrix_group = task_matrix_group(summaries$task),
-    matrix_variant = task_matrix_variant(summaries$task),
-    category = manifest$category[manifest_rows],
-    report_category = task_report_category(manifest$category[manifest_rows]),
-    aggregate_comparable = manifest$aggregate[manifest_rows],
-    comparison_note = manifest$comparison_note[manifest_rows],
-    mean_ms = summaries$mean_ms,
-    median_ms = summaries$median_ms,
-    min_ms = summaries$min_ms,
-    max_ms = summaries$max_ms,
-    sd_ms = summaries$sd_ms,
-    cv_pct = summaries$cv_pct,
-    rss_endpoint_delta_kb = summaries$rss_endpoint_delta_kb,
-    rss_endpoint_metric = summary_column("rss_endpoint_metric"),
-    rss_endpoint_support = summary_column("rss_endpoint_support"),
-    rss_endpoint_support_reason = summary_column("rss_endpoint_support_reason"),
-    gc_policy = summary_column("gc_policy", "legacy"),
-    first_call_ms = summaries$first_call_ms,
-    n_runs = summaries$n_iterations,
-    warmup_iterations = summary_column("warmup_iterations"),
-    sample_stage = summary_column("sample_stage", "legacy_adaptive"),
-    fixed_iterations = summary_column("fixed_iterations"),
-    timer_noise_floor_ms = summary_column("timer_noise_floor_ms"),
-    timer_noise_status = summary_column("timer_noise_status", "legacy"),
-    status = summaries$status,
-    stringsAsFactors = FALSE
-  )
-}
 
 report_product_runners <- function() c("zigr", "rcpp", "cpp11", "extendr", "savvy")
 

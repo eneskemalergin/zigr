@@ -105,7 +105,6 @@ run_exporter <- function(script, arguments = character(0)) {
 run_exporter("export_comparative_metrics.R")
 run_exporter("export_boundary_metrics.R")
 
-report_files <- separated_report_files()
 required_reports <- c(unname(declared_report_files()), "report_manifest.json")
 missing_reports <- required_reports[!file.exists(file.path(stage_dir, required_reports))]
 if (length(missing_reports) > 0L) {
@@ -136,13 +135,22 @@ for (record in report_manifest$reports) {
   }
 }
 
-product <- read.csv(file.path(stage_dir, report_files[["product"]]), stringsAsFactors = FALSE)
-strategy <- read.csv(file.path(stage_dir, report_files[["strategy"]]), stringsAsFactors = FALSE)
-r_baseline <- read.csv(file.path(stage_dir, report_files[["r_baseline"]]), stringsAsFactors = FALSE)
-control <- read.csv(file.path(stage_dir, report_files[["control"]]), stringsAsFactors = FALSE)
-diagnostic <- read.csv(file.path(stage_dir, report_files[["diagnostic"]]), stringsAsFactors = FALSE)
-capability <- read.csv(file.path(stage_dir, report_files[["capability"]]), stringsAsFactors = FALSE)
-safety <- read.csv(file.path(stage_dir, report_files[["safety"]]), stringsAsFactors = FALSE)
+comparative <- read.csv(
+  file.path(stage_dir, comparative_report_files()[["comparative"]]),
+  stringsAsFactors = FALSE
+)
+required_tracks <- c("product", "strategy", "r_baseline", "control", "diagnostic")
+comparative_tracks <- split_report_tracks(comparative, required_tracks, "consolidated comparative report")
+product <- comparative_tracks$product
+strategy <- comparative_tracks$strategy
+r_baseline <- comparative_tracks$r_baseline
+control <- comparative_tracks$control
+diagnostic <- comparative_tracks$diagnostic
+capability <- read.csv(
+  file.path(stage_dir, comparative_report_files()[["capability"]]),
+  stringsAsFactors = FALSE
+)
+safety <- read.csv(file.path(stage_dir, comparative_report_files()[["safety"]]), stringsAsFactors = FALSE)
 validate_product_metrics(product, metadata$timing_policy)
 validate_strategy_metrics(strategy, metadata$timing_policy)
 validate_r_baseline_metrics(
@@ -157,9 +165,12 @@ validate_diagnostic_metrics(
 validate_capability_matrix(capability, paste(evidence$fixture_rows$runner, evidence$fixture_rows$fixture, sep = "\r"))
 validate_safety_results(safety, expected_runners)
 
-boundary_budgets <- read.csv(file.path(stage_dir, "boundary_budgets.csv"), stringsAsFactors = FALSE)
-representation_budgets <- read.csv(file.path(stage_dir, "representation_budgets.csv"), stringsAsFactors = FALSE)
-boundary_metrics <- read.csv(file.path(stage_dir, "boundary_metrics.csv"), stringsAsFactors = FALSE)
+budgets <- read.csv(file.path(stage_dir, budget_report_files()[["budget"]]), stringsAsFactors = FALSE)
+required_budget_tracks <- c("boundary", "boundary_budget", "representation_budget")
+budget_tracks <- split_report_tracks(budgets, required_budget_tracks, "consolidated budget report")
+boundary_metrics <- budget_tracks$boundary
+boundary_budgets <- budget_tracks$boundary_budget
+representation_budgets <- budget_tracks$representation_budget
 if (any(!grepl("^PASS", boundary_budgets$status)) || any(representation_budgets$status != "PASS") ||
     any(as.character(boundary_budgets$run_id) != as.character(metadata$run_id)) ||
     any(as.character(representation_budgets$run_id) != as.character(metadata$run_id))) {
@@ -172,12 +183,10 @@ if (any(!(boundary_metrics$r_reference_status %in% c("PASS", "N/A"))) ||
     any(!r_reference_gap & is.na(boundary_metrics$r_reference_median_ms))) {
   stop("regenerated boundary report hides or misstates an R reference gap")
 }
-analysis <- read.csv(file.path(stage_dir, "analysis_summary.csv"), stringsAsFactors = FALSE)
-expected_analysis_rows <- length(expected_runners) * nrow(manifest)
-if (nrow(analysis) != expected_analysis_rows ||
-    !"run_id" %in% names(analysis) ||
-    any(as.character(analysis$run_id) != as.character(metadata$run_id))) {
-  stop("regenerated analysis report coverage or run identity differs")
+expected_diagnostic_rows <- length(expected_runners) * nrow(manifest)
+if (nrow(diagnostic) != expected_diagnostic_rows ||
+    any(as.character(diagnostic$run_id) != as.character(metadata$run_id))) {
+  stop("regenerated diagnostic report coverage or run identity differs")
 }
 
 task_correctness_files <- run_correctness_artifact_paths(stage_dir, staged_metadata, "task", expected_runners)
@@ -186,7 +195,7 @@ task_correctness_rows <- sum(vapply(task_correctness_files, function(path) nrow(
 fixture_correctness_rows <- sum(vapply(fixture_correctness_files, function(path) nrow(read.csv(path)), integer(1)))
 derived_reports <- report_manifest$reports
 receipt <- list(
-  schema_version = "benchmark-promotion-v2",
+  schema_version = "benchmark-promotion-v3",
   run_id = as.character(metadata$run_id),
   promoted_at = run_manifest_timestamp(),
   source_tree_digest = as.character(metadata$environment$source_tree$digest),
@@ -207,7 +216,7 @@ receipt <- list(
     task_dispositions = length(expected_runners) * nrow(manifest),
     fixture_dispositions = nrow(evidence$fixture_rows),
     sealed_artifacts = length(metadata$completion_artifacts$files),
-    analysis_rows = nrow(analysis),
+    diagnostic_rows = nrow(diagnostic),
     boundary_rows = nrow(boundary_metrics)
   ),
   acceptance = list(
@@ -233,7 +242,7 @@ if (!(ignore_status %in% c(1L))) stop("could not verify compact promotion receip
 
 if (dry_run) {
   cat(sprintf(
-    "Promotion dry run passed for %s: %d sealed inputs, 11 regenerated reports, and one compact receipt.\n",
+    "Promotion dry run passed for %s: %d sealed inputs, four regenerated reports, and one compact receipt.\n",
     metadata$run_id,
     length(metadata$completion_artifacts$files)
   ))

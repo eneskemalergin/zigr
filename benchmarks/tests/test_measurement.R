@@ -645,7 +645,7 @@ expect_true(
   identical(read_run_wall_time_samples(layout_root, grouped_metadata, "task", "r", "b", expected_n = 3L), 4:6),
   "grouped artifact layout reads a selected task"
 )
-legacy_metadata <- list(schema_version = 2L)
+legacy_metadata <- list(schema_version = 2L, run_id = legacy_run_manifest_id())
 dir.create(file.path(layout_root, "r"))
 write.csv(
   data.frame(task = "b", iteration = 1:3, wall_ms = 7:9),
@@ -654,9 +654,36 @@ write.csv(
 )
 expect_true(
   identical(read_run_wall_time_samples(layout_root, legacy_metadata, "task", "r", "b", expected_n = 3L), 7:9),
-  "schema-two artifact layout remains readable"
+  "low-level schema-two artifact reader remains available for the accepted historical run"
+)
+unnamed_legacy_metadata <- legacy_metadata
+unnamed_legacy_metadata$run_id <- "unaccepted-schema-two"
+expect_error(
+  "low-level schema-two reader rejects an unnamed run",
+  read_run_wall_time_samples(layout_root, unnamed_legacy_metadata, "task", "r", "b", expected_n = 3L),
+  "retained only for the named accepted historical run"
 )
 unlink(layout_root, recursive = TRUE)
+legacy_manifest_root <- tempfile("legacy-run-manifest-")
+dir.create(legacy_manifest_root)
+jsonlite::write_json(
+  list(schema_version = 2L, run_id = "unaccepted-schema-two"),
+  run_manifest_path(legacy_manifest_root), auto_unbox = TRUE
+)
+expect_error(
+  "unnamed schema-two run manifest",
+  read_run_manifest(legacy_manifest_root),
+  "retained only for the named accepted historical run"
+)
+jsonlite::write_json(
+  list(schema_version = 2L, run_id = legacy_run_manifest_id()),
+  run_manifest_path(legacy_manifest_root), auto_unbox = TRUE
+)
+expect_true(
+  identical(as.character(read_run_manifest(legacy_manifest_root)$run_id), legacy_run_manifest_id()),
+  "named accepted historical run retains schema-two compatibility"
+)
+unlink(legacy_manifest_root, recursive = TRUE)
 write.csv(data.frame(wall_ms = c(0.1, Inf)), sample_file, row.names = FALSE)
 expect_error(
   "raw timing non-finite drift",
@@ -1024,18 +1051,61 @@ expect_error(
 )
 unlink(file.path(sealed_run, "undeclared.txt"))
 report_names <- unname(declared_report_files())
-for (name in report_names) writeLines(name, file.path(sealed_run, name))
-report_records <- lapply(seq_along(report_names), function(index) list(
-  role = names(declared_report_files())[[index]], file = report_names[[index]], rows = 1L,
-  md5 = unname(as.character(tools::md5sum(file.path(sealed_run, report_names[[index]]))[[1L]]))
-))
+report_roles <- names(declared_report_files())
+report_tables <- lapply(report_roles, function(role) {
+  if (identical(role, "comparative")) {
+    data.frame(report_track = c("product", "strategy", "r_baseline", "control", "diagnostic"), value = 1:5)
+  } else if (identical(role, "budget")) {
+    data.frame(report_track = c("boundary", "boundary_budget", "representation_budget"), value = 1:3)
+  } else {
+    data.frame(value = role)
+  }
+})
+for (index in seq_along(report_names)) {
+  write.csv(report_tables[[index]], file.path(sealed_run, report_names[[index]]), row.names = FALSE)
+}
+report_records <- lapply(seq_along(report_names), function(index) {
+  record <- list(
+    role = report_roles[[index]], file = report_names[[index]], rows = nrow(report_tables[[index]]),
+    md5 = unname(as.character(tools::md5sum(file.path(sealed_run, report_names[[index]]))[[1L]]))
+  )
+  if ("report_track" %in% names(report_tables[[index]])) {
+    counts <- table(report_tables[[index]]$report_track)
+    record$tracks <- lapply(names(counts), function(track) list(track = track, rows = as.integer(counts[[track]])))
+  }
+  record
+})
 report_manifest <- list(
   declared_report_files = as.list(report_names), reports = report_records
 )
 jsonlite::write_json(
   report_manifest, file.path(sealed_run, "report_manifest.json"), auto_unbox = TRUE
 )
+report_manifest <- jsonlite::fromJSON(
+  file.path(sealed_run, "report_manifest.json"), simplifyVector = FALSE
+)
 validate_report_artifact_set(sealed_run, sealed_metadata, report_manifest)
+wrong_report_rows <- unserialize(serialize(report_manifest, NULL))
+wrong_report_rows$reports[[1L]]$rows <- wrong_report_rows$reports[[1L]]$rows + 1L
+expect_error(
+  "report manifest false row count",
+  validate_report_artifact_set(sealed_run, sealed_metadata, wrong_report_rows),
+  "row count differs"
+)
+wrong_track_rows <- unserialize(serialize(report_manifest, NULL))
+wrong_track_rows$reports[[1L]]$tracks[[1L]]$rows <- 2L
+expect_error(
+  "report manifest false track count",
+  validate_report_artifact_set(sealed_run, sealed_metadata, wrong_track_rows),
+  "track counts differ"
+)
+wrong_report_role <- unserialize(serialize(report_manifest, NULL))
+wrong_report_role$reports[[1L]]$role <- "diagnostic"
+expect_error(
+  "report manifest false role",
+  validate_report_artifact_set(sealed_run, sealed_metadata, wrong_report_role),
+  "roles differ"
+)
 writeLines("undeclared derived output", file.path(sealed_run, "debug_report.csv"))
 expect_error(
   "undeclared derived report",
@@ -1211,7 +1281,7 @@ canonical_shape <- if (identical(canonical_receipt$record_kind, "migrated_promot
     identical(canonical_receipt$origin$schema_version, "benchmark-promotion-v1") &&
     identical(canonical_receipt$origin$promotion_manifest_md5, "cd6b3f60c547af5ac3599b21574699fd")
 } else {
-  identical(canonical_receipt$schema_version, "benchmark-promotion-v2") &&
+  identical(canonical_receipt$schema_version, "benchmark-promotion-v3") &&
     length(canonical_receipt$promoted_at) == 1L && nzchar(as.character(canonical_receipt$promoted_at))
 }
 expect_true(

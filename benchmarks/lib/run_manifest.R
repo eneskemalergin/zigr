@@ -251,12 +251,44 @@ validate_report_artifact_set <- function(run_dir, metadata, report_manifest) {
   if (anyDuplicated(recorded) || !setequal(recorded, declared)) {
     stop("report manifest records differ from its declared filenames")
   }
+  recorded_roles <- vapply(records, function(record) as.character(record$role), character(1))
+  expected_roles <- names(declared_report_files())[match(recorded, unname(declared_report_files()))]
+  if (anyNA(expected_roles) || anyDuplicated(recorded_roles) || !identical(recorded_roles, expected_roles)) {
+    stop("report manifest roles differ from the report contract")
+  }
   for (record in records) {
     relative <- run_manifest_relative_artifact_path(as.character(record$file))
     path <- file.path(run_dir, relative)
     actual <- if (file.exists(path)) unname(as.character(tools::md5sum(path)[[1L]])) else ""
     if (!identical(actual, as.character(record$md5))) {
       stop(sprintf("declared report digest differs for %s", relative))
+    }
+    rows <- tryCatch(read.csv(path, stringsAsFactors = FALSE), error = function(error) NULL)
+    recorded_rows <- suppressWarnings(as.integer(record$rows))
+    if (is.null(rows) || length(recorded_rows) != 1L || is.na(recorded_rows) ||
+        recorded_rows < 0L || recorded_rows != nrow(rows)) {
+      stop(sprintf("declared report row count differs for %s", relative))
+    }
+    tracks <- record$tracks
+    if ("report_track" %in% names(rows)) {
+      if (is.null(tracks) || length(tracks) == 0L) {
+        stop(sprintf("consolidated report has no track counts for %s", relative))
+      }
+      if (anyNA(rows$report_track) || any(!nzchar(as.character(rows$report_track)))) {
+        stop(sprintf("consolidated report has a blank track for %s", relative))
+      }
+      track_names <- vapply(tracks, function(track) as.character(track$track), character(1))
+      track_rows <- vapply(tracks, function(track) suppressWarnings(as.integer(track$rows)), integer(1))
+      actual_tracks <- table(as.character(rows$report_track), useNA = "always")
+      actual_tracks <- actual_tracks[!is.na(names(actual_tracks))]
+      if (anyDuplicated(track_names) || anyNA(track_rows) || any(track_rows < 1L) ||
+          sum(track_rows) != recorded_rows ||
+          !setequal(track_names, names(actual_tracks)) ||
+          any(track_rows[match(names(actual_tracks), track_names)] != as.integer(actual_tracks))) {
+        stop(sprintf("declared report track counts differ for %s", relative))
+      }
+    } else if (!is.null(tracks)) {
+      stop(sprintf("non-consolidated report declares track counts for %s", relative))
     }
   }
   expected <- sort(c(run_core_artifact_paths(run_dir, metadata), "report_manifest.json", declared))
@@ -717,6 +749,10 @@ read_run_manifest <- function(run_dir) {
   if (is.null(metadata$schema_version) || !(as.integer(metadata$schema_version) %in% c(2L, 3L))) {
     stop(sprintf("unsupported run manifest schema version: %s", path))
   }
+  if (as.integer(metadata$schema_version) == 2L &&
+      !identical(as.character(metadata$run_id), legacy_run_manifest_id())) {
+    stop("schema-2 run manifests are retained only for the named accepted historical run")
+  }
   benchmark_artifact_layout(metadata)
   metadata
 }
@@ -1072,10 +1108,7 @@ validate_run_artifacts <- function(run_dir, metadata) {
 
   all_summary_files <- sort(list.files(run_dir, pattern = "^[^/]+_summary\\.csv$", full.names = TRUE))
   expected_files <- run_summary_artifact_paths(run_dir, metadata, "task", expected_runners)
-  allowed_derived_files <- c(
-    file.path(run_dir, "analysis_summary.csv"),
-    run_summary_artifact_paths(run_dir, metadata, "fixture", expected_runners)
-  )
+  allowed_derived_files <- run_summary_artifact_paths(run_dir, metadata, "fixture", expected_runners)
   missing_files <- expected_files[!file.exists(expected_files)]
   unexpected_files <- setdiff(all_summary_files, c(expected_files, allowed_derived_files))
   if (length(missing_files) > 0L || length(unexpected_files) > 0L) {

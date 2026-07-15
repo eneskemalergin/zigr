@@ -72,7 +72,7 @@ for (runner in expected_runners) {
   }
 }
 
-export_separated_metrics <- function() {
+export_comparative_reports <- function() {
   evidence <- load_evidence_manifest(root_dir, manifest)
   correctness_identity <- validate_correctness_artifacts(results_dir, run_metadata, evidence)
   validate_fixture_measurement_artifacts(results_dir, run_metadata, evidence)
@@ -434,7 +434,7 @@ export_separated_metrics <- function() {
     )
   }))
 
-  staging <- tempfile("separated-report-staging-", tmpdir = results_dir)
+  staging <- tempfile("comparative-report-staging-", tmpdir = results_dir)
   dir.create(staging, recursive = TRUE)
   on.exit(unlink(staging, recursive = TRUE), add = TRUE)
   safety_paths <- file.path(staging, paste0("safety-", expected_runners, ".csv"))
@@ -523,26 +523,37 @@ export_separated_metrics <- function() {
   validate_capability_matrix(capability, paste(evidence$fixture_rows$runner, evidence$fixture_rows$fixture, sep = "\r"))
   validate_safety_results(safety, expected_runners)
 
-  analysis <- build_analysis_summary(summaries, manifest, run_metadata$run_id)
-
-  outputs <- list(
+  comparative_tracks <- list(
     product = product_output, strategy = strategy_output, r_baseline = r_output,
-    control = control_output, diagnostic = diagnostic_output, capability = capability, safety = safety,
-    analysis = analysis
+    control = control_output, diagnostic = diagnostic_output
   )
-  report_files <- separated_report_files()
+  outputs <- list(
+    comparative = combine_report_tracks(comparative_tracks),
+    capability = capability,
+    safety = safety
+  )
+  report_files <- comparative_report_files()
   staged_reports <- file.path(staging, unname(report_files))
   for (index in seq_along(outputs)) write_csv(outputs[[index]], staged_reports[[index]])
   final_reports <- file.path(results_dir, unname(report_files))
   manifest_path <- file.path(results_dir, "report_manifest.json")
   existing <- c(final_reports[file.exists(final_reports)], manifest_path[file.exists(manifest_path)])
   if (length(existing) > 0L) {
-    stop(sprintf("separated report output already exists: %s", paste(basename(existing), collapse = ", ")))
+    stop(sprintf("comparative report output already exists: %s", paste(basename(existing), collapse = ", ")))
   }
-  report_records <- lapply(seq_along(report_files), function(index) list(
-    role = names(report_files)[[index]], file = unname(report_files[[index]]),
-    rows = nrow(outputs[[index]]), md5 = unname(as.character(tools::md5sum(staged_reports[[index]]))[[1L]])
-  ))
+  report_records <- lapply(seq_along(report_files), function(index) {
+    role <- names(report_files)[[index]]
+    record <- list(
+      role = role, file = unname(report_files[[index]]), rows = nrow(outputs[[index]]),
+      md5 = unname(as.character(tools::md5sum(staged_reports[[index]]))[[1L]])
+    )
+    if (identical(role, "comparative")) {
+      record$tracks <- lapply(names(comparative_tracks), function(track) list(
+        track = track, rows = nrow(comparative_tracks[[track]])
+      ))
+    }
+    record
+  })
   manifest_record <- list(
     schema_version = comparative_report_schema_version(), run_id = as.character(run_metadata$run_id),
     evidence_schema_version = as.integer(evidence$schema_version),
@@ -582,17 +593,17 @@ export_separated_metrics <- function() {
   for (index in seq_along(final_reports)) {
     if (!file.rename(staged_reports[[index]], final_reports[[index]])) {
       unlink(published)
-      stop(sprintf("cannot publish separated report: %s", final_reports[[index]]))
+      stop(sprintf("cannot publish comparative report: %s", final_reports[[index]]))
     }
     published <- c(published, final_reports[[index]])
   }
   publication_complete <- file.rename(staged_manifest, manifest_path)
   if (!publication_complete) {
     unlink(published)
-    stop("cannot publish separated report manifest")
+    stop("cannot publish comparative report manifest")
   }
   cat(sprintf(
-    "Exported eight separated reports for run %s: %s.\n",
+    "Exported consolidated comparative reports for run %s: %s.\n",
     run_metadata$run_id,
     paste(sprintf("%s=%d", names(outputs), vapply(outputs, nrow, integer(1))), collapse = ", ")
   ))
@@ -604,4 +615,4 @@ classified_matrix <- identical(expected_runners, sort(evidence_schema_vocabulary
 if (!classified_matrix) {
   stop("comparative export requires the current complete runner and task matrix")
 }
-export_separated_metrics()
+export_comparative_reports()

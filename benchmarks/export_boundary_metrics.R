@@ -260,17 +260,18 @@ if (!identical(as.character(report_manifest$schema_version), comparative_report_
     !setequal(run_manifest_values(report_manifest$declared_report_files), unname(declared_report_files()))) {
   stop("comparative report manifest does not declare the current report set")
 }
-files <- boundary_report_files()
+files <- budget_report_files()
 final_paths <- file.path(run_dir, unname(files))
 existing <- final_paths[file.exists(final_paths)]
 if (length(existing) > 0L) {
   stop(sprintf("boundary report output already exists: %s", paste(basename(existing), collapse = ", ")))
 }
-outputs <- list(
+budget_tracks <- list(
   boundary = boundary_metrics,
   boundary_budget = boundary_budgets,
   representation_budget = representation_metrics
 )
+outputs <- list(budget = combine_report_tracks(budget_tracks))
 staging <- tempfile("boundary-reports-", tmpdir = run_dir)
 dir.create(staging)
 on.exit(unlink(staging, recursive = TRUE), add = TRUE)
@@ -279,7 +280,10 @@ for (index in seq_along(outputs)) write_csv(outputs[[index]], staged_paths[[inde
 boundary_records <- lapply(seq_along(files), function(index) list(
   role = names(files)[[index]], file = unname(files[[index]]),
   rows = nrow(outputs[[index]]),
-  md5 = unname(as.character(tools::md5sum(staged_paths[[index]])[[1L]]))
+  md5 = unname(as.character(tools::md5sum(staged_paths[[index]])[[1L]])),
+  tracks = lapply(names(budget_tracks), function(track) list(
+    track = track, rows = nrow(budget_tracks[[track]])
+  ))
 ))
 report_manifest$reports <- c(report_manifest$reports, boundary_records)
 boundary_source <- "export_boundary_metrics.R"
@@ -316,5 +320,5 @@ tryCatch(
 )
 publication_complete <- TRUE
 
-cat(sprintf("Wrote %s\n", paste(final_paths, collapse = ", ")))
+cat(sprintf("Wrote consolidated budget report %s\n", paste(final_paths, collapse = ", ")))
 })

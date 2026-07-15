@@ -52,7 +52,7 @@ C historical kernels are consolidated in `src/c_call/tasks.c`. Zig historical ke
 
 | File | Ownership |
 | --- | --- |
-| `task_manifest.csv` | Task IDs, workload groups, result contracts, correctness policy, and aggregate eligibility |
+| `task_manifest.csv` | Task IDs, workload groups, result contracts, correctness policy, and comparison policy |
 | `runners.json` | Runner libraries, call types, registered packages, fixtures, and executable symbol maps |
 | `evidence_manifest.json` | Comparison roles, tiers, strategies, applicability, gaps, and ownership |
 | `source_ledger.json` | Source sets, generated glue, build recipes, tools, and verification policy |
@@ -71,8 +71,8 @@ These files intentionally remain separate: execution configuration, comparison p
 | `lib/product_fixtures.R` | Product package gates, semantic cases, lifecycle checks, and capability gaps |
 | `run_benchmarks.R` | Correctness, bounded batch scheduling, timeouts, consolidation, and run-state transitions |
 | `benchmark_worker.R` | Fixed-count task or fixture batch execution selected with `--kind` |
-| `export_comparative_metrics.R` | Current full-matrix evidence reports |
-| `export_boundary_metrics.R` | Boundary and representation regression budgets |
+| `export_comparative_metrics.R` | Comparative, capability, and safety reports |
+| `export_boundary_metrics.R` | Consolidated boundary and representation budget report |
 | `promote_run.R` | Acceptance validation and compact receipt creation |
 | `check_coverage.R` | No-native trust suite and task preflight |
 
@@ -139,9 +139,9 @@ Rscript promote_run.R --run-dir=results/runs/<run_id> --dry-run
 Rscript promote_run.R --run-dir=results/runs/<run_id>
 ```
 
-Comparative export requires the current complete runner and task matrix. It writes separate product, strategy, R-baseline, control, diagnostic, capability, safety, and analysis reports. Boundary export writes boundary measurements and regression-budget decisions.
+Comparative export requires the current complete runner and task matrix. It writes `comparative_metrics.csv` with filterable product, strategy, R-baseline, control, and diagnostic tracks. Capability and safety remain separate because they contain source and lifecycle proof rather than timing evidence. Boundary export writes one `budget_results.csv` with boundary measurement, boundary budget, and representation budget tracks.
 
-Promotion accepts only an unfiltered timed run collected under the current source tree, evidence, timing policy, and boundary budget policy. The comparative manifest declares all 11 derived filenames, boundary export completes their digest records, and promotion rejects missing or undeclared output. Promotion regenerates reports in isolation, reruns safety proof, and updates only `results/CANONICAL_RUN.json`.
+Promotion accepts only an unfiltered timed run collected under the current source tree, evidence, timing policy, and boundary budget policy. The report manifest declares the exact four derived filenames, file and track row counts, and digests. Boundary export completes its record, and promotion rejects missing, undeclared, or miscounted output. Promotion regenerates reports in isolation, reruns safety proof, checks every required report track, and updates only `results/CANONICAL_RUN.json`.
 
 ## Result retention
 
@@ -149,7 +149,7 @@ Raw samples and generated reports are local and ignored by Git. Schema-3 runs de
 
 Workers write validation, timing, memory, and error batches only under the run's replaceable `.staging` tree. The parent writes each grouped artifact once, validates the exact core filename set, and atomically commits completion through `run_manifest.json`. Failed, interrupted, stale, or timed-out runs remove partial output and retain only one compact incomplete manifest. Zig and Cargo caches must resolve outside the run directory and are never deleted by run publication or failure cleanup.
 
-Run manifests retain execution-critical dispositions and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record.
+Run manifests retain only the selected execution-critical disposition fields and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record. Schema-2 loading is restricted to accepted historical run `20260715T040721Z-pid2`; remove that reader after one current-schema run is promoted.
 
 Keep only the runs needed for active investigation:
 

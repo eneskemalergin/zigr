@@ -100,6 +100,17 @@ for (case in list(
 bad_task_specs <- benchmark_task_specs()
 bad_task_specs[[1L]]$name <- "duplicate display metadata"
 expect_error("task specs reject unsupported metadata", validate_task_specs(manifest, bad_task_specs), "unsupported fields: name")
+expect_true(
+  !any(c("input_factory", "aggregate") %in% names(manifest)),
+  "task manifest derives input ownership and comparison eligibility instead of copying constants"
+)
+duplicated_manifest_policy <- manifest
+duplicated_manifest_policy$aggregate <- duplicated_manifest_policy$comparison_policy == "comparable"
+expect_error(
+  "task manifest rejects duplicated comparison policy",
+  validate_task_manifest(duplicated_manifest_policy),
+  "unsupported columns: aggregate"
+)
 
 expect_true(nrow(evidence$tasks) == 83L * 7L, "complete task disposition matrix")
 expect_true(nrow(evidence$fixture_rows) == 12L * 7L, "complete fixture disposition matrix")
@@ -689,15 +700,46 @@ add_report_metrics <- function(rows) {
   rows
 }
 expect_true(
-  identical(unname(separated_report_files()[["analysis"]]), "analysis_summary.csv"),
-  "analysis summary belongs to the comparative report set"
+  identical(unname(comparative_report_files()[["comparative"]]), "comparative_metrics.csv") &&
+    identical(unname(budget_report_files()[["budget"]]), "budget_results.csv"),
+  "report contract uses one comparative file and one budget file"
 )
 expect_true(
-  length(declared_report_files()) == 11L &&
-    setequal(unname(boundary_report_files()), c(
-      "boundary_metrics.csv", "boundary_budgets.csv", "representation_budgets.csv"
+  length(declared_report_files()) == 4L &&
+    setequal(unname(declared_report_files()), c(
+      "comparative_metrics.csv", "capability_matrix.csv", "safety_results.csv", "budget_results.csv"
     )),
-  "report contract declares every comparative and boundary output"
+  "report contract declares only retained reports"
+)
+combined_tracks <- combine_report_tracks(list(
+  product = data.frame(run_id = "run", ratio = 1, stringsAsFactors = FALSE),
+  diagnostic = data.frame(run_id = "run", reason = "visible", stringsAsFactors = FALSE)
+))
+expect_true(
+  identical(as.character(combined_tracks$report_track), c("product", "diagnostic")) &&
+    is.na(combined_tracks$reason[[1L]]) && is.na(combined_tracks$ratio[[2L]]),
+  "report tracks retain their role and fill only non-applicable fields"
+)
+expect_true(
+  identical(names(split_report_tracks(
+    combined_tracks, c("product", "diagnostic"), "comparative test report"
+  )), c("product", "diagnostic")),
+  "report track selection preserves every declared role"
+)
+expect_error(
+  "comparative report cannot hide the R baseline track",
+  split_report_tracks(combined_tracks, c("product", "r_baseline", "diagnostic"), "comparative test report"),
+  "track coverage differs"
+)
+expect_error(
+  "comparative report cannot hide the control track",
+  split_report_tracks(combined_tracks, c("product", "control", "diagnostic"), "comparative test report"),
+  "track coverage differs"
+)
+expect_error(
+  "report tracks reject an authored track column",
+  combine_report_tracks(list(product = data.frame(report_track = "forged"))),
+  "must not define report_track"
 )
 contains_call <- function(expression, name) {
   if (is.call(expression) && identical(expression[[1L]], as.name(name))) return(TRUE)
@@ -721,28 +763,6 @@ for (script in c("export_boundary_metrics.R", "promote_run.R")) {
     )
   }
 }
-analysis_input <- data.frame(
-  runner = "zigr", task = manifest$task[[1L]], call_type = ".Call",
-  mean_ms = 1, median_ms = 1, min_ms = 1, max_ms = 1, sd_ms = 0, cv_pct = 0,
-  rss_endpoint_delta_kb = 0, rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb",
-  rss_endpoint_support = "supported", rss_endpoint_support_reason = "available",
-  first_call_ms = 1, n_iterations = 10L, status = "PASS",
-  stringsAsFactors = FALSE
-)
-analysis_report <- build_analysis_summary(analysis_input, manifest, "run")
-expect_true(
-  nrow(analysis_report) == 1L && analysis_report$run_id[[1L]] == "run" &&
-    analysis_report$task[[1L]] == manifest$task[[1L]],
-  "analysis summary is derived from validated runner summaries"
-)
-bad_analysis_input <- analysis_input
-bad_analysis_input$task <- "unknown_task"
-expect_error(
-  "analysis summary unknown task",
-  build_analysis_summary(bad_analysis_input, manifest, "run"),
-  "unknown task"
-)
-
 comparison_evidence <- data.frame(
   row_median = 1, row_ci_low = 0.99, row_ci_high = 1.01,
   reference_median = 1, reference_ci_low = 0.99, reference_ci_high = 1.01,
@@ -758,7 +778,7 @@ expect_true(
   "complete low-noise confirmation interval can produce a tie"
 )
 expect_true(
-  identical(comparative_report_schema_version(), "separated-report-v4"),
+  identical(comparative_report_schema_version(), "benchmark-report-v5"),
   "comparative report schema records the fail-closed contract"
 )
 legacy_evidence <- comparison_evidence
@@ -1054,6 +1074,29 @@ expect_error(
   validate_safety_results(bad_report, "zigr"),
   "invalid domain status"
 )
+
+local({
+  roundtrip_path <- tempfile("comparative-report-roundtrip-", fileext = ".csv")
+  on.exit(unlink(roundtrip_path), add = TRUE)
+  write_csv(combine_report_tracks(list(
+    product = product_report,
+    strategy = strategy_report,
+    r_baseline = r_report,
+    control = control_report,
+    diagnostic = diagnostic_report
+  )), roundtrip_path)
+  roundtrip_tracks <- split_report_tracks(
+    read.csv(roundtrip_path, stringsAsFactors = FALSE),
+    c("product", "strategy", "r_baseline", "control", "diagnostic"),
+    "round-trip comparative report"
+  )
+  validate_product_metrics(roundtrip_tracks$product)
+  validate_strategy_metrics(roundtrip_tracks$strategy)
+  validate_r_baseline_metrics(roundtrip_tracks$r_baseline, "task", "fixture")
+  validate_control_metrics(roundtrip_tracks$control)
+  validate_diagnostic_metrics(roundtrip_tracks$diagnostic, paste("zigr", "task", sep = "\r"))
+  expect_true(TRUE, "consolidated comparative report survives CSV write and read")
+})
 
 
 # Hard boundary table: catches swapped type, length, dimension, and name predicates.
