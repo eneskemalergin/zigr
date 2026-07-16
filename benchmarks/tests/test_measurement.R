@@ -400,6 +400,22 @@ expect_error(
   ),
   "cannot meet"
 )
+numeric_transform_sizing <- data.frame(
+  runner = rep(c("r", "c_call"), times = 3L),
+  task = "numeric_transform",
+  batch_repetitions = rep(c(1L, 8L, 64L), each = 2L),
+  batch_elapsed_ms = c(83, 0.5, 695, 3.9, 5416, 35),
+  gc_elapsed_ms = c(5, 0, 74, 0, 464, 0),
+  stringsAsFactors = FALSE
+)
+expect_error(
+  "numeric transform cannot meet the shared sizing cap",
+  select_direct_batch_repetitions(
+    numeric_transform_sizing, c(r = 0.01, c_call = 0.01),
+    c("r", "c_call"), "numeric_transform"
+  ),
+  "cannot meet the shared sizing target"
+)
 fractional_sizing <- sizing_rows
 fractional_sizing$batch_repetitions[[1L]] <- 1.5
 expect_error(
