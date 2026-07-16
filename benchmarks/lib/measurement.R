@@ -142,8 +142,85 @@ parse_named_integer_map <- function(value, expected_names, label) {
   parsed[expected_names]
 }
 
+direct_sizing_policy <- function() {
+  list(
+    policy_version = "shared-ladder-v1",
+    ladder = as.list(c(1L, 8L, 64L)),
+    minimum_batch_ms = 1,
+    timer_floor_multiplier = 20L,
+    target_batch_ms = 5,
+    maximum_batch_ms = 250
+  )
+}
+
+validate_direct_sizing_policy <- function(policy) {
+  fields <- c(
+    "policy_version", "ladder", "minimum_batch_ms", "timer_floor_multiplier",
+    "target_batch_ms", "maximum_batch_ms"
+  )
+  if (!is.list(policy) || !identical(names(policy), fields) ||
+      !identical(as.character(policy$policy_version), "shared-ladder-v1") ||
+      !identical(as.integer(unlist(policy$ladder, use.names = FALSE)), c(1L, 8L, 64L))) {
+    stop("direct sizing policy is invalid")
+  }
+  multiplier <- input_scalar_integer(policy$timer_floor_multiplier, "timer floor multiplier")
+  numeric <- unlist(policy[c("minimum_batch_ms", "target_batch_ms", "maximum_batch_ms")], use.names = FALSE)
+  if (length(numeric) != 3L || any(!is.finite(numeric)) || any(numeric <= 0) ||
+      numeric[[1L]] > numeric[[2L]] || numeric[[2L]] > numeric[[3L]]) {
+    stop("direct sizing policy has invalid batch bounds")
+  }
+  list(
+    ladder = as.integer(unlist(policy$ladder, use.names = FALSE)),
+    minimum_batch_ms = as.numeric(numeric[[1L]]),
+    timer_floor_multiplier = multiplier,
+    target_batch_ms = as.numeric(numeric[[2L]]),
+    maximum_batch_ms = as.numeric(numeric[[3L]])
+  )
+}
+
+direct_sizing_target_ms <- function(timer_floors, policy = direct_sizing_policy()) {
+  policy <- validate_direct_sizing_policy(policy)
+  if (length(timer_floors) == 0L || any(!is.finite(timer_floors)) || any(timer_floors < 0)) {
+    stop("batch sizing timer floors are invalid")
+  }
+  max(policy$minimum_batch_ms, policy$target_batch_ms,
+      max(as.numeric(timer_floors)) * policy$timer_floor_multiplier)
+}
+
+remaining_direct_run_seconds <- function(started_elapsed, current_elapsed, timeout_seconds) {
+  if (length(started_elapsed) != 1L || length(current_elapsed) != 1L ||
+      !is.finite(started_elapsed) || !is.finite(current_elapsed) ||
+      current_elapsed < started_elapsed) {
+    stop("direct run elapsed times are invalid")
+  }
+  timeout_seconds <- input_scalar_integer(timeout_seconds, "total run timeout")
+  floor(timeout_seconds - (current_elapsed - started_elapsed))
+}
+
+direct_sizing_count_accepted <- function(rows, timer_floors, runners,
+                                         policy = direct_sizing_policy()) {
+  required <- c("runner", "task", "batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")
+  sizing_policy <- validate_direct_sizing_policy(policy)
+  if (!is.data.frame(rows) || !identical(names(rows), required) ||
+      nrow(rows) != length(runners) || !identical(as.character(rows$runner), runners) ||
+      anyNA(rows) || any(!vapply(rows[c("batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")], is.numeric, logical(1))) ||
+      any(!is.finite(as.matrix(rows[c("batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")]))) ||
+      any(rows$batch_repetitions < 1L) || any(rows$batch_repetitions != as.integer(rows$batch_repetitions)) ||
+      any(!rows$batch_repetitions %in% sizing_policy$ladder) ||
+      any(rows$batch_elapsed_ms < 0) || any(rows$gc_elapsed_ms < 0) ||
+      any(rows$gc_elapsed_ms > rows$batch_elapsed_ms) ||
+      any(rows$batch_elapsed_ms > sizing_policy$maximum_batch_ms)) {
+    return(FALSE)
+  }
+  target_ms <- max(
+    sizing_policy$minimum_batch_ms, sizing_policy$target_batch_ms,
+    max(as.numeric(timer_floors)) * sizing_policy$timer_floor_multiplier
+  )
+  all(rows$batch_elapsed_ms > target_ms)
+}
+
 select_direct_batch_repetitions <- function(sizing, timer_floors, runners, tasks,
-                                            multiplier = 20L) {
+                                            policy = direct_sizing_policy()) {
   required <- c("runner", "task", "batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")
   if (!is.data.frame(sizing) || !identical(names(sizing), required) ||
       anyNA(sizing) || any(!is.finite(as.matrix(sizing[c("batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")]))) ||
@@ -151,27 +228,47 @@ select_direct_batch_repetitions <- function(sizing, timer_floors, runners, tasks
       any(sizing$gc_elapsed_ms < 0) || any(sizing$gc_elapsed_ms > sizing$batch_elapsed_ms)) {
     stop("batch sizing rows are invalid")
   }
-  multiplier <- input_scalar_integer(multiplier, "timer floor multiplier")
   if (!identical(names(timer_floors), runners) || any(!is.finite(timer_floors)) || any(timer_floors < 0)) {
     stop("batch sizing timer floors are invalid")
   }
-  floor_ms <- max(1, 5, max(as.numeric(timer_floors)) * multiplier)
+  target_ms <- direct_sizing_target_ms(timer_floors, policy)
+  policy <- validate_direct_sizing_policy(policy)
+  if (any(sizing$batch_repetitions != as.integer(sizing$batch_repetitions)) ||
+      any(!sizing$batch_repetitions %in% policy$ladder) ||
+      !setequal(as.character(sizing$runner), runners) || !setequal(as.character(sizing$task), tasks)) {
+    stop("batch sizing rows have invalid coverage or repetitions")
+  }
   selected <- integer(length(tasks))
   names(selected) <- tasks
   for (task in tasks) {
-    candidates <- if (identical(direct_task_batchability(task), "one")) 1L else c(1L, 8L, 64L)
+    candidates <- if (identical(direct_task_batchability(task), "one")) 1L else policy$ladder
     rows <- sizing[sizing$task == task, , drop = FALSE]
+    if (anyDuplicated(paste(rows$runner, rows$batch_repetitions, sep = "\r"))) {
+      stop(sprintf("%s has duplicate batch sizing observations", task))
+    }
+    observed <- lapply(runners, function(runner) {
+      as.integer(rows$batch_repetitions[rows$runner == runner])
+    })
+    if (any(vapply(observed, length, integer(1)) == 0L) ||
+        any(!vapply(observed, identical, logical(1), observed[[1L]]))) {
+      stop(sprintf("%s batch sizing coverage differs across runners", task))
+    }
     chosen <- NA_integer_
     for (count in candidates) {
       candidate <- rows[rows$batch_repetitions == count, , drop = FALSE]
       if (nrow(candidate) == length(runners) && identical(as.character(candidate$runner), runners) &&
-          all(candidate$batch_elapsed_ms > floor_ms)) {
+          all(candidate$batch_elapsed_ms > target_ms) &&
+          all(candidate$batch_elapsed_ms <= policy$maximum_batch_ms)) {
         chosen <- count
         break
       }
     }
     if (is.na(chosen)) {
-      stop(sprintf("%s cannot exceed the shared timer-floor target with its valid batch counts", task))
+      stop(sprintf("%s cannot meet the shared sizing target within the batch cap", task))
+    }
+    expected <- candidates[seq_len(match(chosen, candidates))]
+    if (!identical(observed[[1L]], expected)) {
+      stop(sprintf("%s batch sizing ladder contains an unnecessary or undeclared step", task))
     }
     selected[[task]] <- chosen
   }
@@ -820,11 +917,12 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v2",
+    policy_version = "direct-batch-v3",
     warmup_iterations = 1L,
     calibration_batches = 1L,
     measurement_samples = 11L,
     measurement_probe_samples = 101L,
+    sizing_policy = direct_sizing_policy(),
     batch_repetitions = as.list(direct_batch_repetition_map(tasks)),
     worker_timeout_seconds = 600L,
     total_run_timeout_seconds = 5400L,

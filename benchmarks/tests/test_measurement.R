@@ -247,6 +247,11 @@ expect_true(
   identical(unname(batch_map), c(64L, 64L)),
   "fresh-output tasks may receive an expanded batch"
 )
+expect_true(
+  identical(remaining_direct_run_seconds(10, 609.9, 600L), 0) &&
+    identical(remaining_direct_run_seconds(10, 610, 600L), 0),
+  "one run-wide timeout budget covers both sizing and measurement elapsed time"
+)
 sizing_rows <- data.frame(
   runner = rep(c("r", "c_call"), each = 4L),
   task = rep(c("vector_sum", "vector_sum", "attributes", "attributes"), times = 2L),
@@ -264,6 +269,51 @@ expect_true(
     c(8L, 8L)
   ),
   "sizing selects the smallest shared safe batch for immutable and fresh-output tasks"
+)
+expect_error(
+  "sizing rejects a favorable-runner-only ladder step",
+  select_direct_batch_repetitions(
+    sizing_rows[-6L, , drop = FALSE], c(r = 0.01, c_call = 0.01),
+    c("r", "c_call"), c("vector_sum", "attributes")
+  ),
+  "coverage differs"
+)
+unnecessary_sizing <- sizing_rows
+unnecessary_sizing$batch_elapsed_ms[unnecessary_sizing$batch_repetitions == 1L] <- 6
+expect_error(
+  "sizing rejects a later step after a shared success",
+  select_direct_batch_repetitions(
+    unnecessary_sizing, c(r = 0.01, c_call = 0.01),
+    c("r", "c_call"), c("vector_sum", "attributes")
+  ),
+  "unnecessary or undeclared"
+)
+over_cap_sizing <- sizing_rows
+over_cap_sizing$batch_elapsed_ms[over_cap_sizing$batch_repetitions == 8L] <- 251
+expect_error(
+  "sizing rejects a batch above the wall-time cap",
+  select_direct_batch_repetitions(
+    over_cap_sizing, c(r = 0.01, c_call = 0.01),
+    c("r", "c_call"), c("vector_sum", "attributes")
+  ),
+  "cannot meet"
+)
+fractional_sizing <- sizing_rows
+fractional_sizing$batch_repetitions[[1L]] <- 1.5
+expect_error(
+  "sizing rejects fractional repetitions",
+  select_direct_batch_repetitions(
+    fractional_sizing, c(r = 0.01, c_call = 0.01),
+    c("r", "c_call"), c("vector_sum", "attributes")
+  ),
+  "invalid coverage or repetitions"
+)
+expect_true(
+  !direct_sizing_count_accepted(
+    fractional_sizing[fractional_sizing$task == "vector_sum", , drop = FALSE],
+    c(r = 0.01, c_call = 0.01), c("r", "c_call")
+  ),
+  "a sizing round cannot advance from malformed repetitions"
 )
 expect_true(
   identical(

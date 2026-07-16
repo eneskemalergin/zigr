@@ -196,20 +196,25 @@ validate_direct_run_manifest <- function(metadata) {
   policy <- metadata$timing_policy
   policy_fields <- c(
     "policy_version", "warmup_iterations", "calibration_batches",
-    "measurement_samples", "measurement_probe_samples", "batch_repetitions", "worker_timeout_seconds",
+    "measurement_samples", "measurement_probe_samples", "sizing_policy", "batch_repetitions", "worker_timeout_seconds",
     "total_run_timeout_seconds", "gc_policy"
   )
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v2")) {
+      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v3")) {
     stop("run manifest has an invalid direct timing policy")
   }
-  for (field in setdiff(policy_fields[2:8], "batch_repetitions")) {
+  for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
     input_scalar_integer(policy[[field]], field)
   }
+  validate_direct_sizing_policy(policy$sizing_policy)
   if (!is.list(policy$batch_repetitions) || !setequal(names(policy$batch_repetitions), tasks)) {
     stop("direct timing batch repetition coverage differs from tasks")
   }
   repetitions <- vapply(policy$batch_repetitions[tasks], input_scalar_integer, integer(1), label = "batch repetitions")
+  sizing_policy <- validate_direct_sizing_policy(policy$sizing_policy)
+  if (any(!repetitions %in% sizing_policy$ladder)) {
+    stop("direct timing batch repetitions are outside the sizing ladder")
+  }
   if (any(vapply(tasks, function(task) {
     identical(direct_task_batchability(task), "one") && repetitions[[task]] != 1L
   }, logical(1)))) {
@@ -269,6 +274,23 @@ validate_direct_run_outputs <- function(run_dir, metadata) {
     digest <- unname(as.character(tools::md5sum(path))[[1L]])
     if (!identical(digest, as.character(record$md5))) {
       stop(sprintf("run output digest differs: %s", path))
+    }
+  }
+  if (identical(as.character(metadata$status), "complete")) {
+    samples <- read.csv(file.path(run_dir, "timing_samples.csv"), stringsAsFactors = FALSE)
+    policy <- metadata$timing_policy
+    runners <- run_manifest_values(metadata$runners)
+    tasks <- run_manifest_values(metadata$tasks)
+    validate_direct_timing_samples(samples, runners, tasks, policy$measurement_samples)
+    observed <- vapply(tasks, function(task) {
+      values <- unique(samples$batch_repetitions[samples$task == task])
+      if (length(values) != 1L) stop(sprintf("completed timing repetitions differ across workers for %s", task))
+      as.integer(values)
+    }, integer(1))
+    declared <- vapply(policy$batch_repetitions[tasks], input_scalar_integer, integer(1),
+                       label = "batch repetitions")
+    if (!identical(unname(observed), unname(declared))) {
+      stop("completed timing repetitions differ from the manifest sizing map")
     }
   }
   invisible(metadata)

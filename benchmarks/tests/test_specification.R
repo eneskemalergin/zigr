@@ -75,6 +75,21 @@ expect_error(
   validate_cli_arguments("--runner=", "runner", label = "test"),
   "requires a value"
 )
+worker_skip_probe <- suppressWarnings(system2(
+  "Rscript",
+  c(
+    "benchmark_worker.R", "--runner=r", "--mode=timing",
+    paste0("--output-root=", tempfile("worker-probe-")), "--tasks=vector_sum",
+    "--measurement-samples=1", "--batch-repetitions=vector_sum:1",
+    paste0("--master-seed=", benchmark_master_seed()), "--skip-probes"
+  ),
+  stdout = TRUE, stderr = TRUE
+))
+expect_true(
+  identical(attr(worker_skip_probe, "status"), 1L) &&
+    any(grepl("allowed only for later sizing rounds", worker_skip_probe, fixed = TRUE)),
+  "the worker cannot suppress timing probes"
+)
 expect_true(identical(parse_task_filter("1,7,86"), c(1L, 7L, 86L)), "task filter parses exact positive integers")
 expect_true(
   identical(
@@ -1499,6 +1514,21 @@ direct_metadata <- list(
 validate_direct_run_manifest(direct_metadata)
 
 bad_direct <- clone(direct_metadata)
+bad_direct$timing_policy$batch_repetitions$vector_sum <- 7L
+expect_error(
+  "direct manifest rejects a repetition outside its sizing ladder",
+  validate_direct_run_manifest(bad_direct),
+  "outside the sizing ladder"
+)
+bad_direct <- clone(direct_metadata)
+bad_direct$timing_policy$sizing_policy$maximum_batch_ms <- 4
+expect_error(
+  "direct manifest rejects an impossible sizing policy",
+  validate_direct_run_manifest(bad_direct),
+  "invalid batch bounds"
+)
+
+bad_direct <- clone(direct_metadata)
 bad_direct$input_seeds[[direct_tasks[[1L]]]] <- bad_direct$input_seeds[[direct_tasks[[1L]]]] + 1L
 expect_error(
   "direct manifest rejects a claimed task seed that was not executed",
@@ -1561,7 +1591,21 @@ complete_direct$outputs <- list(
 )
 for (name in names(complete_direct$outputs)) {
   path <- file.path(direct_run_dir, complete_direct$outputs[[name]]$relative_path)
-  writeLines(name, path)
+  if (identical(name, "timing_samples")) {
+    rows <- do.call(rbind, lapply(direct_runners, function(runner) {
+      do.call(rbind, lapply(direct_tasks, function(task) {
+        repetitions <- complete_direct$timing_policy$batch_repetitions[[task]]
+        data.frame(
+          runner = runner, task = task, phase = "measurement", measurement_sample = 1:11,
+          batch_repetitions = repetitions, batch_elapsed_ms = as.numeric(repetitions),
+          elapsed_per_event_ms = 1, gc_elapsed_ms = 0, stringsAsFactors = FALSE
+        )
+      }))
+    }))
+    write.csv(rows, path, row.names = FALSE)
+  } else {
+    writeLines(name, path)
+  }
   complete_direct$outputs[[name]]$md5 <- unname(as.character(tools::md5sum(path))[[1L]])
 }
 
@@ -1680,6 +1724,33 @@ expect_true(
     ),
   "the direct manifest preserves probe precision and validates final output identities"
 )
+forged_direct <- clone(roundtrip_direct)
+forged_samples <- read.csv(file.path(direct_run_dir, "timing_samples.csv"), stringsAsFactors = FALSE)
+forged_samples$batch_repetitions[forged_samples$task == direct_tasks[[1L]]] <- 8L
+forged_samples$batch_elapsed_ms[forged_samples$task == direct_tasks[[1L]]] <- 8
+write.csv(forged_samples, file.path(direct_run_dir, "timing_samples.csv"), row.names = FALSE)
+forged_direct$outputs$timing_samples$md5 <- unname(as.character(tools::md5sum(
+  file.path(direct_run_dir, "timing_samples.csv")
+)[[1L]]))
+jsonlite::write_json(forged_direct, run_manifest_path(direct_run_dir), auto_unbox = TRUE,
+                     pretty = TRUE, null = "null", digits = NA)
+expect_error(
+  "completed manifest rejects timing repetitions that differ from its sizing map",
+  read_run_manifest(direct_run_dir),
+  "differ from the manifest sizing map"
+)
+restored_samples <- do.call(rbind, lapply(direct_runners, function(runner) {
+  do.call(rbind, lapply(direct_tasks, function(task) {
+    repetitions <- complete_direct$timing_policy$batch_repetitions[[task]]
+    data.frame(
+      runner = runner, task = task, phase = "measurement", measurement_sample = 1:11,
+      batch_repetitions = repetitions, batch_elapsed_ms = as.numeric(repetitions),
+      elapsed_per_event_ms = 1, gc_elapsed_ms = 0, stringsAsFactors = FALSE
+    )
+  }))
+}))
+write.csv(restored_samples, file.path(direct_run_dir, "timing_samples.csv"), row.names = FALSE)
+write_run_manifest(direct_run_dir, complete_direct)
 writeLines("drift", file.path(direct_run_dir, "timing_summary.csv"))
 expect_error(
   "direct manifest detects final output drift",

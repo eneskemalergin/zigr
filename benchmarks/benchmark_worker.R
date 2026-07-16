@@ -24,11 +24,15 @@ task_filter <- option_value(arguments, "tasks")
 measurement_samples <- option_value(arguments, "measurement-samples")
 batch_repetitions <- option_value(arguments, "batch-repetitions")
 master_seed <- option_value(arguments, "master-seed")
+skip_probes <- "--skip-probes" %in% arguments
 
 runner_names <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
 if (!(runner %in% runner_names)) stop(sprintf("unknown runner: %s", runner))
 if (!(mode %in% c("correctness", "sizing", "timing"))) {
   stop("worker mode must be correctness, sizing, or timing")
+}
+if (skip_probes && !identical(mode, "sizing")) {
+  stop("--skip-probes is allowed only for later sizing rounds")
 }
 dir.create(output_root, recursive = TRUE, showWarnings = FALSE)
 master_seed <- input_scalar_integer(master_seed, "master seed")
@@ -59,33 +63,41 @@ if (identical(mode, "correctness")) {
 }
 
 task_ids <- vapply(specs, `[[`, character(1), "id")
-if (identical(mode, "timing")) {
-  measurement_samples <- input_scalar_integer(measurement_samples, "measurement samples")
+if (mode %in% c("sizing", "timing")) {
+  if (is.null(batch_repetitions)) stop("--batch-repetitions is required for sizing and timing")
+  if (identical(mode, "timing")) {
+    measurement_samples <- input_scalar_integer(measurement_samples, "measurement samples")
+  }
   batch_repetitions <- parse_named_integer_map(
     batch_repetitions, task_ids, "batch repetitions"
   )
+  if (any(!batch_repetitions %in% validate_direct_sizing_policy(direct_sizing_policy())$ladder)) {
+    stop("batch repetitions must use the declared sizing ladder")
+  }
 }
 
 source(file.path(root_dir, "src", "r", "run_all.R"), local = .GlobalEnv)
 if (!methods::isClass("BenchS4")) methods::setClass("BenchS4", slots = c(slot_x = "numeric"))
 c_dll <- dyn.load(file.path(root_dir, "src", "c_call", "bench.so"), local = TRUE, now = TRUE)
 on.exit(try(dyn.unload(c_dll[["path"]]), silent = TRUE), add = TRUE)
-probes <- run_direct_measurement_probes(c_dll)
-probe_rows <- transform(probes$samples, runner = runner)
-probe_rows <- probe_rows[c(
-  "runner", "probe", "probe_sample", "batch_repetitions", "batch_elapsed_ms",
-  "elapsed_per_event_ms", "gc_elapsed_ms"
-)]
-write_csv_once(
-  probe_rows, file.path(output_root, paste0(runner, "-probes.csv")), "runner probes"
-)
-write_csv_once(data.frame(
-  runner = runner,
-  timer_floor_ms = probes$timer_floor_ms,
-  nanotime_elapsed_ms = probes$nanotime_elapsed_ms,
-  independent_elapsed_ms = probes$independent_elapsed_ms,
-  stringsAsFactors = FALSE
-), file.path(output_root, paste0(runner, "-probe-summary.csv")), "runner probe summary")
+if (!skip_probes) {
+  probes <- run_direct_measurement_probes(c_dll)
+  probe_rows <- transform(probes$samples, runner = runner)
+  probe_rows <- probe_rows[c(
+    "runner", "probe", "probe_sample", "batch_repetitions", "batch_elapsed_ms",
+    "elapsed_per_event_ms", "gc_elapsed_ms"
+  )]
+  write_csv_once(
+    probe_rows, file.path(output_root, paste0(runner, "-probes.csv")), "runner probes"
+  )
+  write_csv_once(data.frame(
+    runner = runner,
+    timer_floor_ms = probes$timer_floor_ms,
+    nanotime_elapsed_ms = probes$nanotime_elapsed_ms,
+    independent_elapsed_ms = probes$independent_elapsed_ms,
+    stringsAsFactors = FALSE
+  ), file.path(output_root, paste0(runner, "-probe-summary.csv")), "runner probe summary")
+}
 
 runner_environment <- .GlobalEnv
 if (!runner %in% c("r", "c_call")) {
@@ -140,7 +152,7 @@ assert_altrep_phase <- function(spec, values) {
   }
 }
 
-if (identical(mode, "timing") && any(vapply(task_ids, function(task) {
+if (mode %in% c("sizing", "timing") && any(vapply(task_ids, function(task) {
   identical(direct_task_batchability(task), "one") && batch_repetitions[[task]] != 1L
 }, logical(1)))) {
   stop("mutable, stateful, RNG, and ALTREP tasks require batch repetitions of one")
@@ -149,31 +161,29 @@ if (identical(mode, "timing") && any(vapply(task_ids, function(task) {
 if (identical(mode, "sizing")) {
   rows <- list()
   for (spec in specs) {
-    counts <- if (identical(direct_task_batchability(spec$id), "one")) 1L else c(1L, 8L, 64L)
+    count <- batch_repetitions[[spec$id]]
     truth_arguments <- benchmark_revision_arguments(spec, master_seed)
     reset_rng(spec)
     truth <- eval(r_call(spec, truth_arguments), envir = .GlobalEnv)
     truth_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
-    for (count in counts) {
-      gc(full = TRUE)
-      measured <- prepare_phase(spec)
-      before <- if (length(measured$values) && !spec$id %in% altrep_tasks) {
-        task_arguments_fingerprint(spec$id, measured$values, "ordinary_r_object")
-      } else NULL
-      reset_rng(spec)
-      result <- measure_direct_batch(measured$call, runner_environment, count)
-      if (!is.null(before)) {
-        assert_immutable_input(spec$id, measured$values, before, "ordinary_r_object")
-      }
-      assert_altrep_phase(spec, measured$values)
-      revision_assert_same(truth, result$result, paste0(spec$id, " sizing"), isTRUE(spec$tolerance))
-      if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth_rng, rng_state_snapshot(), spec$id)
-      rows[[length(rows) + 1L]] <- data.frame(
-        runner = runner, task = spec$id, batch_repetitions = count,
-        batch_elapsed_ms = result$batch_elapsed_ms, gc_elapsed_ms = result$gc_elapsed_ms,
-        stringsAsFactors = FALSE
-      )
+    gc(full = TRUE)
+    measured <- prepare_phase(spec)
+    before <- if (length(measured$values) && !spec$id %in% altrep_tasks) {
+      task_arguments_fingerprint(spec$id, measured$values, "ordinary_r_object")
+    } else NULL
+    reset_rng(spec)
+    result <- measure_direct_batch(measured$call, runner_environment, count)
+    if (!is.null(before)) {
+      assert_immutable_input(spec$id, measured$values, before, "ordinary_r_object")
     }
+    assert_altrep_phase(spec, measured$values)
+    revision_assert_same(truth, result$result, paste0(spec$id, " sizing"), isTRUE(spec$tolerance))
+    if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth_rng, rng_state_snapshot(), spec$id)
+    rows[[length(rows) + 1L]] <- data.frame(
+      runner = runner, task = spec$id, batch_repetitions = count,
+      batch_elapsed_ms = result$batch_elapsed_ms, gc_elapsed_ms = result$gc_elapsed_ms,
+      stringsAsFactors = FALSE
+    )
     rm(truth_arguments, truth, truth_rng)
     gc(FALSE)
   }

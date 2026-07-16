@@ -186,35 +186,74 @@ if (correctness_only) {
 
 dir.create(sizing_staging, recursive = TRUE, showWarnings = FALSE)
 cat("Batch sizing\n")
-for (runner in selected_runners) {
-  status <- system2(
-    "Rscript",
-    c(
-      "benchmark_worker.R", paste0("--runner=", runner), "--mode=sizing",
-      paste0("--output-root=", sizing_staging), paste0("--tasks=", task_argument),
-      paste0("--master-seed=", master_seed)
-    ),
-    env = blas_environment,
-    stdout = "", stderr = "",
-    timeout = as.integer(timing_policy$worker_timeout_seconds)
+timed_started <- proc.time()[["elapsed"]]
+remaining_timed_seconds <- function() {
+  remaining_direct_run_seconds(
+    timed_started, proc.time()[["elapsed"]], timing_policy$total_run_timeout_seconds
   )
-  if (!identical(status, 0L)) {
-    failure <- sprintf("sizing worker failed for %s with exit code %d", runner, status)
-    stop(failure)
+}
+active_tasks <- selected_tasks
+sizing_rows <- list()
+sizing_timer_floors <- NULL
+sizing_policy <- timing_policy$sizing_policy
+for (count in validate_direct_sizing_policy(sizing_policy)$ladder) {
+  if (length(active_tasks) == 0L) break
+  round_staging <- file.path(sizing_staging, as.character(count))
+  dir.create(round_staging, recursive = TRUE, showWarnings = FALSE)
+  round_tasks <- paste(active_tasks, collapse = ",")
+  round_map <- setNames(rep.int(count, length(active_tasks)), active_tasks)
+  for (runner in selected_runners) {
+    remaining <- remaining_timed_seconds()
+    if (remaining < 1L) stop("total direct sizing and timing timeout expired")
+    status <- system2(
+      "Rscript",
+      c(
+        "benchmark_worker.R", paste0("--runner=", runner), "--mode=sizing",
+        paste0("--output-root=", round_staging), paste0("--tasks=", round_tasks),
+        paste0("--batch-repetitions=", format_named_integer_map(round_map, "batch repetitions")),
+        if (identical(count, 1L)) character() else "--skip-probes",
+        paste0("--master-seed=", master_seed)
+      ),
+      env = blas_environment,
+      stdout = "", stderr = "",
+      timeout = as.integer(min(timing_policy$worker_timeout_seconds, remaining))
+    )
+    if (!identical(status, 0L)) {
+      failure <- sprintf("sizing worker failed for %s with exit code %d", runner, status)
+      stop(failure)
+    }
   }
+  round_files <- file.path(round_staging, paste0(selected_runners, "-sizing.csv"))
+  round_rows <- do.call(rbind, lapply(round_files, read.csv, stringsAsFactors = FALSE))
+  if (identical(count, 1L)) {
+    summary_files <- file.path(round_staging, paste0(selected_runners, "-probe-summary.csv"))
+    summaries <- do.call(rbind, lapply(summary_files, read.csv, stringsAsFactors = FALSE))
+    if (!identical(as.character(summaries$runner), selected_runners)) {
+      stop("batch sizing timer-floor coverage is invalid")
+    }
+    sizing_timer_floors <- setNames(as.numeric(summaries$timer_floor_ms), selected_runners)
+  }
+  sizing_rows[[length(sizing_rows) + 1L]] <- round_rows
+  complete_tasks <- vapply(active_tasks, function(task) {
+    direct_sizing_count_accepted(
+      round_rows[round_rows$task == task, , drop = FALSE], sizing_timer_floors,
+      selected_runners, sizing_policy
+    )
+  }, logical(1))
+  if (any(!complete_tasks) && (identical(count, 64L) || any(vapply(
+    active_tasks[!complete_tasks], direct_task_batchability, character(1)) == "one"
+  ))) {
+    blocked <- active_tasks[!complete_tasks]
+    stop(sprintf("batch sizing cannot meet the shared policy for: %s", paste(blocked, collapse = ", ")))
+  }
+  active_tasks <- active_tasks[!complete_tasks]
 }
-sizing_files <- file.path(sizing_staging, paste0(selected_runners, "-sizing.csv"))
-sizing_probe_summary_files <- file.path(sizing_staging, paste0(selected_runners, "-probe-summary.csv"))
-sizing <- do.call(rbind, lapply(sizing_files, read.csv, stringsAsFactors = FALSE))
-sizing_probe_summaries <- do.call(rbind, lapply(sizing_probe_summary_files, read.csv, stringsAsFactors = FALSE))
+sizing <- do.call(rbind, sizing_rows)
 rownames(sizing) <- NULL
-if (!identical(as.character(sizing_probe_summaries$runner), selected_runners)) {
-  stop("batch sizing timer-floor coverage is invalid")
-}
+write_csv_once(sizing, file.path(sizing_staging, "sizing.csv"), "batch sizing")
+sizing <- read.csv(file.path(sizing_staging, "sizing.csv"), stringsAsFactors = FALSE)
 batch_repetitions <- select_direct_batch_repetitions(
-  sizing,
-  setNames(as.numeric(sizing_probe_summaries$timer_floor_ms), selected_runners),
-  selected_runners, selected_tasks
+  sizing, sizing_timer_floors, selected_runners, selected_tasks, sizing_policy
 )
 timing_policy$batch_repetitions <- as.list(batch_repetitions)
 metadata$timing_policy <- timing_policy
@@ -223,11 +262,9 @@ unlink(sizing_staging, recursive = TRUE)
 
 dir.create(timing_staging, recursive = TRUE, showWarnings = FALSE)
 cat("Direct timing\n")
-timing_started <- proc.time()[["elapsed"]]
 for (runner in selected_runners) {
-  elapsed <- proc.time()[["elapsed"]] - timing_started
-  remaining <- floor(timing_policy$total_run_timeout_seconds - elapsed)
-  if (remaining < 1L) stop("total direct timing timeout expired")
+  remaining <- remaining_timed_seconds()
+  if (remaining < 1L) stop("total direct sizing and timing timeout expired")
   status <- system2(
     "Rscript",
     c(
@@ -260,6 +297,14 @@ rownames(first_calls) <- NULL
 validate_direct_timing_samples(
   samples, selected_runners, selected_tasks, timing_policy$measurement_samples
 )
+observed_repetitions <- vapply(selected_tasks, function(task) {
+  values <- unique(samples$batch_repetitions[samples$task == task])
+  if (length(values) != 1L) stop(sprintf("timing batch repetitions differ across workers for %s", task))
+  as.integer(values)
+}, integer(1))
+if (!identical(unname(observed_repetitions), unname(batch_repetitions))) {
+  stop("timing batch repetitions differ from the manifest sizing map")
+}
 
 expected_probe_columns <- c(
   "runner", "probe", "probe_sample", "batch_repetitions", "batch_elapsed_ms",
