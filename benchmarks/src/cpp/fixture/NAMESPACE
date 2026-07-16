@@ -1,4 +1,3 @@
 useDynLib(zigrRcpp, .registration = TRUE)
 importFrom(Rcpp, loadModule)
-exportPattern("^fixture_")
-
+exportPattern("^(bench|fixture)_")

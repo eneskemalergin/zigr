@@ -42,6 +42,149 @@ benchmark_factor_input <- function() {
   values
 }
 
+# Each factory builds one task input on demand so correctness checks keep only
+# the current event's input live.
+benchmark_revision_task_specs <- function() {
+  list(
+    list(id = "vector_sum", function_name = "bench_vector_sum", arguments = function() list(runif(1000000L)), tolerance = TRUE),
+    list(id = "numeric_transform", function_name = "bench_numeric_transform", arguments = function() list(c(seq_len(99998L), NA_real_, NaN))),
+    list(id = "broadcast", function_name = "bench_broadcast", arguments = function() list(runif(1000000L), 3.14), tolerance = TRUE),
+    list(id = "sort", function_name = "bench_sort", arguments = function() list(runif(100000L))),
+    list(id = "missing_mean", function_name = "bench_missing_mean", arguments = function() {
+      x <- runif(1000000L)
+      positions <- sample.int(length(x), 50000L)
+      x[positions[seq_len(25000L)]] <- NA_real_
+      x[positions[25000L + seq_len(25000L)]] <- NaN
+      list(x)
+    }, tolerance = TRUE),
+    list(id = "transpose", function_name = "bench_transpose", arguments = function() list(matrix(runif(512L * 512L), 512L, 512L))),
+    list(id = "rowcol", function_name = "bench_rowcol", arguments = function() list(matrix(runif(500L * 1000L), 500L, 1000L)), tolerance = TRUE),
+    list(id = "matmul", function_name = "bench_matmul", arguments = function() list(matrix(runif(256L * 256L), 256L), matrix(runif(256L * 256L), 256L)), tolerance = TRUE),
+    list(id = "dataframe", function_name = "bench_dataframe", arguments = function() {
+      x <- rnorm(100000L)
+      y <- abs(rnorm(100000L)) + 0.1
+      missing <- sample.int(length(x), 5000L)
+      x[missing] <- NA_real_
+      groups <- sprintf("grp_%02d", 1:10)
+      list(data.frame(x = x, y = y, grp = factor(rep(groups, length.out = length(x)), levels = groups)))
+    }, tolerance = TRUE),
+    list(id = "list_sum", function_name = "bench_list_sum", arguments = function() list(replicate(1000L, runif(100L), simplify = FALSE)), tolerance = TRUE),
+    list(id = "string_concat", function_name = "bench_string_concat", arguments = function() list(rep(benchmark_encoded_strings(), 2000L))),
+    list(id = "string_metadata", function_name = "bench_string_metadata", arguments = function() list(rep(benchmark_encoded_strings(), 2000L))),
+    list(id = "factor", function_name = "bench_factor", arguments = function() list(benchmark_factor_input())),
+    list(id = "attributes", function_name = "bench_attributes", arguments = function() list(runif(100000L))),
+    list(id = "s4", function_name = "bench_s4", arguments = function() list(runif(100000L))),
+    list(id = "logical_counts", function_name = "bench_logical_counts", arguments = function() list(rep(c(FALSE, TRUE, NA), length.out = 100000L))),
+    list(id = "raw_copy", function_name = "bench_raw_copy", arguments = function() list(as.raw((0:262143) %% 251L))),
+    list(id = "complex_conjugate", function_name = "bench_complex_conjugate", arguments = function() {
+      x <- complex(real = seq_len(32768L), imaginary = seq_len(32768L) / 2)
+      x[[1L]] <- NA_complex_
+      x[[2L]] <- complex(real = NaN, imaginary = 3)
+      list(x)
+    }),
+    list(id = "schema", function_name = "bench_schema", arguments = function() list(list(id = 1L, count = 2L, ratio = 0.5, enabled = TRUE))),
+    list(id = "altrep_sum", function_name = "bench_altrep_sum", arguments = function() list(seq_len(1000000L)), altrep = TRUE),
+    list(id = "altrep_index", function_name = "bench_altrep_index", arguments = function() list(seq_len(10000000L)), altrep = TRUE),
+    list(id = "altrep_materialize", function_name = "bench_altrep_materialize", arguments = function() list(seq_len(1000000L)), altrep = TRUE),
+    list(id = "external_state", function_name = "bench_external_state", arguments = function() list()),
+    list(id = "eval", function_name = "bench_eval", arguments = function() list(runif(100000L)), tolerance = TRUE),
+    list(id = "serialize", function_name = "bench_serialize", arguments = function() list(runif(100000L))),
+    list(id = "rng", function_name = "bench_rng", arguments = function() list(100000L), rng = TRUE),
+    list(id = "outputs", function_name = "bench_outputs", arguments = function() list())
+  )
+}
+
+# One event is one invocation with freshly prepared deterministic arguments.
+# These tasks cannot repeat that event against one prepared object: they mutate
+# it, consume RNG state, or may change ALTREP representation.
+direct_task_batchability <- function(task_id) {
+  if (task_id %in% c(
+    "altrep_sum", "altrep_index", "altrep_materialize",
+    "external_state", "rng"
+  )) {
+    return("one")
+  }
+  "repeat"
+}
+
+direct_batch_repetition_map <- function(tasks, repetitions = 1L) {
+  tasks <- as.character(tasks)
+  if (length(tasks) == 0L || any(!nzchar(tasks)) || anyDuplicated(tasks)) {
+    stop("batch repetition tasks are invalid")
+  }
+  repetitions <- input_scalar_integer(repetitions, "default batch repetitions")
+  result <- setNames(rep.int(repetitions, length(tasks)), tasks)
+  result[vapply(tasks, direct_task_batchability, character(1)) == "one"] <- 1L
+  result
+}
+
+format_named_integer_map <- function(values, label) {
+  if (!is.numeric(values) || is.null(names(values)) || any(!nzchar(names(values))) ||
+      anyDuplicated(names(values))) {
+    stop(sprintf("%s must be a named integer map", label))
+  }
+  checked <- vapply(values, input_scalar_integer, integer(1), label = label)
+  paste(paste(names(checked), checked, sep = ":"), collapse = ",")
+}
+
+parse_named_integer_map <- function(value, expected_names, label) {
+  entries <- strsplit(as.character(value), ",", fixed = TRUE)[[1L]]
+  fields <- strsplit(entries, ":", fixed = TRUE)
+  if (length(entries) == 0L || any(lengths(fields) != 2L)) {
+    stop(sprintf("%s must be task:integer entries", label))
+  }
+  names <- vapply(fields, `[[`, character(1), 1L)
+  values <- vapply(fields, `[[`, character(1), 2L)
+  if (any(!nzchar(names)) || anyDuplicated(names) || !setequal(names, expected_names)) {
+    stop(sprintf("%s task coverage differs", label))
+  }
+  parsed <- setNames(vapply(values, input_scalar_integer, integer(1), label = label), names)
+  parsed[expected_names]
+}
+
+select_direct_batch_repetitions <- function(sizing, timer_floors, runners, tasks,
+                                            multiplier = 20L) {
+  required <- c("runner", "task", "batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")
+  if (!is.data.frame(sizing) || !identical(names(sizing), required) ||
+      anyNA(sizing) || any(!is.finite(as.matrix(sizing[c("batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")]))) ||
+      any(sizing$batch_repetitions < 1L) || any(sizing$batch_elapsed_ms < 0) ||
+      any(sizing$gc_elapsed_ms < 0) || any(sizing$gc_elapsed_ms > sizing$batch_elapsed_ms)) {
+    stop("batch sizing rows are invalid")
+  }
+  multiplier <- input_scalar_integer(multiplier, "timer floor multiplier")
+  if (!identical(names(timer_floors), runners) || any(!is.finite(timer_floors)) || any(timer_floors < 0)) {
+    stop("batch sizing timer floors are invalid")
+  }
+  floor_ms <- max(1, 5, max(as.numeric(timer_floors)) * multiplier)
+  selected <- integer(length(tasks))
+  names(selected) <- tasks
+  for (task in tasks) {
+    candidates <- if (identical(direct_task_batchability(task), "one")) 1L else c(1L, 8L, 64L)
+    rows <- sizing[sizing$task == task, , drop = FALSE]
+    chosen <- NA_integer_
+    for (count in candidates) {
+      candidate <- rows[rows$batch_repetitions == count, , drop = FALSE]
+      if (nrow(candidate) == length(runners) && identical(as.character(candidate$runner), runners) &&
+          all(candidate$batch_elapsed_ms > floor_ms)) {
+        chosen <- count
+        break
+      }
+    }
+    if (is.na(chosen)) {
+      stop(sprintf("%s cannot exceed the shared timer-floor target with its valid batch counts", task))
+    }
+    selected[[task]] <- chosen
+  }
+  selected
+}
+
+benchmark_revision_arguments <- function(spec, master_seed = benchmark_master_seed()) {
+  seed <- task_input_seed(master_seed, spec$id, "revision-v1")
+  arguments <- with_preserved_rng(seed, spec$arguments())
+  if (!is.list(arguments)) stop(sprintf("input factory for %s did not return a list", spec$id))
+  arguments
+}
+
 validate_special_task_input <- function(task_id, arguments) {
   if (task_id %in% c("17_string_concat", "18_string_nchar", "19_string_encoding")) {
     expected <- benchmark_string_input(task_id)
@@ -319,726 +462,377 @@ assert_immutable_input <- function(task_id, arguments, before_fingerprint, altre
   invisible(after)
 }
 
-# Prepared-call timing, process-memory observation, and result logging.
+# One direct timing path: calls are prepared before the clock, and only the
+# benchmark event is evaluated between the two timer reads.
 
-library(microbenchmark)
-
-current_rss_kb <- function() {
-  if (.Platform$OS.type != "unix" || !file.exists("/proc/self/status")) return(NA_integer_)
-  tryCatch({
-    lines <- readLines("/proc/self/status")
-    line  <- grep("^VmRSS:", lines, value = TRUE)
-    if (length(line) == 0) return(NA_integer_)
-    as.integer(sub(".*?([0-9]+).*", "\\1", line[1]))
-  }, error = function(e) NA_integer_)
+if (!requireNamespace("microbenchmark", quietly = TRUE)) {
+  stop("direct timing requires the microbenchmark package")
 }
 
-rss_endpoint_support_reason <- function() {
-  if (.Platform$OS.type != "unix") return("current process RSS is unsupported outside Unix hosts")
-  if (!file.exists("/proc/self/status")) return("current process RSS requires Linux /proc/self/status")
-  "available"
+direct_function_call <- function(function_object, arguments = list()) {
+  if (!is.function(function_object)) stop("direct R call requires a function")
+  if (!is.list(arguments)) stop("direct call arguments must be a list")
+  as.call(c(list(function_object), arguments))
 }
 
-validate_forced_registration <- function(dynamic_lookup, label) {
-  if (!isFALSE(dynamic_lookup)) stop(sprintf("dynamic symbol lookup is enabled for %s", label))
-  invisible(TRUE)
+direct_native_call <- function(interface, symbol, arguments = list()) {
+  if (!(interface %in% c(".Call", ".External"))) {
+    stop("direct native interface must be .Call or .External")
+  }
+  if (!inherits(symbol, "NativeSymbolInfo") && !inherits(symbol, "NativeSymbol")) {
+    stop("direct native call requires a resolved symbol")
+  }
+  if (!is.list(arguments)) stop("direct call arguments must be a list")
+  as.call(c(list(as.name(interface), symbol), arguments))
 }
 
-make_call_expr <- function(cfun, args, call_type) {
-  if (call_type == "r") {
-    as.call(c(list(as.name(cfun)), args))
-  } else if (call_type == ".C") {
-    as.call(c(list(quote(.C), cfun), args))
-  } else if (call_type == ".External") {
-    as.call(c(list(quote(.External), cfun), args))
-  } else {
-    as.call(c(list(quote(.Call), cfun), args))
-  }
+direct_batch_expression <- function(call, repetitions) {
+  repetitions <- input_scalar_integer(repetitions, "batch repetitions")
+  if (repetitions < 1L) stop("batch repetitions must be positive")
+  if (!is.call(call)) stop("direct batch requires one prepared call expression")
+  if (repetitions == 1L) return(call)
+  as.call(c(list(as.name("{")), rep(list(call), repetitions)))
 }
 
-evaluate_prepared_call <- function(prepared) {
-  if (is.function(prepared)) prepared() else eval(prepared, envir = parent.frame())
-}
-
-prepared_call_function <- function(prepared, parent = parent.frame()) {
-  if (is.function(prepared)) return(prepared)
-  if (!is.call(prepared)) stop("prepared timing value must be a function or call")
-  parts <- as.list(prepared)
-  interface <- as.character(parts[[1L]])
-  native_interface <- interface %in% c(".Call", ".C", ".External")
-  target <- if (native_interface) {
-    parts[[2L]]
-  } else {
-    get(interface, envir = parent, inherits = TRUE)
+measure_direct_batch <- function(
+    call, environment, repetitions,
+    clock = function() microbenchmark::get_nanotime() / 1e9,
+    gc_clock = function() gc.time()[[3L]]) {
+  batch <- direct_batch_expression(call, repetitions)
+  read_elapsed <- function() {
+    value <- clock()
+    if (length(value) != 1L) value <- value[["elapsed"]]
+    value <- as.numeric(value)
+    if (length(value) != 1L || !is.finite(value)) stop("timer returned an invalid elapsed value")
+    value
   }
-  arguments <- if (native_interface) {
-    if (length(parts) <= 2L) list() else parts[-c(1L, 2L)]
-  } else if (length(parts) <= 1L) list() else parts[-1L]
-  if (length(arguments) > 2L) stop("prepared timing calls support at most two arguments")
-  arg1 <- if (length(arguments) >= 1L) arguments[[1L]] else NULL
-  arg2 <- if (length(arguments) >= 2L) arguments[[2L]] else NULL
-  if (identical(interface, ".Call")) {
-    return(switch(as.character(length(arguments) + 1L),
-      "1" = function() .Call(target),
-      "2" = function() .Call(target, arg1),
-      "3" = function() .Call(target, arg1, arg2)
-    ))
+  gc_started <- as.numeric(gc_clock())
+  started <- read_elapsed()
+  result <- eval(batch, envir = environment)
+  finished <- read_elapsed()
+  gc_finished <- as.numeric(gc_clock())
+  elapsed_ms <- (finished - started) * 1000
+  gc_elapsed_ms <- (gc_finished - gc_started) * 1000
+  if (!is.finite(elapsed_ms) || elapsed_ms < 0 || !is.finite(gc_elapsed_ms) ||
+      gc_elapsed_ms < 0) {
+    stop("timer moved backwards")
   }
-  if (identical(interface, ".C")) {
-    return(switch(as.character(length(arguments) + 1L),
-      "1" = function() .C(target),
-      "2" = function() .C(target, arg1),
-      "3" = function() .C(target, arg1, arg2)
-    ))
-  }
-  if (identical(interface, ".External")) {
-    return(switch(as.character(length(arguments) + 1L),
-      "1" = function() .External(target),
-      "2" = function() .External(target, arg1),
-      "3" = function() .External(target, arg1, arg2)
-    ))
-  }
-  switch(as.character(length(arguments) + 1L),
-    "1" = function() target(),
-    "2" = function() target(arg1),
-    "3" = function() target(arg1, arg2)
-  )
-}
-
-measure_first_call <- function(prepare_call) {
-  gc(full = TRUE)
-  prepared <- tryCatch(list(ok = TRUE, expression = prepare_call()), error = function(error) {
-    list(ok = FALSE, error = conditionMessage(error))
-  })
-  if (!isTRUE(prepared$ok)) {
-    return(list(wall_ms = NA_real_, error = paste("first-call input preparation failed:", prepared$error)))
-  }
-  error <- NA_character_
-  wall_start <- get_nanotime()
-  tryCatch(evaluate_prepared_call(prepared$expression), error = function(e) { error <<- conditionMessage(e) })
-  wall_end <- get_nanotime()
   list(
-    wall_ms = (wall_end - wall_start) / 1e6,
-    error = error
+    result = result,
+    batch_elapsed_ms = elapsed_ms,
+    batch_repetitions = as.integer(repetitions),
+    elapsed_per_event_ms = elapsed_ms / repetitions,
+    gc_elapsed_ms = gc_elapsed_ms
   )
 }
 
-get_nanotime <- function() {
-  microbenchmark::get_nanotime()
-}
-
-benchmark_timing_policy <- function() {
-  list(
-    policy_version = "bounded-pilot-confirmation-v2",
-    warmup_iterations = 10L,
-    pilot_iterations = 20L,
-    confirmation_min_iterations = 20L,
-    confirmation_max_iterations = 500L,
-    confirmation_target_cv_pct = 5.0,
-    group_time_cap_ms = 15000,
-    batch_time_cap_ms = 60000,
-    batch_group_cap = 8L,
-    batch_timeout_seconds = 90L,
-    total_run_budget_seconds = 7200L,
-    timer_noise_floor_ms = 0.01,
-    timer_noise_floor_method = "fixed 0.01 ms floor rounded above empty-eval p99 calibration",
-    low_noise_cv_threshold_pct = 20.0,
-    meaningful_margin_ratio = 1.05,
-    median_ci_level = 0.95,
-    median_ci_method = "exact order-statistic interval",
-    rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb",
-    peak_rss_metric = "linux_proc_status_vmhwm_kb",
-    peak_rss_repetitions = 3L,
-    peak_rss_timeout_seconds = 60L,
-    peak_rss_fixture_ids = c("F03", "F04", "F06"),
-    gc_policy = "full before warmup and timed sequence; full after timed sequence before endpoint RSS; no forced GC between timed samples"
+validate_direct_timing_samples <- function(
+    samples, runners = NULL, tasks = NULL, measurement_samples = NULL) {
+  required <- c(
+    "runner", "task", "phase", "measurement_sample", "batch_repetitions",
+    "batch_elapsed_ms", "elapsed_per_event_ms", "gc_elapsed_ms"
   )
-}
-
-benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 10L,
-                           fresh_each_iteration = FALSE,
-                           timer_noise_floor_ms = 0.01,
-                           rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb") {
-
-  iterations <- as.integer(iterations)
-  if (length(iterations) != 1L || is.na(iterations) || iterations < 1L) {
-    stop("fixed timing iteration count must be a positive integer")
+  if (!is.data.frame(samples) || !identical(names(samples), required)) {
+    stop("direct timing samples have the wrong columns")
   }
-
-  gc(full = TRUE)
-
-  fixed_call <- if (isTRUE(fresh_each_iteration)) NULL else {
-    prepared_call_function(prepare_timed(), parent.frame())
+  if (nrow(samples) == 0L) stop("direct timing samples are empty")
+  identity_fields <- c("runner", "task", "phase")
+  if (anyNA(samples[identity_fields]) ||
+      any(!vapply(samples[identity_fields], is.character, logical(1))) ||
+      any(!nzchar(samples$runner)) || any(!nzchar(samples$task)) ||
+      any(samples$phase != "measurement")) {
+    stop("only measurement rows may enter timing samples")
   }
-  for (i in seq_len(warmup)) {
-    prepared <- tryCatch(list(
-      ok = TRUE,
-      expression = if (is.null(fixed_call)) {
-        prepared_call_function(prepare_warmup(), parent.frame())
-      } else fixed_call
-    ), error = function(error) {
-      list(ok = FALSE, error = conditionMessage(error))
-    })
-    if (!isTRUE(prepared$ok)) return(list(error = paste("warmup input preparation failed:", prepared$error)))
-    call_ok <- TRUE
-    t0 <- get_nanotime()
-    tryCatch(prepared$expression(), error = function(error) {
-      call_ok <<- FALSE
-    })
-    t1 <- get_nanotime()
-    if (!call_ok) return(list(error = "warmup failed"))
+  numeric_fields <- c(
+    "measurement_sample", "batch_repetitions", "batch_elapsed_ms", "elapsed_per_event_ms",
+    "gc_elapsed_ms"
+  )
+  if (any(!vapply(samples[numeric_fields], is.numeric, logical(1))) ||
+      anyNA(samples[numeric_fields]) ||
+      any(!is.finite(as.matrix(samples[numeric_fields]))) ||
+      any(samples$measurement_sample < 1L) ||
+      any(samples$measurement_sample != as.integer(samples$measurement_sample)) ||
+      any(samples$batch_repetitions < 1L) ||
+      any(samples$batch_repetitions != as.integer(samples$batch_repetitions)) ||
+      any(samples$batch_elapsed_ms < 0) || any(samples$elapsed_per_event_ms < 0) ||
+      any(samples$gc_elapsed_ms < 0) || any(samples$gc_elapsed_ms > samples$batch_elapsed_ms)) {
+    stop("direct timing samples contain invalid measurements")
   }
-
-  gc(full = TRUE)
-  rss_before <- current_rss_kb()
-
-  planning_times <- numeric(iterations)
-  measured <- tryCatch({
-    if (isTRUE(fresh_each_iteration)) {
-      times <- numeric(iterations)
-      for (sample_index in seq_len(iterations)) {
-        sample_started <- get_nanotime()
-        prepared <- prepared_call_function(prepare_timed(), parent.frame())
-        expression <- as.call(list(prepared))
-        sample <- microbenchmark::microbenchmark(
-          list = list(call = expression), times = 1L, unit = "ns"
-        )
-        times[[sample_index]] <- as.numeric(sample$time[[1L]]) / 1e6
-        planning_times[[sample_index]] <- (get_nanotime() - sample_started) / 1e6
+  expected_elapsed <- samples$batch_elapsed_ms / samples$batch_repetitions
+  if (!isTRUE(all.equal(
+    samples$elapsed_per_event_ms, expected_elapsed,
+    tolerance = 1e-12, check.attributes = FALSE
+  ))) {
+    stop("direct timing elapsed-per-event values differ from their batches")
+  }
+  keys <- paste(samples$runner, samples$task, samples$measurement_sample, sep = "\r")
+  if (anyDuplicated(keys)) stop("direct timing samples contain duplicate identities")
+  repetitions <- split(samples$batch_repetitions, samples$task)
+  if (any(vapply(repetitions, function(value) length(unique(value)) != 1L, logical(1)))) {
+    stop("a task does not use one shared batch repetition count")
+  }
+  if (!is.null(runners)) {
+    runners <- as.character(runners)
+    coverage <- split(as.character(samples$runner), samples$task)
+    if (any(vapply(coverage, function(value) !setequal(unique(value), runners), logical(1)))) {
+      stop("direct timing runner coverage is incomplete")
+    }
+  }
+  if (!is.null(tasks)) {
+    tasks <- as.character(tasks)
+    if (!setequal(unique(samples$task), tasks)) stop("direct timing task coverage is incomplete")
+  }
+  if (!is.null(measurement_samples)) {
+    measurement_samples <- input_scalar_integer(measurement_samples, "measurement samples")
+    groups <- split(samples$measurement_sample, paste(samples$runner, samples$task, sep = "\r"))
+    expected <- seq_len(measurement_samples)
+    if (any(vapply(groups, function(value) !identical(sort(as.integer(value)), expected), logical(1)))) {
+      stop("direct timing measurement-sample coverage is incomplete")
+    }
+    if (!is.null(runners) && !is.null(tasks)) {
+      expected_groups <- as.vector(outer(runners, tasks, paste, sep = "\r"))
+      if (!setequal(names(groups), expected_groups)) {
+        stop("direct timing runner-task coverage is incomplete")
       }
-      times
-    } else {
-      batch_started <- get_nanotime()
-      expression <- as.call(list(fixed_call))
-      sample <- microbenchmark::microbenchmark(
-        list = list(call = expression), times = iterations, unit = "ns"
-      )
-      planning_times[] <- (get_nanotime() - batch_started) / 1e6 / iterations
-      as.numeric(sample$time) / 1e6
+      expected_order <- unlist(lapply(runners, function(runner) {
+        unlist(lapply(tasks, function(task) {
+          paste(runner, task, seq_len(measurement_samples), sep = "\r")
+        }), use.names = FALSE)
+      }), use.names = FALSE)
+      observed_order <- paste(samples$runner, samples$task, samples$measurement_sample, sep = "\r")
+      if (!identical(observed_order, expected_order)) {
+        stop("direct timing raw sample order is invalid")
+      }
     }
-  }, error = function(error) error)
-  if (inherits(measured, "error")) {
-    return(list(error = paste("timed call failed:", conditionMessage(measured))))
   }
-  all_times <- measured
+  invisible(samples)
+}
 
-  n <- length(all_times)
-  mean_ms <- mean(all_times)
-  median_ms <- median(all_times)
-  min_ms <- min(all_times)
-  max_ms <- max(all_times)
-  sd_ms <- sd(all_times)
-  cv_pct <- if (mean_ms > 0) sd_ms / mean_ms * 100 else 0
+direct_distribution_metrics <- function(values) {
+  values <- as.numeric(values)
+  if (length(values) < 1L || anyNA(values) || any(!is.finite(values)) || any(values < 0)) {
+    stop("distribution values are invalid")
+  }
+  median_ms <- stats::median(values)
+  mean_ms <- mean(values)
+  denominator <- max(median_ms, .Machine$double.eps)
+  regime_change <- FALSE
+  if (length(values) >= 6L) {
+    for (split in 3L:(length(values) - 3L)) {
+      left <- stats::median(values[seq_len(split)])
+      right <- stats::median(values[(split + 1L):length(values)])
+      ratio <- max(left, right) / max(min(left, right), .Machine$double.eps)
+      if (ratio > 3) {
+        regime_change <- TRUE
+        break
+      }
+    }
+  }
+  list(
+    median_ms = median_ms,
+    mean_ms = mean_ms,
+    q1_ms = unname(stats::quantile(values, 0.25, names = FALSE)),
+    q3_ms = unname(stats::quantile(values, 0.75, names = FALSE)),
+    p95_ms = unname(stats::quantile(values, 0.95, names = FALSE)),
+    p99_ms = unname(stats::quantile(values, 0.99, names = FALSE)),
+    min_ms = min(values),
+    max_ms = max(values),
+    sd_ms = if (length(values) > 1L) stats::sd(values) else 0,
+    cv_pct = if (mean_ms > 0 && length(values) > 1L) stats::sd(values) / mean_ms * 100 else 0,
+    max_over_median = max(values) / denominator,
+    p99_over_median = unname(stats::quantile(values, 0.99, names = FALSE)) / denominator,
+    regime_change = regime_change
+  )
+}
 
+direct_distribution_needs_explanation <- function(metrics) {
+  metrics$max_over_median > 20 || metrics$p99_over_median > 5 ||
+    metrics$cv_pct > 50 || isTRUE(metrics$regime_change)
+}
+
+classify_direct_distribution <- function(values, batch_elapsed_ms, gc_elapsed_ms, timer_floor_ms) {
+  metrics <- direct_distribution_metrics(values)
+  batch_metrics <- direct_distribution_metrics(batch_elapsed_ms)
+  if (batch_metrics$median_ms <= timer_floor_ms) {
+    return(list(status = "BLOCK", reason = "median is at or below the measured timer floor", metrics = metrics))
+  }
+  if (!direct_distribution_needs_explanation(metrics)) {
+    return(list(status = "PASS", reason = "ordered samples pass the distribution gates", metrics = metrics))
+  }
+  gc_samples <- which(as.numeric(gc_elapsed_ms) > 0)
+  if (length(gc_samples) > 0L && length(gc_samples) <= length(values) - 3L) {
+    without_gc <- direct_distribution_metrics(values[-gc_samples])
+    if (!direct_distribution_needs_explanation(without_gc)) {
+      return(list(
+        status = "PASS_GC", reason = "distribution spread is explained by measured R GC time",
+        metrics = metrics
+      ))
+    }
+  }
+  list(status = "BLOCK", reason = "ordered samples contain unexplained spread or a regime change", metrics = metrics)
+}
+
+summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL) {
+  validate_direct_timing_samples(samples)
+  first_required <- c("runner", "task", "first_call_ms")
+  if (!is.data.frame(first_calls) || !identical(names(first_calls), first_required) ||
+      anyNA(first_calls) || !is.numeric(first_calls$first_call_ms) ||
+      any(!is.finite(first_calls$first_call_ms)) || any(first_calls$first_call_ms < 0) ||
+      any(!nzchar(first_calls$runner)) || any(!nzchar(first_calls$task))) {
+    stop("direct first-call rows are invalid")
+  }
+  first_keys <- paste(first_calls$runner, first_calls$task, sep = "\r")
+  if (anyDuplicated(first_keys)) stop("direct first-call rows contain duplicate identities")
+  groups <- split(seq_len(nrow(samples)), paste(samples$runner, samples$task, sep = "\r"))
+  if (!setequal(first_keys, names(groups))) stop("direct first-call coverage differs from timing samples")
+  rows <- lapply(groups, function(index) {
+    values <- samples$elapsed_per_event_ms[index]
+    key <- paste(samples$runner[index[[1L]]], samples$task[index[[1L]]], sep = "\r")
+    first_index <- match(key, first_keys)
+    if (is.na(first_index)) stop("direct timing summary is missing first-call evidence")
+    timer_floor <- if (is.null(timer_floors)) 0 else as.numeric(timer_floors[[samples$runner[index[[1L]]]]])
+    if (length(timer_floor) != 1L || !is.finite(timer_floor) || timer_floor < 0) {
+      stop("direct timing summary is missing a valid runner timer floor")
+    }
+    classification <- classify_direct_distribution(
+      values, samples$batch_elapsed_ms[index], samples$gc_elapsed_ms[index], timer_floor
+    )
+    metrics <- classification$metrics
+    data.frame(
+      runner = samples$runner[index[[1L]]], task = samples$task[index[[1L]]],
+      measurement_samples = length(values),
+      batch_repetitions = samples$batch_repetitions[index[[1L]]],
+      median_ms = metrics$median_ms, mean_ms = metrics$mean_ms,
+      q1_ms = metrics$q1_ms, q3_ms = metrics$q3_ms, p95_ms = metrics$p95_ms,
+      p99_ms = metrics$p99_ms, min_ms = metrics$min_ms, max_ms = metrics$max_ms,
+      sd_ms = metrics$sd_ms, cv_pct = metrics$cv_pct,
+      max_over_median = metrics$max_over_median,
+      p99_over_median = metrics$p99_over_median,
+      regime_change = metrics$regime_change,
+      timer_floor_ms = timer_floor,
+      distribution_status = classification$status,
+      distribution_reason = classification$reason,
+      first_call_ms = first_calls$first_call_ms[first_index],
+      stringsAsFactors = FALSE
+    )
+  })
+  result <- do.call(rbind, rows)
+  rownames(result) <- NULL
+  result[order(result$task, result$runner), , drop = FALSE]
+}
+
+measurement_probe_names <- function() c("noop_native", "noop_r", "cpu", "allocate")
+
+measurement_probe_timer_floor <- function(samples) {
+  values <- lapply(c("noop_native", "noop_r"), function(name) {
+    samples$elapsed_per_event_ms[samples$probe == name]
+  })
+  noops <- unlist(values, use.names = FALSE)
+  if (any(lengths(values) == 0L) || anyNA(noops) ||
+      any(!is.finite(noops)) || any(noops < 0)) {
+    stop("no-op probe samples are invalid")
+  }
+  max(vapply(values, stats::quantile, numeric(1), probs = 0.99, names = FALSE))
+}
+
+measurement_unit_minimum_ms <- function() 10
+
+measurement_unit_tolerance_ms <- function(independent_elapsed_ms) {
+  max(2, as.numeric(independent_elapsed_ms) * 0.20)
+}
+
+run_direct_measurement_probes <- function(c_dll, samples = 101L) {
+  samples <- input_scalar_integer(samples, "probe samples")
+  symbol <- function(name) getNativeSymbolInfo(name, c_dll)
+  same_sexp <- function(left, right) {
+    isTRUE(eval(direct_native_call(
+      ".Call", symbol("c_benchmark_same_sexp"), list(left, right)
+    ), envir = environment()))
+  }
+  cpu_input <- seq(0, 1, length.out = 200000L)
+  allocating_expected <- as.double(seq.int(0L, 32767L))
+  calls <- list(
+    noop_native = direct_native_call(".Call", symbol("c_measurement_probe_noop")),
+    noop_r = direct_function_call(compiler::cmpfun(function() NULL)),
+    cpu = direct_native_call(
+      ".Call", symbol("c_measurement_probe_cpu"), list(cpu_input)
+    ),
+    allocate = direct_native_call(
+      ".Call", symbol("c_measurement_probe_allocate"), list(32768L)
+    )
+  )
   gc(full = TRUE)
-  rss_after <- current_rss_kb()
-  rss_supported <- !is.na(rss_before) && !is.na(rss_after)
-  rss_delta <- if (rss_supported) max(0L, rss_after - rss_before) else NA_integer_
-  rss_reason <- if (rss_supported) {
-    "available"
-  } else {
-    reason <- rss_endpoint_support_reason()
-    if (identical(reason, "available")) "current process RSS reading failed" else reason
-  }
-
-  list(
-    times      = all_times,
-    planning_times = planning_times,
-    n_runs     = n,
-    warmup_iterations = warmup,
-    fixed_iterations = iterations,
-    mean_ms    = mean_ms,
-    median_ms  = median_ms,
-    min_ms     = min_ms,
-    max_ms     = max_ms,
-    sd_ms      = sd_ms,
-    cv_pct     = cv_pct,
-    timer_noise_floor_ms = timer_noise_floor_ms,
-    timer_noise_status = if (median_ms < timer_noise_floor_ms) "below_floor" else "above_floor",
-    rss_endpoint_metric = rss_endpoint_metric,
-    rss_endpoint_delta_kb = rss_delta,
-    rss_endpoint_support = if (rss_supported) "supported" else "unsupported",
-    rss_endpoint_support_reason = rss_reason,
-    error      = NA_character_
-  )
-}
-
-validate_rss_endpoint_support <- function(rows, measured, policy, label) {
-  required <- c(
-    "rss_endpoint_delta_kb", "rss_endpoint_metric", "rss_endpoint_support",
-    "rss_endpoint_support_reason"
-  )
-  missing <- setdiff(required, names(rows))
-  if (length(missing) > 0L) stop(sprintf("%s lacks endpoint RSS columns", label))
-  metrics <- as.character(rows$rss_endpoint_metric)
-  if (anyNA(metrics) || any(metrics != as.character(policy$rss_endpoint_metric))) {
-    stop(sprintf("%s endpoint RSS metric differs from policy", label))
-  }
-  measured <- as.logical(measured)
-  states <- as.character(rows$rss_endpoint_support)
-  if (length(measured) != nrow(rows) || anyNA(measured) || anyNA(states)) {
-    stop(sprintf("%s has an invalid endpoint RSS support state", label))
-  }
-  supported <- measured & states == "supported"
-  unsupported <- measured & states == "unsupported"
-  if (any(measured & !(supported | unsupported)) ||
-      any(!measured & states != "not_measured")) {
-    stop(sprintf("%s has an invalid endpoint RSS support state", label))
-  }
-  values <- strict_metric_numeric(rows$rss_endpoint_delta_kb, paste(label, "endpoint RSS"))
-  reasons <- as.character(rows$rss_endpoint_support_reason)
-  if (anyNA(reasons) || any(!nzchar(reasons)) ||
-      any(!is.finite(values[supported]) | values[supported] < 0) ||
-      any(!is.na(values[unsupported | !measured])) ||
-      any(reasons[supported] != "available") ||
-      any(reasons[unsupported | !measured] == "available") ||
-      any(!nzchar(reasons[unsupported | !measured]))) {
-    stop(sprintf("%s endpoint RSS value disagrees with its support state", label))
-  }
-  invisible(rows)
-}
-
-strict_metric_numeric <- function(values, label) {
-  missing <- is.na(values)
-  numeric <- suppressWarnings(as.numeric(as.character(values)))
-  if (any(!missing & is.na(numeric))) stop(sprintf("%s contains a non-numeric value", label))
-  numeric
-}
-
-validate_rss_endpoint_raw <- function(summary, raw, label) {
-  if (nrow(summary) != 1L || !("rss_endpoint_delta_kb" %in% names(raw))) {
-    stop(sprintf("%s lacks endpoint RSS evidence", label))
-  }
-  raw_values <- strict_metric_numeric(raw$rss_endpoint_delta_kb, paste(label, "raw endpoint RSS"))
-  summary_value <- strict_metric_numeric(summary$rss_endpoint_delta_kb, paste(label, "summary endpoint RSS"))
-  supported <- identical(as.character(summary$rss_endpoint_support[[1L]]), "supported")
-  unsupported <- identical(as.character(summary$rss_endpoint_support[[1L]]), "unsupported")
-  observed <- which(!is.na(raw_values))
-  valid <- if (supported) {
-    length(observed) == 1L && observed[[1L]] == nrow(raw) &&
-      identical(raw_values[[observed]], summary_value[[1L]])
-  } else {
-    unsupported && length(observed) == 0L && is.na(summary_value[[1L]])
-  }
-  if (!isTRUE(valid)) stop(sprintf("%s raw endpoint RSS differs from its summary", label))
-  invisible(raw)
-}
-
-validate_first_call_raw <- function(summary, raw, label) {
-  required <- c("iteration", "wall_ms")
-  if (nrow(summary) != 1L || nrow(raw) != 1L || length(setdiff(required, names(raw))) > 0L ||
-      as.integer(raw$iteration[[1L]]) != 1L || !is.finite(as.numeric(raw$wall_ms[[1L]])) ||
-      round(as.numeric(raw$wall_ms[[1L]]), 3) != as.numeric(summary$first_call_ms[[1L]]) ||
-      ("error" %in% names(raw) && !is.na(raw$error[[1L]]))) {
-    stop(sprintf("%s raw first-call timing differs from its summary", label))
-  }
-  invisible(raw)
-}
-
-validate_first_call_metric <- function(rows, measured, label) {
-  if (!("first_call_ms" %in% names(rows))) stop(sprintf("%s lacks first_call_ms", label))
-  measured <- as.logical(measured)
-  if (length(measured) != nrow(rows) || anyNA(measured)) {
-    stop(sprintf("%s has an invalid first-call measurement", label))
-  }
-  values <- as.numeric(rows$first_call_ms)
-  if (any(!is.finite(values[measured]) | values[measured] < 0) || any(!is.na(values[!measured]))) {
-    stop(sprintf("%s has an invalid first-call measurement", label))
-  }
-  invisible(rows)
-}
-
-parse_proc_status_memory <- function(lines) {
-  value <- function(name) {
-    match <- grep(paste0("^", name, ":"), lines, value = TRUE)
-    if (length(match) != 1L || !grepl("^[^:]+:[[:space:]]*[0-9]+[[:space:]]+kB[[:space:]]*$", match)) {
-      return(NA_integer_)
-    }
-    as.integer(sub("^[^:]+:[[:space:]]*([0-9]+)[[:space:]]+kB[[:space:]]*$", "\\1", match))
-  }
-  list(loaded_process_rss_kb = value("VmRSS"), peak_rss_kb = value("VmHWM"))
-}
-
-peak_rss_host_support <- function(status_path = "/proc/self/status") {
-  linux <- .Platform$OS.type == "unix" && identical(unname(Sys.info()[["sysname"]]), "Linux")
-  if (!linux) {
-    return(list(supported = FALSE, reason = "gross peak RSS is supported only on Linux /proc"))
-  }
-  if (!file.exists(status_path)) {
-    return(list(supported = FALSE, reason = "gross peak RSS requires /proc/self/status"))
-  }
-  snapshot <- tryCatch(parse_proc_status_memory(readLines(status_path)), error = function(error) NULL)
-  supported <- !is.null(snapshot) && !is.na(snapshot$loaded_process_rss_kb) && !is.na(snapshot$peak_rss_kb)
-  list(
-    supported = supported,
-    reason = if (supported) "available" else "Linux /proc/self/status lacks VmRSS or VmHWM"
-  )
-}
-
-measure_peak_process_rss <- function(prepare_call, repetitions, status_path = "/proc/self/status") {
-  repetitions <- as.integer(repetitions)
-  if (length(repetitions) != 1L || is.na(repetitions) || repetitions < 1L) {
-    stop("peak RSS repetition count must be a positive integer")
-  }
-  support <- peak_rss_host_support(status_path)
-  if (!isTRUE(support$supported)) {
-    return(list(
-      peak_rss_kb = NA_integer_, loaded_process_rss_kb = NA_integer_,
-      peak_rss_support = "unsupported", peak_rss_support_reason = as.character(support$reason),
-      peak_rss_repetitions = repetitions
-    ))
-  }
-  gc(full = TRUE)
-  loaded <- parse_proc_status_memory(readLines(status_path))$loaded_process_rss_kb
-  retained <- vector("list", repetitions)
-  for (index in seq_len(repetitions)) {
-    prepared <- prepare_call()
-    retained[[index]] <- evaluate_prepared_call(prepared)
-  }
-  peak <- parse_proc_status_memory(readLines(status_path))$peak_rss_kb
-  if (is.na(loaded) || is.na(peak) || peak < loaded) {
-    stop("peak RSS reading is invalid")
-  }
-  list(
-    peak_rss_kb = peak, loaded_process_rss_kb = loaded,
-    peak_rss_support = "supported", peak_rss_support_reason = "available",
-    peak_rss_repetitions = repetitions
-  )
-}
-
-peak_rss_fixture_eligible <- function(fixture, variant, status, policy) {
-  fixture <- as.character(fixture)
-  variant <- as.character(variant)
-  eligible_variant <- variant == "public" |
-    (variant == "optimized_base_r" & fixture %in% names(fixture_measurement_optimized_specs()))
-  as.character(status) == "PASS" & fixture %in% as.character(policy$peak_rss_fixture_ids) & eligible_variant
-}
-
-apply_peak_rss_results <- function(summaries, results, policy, host_support) {
-  required_summary <- c("run_id", "runner", "fixture", "variant", "row_id", "status")
-  if (length(setdiff(required_summary, names(summaries))) > 0L) stop("fixture summaries lack peak RSS identity columns")
-  eligible <- peak_rss_fixture_eligible(summaries$fixture, summaries$variant, summaries$status, policy)
-  summaries$peak_rss_kb <- NA_integer_
-  summaries$loaded_process_rss_kb <- NA_integer_
-  summaries$peak_rss_metric <- as.character(policy$peak_rss_metric)
-  summaries$peak_rss_support <- "not_eligible"
-  summaries$peak_rss_support_reason <- "workload is not declared memory eligible"
-  summaries$peak_rss_repetitions <- NA_integer_
-  if (!isTRUE(host_support$supported)) {
-    if (!is.null(results) && nrow(results) > 0L) stop("unsupported host produced peak RSS results")
-    summaries$peak_rss_support[eligible] <- "unsupported"
-    summaries$peak_rss_support_reason[eligible] <- as.character(host_support$reason)
-    summaries$peak_rss_repetitions[eligible] <- as.integer(policy$peak_rss_repetitions)
-    return(summaries)
-  }
-  expected_keys <- paste(summaries$runner[eligible], summaries$row_id[eligible], sep = "\r")
-  if (length(expected_keys) == 0L) {
-    if (!is.null(results) && nrow(results) > 0L) stop("peak RSS results exist without eligible rows")
-    return(summaries)
-  }
-  required_results <- c(
-    "run_id", "runner", "fixture", "variant", "row_id", "peak_rss_kb", "loaded_process_rss_kb",
-    "peak_rss_metric", "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions"
-  )
-  if (is.null(results) || length(setdiff(required_results, names(results))) > 0L) {
-    stop("peak RSS results are missing required columns")
-  }
-  result_keys <- paste(results$runner, results$row_id, sep = "\r")
-  if (!setequal(expected_keys, result_keys) || anyDuplicated(result_keys)) {
-    stop("peak RSS result coverage differs from declared memory-eligible rows")
-  }
-  results <- results[match(expected_keys, result_keys), , drop = FALSE]
-  identity_valid <- as.character(results$run_id) == as.character(summaries$run_id[eligible]) &
-    as.character(results$fixture) == as.character(summaries$fixture[eligible]) &
-    as.character(results$variant) == as.character(summaries$variant[eligible]) &
-    as.character(results$peak_rss_metric) == as.character(policy$peak_rss_metric) &
-    as.integer(results$peak_rss_repetitions) == as.integer(policy$peak_rss_repetitions)
-  supported <- as.character(results$peak_rss_support) == "supported" &
-    as.character(results$peak_rss_support_reason) == "available" &
-    is.finite(as.numeric(results$peak_rss_kb)) & as.numeric(results$peak_rss_kb) > 0 &
-    is.finite(as.numeric(results$loaded_process_rss_kb)) & as.numeric(results$loaded_process_rss_kb) > 0 &
-    as.numeric(results$peak_rss_kb) >= as.numeric(results$loaded_process_rss_kb)
-  unsupported <- as.character(results$peak_rss_support) == "unsupported" &
-    is.na(results$peak_rss_kb) & is.na(results$loaded_process_rss_kb) &
-    !is.na(results$peak_rss_support_reason) & nzchar(as.character(results$peak_rss_support_reason)) &
-    as.character(results$peak_rss_support_reason) != "available"
-  identity_valid[is.na(identity_valid)] <- FALSE
-  supported[is.na(supported)] <- FALSE
-  unsupported[is.na(unsupported)] <- FALSE
-  if (any(!identity_valid | !(supported | unsupported))) {
-    stop("peak RSS result value or identity is invalid")
-  }
-  summaries$peak_rss_kb[eligible] <- as.integer(results$peak_rss_kb)
-  summaries$loaded_process_rss_kb[eligible] <- as.integer(results$loaded_process_rss_kb)
-  summaries$peak_rss_support[eligible] <- as.character(results$peak_rss_support)
-  summaries$peak_rss_support_reason[eligible] <- as.character(results$peak_rss_support_reason)
-  summaries$peak_rss_repetitions[eligible] <- as.integer(results$peak_rss_repetitions)
-  summaries
-}
-
-validate_peak_rss_support <- function(rows, policy, universe, label) {
-  required <- c(
-    "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_metric", "peak_rss_support",
-    "peak_rss_support_reason", "peak_rss_repetitions"
-  )
-  if (length(setdiff(required, names(rows))) > 0L) stop(sprintf("%s lacks peak RSS columns", label))
-  metrics <- as.character(rows$peak_rss_metric)
-  if (anyNA(metrics) || any(metrics != as.character(policy$peak_rss_metric))) {
-    stop(sprintf("%s peak RSS metric differs from policy", label))
-  }
-  eligible <- if (identical(universe, "fixture")) {
-    peak_rss_fixture_eligible(rows$fixture, rows$variant, rows$status, policy)
-  } else {
-    rep(FALSE, nrow(rows))
-  }
-  states <- as.character(rows$peak_rss_support)
-  if (anyNA(states)) stop(sprintf("%s has an invalid peak RSS support state", label))
-  supported <- eligible & states == "supported"
-  unsupported <- eligible & states == "unsupported"
-  not_eligible <- !eligible & states == "not_eligible"
-  if (any(!(supported | unsupported | not_eligible))) {
-    stop(sprintf("%s has an invalid peak RSS support state", label))
-  }
-  peak <- strict_metric_numeric(rows$peak_rss_kb, paste(label, "peak RSS"))
-  loaded <- strict_metric_numeric(rows$loaded_process_rss_kb, paste(label, "loaded-process RSS"))
-  repetitions <- strict_metric_numeric(rows$peak_rss_repetitions, paste(label, "peak RSS repetitions"))
-  reasons <- as.character(rows$peak_rss_support_reason)
-  if (anyNA(reasons) || any(!nzchar(reasons)) ||
-      any(!is.finite(peak[supported]) | !is.finite(loaded[supported]) |
-          peak[supported] < loaded[supported] | loaded[supported] <= 0) ||
-      anyNA(repetitions[supported | unsupported]) ||
-      any(repetitions[supported | unsupported] != as.integer(policy$peak_rss_repetitions)) ||
-      any(!is.na(peak[unsupported | not_eligible]) | !is.na(loaded[unsupported | not_eligible])) ||
-      any(!is.na(repetitions[not_eligible])) || any(reasons[supported] != "available") ||
-      any(reasons[unsupported | not_eligible] == "available") ||
-      any(!nzchar(reasons[unsupported | not_eligible]))) {
-    stop(sprintf("%s peak RSS value disagrees with its support state", label))
-  }
-  invisible(rows)
-}
-
-ordered_selection <- function(available, selected, label) {
-  indices <- match(as.character(selected), as.character(available))
-  if (anyNA(indices) || anyDuplicated(indices)) stop(sprintf("%s differs from available IDs", label))
-  indices
-}
-
-timing_group_schedule <- function(group_ids, seed) {
-  group_ids <- as.character(group_ids)
-  if (anyNA(group_ids) || any(!nzchar(group_ids)) || anyDuplicated(group_ids)) {
-    stop("timing group IDs must be unique non-empty values")
-  }
-  seed <- input_scalar_integer(seed, "timing schedule seed")
-  prior_seed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  } else NULL
-  on.exit({
-    if (is.null(prior_seed)) {
-      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
-    } else assign(".Random.seed", prior_seed, envir = .GlobalEnv)
-  }, add = TRUE)
-  set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
-  realized <- if (length(group_ids) > 1L) sample(group_ids, length(group_ids)) else group_ids
-  data.frame(group_id = realized, group_order = seq_along(realized), stringsAsFactors = FALSE)
-}
-
-timing_batch_schedule <- function(batches, runners) {
-  runners <- as.character(runners)
-  if (length(runners) < 1L || anyNA(runners) || any(!nzchar(runners)) || anyDuplicated(runners)) {
-    stop("timing runners must be unique non-empty values")
-  }
-  do.call(rbind, lapply(seq_len(nrow(batches)), function(index) {
-    batch <- as.integer(batches$batch[[index]])
-    offset <- (batch - 1L) %% length(runners)
-    order <- runners[((seq_along(runners) - 1L + offset) %% length(runners)) + 1L]
-    data.frame(
-      group_id = as.character(batches$group_id[[index]]),
-      group_order = as.integer(batches$group_order[[index]]), batch = batch,
-      runner = order, member_order = seq_along(order), stringsAsFactors = FALSE
-    )
-  }))
-}
-
-pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
-  required <- c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")
-  missing <- setdiff(required, names(samples))
-  if (length(missing) > 0L) stop(sprintf("pilot samples missing fields: %s", paste(missing, collapse = ", ")))
-  if (nrow(samples) == 0L) return(data.frame())
-  samples$group_id <- as.character(samples$group_id)
-  samples$member_id <- as.character(samples$member_id)
-  samples$iteration <- as.integer(samples$iteration)
-  samples$wall_ms <- as.numeric(samples$wall_ms)
-  samples$planning_ms <- as.numeric(samples$planning_ms)
-  if (anyNA(samples[c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")]) ||
-      any(!nzchar(samples$group_id)) || any(!nzchar(samples$member_id)) ||
-      any(!is.finite(samples$wall_ms)) || any(samples$wall_ms < 0) ||
-      any(!is.finite(samples$planning_ms)) || any(samples$planning_ms < samples$wall_ms)) {
-    stop("pilot samples contain invalid values")
-  }
-  keys <- paste(samples$group_id, samples$member_id, sep = "\r")
-  split_rows <- split(seq_len(nrow(samples)), keys)
-  members <- do.call(rbind, lapply(split_rows, function(indices) {
-    values <- samples$wall_ms[indices]
-    iterations <- sort(samples$iteration[indices])
-    data.frame(
-      group_id = samples$group_id[indices[[1L]]], member_id = samples$member_id[indices[[1L]]],
-      n = length(values),
-      complete = identical(iterations, seq_len(as.integer(policy$pilot_iterations))),
-      median_ms = median(values),
-      planning_median_ms = median(samples$planning_ms[indices]),
-      cv_pct = if (mean(values) > 0) sd(values) / mean(values) * 100 else 0,
-      drift_pct = if (length(values) >= 4L) {
-        half <- floor(length(values) / 2L)
-        first <- median(values[seq_len(half)])
-        second <- median(tail(values, half))
-        if (first > 0) abs(second / first - 1) * 100 else 0
-      } else NA_real_, stringsAsFactors = FALSE
-    )
-  }))
-  groups <- split(seq_len(nrow(members)), members$group_id)
-  do.call(rbind, lapply(groups, function(indices) {
-    rows <- members[indices, , drop = FALSE]
-    complete <- all(rows$complete)
-    above_floor <- all(rows$median_ms >= as.numeric(policy$timer_noise_floor_ms))
-    group_cost <- sum(rows$median_ms)
-    planning_group_cost <- sum(rows$planning_median_ms)
-    worst_cv <- max(rows$cv_pct, na.rm = TRUE)
-    desired <- ceiling(as.integer(policy$confirmation_min_iterations) *
-      max(1, (worst_cv / as.numeric(policy$confirmation_target_cv_pct)) ^ 2))
-    affordable <- if (planning_group_cost > 0) {
-      floor(as.numeric(policy$group_time_cap_ms) / planning_group_cost)
-    } else 0L
-    count <- min(as.integer(policy$confirmation_max_iterations), desired, affordable)
-    status <- if (!complete) "incomplete" else if (!above_floor) "below_timer_floor" else if (
-      count < as.integer(policy$confirmation_min_iterations)
-    ) "incomplete" else "confirmation"
-    data.frame(
-      group_id = rows$group_id[[1L]], pilot_complete = complete,
-      pilot_median_group_ms = group_cost, pilot_max_cv_pct = worst_cv,
-      pilot_median_planning_group_ms = planning_group_cost,
-      pilot_max_drift_pct = max(rows$drift_pct, na.rm = TRUE),
-      confirmation_iterations = if (identical(status, "confirmation")) as.integer(count) else NA_integer_,
-      estimated_confirmation_ms = if (identical(status, "confirmation")) count * planning_group_cost else NA_real_,
-      status = status, stringsAsFactors = FALSE
-    )
-  }))
-}
-
-pack_timing_batches <- function(groups, policy = benchmark_timing_policy()) {
-  required <- c("group_id", "group_order", "estimated_ms")
-  missing <- setdiff(required, names(groups))
-  if (length(missing) > 0L) stop(sprintf("timing groups missing fields: %s", paste(missing, collapse = ", ")))
-  if (nrow(groups) == 0L) return(transform(groups, batch = integer()))
-  groups <- groups[order(as.integer(groups$group_order)), , drop = FALSE]
-  batch <- integer(nrow(groups))
-  batch_id <- 1L
-  batch_count <- 0L
-  batch_ms <- 0
-  for (index in seq_len(nrow(groups))) {
-    cost <- as.numeric(groups$estimated_ms[[index]])
-    if (!is.finite(cost) || cost < 0) stop("timing group estimate must be finite and non-negative")
-    would_overflow <- batch_count > 0L && (
-      batch_count >= as.integer(policy$batch_group_cap) ||
-      batch_ms + cost > as.numeric(policy$batch_time_cap_ms)
-    )
-    if (would_overflow) {
-      batch_id <- batch_id + 1L
-      batch_count <- 0L
-      batch_ms <- 0
-    }
-    batch[[index]] <- batch_id
-    batch_count <- batch_count + 1L
-    batch_ms <- batch_ms + cost
-  }
-  groups$batch <- batch
-  groups
-}
-
-admit_timing_budget <- function(groups, budget_ms) {
-  required <- c("universe", "group_id", "estimated_ms")
-  missing <- setdiff(required, names(groups))
-  if (length(missing) > 0L) stop(sprintf("timing budget groups missing fields: %s", paste(missing, collapse = ", ")))
-  budget_ms <- as.numeric(budget_ms)
-  if (length(budget_ms) != 1L || !is.finite(budget_ms) || budget_ms < 0) {
-    stop("timing budget must be one finite non-negative value")
-  }
-  if (nrow(groups) == 0L) {
-    groups$admitted <- logical()
-    groups$remaining_after_ms <- numeric()
-    return(groups)
-  }
-  estimates <- as.numeric(groups$estimated_ms)
-  if (any(!is.finite(estimates)) || any(estimates < 0)) {
-    stop("timing budget estimates must be finite and non-negative")
-  }
-  remaining <- budget_ms
-  admitted <- logical(nrow(groups))
-  remaining_after <- numeric(nrow(groups))
-  for (index in seq_len(nrow(groups))) {
-    admitted[[index]] <- estimates[[index]] <= remaining
-    if (admitted[[index]]) remaining <- remaining - estimates[[index]]
-    remaining_after[[index]] <- remaining
-  }
-  groups$admitted <- admitted
-  groups$remaining_after_ms <- remaining_after
-  groups
-}
-
-run_timing_batches <- function(batches, execute, timeout_seconds, total_budget_seconds,
-                               started_at = proc.time()[["elapsed"]]) {
-  required <- c("batch", "group_id")
-  missing <- setdiff(required, names(batches))
-  if (length(missing) > 0L) stop(sprintf("timing batches missing fields: %s", paste(missing, collapse = ", ")))
-  outcomes <- list()
-  batch_epoch <- 0L
-  run_one <- function(rows, attempt) {
-    batch_epoch <<- batch_epoch + 1L
-    elapsed <- proc.time()[["elapsed"]] - started_at
-    remaining <- total_budget_seconds - elapsed
-    if (remaining <= 0) {
-      return(list(ok = FALSE, timed_out = FALSE, budget_exhausted = TRUE, batch_epoch = batch_epoch))
-    }
-    result <- execute(rows, min(timeout_seconds, remaining), attempt, batch_epoch)
-    if (!is.list(result) || is.null(result$ok) || is.null(result$timed_out)) {
-      stop("timing batch executor returned an invalid result")
-    }
-    result$budget_exhausted <- FALSE
-    result$batch_epoch <- batch_epoch
-    result
-  }
-  for (batch_id in unique(as.integer(batches$batch))) {
-    rows <- batches[as.integer(batches$batch) == batch_id, , drop = FALSE]
-    first <- run_one(rows, 1L)
-    if (isTRUE(first$ok)) {
-      outcomes[[length(outcomes) + 1L]] <- data.frame(
-        group_id = rows$group_id, batch = batch_id, attempt = 1L,
-        batch_epoch = first$batch_epoch, status = "complete", stringsAsFactors = FALSE
+  gc.time(TRUE)
+  rows <- list()
+  for (name in names(calls)) {
+    for (sample in seq_len(samples)) {
+      measured <- measure_direct_batch(calls[[name]], environment(), 1L)
+      valid <- switch(name,
+        noop_native = is.null(measured$result),
+        noop_r = is.null(measured$result),
+        cpu = same_sexp(cpu_input, measured$result),
+        allocate = identical(measured$result, allocating_expected)
       )
-      next
-    }
-    if (!isTRUE(first$timed_out) || isTRUE(first$budget_exhausted)) {
-      outcomes[[length(outcomes) + 1L]] <- data.frame(
-        group_id = rows$group_id, batch = batch_id, attempt = 1L,
-        batch_epoch = first$batch_epoch,
-        status = if (isTRUE(first$budget_exhausted)) "incomplete_budget" else "failed",
-        stringsAsFactors = FALSE
-      )
-      next
-    }
-    splits <- as.list(seq_len(nrow(rows)))
-    for (indices in splits) {
-      retry <- run_one(rows[indices, , drop = FALSE], 2L)
-      outcomes[[length(outcomes) + 1L]] <- data.frame(
-        group_id = rows$group_id[indices], batch = batch_id, attempt = 2L,
-        batch_epoch = retry$batch_epoch,
-        status = if (isTRUE(retry$ok)) "complete" else if (isTRUE(retry$budget_exhausted)) {
-          "incomplete_budget"
-        } else if (isTRUE(retry$timed_out)) "incomplete_timeout" else "failed",
+      if (!isTRUE(valid)) stop(sprintf("%s measurement probe result was not evaluated", name))
+      rows[[length(rows) + 1L]] <- data.frame(
+        probe = name, probe_sample = sample, batch_repetitions = 1L,
+        batch_elapsed_ms = measured$batch_elapsed_ms,
+        elapsed_per_event_ms = measured$elapsed_per_event_ms,
+        gc_elapsed_ms = measured$gc_elapsed_ms,
         stringsAsFactors = FALSE
       )
     }
   }
-  if (length(outcomes) == 0L) data.frame() else do.call(rbind, outcomes)
+  rows <- do.call(rbind, rows)
+  rownames(rows) <- NULL
+
+  first_allocated <- eval(calls$allocate, envir = environment())
+  second_allocated <- eval(calls$allocate, envir = environment())
+  if (same_sexp(first_allocated, second_allocated)) {
+    stop("allocation probe returned the same R object twice")
+  }
+  first_allocated[[1L]] <- -1
+  if (!identical(second_allocated[[1L]], 0)) {
+    stop("allocation probe results alias each other")
+  }
+
+  unit_batch <- direct_batch_expression(calls$cpu, 64L)
+  proc_started <- proc.time()[["elapsed"]]
+  nano_started <- microbenchmark::get_nanotime() / 1e9
+  unit_result <- eval(unit_batch, envir = environment())
+  nano_finished <- microbenchmark::get_nanotime() / 1e9
+  proc_finished <- proc.time()[["elapsed"]]
+  nano_ms <- (nano_finished - nano_started) * 1000
+  proc_ms <- (proc_finished - proc_started) * 1000
+  tolerance_ms <- measurement_unit_tolerance_ms(proc_ms)
+  if (!same_sexp(cpu_input, unit_result) ||
+      proc_ms < measurement_unit_minimum_ms() ||
+      abs(nano_ms - proc_ms) > tolerance_ms) {
+    stop("nanotime units disagree with the independent elapsed-time check")
+  }
+  list(
+    samples = rows,
+    timer_floor_ms = unname(measurement_probe_timer_floor(rows)),
+    nanotime_elapsed_ms = nano_ms,
+    independent_elapsed_ms = proc_ms
+  )
+}
+benchmark_timing_policy <- function() {
+  tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
+  list(
+    policy_version = "direct-batch-v2",
+    warmup_iterations = 1L,
+    calibration_batches = 1L,
+    measurement_samples = 11L,
+    measurement_probe_samples = 101L,
+    batch_repetitions = as.list(direct_batch_repetition_map(tasks)),
+    worker_timeout_seconds = 600L,
+    total_run_timeout_seconds = 5400L,
+    gc_policy = paste(
+      "full before first call, warmup, and calibration; no forced collection between",
+      "measurement samples; completed task state released before the next task"
+    )
+  )
 }
 
 write_csv <- function(df, path, append = FALSE) {
@@ -1071,724 +865,4 @@ combine_csv_files_once <- function(paths, output, label) {
   write_csv_once(do.call(rbind, tables), output, label)
   unlink(paths)
   invisible(output)
-}
-
-log_error <- function(runner, task, msg, dir = "results") {
-  path <- file.path(dir, runner, "errors.csv")
-  header <- !file.exists(path)
-  msg <- gsub(",", " ", msg)
-  df <- data.frame(runner = runner, task = task, error = msg,
-                   stringsAsFactors = FALSE)
-  write_csv(df, path, append = !header)
-}
-
-benchmark_artifact_layout <- function(metadata) {
-  schema <- suppressWarnings(as.integer(metadata$schema_version))
-  if (length(schema) != 1L || is.na(schema) || schema != 3L) {
-    stop("unsupported run manifest schema version")
-  }
-  layout <- as.character(metadata$artifact_layout)
-  if (length(layout) != 1L || is.na(layout) || !identical(layout, "grouped-v1")) {
-    stop("run manifest has no supported artifact layout")
-  }
-  layout
-}
-
-run_summary_artifact_paths <- function(run_dir, metadata, universe, runners = character(0)) {
-  if (!(universe %in% c("task", "fixture"))) stop("summary universe must be task or fixture")
-  rooted <- function(path) if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
-  benchmark_artifact_layout(metadata)
-  rooted(paste0(universe, "_summary.csv"))
-}
-
-read_run_summary_table <- function(run_dir, metadata, universe, runners) {
-  paths <- run_summary_artifact_paths(run_dir, metadata, universe, runners)
-  missing <- paths[!file.exists(paths)]
-  if (length(missing) > 0L) stop(sprintf("run %s summaries are missing", universe))
-  do.call(rbind, lapply(paths, read.csv, stringsAsFactors = FALSE))
-}
-
-run_correctness_artifact_paths <- function(run_dir, metadata, universe, runners = character(0)) {
-  if (!(universe %in% c("task", "fixture"))) stop("correctness universe must be task or fixture")
-  rooted <- function(path) if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
-  benchmark_artifact_layout(metadata)
-  rooted(file.path("correctness", paste0(universe, "s.csv")))
-}
-
-run_sample_artifact_paths <- function(run_dir, metadata, universe, runner, ids = character(0)) {
-  if (!(universe %in% c("task", "fixture"))) stop("sample universe must be task or fixture")
-  ids <- as.character(ids)
-  if (length(ids) == 0L) return(character(0))
-  benchmark_artifact_layout(metadata)
-  path <- paste0(universe, "_samples.csv")
-  if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
-}
-
-read_run_sample_table <- function(run_dir, metadata, universe, runner, ids) {
-  ids <- as.character(ids)
-  paths <- run_sample_artifact_paths(run_dir, metadata, universe, runner, ids)
-  if (length(ids) == 0L) return(data.frame())
-  missing <- paths[!file.exists(paths)]
-  if (length(missing) > 0L) {
-    stop(sprintf("raw timing samples are missing for %s: %s", runner, paste(basename(missing), collapse = ", ")))
-  }
-  tables <- lapply(paths, read.csv, stringsAsFactors = FALSE)
-  samples <- do.call(rbind, tables)
-  if (!("runner" %in% names(samples))) stop("grouped raw timing samples lack runner")
-  samples <- samples[as.character(samples$runner) == runner, , drop = FALSE]
-  samples
-}
-
-read_run_wall_time_samples <- function(
-    run_dir, metadata, universe, runner, id, expected_n = NULL, minimum_n = 2L, stage = NULL) {
-  paths <- run_sample_artifact_paths(run_dir, metadata, universe, runner, id)
-  filters <- if (identical(universe, "task")) list(runner = runner, task = id) else list(runner = runner, row_id = id)
-  header_names <- names(read.csv(paths[[1L]], nrows = 0L, stringsAsFactors = FALSE))
-  if ("phase" %in% header_names) filters$phase <- "timed"
-  if (is.null(stage)) {
-    if ("stage" %in% header_names) {
-      header <- read.csv(paths[[1L]], stringsAsFactors = FALSE)
-      keep <- rep(TRUE, nrow(header))
-      for (field in names(filters)) keep <- keep & as.character(header[[field]]) == as.character(filters[[field]])
-      stages <- unique(as.character(header$stage[keep]))
-      stage <- if ("confirmation" %in% stages) "confirmation" else if ("pilot" %in% stages) "pilot" else NULL
-    }
-  }
-  if (!is.null(stage) && "stage" %in% header_names) filters$stage <- stage
-  if ("excluded" %in% header_names) filters$excluded <- FALSE
-  read_wall_time_samples(paths[[1L]], expected_n = expected_n, minimum_n = minimum_n, filters = filters)
-}
-
-read_wall_time_samples <- function(path, expected_n = NULL, minimum_n = 2L, filters = NULL) {
-  if (length(path) != 1L || is.na(path) || !nzchar(path)) stop("raw timing sample path must be one non-empty value")
-  if (!file.exists(path)) stop(sprintf("raw timing samples are missing: %s", path))
-  samples <- read.csv(path, stringsAsFactors = FALSE)
-  if (!is.null(filters)) {
-    if (!is.list(filters) || is.null(names(filters)) || any(!nzchar(names(filters)))) {
-      stop("raw timing sample filters must be a named list")
-    }
-    missing_filters <- setdiff(names(filters), names(samples))
-    if (length(missing_filters) > 0L) {
-      stop(sprintf("raw timing samples lack filter columns: %s", paste(missing_filters, collapse = ", ")))
-    }
-    keep <- rep(TRUE, nrow(samples))
-    for (field in names(filters)) keep <- keep & as.character(samples[[field]]) == as.character(filters[[field]])
-    samples <- samples[keep, , drop = FALSE]
-  }
-  if (!("wall_ms" %in% names(samples))) stop(sprintf("raw timing samples lack wall_ms: %s", path))
-  values <- samples$wall_ms
-  if (!is.numeric(values) || any(!is.finite(values)) || any(values < 0)) {
-    stop(sprintf("raw timing samples contain invalid wall_ms values: %s", path))
-  }
-  minimum_n <- as.integer(minimum_n)
-  if (length(minimum_n) != 1L || is.na(minimum_n) || minimum_n < 0L) stop("minimum sample count must be non-negative")
-  if (length(values) < minimum_n) stop(sprintf("raw timing samples are incomplete: %s", path))
-  if (!is.null(expected_n) && (length(expected_n) != 1L || is.na(expected_n) || length(values) != as.integer(expected_n))) {
-    stop(sprintf("raw timing sample count differs from summary: %s", path))
-  }
-  values
-}
-
-median_confidence_interval <- function(values, level) {
-  if (!is.numeric(values) || any(!is.finite(values))) stop("median confidence interval requires finite numeric samples")
-  if (length(level) != 1L || is.na(level) || !is.finite(level) || level <= 0 || level >= 1) {
-    stop("median confidence level must be between zero and one")
-  }
-  values <- sort(as.numeric(values))
-  n <- length(values)
-  if (n < 2L) return(c(low = NA_real_, high = NA_real_))
-  alpha <- 1 - level
-  low_rank <- max(1L, as.integer(qbinom(alpha / 2, n, 0.5)))
-  high_rank <- min(n, as.integer(qbinom(1 - alpha / 2, n, 0.5)) + 1L)
-  c(low = values[[low_rank]], high = values[[high_rank]])
-}
-
-# Normalized fixture measurement and retained-artifact validation.
-
-fixture_measurement_specs <- function() {
-  complex_values <- function() {
-    values <- complex(
-      real = as.double(seq_len(32768L)),
-      imaginary = as.double(seq_len(32768L)) * 0.5
-    )
-    values[[1L]] <- NA_complex_
-    values[[2L]] <- complex(real = NaN, imaginary = 3)
-    values
-  }
-  list(
-    F01 = list(function_name = "fixture_zero", arguments = function() list()),
-    F02 = list(function_name = "fixture_scalar", arguments = function() list(2.5)),
-    F03 = list(
-      function_name = "fixture_numeric",
-      arguments = function() list(c(as.double(seq_len(100000L)) + 0.0, NA_real_, NaN))
-    ),
-    F04 = list(
-      function_name = "fixture_altrep_integer",
-      arguments = function() list(seq_len(100000L)),
-      altrep_intent = "compact_integer_altrep"
-    ),
-    F05 = list(
-      function_name = "fixture_strings",
-      arguments = function() list(rep(benchmark_encoded_strings(), 2000L))
-    ),
-    F06 = list(
-      function_name = "fixture_raw",
-      arguments = function() list(as.raw((seq_len(262144L) - 1L) %% 251L))
-    ),
-    F07 = list(function_name = "fixture_complex", arguments = function() list(complex_values())),
-    F08 = list(
-      function_name = "fixture_logical_counts",
-      arguments = function() list(rep(c(FALSE, TRUE, NA), length.out = 100000L))
-    ),
-    F09 = list(function_name = "fixture_schema", arguments = function() list(fixture_schema_value())),
-    F10 = list(
-      function_name = c("fixture_new", "fixture_method", "fixture_read"),
-      arguments = function() list(7L),
-      stateful = TRUE
-    ),
-    F12 = list(function_name = "fixture_outputs", arguments = function() list())
-  )
-}
-
-fixture_measurement_optimized_specs <- function() {
-  list(
-    F03 = list(function_name = "F03", implementation_class = "optimized_base_r"),
-    F04 = list(function_name = "F04", implementation_class = "optimized_base_r")
-  )
-}
-
-fixture_measurement_altrep_intent <- function(spec) {
-  if (is.null(spec$altrep_intent)) "ordinary_r_object" else as.character(spec$altrep_intent)
-}
-
-fixture_measurement_requires_fresh_input <- function(spec) {
-  isTRUE(spec$stateful) || !identical(fixture_measurement_altrep_intent(spec), "ordinary_r_object")
-}
-
-fixture_measurement_input_fingerprint <- function(fixture, spec) {
-  task_arguments_fingerprint(
-    paste0("fixture:", fixture),
-    spec$arguments(),
-    fixture_measurement_altrep_intent(spec)
-  )
-}
-
-fixture_measurement_context <- function(root_dir, runner, evidence) {
-  supported <- as.character(evidence$fixture_rows$fixture[
-    evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable
-  ])
-  if (runner %in% c("zigr", "rcpp", "cpp11", "extendr", "savvy")) {
-    package <- fixture_package_map(root_dir)[[runner]]
-    old_paths <- .libPaths()
-    .libPaths(c(package$library, old_paths))
-    if (package$package %in% loadedNamespaces()) unloadNamespace(package$package)
-    loadNamespace(package$package, lib.loc = package$library)
-    namespace <- asNamespace(package$package)
-    public_names <- unique(unlist(fixture_function_map(), use.names = FALSE))
-    functions <- lapply(public_names, function(name) {
-      if (exists(name, envir = namespace, mode = "function", inherits = FALSE)) {
-        get(name, envir = namespace, mode = "function", inherits = FALSE)
-      } else {
-        NULL
-      }
-    })
-    names(functions) <- public_names
-    close <- function() {
-      gc(full = TRUE)
-      if (package$package %in% loadedNamespaces()) unloadNamespace(package$package)
-      .libPaths(old_paths)
-      invisible(NULL)
-    }
-    return(list(functions = functions, optimized = list(), supported = supported, close = close))
-  }
-  if (identical(runner, "r")) {
-    reference <- fixture_r_functions(root_dir)
-    return(list(
-      functions = reference$functions,
-      optimized = reference$optimized,
-      supported = supported,
-      close = function() invisible(NULL)
-    ))
-  }
-  if (identical(runner, "c_call")) {
-    control <- fixture_c_context(root_dir)
-    return(list(
-      functions = control$functions,
-      optimized = list(),
-      supported = supported,
-      close = control$close
-    ))
-  }
-  stop(sprintf("no fixture measurement context for runner %s", runner))
-}
-
-fixture_measurement_prepare <- function(functions, fixture, spec, arguments = spec$arguments()) {
-  force(arguments)
-  if (isTRUE(spec$stateful)) {
-    state <- functions$fixture_new()
-    amount <- arguments[[1L]]
-    return(function() functions$fixture_method(state, amount))
-  }
-  fn <- functions[[spec$function_name]]
-  if (!is.function(fn)) stop(sprintf("fixture %s has no callable implementation", fixture))
-  function() do.call(fn, arguments)
-}
-
-fixture_measurement_validate_case <- function(runner, functions, reference_functions, fixture, spec) {
-  if (isTRUE(spec$stateful)) {
-    state <- functions$fixture_new()
-    amount <- spec$arguments()[[1L]]
-    actual <- functions$fixture_method(state, amount)
-    if (!identical(as.integer(actual), amount) ||
-        !identical(as.integer(functions$fixture_read(state)), amount)) {
-      stop(sprintf("fixture timing correctness failed for %s/%s", runner, fixture))
-    }
-    return(invisible(TRUE))
-  }
-  actual <- fixture_measurement_prepare(functions, fixture, spec)()
-  expected <- do.call(reference_functions[[spec$function_name]], spec$arguments())
-  fixture_assert_same(expected, actual, sprintf("fixture timing %s/%s", runner, fixture))
-  invisible(TRUE)
-}
-
-fixture_measurement_validate_optimized <- function(optimized, reference_functions, fixture, spec) {
-  fn <- optimized[[fixture]]
-  if (!is.function(fn)) stop(sprintf("optimized R fixture %s is missing", fixture))
-  arguments <- spec$arguments()
-  actual <- do.call(fn, arguments)
-  expected <- do.call(reference_functions[[spec$function_name]], spec$arguments())
-  fixture_assert_same(expected, actual, sprintf("optimized R fixture timing %s", fixture))
-  invisible(TRUE)
-}
-
-correctness_artifact_set_digest <- function(paths) {
-  paths <- sort(normalizePath(paths, mustWork = TRUE))
-  records <- lapply(paths, function(path) list(
-    name = basename(path),
-    size = unname(file.info(path)$size),
-    md5 = unname(as.character(tools::md5sum(path))[[1L]])
-  ))
-  source_ledger_object_digest(records)
-}
-
-validate_correctness_artifacts <- function(run_dir, metadata, evidence) {
-  expected_runners <- sort(run_manifest_values(metadata$runners))
-  expected_tasks <- sort(run_manifest_values(metadata$tasks))
-  task_selected <- benchmark_run_includes(metadata, "task")
-  fixture_selected <- benchmark_run_includes(metadata, "fixture")
-  task_files <- run_correctness_artifact_paths(run_dir, metadata, "task", expected_runners)
-  fixture_files <- run_correctness_artifact_paths(run_dir, metadata, "fixture", expected_runners)
-  if ((task_selected && any(!file.exists(task_files))) ||
-      (fixture_selected && any(!file.exists(fixture_files)))) {
-    stop("correctness evidence files are incomplete")
-  }
-  if ((!task_selected && any(file.exists(task_files))) ||
-      (!fixture_selected && any(file.exists(fixture_files)))) {
-    stop("correctness evidence exists for an unselected suite")
-  }
-
-  tasks <- data.frame()
-  if (task_selected) {
-    tasks <- do.call(rbind, lapply(task_files, read.csv, stringsAsFactors = FALSE))
-    task_required <- c(
-      "run_id", "runner", "task", "status", "correctness_status", "correctness_policy",
-      "correctness_message", "source_tree_digest", "source_ledger_identity_digest",
-      "artifact_digest", "input_manifest_digest", "contract_version", "timing_policy_digest"
-    )
-    if (length(setdiff(task_required, names(tasks))) > 0L) stop("task correctness evidence columns differ")
-    task_keys <- paste(tasks$runner, tasks$task, sep = "\r")
-    expected_task_keys <- unlist(lapply(expected_runners, function(runner) {
-      paste(runner, expected_tasks, sep = "\r")
-    }), use.names = FALSE)
-    if (!setequal(task_keys, expected_task_keys) || anyDuplicated(task_keys)) {
-      stop("task correctness evidence coverage differs from the run manifest")
-    }
-    for (index in seq_len(nrow(tasks))) {
-      row <- tasks[index, , drop = FALSE]
-      runner <- as.character(row$runner)
-      task <- as.character(row$task)
-      disposition <- run_manifest_disposition(metadata, runner, task)
-      environment <- runner_environment_record(metadata$environment, runner)
-      expected_status <- if (isTRUE(disposition$executable)) "PASS" else "N/A"
-      expected_correctness <- if (isTRUE(disposition$executable)) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
-      if (!identical(as.character(row$status), expected_status) ||
-          !(as.character(row$correctness_status) %in% expected_correctness) ||
-          !nzchar(as.character(row$correctness_message))) {
-        stop(sprintf("task correctness evidence failed for %s/%s", runner, task))
-      }
-      if (!isTRUE(disposition$executable) &&
-          !identical(as.character(row$correctness_message), as.character(disposition$reason))) {
-        stop(sprintf("task correctness gap reason differs for %s/%s", runner, task))
-      }
-      exact <- list(
-        run_id = as.character(metadata$run_id),
-        source_tree_digest = as.character(metadata$environment$source_tree$digest),
-        source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-        artifact_digest = as.character(environment$artifact_digest),
-        input_manifest_digest = as.character(metadata$input_manifest$digest),
-        contract_version = as.character(disposition$contract_version),
-        timing_policy_digest = run_manifest_object_digest(metadata$timing_policy)
-      )
-      for (field in names(exact)) {
-        if (!identical(as.character(row[[field]]), exact[[field]])) {
-          stop(sprintf("task correctness identity field %s differs for %s/%s", field, runner, task))
-        }
-      }
-    }
-  }
-
-  fixtures <- data.frame()
-  if (fixture_selected) {
-    fixtures <- do.call(rbind, lapply(fixture_files, read.csv, stringsAsFactors = FALSE))
-    fixture_required <- c(
-      "run_id", "runner", "fixture", "variant", "row_id", "status", "correctness_status",
-      "correctness_message", "source_tree_digest", "source_ledger_identity_digest", "artifact_digest",
-      "input_fingerprint", "contract_version", "timing_policy_digest"
-    )
-    if (length(setdiff(fixture_required, names(fixtures))) > 0L) {
-      stop("fixture correctness evidence columns differ")
-    }
-    fixture_keys <- paste(fixtures$runner, fixtures$row_id, sep = "\r")
-    expected_fixture_keys <- unlist(lapply(expected_runners, function(runner) {
-      base <- paste(runner, evidence$fixtures, sep = "\r")
-      if (identical(runner, "r")) {
-        c(base, paste(runner, paste0(c("F03", "F04"), "_optimized_base_r"), sep = "\r"))
-      } else base
-    }), use.names = FALSE)
-    if (!setequal(fixture_keys, expected_fixture_keys) || anyDuplicated(fixture_keys)) {
-      stop("fixture correctness evidence coverage differs from the normalized matrix")
-    }
-    fixture_specs <- fixture_measurement_specs()
-    for (index in seq_len(nrow(fixtures))) {
-      row <- fixtures[index, , drop = FALSE]
-      runner <- as.character(row$runner)
-      fixture <- as.character(row$fixture)
-      optimized <- identical(as.character(row$variant), "optimized_base_r")
-      evidence_row <- evidence$fixture_rows[
-        evidence$fixture_rows$runner == runner & evidence$fixture_rows$fixture == fixture,
-        , drop = FALSE
-      ]
-      if (nrow(evidence_row) != 1L) stop(sprintf("fixture correctness evidence is missing for %s/%s", runner, fixture))
-      environment <- runner_environment_record(metadata$environment, runner)
-      executable <- optimized || isTRUE(evidence_row$executable)
-      expected_status <- if (executable) "PASS" else "N/A"
-      expected_correctness <- if (executable) c("PASS", "REFERENCE") else "NOT_APPLICABLE"
-      expected_variant <- if (optimized) "optimized_base_r" else "public"
-      expected_row_id <- if (optimized) paste0(fixture, "_optimized_base_r") else fixture
-      spec <- fixture_specs[[fixture]]
-      if (!identical(as.character(row$variant), expected_variant) ||
-          !identical(as.character(row$row_id), expected_row_id) ||
-          !identical(as.character(row$status), expected_status) ||
-          !(as.character(row$correctness_status) %in% expected_correctness) ||
-          !nzchar(as.character(row$correctness_message))) {
-        stop(sprintf("fixture correctness evidence failed for %s/%s", runner, row$row_id))
-      }
-      if (!executable &&
-          !identical(as.character(row$correctness_message), as.character(evidence_row$reason))) {
-        stop(sprintf("fixture correctness gap reason differs for %s/%s", runner, fixture))
-      }
-      exact <- list(
-        run_id = as.character(metadata$run_id),
-        source_tree_digest = as.character(metadata$environment$source_tree$digest),
-        source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-        artifact_digest = as.character(environment$fixture_artifact_digest),
-        input_fingerprint = if (is.null(spec)) {
-          "not_applicable"
-        } else fixture_measurement_input_fingerprint(fixture, spec),
-        contract_version = as.character(evidence_row$contract_version),
-        timing_policy_digest = run_manifest_object_digest(metadata$timing_policy)
-      )
-      for (field in names(exact)) {
-        if (!identical(as.character(row[[field]]), exact[[field]])) {
-          stop(sprintf("fixture correctness identity field %s differs for %s/%s", field, runner, row$row_id))
-        }
-      }
-    }
-  }
-
-  list(
-    task_rows = nrow(tasks),
-    fixture_rows = nrow(fixtures),
-    task_artifact_digest = if (task_selected) correctness_artifact_set_digest(task_files) else "not_selected",
-    fixture_artifact_digest = if (fixture_selected) correctness_artifact_set_digest(fixture_files) else "not_selected"
-  )
-}
-
-validate_fixture_raw_statistics <- function(summary, raw, policy, label) {
-  median_ms <- median(raw$wall_ms)
-  mean_ms <- mean(raw$wall_ms)
-  min_ms <- min(raw$wall_ms)
-  max_ms <- max(raw$wall_ms)
-  sd_ms <- sd(raw$wall_ms)
-  cv_pct <- if (mean_ms > 0) sd_ms / mean_ms * 100 else 0
-  if (!identical(as.numeric(summary$mean_ms), round(mean_ms, 4)) ||
-      !identical(as.numeric(summary$median_ms), round(median_ms, 4)) ||
-      !identical(as.numeric(summary$min_ms), round(min_ms, 4)) ||
-      !identical(as.numeric(summary$max_ms), round(max_ms, 4)) ||
-      !identical(as.numeric(summary$sd_ms), round(sd_ms, 4)) ||
-      !identical(as.numeric(summary$cv_pct), round(cv_pct, 2))) {
-    stop(sprintf("fixture raw statistics differ for %s", label))
-  }
-  expected_noise <- if (median_ms < as.numeric(policy$timer_noise_floor_ms)) "below_floor" else "above_floor"
-  if (!identical(as.character(summary$timer_noise_status), expected_noise)) {
-    stop(sprintf("fixture timer-noise evidence differs for %s", label))
-  }
-  if (!is_bounded_timing_policy(policy)) {
-    window <- tail(raw$wall_ms, as.integer(policy$block_size) * as.integer(policy$convergence_window_blocks))
-    window_mean <- mean(window)
-    expected_cv <- if (window_mean > 0) sd(window) / window_mean * 100 else 0
-    if (!isTRUE(all.equal(as.numeric(summary$convergence_cv_pct), expected_cv, tolerance = 1e-12))) {
-      stop(sprintf("fixture convergence evidence differs for %s", label))
-    }
-  }
-  invisible(TRUE)
-}
-
-validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) {
-  if (!benchmark_run_includes(metadata, "fixture")) {
-    stop("fixture measurement validation requires the fixture suite")
-  }
-  expected_runners <- sort(run_manifest_values(metadata$runners))
-  summaries <- read_run_summary_table(run_dir, metadata, "fixture", expected_runners)
-  bounded <- is_bounded_timing_policy(metadata$timing_policy)
-  required <- c(
-    "run_id", "runner", "fixture", "variant", "row_id", "status", "correctness_status",
-    "correctness_message", "input_fingerprint", "implementation_role", "evidence_use",
-    "path_kind", "representation_strategy", "comparison_tier", "setup_policy", "timing_eligible",
-    "kernel_id", "contract_version", "fixture_version", "comparison_group", "tool_identity",
-    "fixture_source_digest", "fixture_build_digest", "fixture_generated_glue_kind",
-    "fixture_generated_glue_digest", "fixture_artifact_digest", "fixture_dependency_digest",
-    "fixture_artifact_dependency_digest", "source_ledger_identity_digest", "mean_ms", "median_ms",
-    "min_ms", "max_ms", "sd_ms", "cv_pct", "n_iterations"
-  )
-  timing_required <- if (bounded) c(
-    "rss_endpoint_delta_kb", "first_call_ms", "peak_rss_kb", "loaded_process_rss_kb",
-    "peak_rss_metric", "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions",
-    "warmup_iterations", "sample_stage", "fixed_iterations", "timer_noise_floor_ms",
-    "timer_noise_status", "rss_endpoint_metric", "rss_endpoint_support",
-    "rss_endpoint_support_reason", "gc_policy"
-  ) else c(
-    "rss_kb", "cold_start_ms",
-    "warmup_iterations", "block_size", "max_iterations", "convergence_window_blocks",
-    "convergence_cv_threshold_pct", "convergence_cv_pct", "stopping_condition", "converged",
-    "timer_noise_floor_ms", "timer_noise_status", "rss_metric", "gc_policy"
-  )
-  required <- c(required, timing_required)
-  missing <- setdiff(required, names(summaries))
-  if (length(missing) > 0L) stop(sprintf("fixture summaries missing columns: %s", paste(missing, collapse = ", ")))
-  if (!all(as.character(summaries$run_id) == as.character(metadata$run_id))) {
-    stop("fixture summaries contain mixed run IDs")
-  }
-  expected_keys <- unlist(lapply(expected_runners, function(runner) {
-    base <- paste(runner, evidence$fixtures, sep = "\r")
-    if (identical(runner, "r")) c(base, paste(runner, paste0(c("F03", "F04"), "_optimized_base_r"), sep = "\r")) else base
-  }), use.names = FALSE)
-  actual_keys <- paste(summaries$runner, summaries$row_id, sep = "\r")
-  if (!setequal(expected_keys, actual_keys) || anyDuplicated(actual_keys)) {
-    stop("fixture summary coverage differs from the normalized matrix")
-  }
-  specs <- fixture_measurement_specs()
-  for (index in seq_len(nrow(summaries))) {
-    summary <- summaries[index, , drop = FALSE]
-    runner <- as.character(summary$runner)
-    fixture <- as.character(summary$fixture)
-    variant <- as.character(summary$variant)
-    optimized <- identical(variant, "optimized_base_r")
-    evidence_row <- evidence$fixture_rows[
-      evidence$fixture_rows$runner == runner & evidence$fixture_rows$fixture == fixture,
-      , drop = FALSE
-    ]
-    if (nrow(evidence_row) != 1L) stop(sprintf("fixture evidence is missing for %s/%s", runner, fixture))
-    environment <- runner_environment_record(metadata$environment, runner)
-    validate_fixture_artifact_identity(environment)
-    spec <- specs[[fixture]]
-    expected_fingerprint <- if (is.null(spec)) {
-      "not_applicable"
-    } else {
-      fixture_measurement_input_fingerprint(fixture, spec)
-    }
-    expected <- list(
-      variant = if (optimized) "optimized_base_r" else "public",
-      row_id = if (optimized) paste0(fixture, "_optimized_base_r") else fixture,
-      input_fingerprint = expected_fingerprint,
-      implementation_role = if (optimized) "optimized_base_r" else as.character(evidence_row$implementation_role),
-      evidence_use = if (optimized) "timed_baseline" else as.character(evidence_row$evidence_use),
-      path_kind = if (optimized) "optimized_base_r" else as.character(evidence_row$path_kind),
-      representation_strategy = if (optimized) "runtime_service" else as.character(evidence_row$representation_strategy),
-      comparison_tier = if (optimized) "tier_c" else as.character(evidence_row$comparison_tier),
-      setup_policy = if (optimized) "setup_outside_timer" else as.character(evidence_row$setup_policy),
-      kernel_id = if (optimized) paste0("normalized:", fixture, ":optimized-base-r-v1") else as.character(evidence_row$kernel_id),
-      contract_version = as.character(evidence_row$contract_version),
-      fixture_version = as.character(evidence_row$fixture_version),
-      comparison_group = if (optimized) paste0("normalized:", fixture, ":optimized-base-r") else as.character(evidence_row$comparison_group),
-      tool_identity = as.character(environment$tool_identity),
-      fixture_source_digest = as.character(environment$fixture_source_digest),
-      fixture_build_digest = as.character(environment$fixture_build_digest),
-      fixture_generated_glue_kind = as.character(environment$fixture_generated_glue_kind),
-      fixture_generated_glue_digest = as.character(environment$fixture_generated_glue_digest),
-      fixture_artifact_digest = as.character(environment$fixture_artifact_digest),
-      fixture_dependency_digest = as.character(environment$fixture_dependency_digest),
-      fixture_artifact_dependency_digest = as.character(environment$fixture_artifact_dependency_digest),
-      source_ledger_identity_digest = as.character(environment$source_ledger_identity_digest),
-      timing_eligible = if (optimized) "TRUE" else as.character(isTRUE(evidence_row$timing_eligible))
-    )
-    for (field in names(expected)) {
-      if (!identical(as.character(summary[[field]]), expected[[field]])) {
-        stop(sprintf("fixture summary field %s differs for %s/%s", field, runner, summary$row_id))
-      }
-    }
-    admitted <- optimized || isTRUE(evidence_row$timing_eligible)
-    if (admitted) {
-      if (!identical(as.character(summary$status), "PASS") ||
-          !(as.character(summary$correctness_status) %in% c("PASS", "REFERENCE")) ||
-          !nzchar(as.character(summary$correctness_message))) {
-        stop(sprintf("timed fixture lacks passing correctness for %s/%s", runner, summary$row_id))
-      }
-    } else if (isTRUE(evidence_row$executable)) {
-      if (!identical(as.character(summary$status), "CORRECTNESS_ONLY") ||
-          !(as.character(summary$correctness_status) %in% c("PASS", "REFERENCE"))) {
-        stop(sprintf("correctness-only fixture status differs for %s/%s", runner, fixture))
-      }
-    } else if (!identical(as.character(summary$status), "N/A") ||
-               !identical(as.character(summary$correctness_status), "NOT_APPLICABLE")) {
-      stop(sprintf("fixture gap status differs for %s/%s", runner, fixture))
-    }
-  }
-  pass <- summaries[summaries$status == "PASS", , drop = FALSE]
-  policy <- metadata$timing_policy
-  policy_mismatch <- any(as.integer(pass$warmup_iterations) != as.integer(policy$warmup_iterations)) ||
-      any(as.numeric(pass$timer_noise_floor_ms) != as.numeric(policy$timer_noise_floor_ms)) ||
-      any(as.character(pass$gc_policy) != as.character(policy$gc_policy))
-  if (!bounded) policy_mismatch <- policy_mismatch ||
-    any(as.character(pass$rss_metric) != as.character(policy$rss_metric)) ||
-    any(as.integer(pass$block_size) != as.integer(policy$block_size)) ||
-    any(as.integer(pass$max_iterations) != as.integer(policy$max_iterations)) ||
-    any(as.integer(pass$convergence_window_blocks) != as.integer(policy$convergence_window_blocks)) ||
-    any(as.numeric(pass$convergence_cv_threshold_pct) != as.numeric(policy$convergence_cv_threshold_pct))
-  if (policy_mismatch) {
-    stop("fixture summaries disagree with the timing policy")
-  }
-  numeric_fields <- c("mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct")
-  if (!bounded) numeric_fields <- c(numeric_fields, "rss_kb", "cold_start_ms")
-  if (any(!vapply(pass[numeric_fields], function(values) all(is.finite(values) & values >= 0), logical(1)))) {
-    stop("fixture PASS summaries contain invalid timing statistics")
-  }
-  if (bounded) {
-    validate_rss_endpoint_support(summaries, summaries$status == "PASS", policy, "fixture summaries")
-    validate_first_call_metric(summaries, summaries$status == "PASS", "fixture summaries")
-    validate_peak_rss_support(summaries, policy, "fixture", "fixture summaries")
-    if (any(!(pass$sample_stage %in% c("pilot", "confirmation"))) ||
-        any(as.integer(pass$n_iterations) != as.integer(pass$fixed_iterations))) {
-      stop("fixture PASS summaries contain an invalid measured sample count")
-    }
-    pilot_rows <- pass$sample_stage == "pilot"
-    confirmation_rows <- pass$sample_stage == "confirmation"
-    if (any(pass$n_iterations[pilot_rows] != as.integer(policy$pilot_iterations)) ||
-        any(pass$n_iterations[confirmation_rows] < as.integer(policy$confirmation_min_iterations)) ||
-        any(pass$n_iterations[confirmation_rows] > as.integer(policy$confirmation_max_iterations))) {
-      stop("fixture PASS summaries disagree with bounded timing policy")
-    }
-  } else if (any(!(pass$stopping_condition %in% c("rolling_cv", "max_iterations"))) ||
-             any(pass$n_iterations < 1L | pass$n_iterations > as.integer(policy$max_iterations) |
-                 pass$n_iterations %% as.integer(policy$block_size) != 0L)) {
-    stop("legacy fixture PASS summaries contain invalid adaptive timing evidence")
-  }
-  not_measured <- summaries$status != "PASS"
-  not_measured_numeric <- c("mean_ms", "median_ms", "min_ms", "max_ms", "sd_ms", "cv_pct")
-  not_measured_numeric <- c(
-    not_measured_numeric,
-    if (bounded) c(
-      "rss_endpoint_delta_kb", "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_repetitions",
-      "n_iterations", "fixed_iterations"
-    ) else c("rss_kb", "cold_start_ms", "n_iterations", "convergence_cv_pct")
-  )
-  if (any(!vapply(summaries[not_measured, not_measured_numeric, drop = FALSE], function(values) {
-    all(is.na(values))
-  }, logical(1))) ||
-      any(as.character(summaries[[if (bounded) "sample_stage" else "stopping_condition"]][not_measured]) != "not_measured") ||
-      any(as.character(summaries$timer_noise_status[not_measured]) != "not_measured")) {
-    stop("untimed fixture summaries contain measurement evidence")
-  }
-  benchmark_artifact_layout(metadata)
-  shared_samples <- run_sample_artifact_paths(run_dir, metadata, "fixture", expected_runners[[1L]], ".")
-  if (!identical(file.exists(shared_samples), nrow(pass) > 0L)) {
-    stop("shared fixture timing artifact presence differs from PASS summaries")
-  }
-  if (dir.exists(file.path(run_dir, "fixtures"))) {
-    stop("grouped run retains per-runner fixture artifact directories")
-  }
-  for (runner in expected_runners) {
-    runner_rows <- pass[pass$runner == runner, , drop = FALSE]
-    expected_raw <- sort(as.character(runner_rows$row_id))
-    raw_samples <- read_run_sample_table(run_dir, metadata, "fixture", runner, expected_raw)
-    actual_raw <- sort(unique(as.character(raw_samples$row_id)))
-    if (!identical(actual_raw, expected_raw)) {
-      stop(sprintf("fixture raw timing coverage differs for %s", runner))
-    }
-    required_raw <- c("run_id", "runner", "fixture", "variant", "row_id", "iteration", "wall_ms")
-    if (bounded) required_raw <- c(
-      required_raw, "stage", "process_epoch", "batch", "attempt", "group_order", "member_order",
-      "excluded", "exclusion_reason", "phase", "rss_endpoint_delta_kb"
-    )
-    if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
-      stop(sprintf("fixture raw timing columns differ for %s", runner))
-    }
-    if (bounded && nrow(raw_samples) > 0L && (
-        any(!(as.character(raw_samples$stage) %in% c("pilot", "confirmation"))) ||
-        any(as.integer(raw_samples$process_epoch) < 1L) || any(as.integer(raw_samples$batch) < 1L) ||
-        any(!(as.integer(raw_samples$attempt) %in% 1:2)) ||
-        any(as.integer(raw_samples$group_order) < 1L) || any(as.integer(raw_samples$member_order) < 1L))) {
-      stop(sprintf("fixture raw timing metadata differs for %s", runner))
-    }
-    if (bounded) {
-      excluded <- as.logical(raw_samples$excluded) %in% TRUE
-      if (anyNA(as.logical(raw_samples$excluded)) ||
-          any(excluded & (is.na(raw_samples$exclusion_reason) | !nzchar(as.character(raw_samples$exclusion_reason)))) ||
-          any(!excluded & !is.na(raw_samples$exclusion_reason) & nzchar(as.character(raw_samples$exclusion_reason)))) {
-        stop(sprintf("fixture raw timing exclusions differ for %s", runner))
-      }
-      if (nrow(raw_samples) > 0L &&
-          !setequal(unique(as.character(raw_samples$phase)), c("first_call", "timed"))) {
-        stop(sprintf("fixture raw timing phases differ for %s", runner))
-      }
-    }
-    for (row_id in expected_raw) {
-      summary <- runner_rows[runner_rows$row_id == row_id, , drop = FALSE]
-      raw <- raw_samples[
-        as.character(raw_samples$row_id) == row_id,
-        , drop = FALSE
-      ]
-      if (bounded) raw <- raw[
-        !(as.logical(raw$excluded) %in% TRUE) &
-          as.character(raw$stage) == as.character(summary$sample_stage[[1L]]), , drop = FALSE
-      ]
-      first_call_raw <- if (bounded) raw[as.character(raw$phase) == "first_call", , drop = FALSE] else NULL
-      if (bounded) raw <- raw[as.character(raw$phase) == "timed", , drop = FALSE]
-      identity_matches <- nrow(summary) == 1L &&
-        all(as.character(raw$run_id) == as.character(metadata$run_id)) &&
-        all(as.character(raw$runner) == runner) &&
-        all(as.character(raw$fixture) == as.character(summary$fixture)) &&
-        all(as.character(raw$variant) == as.character(summary$variant)) &&
-        all(as.character(raw$row_id) == row_id)
-      if (!identity_matches || nrow(raw) != as.integer(summary$n_iterations) ||
-          !identical(as.integer(raw$iteration), seq_len(nrow(raw))) ||
-          any(!is.finite(raw$wall_ms) | raw$wall_ms < 0)) {
-        stop(sprintf("fixture raw sample count differs for %s/%s", runner, row_id))
-      }
-      if (bounded) {
-        label <- paste(runner, row_id, sep = "/")
-        validate_first_call_raw(summary, first_call_raw, label)
-        validate_rss_endpoint_raw(summary, raw, label)
-      }
-      validate_fixture_raw_statistics(summary, raw, policy, paste(runner, row_id, sep = "/"))
-    }
-  }
-  confirmation <- if (bounded) pass[pass$sample_stage == "confirmation", , drop = FALSE] else pass[0, , drop = FALSE]
-  if (nrow(confirmation) > 0L) {
-    counts <- split(as.integer(confirmation$n_iterations), as.character(confirmation$fixture))
-    if (any(vapply(counts, function(value) length(unique(value)) != 1L, logical(1)))) {
-      stop("confirmation fixture groups do not use symmetric frozen sample counts")
-    }
-  }
-  invisible(TRUE)
 }

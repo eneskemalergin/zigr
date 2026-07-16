@@ -1,6 +1,8 @@
 #include <Rcpp.h>
 
 #include <algorithm>
+#include <cmath>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -221,6 +223,170 @@ Rcpp::List fixture_outputs() {
       Rcpp::Named("logical") = Rcpp::LogicalVector::create(false, true, NA_LOGICAL),
       Rcpp::Named("list") = Rcpp::List::create(Rcpp::Named("value") = 7));
 }
+
+// [[Rcpp::export]]
+double bench_vector_sum(Rcpp::NumericVector x) {
+  return std::accumulate(x.begin(), x.end(), 0.0);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericVector bench_numeric_transform(Rcpp::NumericVector x) {
+  return fixture_numeric(x);
+}
+
+// [[Rcpp::export]]
+double bench_broadcast(Rcpp::NumericVector x, double scalar) {
+  long double total = 0.0;
+  for (double value : x) total += value + scalar;
+  return static_cast<double>(total);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericVector bench_sort(Rcpp::NumericVector x) {
+  Rcpp::NumericVector result = Rcpp::clone(x);
+  std::sort(result.begin(), result.end());
+  return result;
+}
+
+// [[Rcpp::export]]
+double bench_missing_mean(Rcpp::NumericVector x) {
+  double total = 0.0;
+  R_xlen_t count = 0;
+  for (double value : x) if (!R_IsNA(value) && !R_IsNaN(value)) { total += value; ++count; }
+  return total / static_cast<double>(count);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix bench_transpose(Rcpp::NumericMatrix x) {
+  Rcpp::NumericMatrix result(x.ncol(), x.nrow());
+  for (int col = 0; col < x.ncol(); ++col) for (int row = 0; row < x.nrow(); ++row) result(col, row) = x(row, col);
+  return result;
+}
+
+// [[Rcpp::export]]
+Rcpp::List bench_rowcol(Rcpp::NumericMatrix x) {
+  Rcpp::NumericVector rows(x.nrow()), columns(x.ncol());
+  for (int col = 0; col < x.ncol(); ++col) for (int row = 0; row < x.nrow(); ++row) {
+    rows[row] += x(row, col) / x.ncol();
+    columns[col] += x(row, col);
+  }
+  return Rcpp::List::create(Rcpp::Named("row_means") = rows, Rcpp::Named("column_sums") = columns);
+}
+
+// [[Rcpp::export]]
+SEXP bench_matmul(Rcpp::NumericMatrix x, Rcpp::NumericMatrix y) {
+  return Rcpp::Function("%*%", R_BaseEnv)(x, y);
+}
+
+// [[Rcpp::export]]
+Rcpp::DataFrame bench_dataframe(Rcpp::DataFrame data) {
+  Rcpp::NumericVector x = data["x"], y = data["y"];
+  Rcpp::IntegerVector group = data["grp"];
+  Rcpp::NumericVector totals(10);
+  for (R_xlen_t i = 0; i < x.size(); ++i) if (!R_IsNA(x[i]) && !R_IsNaN(x[i]) && x[i] > 0) totals[group[i] - 1] += x[i] / y[i];
+  return Rcpp::DataFrame::create(Rcpp::Named("grp") = Rcpp::seq(1, 10), Rcpp::Named("z_sum") = totals);
+}
+
+// [[Rcpp::export]]
+double bench_list_sum(Rcpp::List x) {
+  double total = 0.0;
+  for (SEXP item : x) { Rcpp::NumericVector values(item); total = std::accumulate(values.begin(), values.end(), total); }
+  return total;
+}
+
+// [[Rcpp::export]]
+SEXP bench_string_concat(Rcpp::CharacterVector x) {
+  return Rcpp::Function("paste", R_BaseEnv)(x, Rcpp::Named("collapse") = ", ");
+}
+
+// [[Rcpp::export]]
+Rcpp::IntegerVector bench_string_metadata(Rcpp::CharacterVector x) {
+  int bytes = 0, utf8 = 0, latin1 = 0, marked = 0, missing = 0;
+  for (R_xlen_t i = 0; i < x.size(); ++i) {
+    SEXP value = x[i];
+    if (value == NA_STRING) { ++missing; continue; }
+    bytes += LENGTH(value);
+    switch (Rf_getCharCE(value)) {
+      case CE_UTF8: ++utf8; break;
+      case CE_LATIN1: ++latin1; break;
+      case CE_BYTES: ++marked; break;
+      default: break;
+    }
+  }
+  return Rcpp::IntegerVector::create(Rcpp::Named("bytes") = bytes, Rcpp::Named("utf8") = utf8,
+    Rcpp::Named("latin1") = latin1, Rcpp::Named("bytes_marked") = marked, Rcpp::Named("missing") = missing);
+}
+
+// [[Rcpp::export]]
+SEXP bench_factor(Rcpp::CharacterVector x) {
+  return Rcpp::Function("factor", R_BaseEnv)(x, Rcpp::Named("levels") = Rcpp::Function("sprintf", R_BaseEnv)("level_%03d", Rcpp::seq(1, 100)));
+}
+
+// [[Rcpp::export]]
+SEXP bench_attributes(SEXP x) {
+  SEXP result = PROTECT(Rf_duplicate(x));
+  Rf_setAttrib(result, R_ClassSymbol, Rcpp::CharacterVector::create("bench_class"));
+  Rf_setAttrib(result, Rf_install("creator"), Rcpp::CharacterVector::create("zigr_bench"));
+  (void) Rf_getAttrib(result, R_ClassSymbol);
+  (void) Rf_getAttrib(result, Rf_install("creator"));
+  UNPROTECT(1);
+  return result;
+}
+
+// [[Rcpp::export]]
+SEXP bench_s4(Rcpp::NumericVector x) {
+  SEXP object = Rcpp::Function("new", Rcpp::Environment::namespace_env("methods"))("BenchS4", Rcpp::Named("slot_x") = x);
+  return R_do_slot(object, Rf_install("slot_x"));
+}
+
+// [[Rcpp::export]]
+Rcpp::IntegerVector bench_logical_counts(Rcpp::LogicalVector x) { return fixture_logical_counts(x); }
+
+// [[Rcpp::export]]
+Rcpp::RawVector bench_raw_copy(Rcpp::RawVector x) { return fixture_raw(x); }
+
+// [[Rcpp::export]]
+Rcpp::ComplexVector bench_complex_conjugate(Rcpp::ComplexVector x) {
+  Rcpp::ComplexVector result(x.size());
+  for (R_xlen_t i = 0; i < x.size(); ++i) result[i] = Rcomplex{x[i].r, -x[i].i};
+  return result;
+}
+
+// [[Rcpp::export]]
+Rcpp::List bench_schema(Rcpp::List x) { return fixture_schema(x); }
+
+// [[Rcpp::export]]
+double bench_altrep_sum(Rcpp::IntegerVector x) { return fixture_altrep_integer(x); }
+
+// [[Rcpp::export]]
+double bench_altrep_index(Rcpp::IntegerVector x) {
+  double total = 0.0;
+  for (R_xlen_t i = 0; i < x.size(); i += 10000) total += x[i];
+  return total;
+}
+
+// [[Rcpp::export]]
+Rcpp::IntegerVector bench_altrep_materialize(Rcpp::IntegerVector x) { return Rcpp::clone(x); }
+
+// [[Rcpp::export]]
+double bench_eval(Rcpp::NumericVector x) {
+  Rcpp::Environment env = Rcpp::new_env(R_BaseEnv);
+  env["x"] = x;
+  SEXP expression = Rcpp::Function("parse", R_BaseEnv)(Rcpp::Named("text") = "sum(x) + mean(x)");
+  return Rcpp::as<double>(Rcpp::Function("eval", R_BaseEnv)(expression, env));
+}
+
+// [[Rcpp::export]]
+SEXP bench_serialize(SEXP x) {
+  Rcpp::RawVector bytes = Rcpp::Function("serialize", R_BaseEnv)(x, R_NilValue, Rcpp::Named("version") = 3);
+  return Rcpp::Function("unserialize", R_BaseEnv)(bytes);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericVector bench_rng(int n) { return Rcpp::rnorm(n); }
+
+// [[Rcpp::export]]
+Rcpp::List bench_outputs() { return fixture_outputs(); }
 
 RCPP_MODULE(zigr_fixture_module) {
   Rcpp::class_<FixtureState>("FixtureState")

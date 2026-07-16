@@ -83,6 +83,13 @@ extern "C" SEXP _zigrCpp11_diagnostic_state_method(SEXP state, SEXP amount) {
   END_CPP11
 }
 // fixture.cpp
+int diagnostic_state_read(cpp11::external_pointer<FixtureState> state);
+extern "C" SEXP _zigrCpp11_diagnostic_state_read(SEXP state) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(diagnostic_state_read(cpp11::as_cpp<cpp11::decay_t<cpp11::external_pointer<FixtureState>>>(state)));
+  END_CPP11
+}
+// fixture.cpp
 void fixture_error(double trigger);
 extern "C" SEXP _zigrCpp11_fixture_error(SEXP trigger) {
   BEGIN_CPP11
@@ -140,16 +147,225 @@ extern "C" SEXP _zigrCpp11_bench_external_ptr(SEXP value) {
     return cpp11::as_sexp(bench_external_ptr(cpp11::as_cpp<cpp11::decay_t<cpp11::integers>>(value)));
   END_CPP11
 }
+// fixture.cpp
+double bench_vector_sum(cpp11::doubles x);
+extern "C" SEXP _zigrCpp11_bench_vector_sum(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_vector_sum(cpp11::as_cpp<cpp11::decay_t<cpp11::doubles>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::doubles bench_numeric_transform(cpp11::doubles x);
+extern "C" SEXP _zigrCpp11_bench_numeric_transform(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_numeric_transform(cpp11::as_cpp<cpp11::decay_t<cpp11::doubles>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+double bench_broadcast(cpp11::doubles x, double scalar);
+extern "C" SEXP _zigrCpp11_bench_broadcast(SEXP x, SEXP scalar) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_broadcast(cpp11::as_cpp<cpp11::decay_t<cpp11::doubles>>(x), cpp11::as_cpp<cpp11::decay_t<double>>(scalar)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::doubles bench_sort(cpp11::doubles x);
+extern "C" SEXP _zigrCpp11_bench_sort(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_sort(cpp11::as_cpp<cpp11::decay_t<cpp11::doubles>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+double bench_missing_mean(cpp11::doubles x);
+extern "C" SEXP _zigrCpp11_bench_missing_mean(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_missing_mean(cpp11::as_cpp<cpp11::decay_t<cpp11::doubles>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_transpose(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_transpose(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_transpose(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_rowcol(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_rowcol(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_rowcol(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_matmul(cpp11::sexp x, cpp11::sexp y);
+extern "C" SEXP _zigrCpp11_bench_matmul(SEXP x, SEXP y) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_matmul(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x), cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(y)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_dataframe(cpp11::list data);
+extern "C" SEXP _zigrCpp11_bench_dataframe(SEXP data) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_dataframe(cpp11::as_cpp<cpp11::decay_t<cpp11::list>>(data)));
+  END_CPP11
+}
+// fixture.cpp
+double bench_list_sum(cpp11::list x);
+extern "C" SEXP _zigrCpp11_bench_list_sum(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_list_sum(cpp11::as_cpp<cpp11::decay_t<cpp11::list>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_string_concat(cpp11::strings x);
+extern "C" SEXP _zigrCpp11_bench_string_concat(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_string_concat(cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::integers bench_string_metadata(cpp11::strings x);
+extern "C" SEXP _zigrCpp11_bench_string_metadata(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_string_metadata(cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_factor(cpp11::strings x);
+extern "C" SEXP _zigrCpp11_bench_factor(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_factor(cpp11::as_cpp<cpp11::decay_t<cpp11::strings>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_attributes(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_attributes(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_attributes(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_s4(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_s4(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_s4(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::integers bench_logical_counts(cpp11::logicals x);
+extern "C" SEXP _zigrCpp11_bench_logical_counts(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_logical_counts(cpp11::as_cpp<cpp11::decay_t<cpp11::logicals>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::raws bench_raw_copy(cpp11::raws x);
+extern "C" SEXP _zigrCpp11_bench_raw_copy(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_raw_copy(cpp11::as_cpp<cpp11::decay_t<cpp11::raws>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_complex_conjugate(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_complex_conjugate(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_complex_conjugate(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::list bench_schema(cpp11::list x);
+extern "C" SEXP _zigrCpp11_bench_schema(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_schema(cpp11::as_cpp<cpp11::decay_t<cpp11::list>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+double bench_altrep_sum(cpp11::integers x);
+extern "C" SEXP _zigrCpp11_bench_altrep_sum(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_altrep_sum(cpp11::as_cpp<cpp11::decay_t<cpp11::integers>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+double bench_altrep_index(cpp11::integers x);
+extern "C" SEXP _zigrCpp11_bench_altrep_index(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_altrep_index(cpp11::as_cpp<cpp11::decay_t<cpp11::integers>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::integers bench_altrep_materialize(cpp11::integers x);
+extern "C" SEXP _zigrCpp11_bench_altrep_materialize(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_altrep_materialize(cpp11::as_cpp<cpp11::decay_t<cpp11::integers>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_eval(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_eval(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_eval(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_serialize(cpp11::sexp x);
+extern "C" SEXP _zigrCpp11_bench_serialize(SEXP x) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_serialize(cpp11::as_cpp<cpp11::decay_t<cpp11::sexp>>(x)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_rng(int n);
+extern "C" SEXP _zigrCpp11_bench_rng(SEXP n) {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_rng(cpp11::as_cpp<cpp11::decay_t<int>>(n)));
+  END_CPP11
+}
+// fixture.cpp
+cpp11::sexp bench_outputs();
+extern "C" SEXP _zigrCpp11_bench_outputs() {
+  BEGIN_CPP11
+    return cpp11::as_sexp(bench_outputs());
+  END_CPP11
+}
 
 extern "C" {
 static const R_CallMethodDef CallEntries[] = {
+    {"_zigrCpp11_bench_altrep_index",       (DL_FUNC) &_zigrCpp11_bench_altrep_index,       1},
+    {"_zigrCpp11_bench_altrep_materialize", (DL_FUNC) &_zigrCpp11_bench_altrep_materialize, 1},
+    {"_zigrCpp11_bench_altrep_sum",         (DL_FUNC) &_zigrCpp11_bench_altrep_sum,         1},
+    {"_zigrCpp11_bench_attributes",         (DL_FUNC) &_zigrCpp11_bench_attributes,         1},
+    {"_zigrCpp11_bench_broadcast",          (DL_FUNC) &_zigrCpp11_bench_broadcast,          2},
+    {"_zigrCpp11_bench_complex_conjugate",  (DL_FUNC) &_zigrCpp11_bench_complex_conjugate,  1},
+    {"_zigrCpp11_bench_dataframe",          (DL_FUNC) &_zigrCpp11_bench_dataframe,          1},
+    {"_zigrCpp11_bench_eval",               (DL_FUNC) &_zigrCpp11_bench_eval,               1},
     {"_zigrCpp11_bench_external_ptr",       (DL_FUNC) &_zigrCpp11_bench_external_ptr,       1},
+    {"_zigrCpp11_bench_factor",             (DL_FUNC) &_zigrCpp11_bench_factor,             1},
+    {"_zigrCpp11_bench_list_sum",           (DL_FUNC) &_zigrCpp11_bench_list_sum,           1},
+    {"_zigrCpp11_bench_logical_counts",     (DL_FUNC) &_zigrCpp11_bench_logical_counts,     1},
+    {"_zigrCpp11_bench_matmul",             (DL_FUNC) &_zigrCpp11_bench_matmul,             2},
+    {"_zigrCpp11_bench_missing_mean",       (DL_FUNC) &_zigrCpp11_bench_missing_mean,       1},
+    {"_zigrCpp11_bench_numeric_transform",  (DL_FUNC) &_zigrCpp11_bench_numeric_transform,  1},
+    {"_zigrCpp11_bench_outputs",            (DL_FUNC) &_zigrCpp11_bench_outputs,            0},
+    {"_zigrCpp11_bench_raw_copy",           (DL_FUNC) &_zigrCpp11_bench_raw_copy,           1},
+    {"_zigrCpp11_bench_rng",                (DL_FUNC) &_zigrCpp11_bench_rng,                1},
+    {"_zigrCpp11_bench_rowcol",             (DL_FUNC) &_zigrCpp11_bench_rowcol,             1},
+    {"_zigrCpp11_bench_s4",                 (DL_FUNC) &_zigrCpp11_bench_s4,                 1},
+    {"_zigrCpp11_bench_schema",             (DL_FUNC) &_zigrCpp11_bench_schema,             1},
+    {"_zigrCpp11_bench_serialize",          (DL_FUNC) &_zigrCpp11_bench_serialize,          1},
+    {"_zigrCpp11_bench_sort",               (DL_FUNC) &_zigrCpp11_bench_sort,               1},
+    {"_zigrCpp11_bench_string_concat",      (DL_FUNC) &_zigrCpp11_bench_string_concat,      1},
+    {"_zigrCpp11_bench_string_metadata",    (DL_FUNC) &_zigrCpp11_bench_string_metadata,    1},
+    {"_zigrCpp11_bench_transpose",          (DL_FUNC) &_zigrCpp11_bench_transpose,          1},
+    {"_zigrCpp11_bench_vector_sum",         (DL_FUNC) &_zigrCpp11_bench_vector_sum,         1},
     {"_zigrCpp11_boundary_numeric",         (DL_FUNC) &_zigrCpp11_boundary_numeric,         1},
     {"_zigrCpp11_boundary_raw",             (DL_FUNC) &_zigrCpp11_boundary_raw,             1},
     {"_zigrCpp11_boundary_string",          (DL_FUNC) &_zigrCpp11_boundary_string,          1},
     {"_zigrCpp11_boundary_zero",            (DL_FUNC) &_zigrCpp11_boundary_zero,            0},
     {"_zigrCpp11_diagnostic_state_method",  (DL_FUNC) &_zigrCpp11_diagnostic_state_method,  2},
     {"_zigrCpp11_diagnostic_state_new",     (DL_FUNC) &_zigrCpp11_diagnostic_state_new,     0},
+    {"_zigrCpp11_diagnostic_state_read",    (DL_FUNC) &_zigrCpp11_diagnostic_state_read,    1},
     {"_zigrCpp11_fixture_altrep_integer",   (DL_FUNC) &_zigrCpp11_fixture_altrep_integer,   1},
     {"_zigrCpp11_fixture_error",            (DL_FUNC) &_zigrCpp11_fixture_error,            1},
     {"_zigrCpp11_fixture_lifecycle_counts", (DL_FUNC) &_zigrCpp11_fixture_lifecycle_counts, 0},

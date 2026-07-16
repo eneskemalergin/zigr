@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 
 library(jsonlite)
+
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "specification.R"))
 source(file.path(root_dir, "lib", "measurement.R"))
@@ -8,845 +9,336 @@ source(file.path(root_dir, "lib", "provenance.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "product_fixtures.R"))
 
-args <- commandArgs(trailingOnly = TRUE)
+arguments <- commandArgs(trailingOnly = TRUE)
 validate_cli_arguments(
-  args,
-  value_options = c("runners", "tasks", "suite", "run-dir", "seed", "prune-runs"),
+  arguments,
+  value_options = c("runners", "tasks", "run-dir", "seed"),
   flag_options = c("build", "correctness-only"),
   label = "benchmark"
 )
-runners_filter <- NULL
-tasks_filter   <- NULL
-suite <- "all"
-do_build       <- FALSE
-correctness_only <- FALSE
-run_dir_arg    <- NULL
-prune_runs     <- NULL
-master_seed    <- benchmark_master_seed()
-for (a in args) {
-  if (grepl("^--runners=", a)) runners_filter <- parse_csv_option(sub("^--runners=", "", a), "runner filter")
-  if (grepl("^--tasks=", a))  tasks_filter <- parse_task_filter(sub("^--tasks=", "", a))
-  if (grepl("^--suite=", a)) suite <- parse_benchmark_suite(sub("^--suite=", "", a))
-  if (a == "--build")         do_build      <- TRUE
-  if (a == "--correctness-only") correctness_only <- TRUE
-  if (grepl("^--run-dir=", a)) run_dir_arg <- sub("^--run-dir=", "", a)
-  if (grepl("^--seed=", a)) master_seed <- input_scalar_integer(sub("^--seed=", "", a), "master seed")
-  if (grepl("^--prune-runs=", a)) prune_runs <- sub("^--prune-runs=", "", a)
-}
-if (identical(suite, "fixtures") && !is.null(tasks_filter)) {
-  stop("--tasks cannot be combined with --suite=fixtures")
-}
-run_tasks <- suite %in% c("tasks", "all")
-run_fixtures <- suite %in% c("fixtures", "all")
 
-if (!is.null(prune_runs)) {
-  if (length(args) != 1L) stop("--prune-runs cannot be combined with benchmark arguments")
-  receipt_path <- file.path(root_dir, "results", "CANONICAL_RUN.json")
-  protected <- if (file.exists(receipt_path)) {
-    receipt <- fromJSON(receipt_path, simplifyVector = FALSE)
-    validate_run_promotion_receipt(receipt)
-    if (length(receipt$run_id) != 1L || is.na(receipt$run_id) || !nzchar(as.character(receipt$run_id))) {
-      stop("canonical acceptance receipt has no run ID")
-    }
-    as.character(receipt$run_id)
-  } else {
-    character(0)
-  }
-  removed <- prune_local_runs(file.path(root_dir, "results"), prune_runs, protected)
-  cat(sprintf(
-    "Removed %d local run director%s%s\n",
-    length(removed),
-    if (length(removed) == 1L) "y" else "ies",
-    if (length(removed) == 0L) "." else paste0(": ", paste(removed, collapse = ", "))
-  ))
-  quit(save = "no", status = 0L, runLast = FALSE)
-}
-manifest <- load_task_manifest(root_dir)
-evidence <- load_evidence_manifest(root_dir, manifest)
-raw_runner_configs <- load_runner_configs(root_dir)
-all_runners <- list()
-for (runner_name in names(raw_runner_configs)) {
-  cfg <- raw_runner_configs[[runner_name]]
-  if (!is.null(cfg$status) && cfg$status == "broken") next
-  cfg <- hydrate_runner_config(manifest, cfg, cfg$name, evidence)
-  all_runners[[cfg$name]] <- cfg
+option_value <- function(name) {
+  matches <- grep(paste0("^--", name, "="), arguments, value = TRUE)
+  if (length(matches) == 0L) return(NULL)
+  sub(paste0("^--", name, "="), "", matches[[1L]])
 }
 
-if (!is.null(runners_filter)) {
-  unknown_runners <- setdiff(runners_filter, names(all_runners))
-  if (length(unknown_runners) > 0L) stop(sprintf("runner filter contains unknown runners: %s", paste(unknown_runners, collapse = ", ")))
-  all_runners <- all_runners[intersect(names(all_runners), runners_filter)]
+runner_names <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+selected_runners <- option_value("runners")
+selected_runners <- if (is.null(selected_runners)) runner_names else {
+  strsplit(selected_runners, ",", fixed = TRUE)[[1L]]
 }
-if (length(all_runners) == 0L) stop("no active runners selected")
-
-selected_tasks <- if (run_tasks) manifest$task else character(0)
-if (!is.null(tasks_filter) && length(selected_tasks) > 0L) {
-  selected_tasks <- select_task_ids(manifest$task, tasks_filter)
+if (any(!nzchar(selected_runners)) || anyDuplicated(selected_runners) ||
+    !all(selected_runners %in% runner_names)) {
+  stop("runner selection contains an unknown or duplicate runner")
 }
 
-source(file.path(root_dir, "src", "r", "run_all.R"))
-r_config <- raw_runner_configs$r
-r_runner_map <- r_config$exports
-r_reference_exports <- r_reference_map(r_config)
-r_evidence_rows <- evidence$tasks[evidence$tasks$runner == "r", , drop = FALSE]
-r_provenance <- build_run_r_provenance(
-  selected_tasks, r_runner_map, r_reference_exports, manifest, r_evidence_rows
-)
-
-coverage_args <- c("check_coverage.R")
-if (!is.null(tasks_filter)) coverage_args <- c(coverage_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
-if (!is.null(tasks_filter) || !is.null(runners_filter) || !identical(suite, "all")) {
-  coverage_args <- c(coverage_args, "--quick")
+specs <- benchmark_revision_task_specs()
+task_ids <- vapply(specs, `[[`, character(1), "id")
+selected_tasks <- option_value("tasks")
+selected_tasks <- if (is.null(selected_tasks)) task_ids else {
+  strsplit(selected_tasks, ",", fixed = TRUE)[[1L]]
 }
-blas_env <- c("OPENBLAS_NUM_THREADS=1")
-cat(sprintf(
-  "Preflight: %s\n",
-  if ("--quick" %in% coverage_args) "quick manifest and selected-task admission" else "full static trust suite"
-))
-coverage_code <- system2("Rscript", args = coverage_args, env = blas_env, stdout = "", stderr = "")
-if (!identical(coverage_code, 0L)) stop(sprintf("coverage preflight failed with exit code %d", coverage_code))
+if (any(!nzchar(selected_tasks)) || anyDuplicated(selected_tasks) ||
+    !all(selected_tasks %in% task_ids)) {
+  stop("task selection contains an unknown or duplicate task")
+}
 
-run_dir <- if (is.null(run_dir_arg)) {
-  run_id <- paste0(format(Sys.time(), "%Y%m%dT%H%M%SZ", tz = "UTC"), "-pid", Sys.getpid())
+master_seed <- option_value("seed")
+master_seed <- if (is.null(master_seed)) benchmark_master_seed() else {
+  input_scalar_integer(master_seed, "master seed")
+}
+do_build <- "--build" %in% arguments
+correctness_only <- "--correctness-only" %in% arguments
+
+if (do_build) {
+  build_status <- system("bash build_all.sh", ignore.stdout = FALSE, ignore.stderr = FALSE)
+  if (!identical(build_status, 0L)) stop(sprintf("runner build failed with exit code %d", build_status))
+}
+
+run_dir_value <- option_value("run-dir")
+run_id <- if (is.null(run_dir_value)) {
+  paste0(format(Sys.time(), "%Y%m%dT%H%M%SZ", tz = "UTC"), "-pid", Sys.getpid())
+} else basename(normalizePath(run_dir_value, mustWork = FALSE))
+run_dir <- if (is.null(run_dir_value)) {
   file.path(root_dir, "results", "runs", run_id)
-} else {
-  normalizePath(run_dir_arg, mustWork = FALSE)
+} else normalizePath(run_dir_value, mustWork = FALSE)
+if (dir.exists(run_dir) && length(list.files(run_dir, all.files = TRUE, no.. = TRUE)) > 0L) {
+  stop(sprintf("run directory is not empty: %s", run_dir))
 }
-run_id <- basename(run_dir)
-if (file.exists(run_manifest_path(run_dir))) stop(sprintf("run directory already exists: %s", run_dir))
-existing_entries <- if (dir.exists(run_dir)) list.files(run_dir, all.files = TRUE, no.. = TRUE) else character(0)
-if (length(existing_entries) > 0L) stop(sprintf("run directory is not empty: %s", run_dir))
+dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
 
-project_runs_root <- normalizePath(file.path(root_dir, "results", "runs"), mustWork = FALSE)
-if (identical(dirname(run_dir), project_runs_root)) {
-  stale_runs <- reconcile_running_runs(
-    file.path(root_dir, "results"),
-    replacement_run_id = run_id
+artifact_path <- function(runner) {
+  if (identical(runner, "r")) return(file.path(root_dir, "src", "r", "run_all.R"))
+  if (identical(runner, "c_call")) return(file.path(root_dir, "src", "c_call", "bench.so"))
+  package <- fixture_package_map(root_dir)[[runner]]
+  file.path(
+    package$library, package$package, "libs",
+    paste0(package$dll, .Platform$dynlib.ext)
   )
-  if (length(stale_runs) > 0L) {
-    cat(sprintf("Reconciled stale runs: %s\n\n", paste(stale_runs, collapse = ", ")))
-  }
 }
 
-full_matrix <- identical(suite, "all") && is.null(runners_filter) && is.null(tasks_filter)
-run_metadata <- list(
-  schema_version = 3L,
-  artifact_layout = "grouped-v1",
+artifacts <- lapply(selected_runners, function(runner) {
+  path <- artifact_path(runner)
+  if (!file.exists(path)) stop(sprintf("runner artifact is missing for %s: %s", runner, path))
+  list(
+    runner = runner,
+    relative_path = if (startsWith(path, paste0(root_dir, .Platform$file.sep))) {
+      substring(path, nchar(root_dir) + 2L)
+    } else path,
+    md5 = unname(as.character(tools::md5sum(path))[[1L]])
+  )
+})
+names(artifacts) <- selected_runners
+
+timing_policy <- benchmark_timing_policy()
+batch_repetitions <- direct_batch_repetition_map(selected_tasks)
+timing_policy$batch_repetitions <- as.list(batch_repetitions)
+metadata <- list(
+  schema_version = 4L,
+  artifact_layout = "direct-v1",
   run_id = run_id,
   status = "running",
   started_at = run_manifest_timestamp(),
-  runners = sort(names(all_runners)),
-  tasks = selected_tasks,
-  master_seed = master_seed,
-  input_manifest = if (run_tasks) {
-    list(relative_path = "input_manifest.json", digest = "pending")
-  } else list(relative_path = "not_applicable", digest = "not_applicable"),
-  runner_dispositions = run_disposition_records(evidence, sort(names(all_runners)), selected_tasks),
-  r_provenance = compact_run_r_provenance(r_provenance),
-  timing_policy = benchmark_timing_policy(),
-  boundary_budget_policy_version = boundary_budget_policy_version(),
-  suite = suite,
-  full_matrix = full_matrix,
-  measurement_mode = if (correctness_only) "correctness_only" else "timed",
-  command = commandArgs()
-)
-run_metadata$promotion_eligible <- benchmark_run_promotion_eligible(run_metadata)
-write_run_manifest(run_dir, run_metadata)
-run_complete <- FALSE
-run_error <- NULL
-previous_error_handler <- getOption("error")
-mark_run_incomplete <- function() {
-  if (!run_complete) {
-    message <- if (is.null(run_error)) geterrmessage() else run_error
-    try(record_run_failure(run_dir, message), silent = TRUE)
-  }
-}
-options(error = function() {
-  mark_run_incomplete()
-  options(error = previous_error_handler)
-  if (is.function(previous_error_handler)) previous_error_handler()
-  quit(save = "no", status = 1L, runLast = FALSE)
-})
-
-input_manifest_path <- NULL
-if (run_tasks) {
-  input_manifest_path <- file.path(run_dir, run_metadata$input_manifest$relative_path)
-  prepare_args <- c(
-    "benchmark_worker.R", "--kind=task",
-    sprintf("--prepare-inputs=%s", input_manifest_path),
-    sprintf("--master-seed=%d", master_seed)
-  )
-  if (!is.null(tasks_filter)) {
-    prepare_args <- c(prepare_args, sprintf("--task-ids=%s", paste(selected_tasks, collapse = ",")))
-  }
-  prepare_code <- system2("Rscript", args = prepare_args, env = blas_env, stdout = "", stderr = "")
-  if (!identical(prepare_code, 0L)) stop(sprintf("canonical input preparation failed with exit code %d", prepare_code))
-  run_metadata$input_manifest$digest <- unname(as.character(tools::md5sum(input_manifest_path))[[1L]])
-  prepared_inputs <- read_input_recipe_manifest(input_manifest_path)
-  if (!identical(sort(names(prepared_inputs$tasks)), sort(as.character(selected_tasks)))) {
-    stop("canonical input preparation produced the wrong task set")
-  }
-}
-write_run_manifest(run_dir, run_metadata)
-
-cat(sprintf("Runners: %s\n\n", paste(names(all_runners), collapse = ", ")))
-cat(sprintf("Run: %s\n\n", run_id))
-
-zig_cache_dir <- normalizePath(
-  Sys.getenv("ZIG_CACHE_DIR", unset = file.path(root_dir, ".zig-cache")), mustWork = FALSE
-)
-zig_global_cache_dir <- normalizePath(
-  Sys.getenv("ZIG_GLOBAL_CACHE_DIR", unset = file.path(root_dir, ".zig-global-cache")), mustWork = FALSE
-)
-cargo_target_dir <- normalizePath(
-  Sys.getenv("CARGO_TARGET_DIR", unset = file.path(root_dir, "tmp", "cargo-target")), mustWork = FALSE
-)
-cargo_home <- Sys.getenv("CARGO_HOME", unset = path.expand("~/.cargo"))
-if (!nzchar(cargo_home)) cargo_home <- path.expand("~/.cargo")
-cargo_home <- normalizePath(cargo_home, mustWork = FALSE)
-cache_paths <- c(zig_cache_dir, zig_global_cache_dir, cargo_target_dir, cargo_home)
-validate_run_cache_paths(run_dir, cache_paths)
-
-if (do_build) {
-  cat("Building runners\n")
-  code <- system("bash build_all.sh", ignore.stdout = FALSE, ignore.stderr = FALSE)
-  if (code != 0) stop(sprintf("runner build failed with exit code %d", code))
-  cat("\n")
-}
-
-checked_sexp_value <- tolower(Sys.getenv("ZIGR_CHECKED_SEXP", unset = "false"))
-if (!(checked_sexp_value %in% c("1", "true", "yes", "on", "0", "false", "no", "off", ""))) {
-  stop("ZIGR_CHECKED_SEXP must be a boolean value")
-}
-
-build_settings <- list(
-  optimization = Sys.getenv("ZIGR_OPTIMIZE", unset = "ReleaseFast"),
-  target = Sys.getenv("ZIGR_TARGET", unset = "native"),
-  cpu_features = Sys.getenv("ZIGR_CPU_FEATURES", unset = "default"),
-  checked_sexp = checked_sexp_value %in% c("1", "true", "yes", "on"),
-  cache_dir = zig_cache_dir,
-  global_cache_dir = zig_global_cache_dir,
-  command = if (do_build) "bash build_all.sh" else "prebuilt runner libraries",
-  requested_rebuild = do_build
-)
-run_metadata$environment <- capture_environment_manifest(
-  root_dir,
-  all_runners,
-  blas_env,
-  build_settings,
-  evidence,
-  r_provenance,
-  source_root = normalizePath("..")
-)
-validate_environment_manifest(run_metadata$environment)
-write_run_manifest(run_dir, run_metadata)
-
-worker_process_args <- function(kind, runner_name, validation_only = FALSE, validation_output = NULL,
-                                timing = NULL, memory = NULL) {
-  if (!(kind %in% c("task", "fixture"))) stop("worker kind must be task or fixture")
-  worker_args <- c(
-    "benchmark_worker.R", sprintf("--kind=%s", kind),
-    sprintf("--runner=%s", runner_name),
-    sprintf("--%s=%s", if (identical(kind, "task")) "results-dir" else "run-dir", run_dir)
-  )
-  if (identical(kind, "task")) worker_args <- c(
-    worker_args,
-    sprintf("--input-manifest=%s", input_manifest_path),
-    sprintf("--expected-input-manifest-digest=%s", run_metadata$input_manifest$digest),
-    sprintf("--master-seed=%d", master_seed)
-  )
-  if (validation_only) {
-    worker_args <- c(worker_args, "--validation-only", sprintf("--validation-output=%s", validation_output))
-  } else {
-    correctness_path <- if (identical(kind, "task")) task_correctness_path else fixture_correctness_path
-    worker_args <- c(
-      worker_args,
-      sprintf("--validated-correctness=%s", correctness_path)
-    )
-  }
-  if (identical(kind, "task") && !is.null(tasks_filter)) {
-    worker_args <- c(worker_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
-  }
-  if (!is.null(timing)) {
-    ids <- as.character(timing$ids)
-    counts <- as.integer(timing$counts[ids])
-    group_orders <- as.integer(timing$group_orders[ids])
-    if (anyNA(counts) || anyNA(group_orders)) stop("worker timing selection is incomplete")
-    if (identical(kind, "task")) {
-      worker_args <- worker_args[!grepl("^--tasks=", worker_args)]
-      worker_args <- c(worker_args, sprintf("--task-ids=%s", paste(ids, collapse = ",")))
-    } else {
-      worker_args <- c(worker_args, sprintf("--fixtures=%s", paste(ids, collapse = ",")))
-    }
-    worker_args <- c(
-      worker_args,
-      sprintf("--timing-stage=%s", timing$stage),
-      sprintf("--timing-counts=%s", paste(paste(ids, counts, sep = "="), collapse = ",")),
-      sprintf("--batch-output=%s", timing$output),
-      sprintf("--batch=%d", timing$batch), sprintf("--attempt=%d", timing$attempt),
-      sprintf("--process-epoch=%d", timing$process_epoch),
-      sprintf("--member-order=%d", timing$member_order),
-      sprintf("--group-orders=%s", paste(paste(ids, group_orders, sep = "="), collapse = ","))
-    )
-  }
-  if (!is.null(memory)) {
-    if (!identical(kind, "fixture") || !is.null(timing)) stop("memory work requires one fixture row outside timing")
-    worker_args <- c(
-      worker_args,
-      sprintf("--memory-row=%s", memory$row_id),
-      sprintf("--memory-output=%s", memory$output)
-    )
-  }
-  worker_args
-}
-
-cat("Trust and correctness preflight\n")
-correctness_root <- file.path(run_dir, "correctness")
-task_correctness_path <- run_correctness_artifact_paths(run_dir, run_metadata, "task")
-fixture_correctness_path <- run_correctness_artifact_paths(run_dir, run_metadata, "fixture")
-correctness_staging_root <- file.path(run_dir, ".staging", "correctness")
-task_correctness_staging <- file.path(correctness_staging_root, "tasks")
-fixture_correctness_staging <- file.path(correctness_staging_root, "fixtures")
-if (run_fixtures) {
-  for (rn in names(all_runners)) {
-    code <- system2(
-      "Rscript",
-      args = worker_process_args("fixture",
-        rn, validation_only = TRUE, validation_output = file.path(fixture_correctness_staging, paste0(rn, ".csv"))
-      ),
-      env = blas_env, stdout = "", stderr = ""
-    )
-    if (code != 0L) {
-      run_error <- sprintf("fixture validation preflight failed for %s with exit code %d", rn, code)
-      stop(run_error)
-    }
-  }
-  combine_csv_files_once(
-    file.path(fixture_correctness_staging, paste0(names(all_runners), ".csv")),
-    fixture_correctness_path,
-    "fixture correctness evidence"
-  )
-}
-if (run_tasks) {
-  for (rn in names(all_runners)) {
-    code <- system2(
-      "Rscript",
-      args = worker_process_args("task",
-        rn, validation_only = TRUE, validation_output = file.path(task_correctness_staging, paste0(rn, ".csv"))
-      ),
-      env = blas_env, stdout = "", stderr = ""
-    )
-    if (code != 0L) {
-      run_error <- sprintf("runner validation preflight failed for %s with exit code %d", rn, code)
-      stop(run_error)
-    }
-  }
-  combine_csv_files_once(
-    file.path(task_correctness_staging, paste0(names(all_runners), ".csv")),
-    task_correctness_path,
-    "task correctness evidence"
-  )
-}
-unlink(correctness_staging_root, recursive = TRUE)
-cat("\n")
-
-correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
-validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
-
-run_metadata$correctness_stage <- c(list(
-  completed_at = run_manifest_timestamp(),
-  suite = suite,
-  fixture_runners = if (run_fixtures) sort(names(all_runners)) else character(0),
-  task_runners = if (run_tasks) sort(names(all_runners)) else character(0),
+  runners = as.list(selected_runners),
   tasks = as.list(selected_tasks),
-  source_tree_digest = as.character(run_metadata$environment$source_tree$digest),
-  source_ledger_identity_digest = as.character(run_metadata$environment$tool_source_ledger$identity_digest)
-), correctness_evidence)
-write_run_manifest(run_dir, run_metadata)
+  master_seed = master_seed,
+  input_recipe_version = "revision-v1",
+  input_seeds = setNames(lapply(selected_tasks, function(task) {
+    task_input_seed(master_seed, task, "revision-v1")
+  }), selected_tasks),
+  rng_event_seed = task_input_seed(master_seed, "rng", "direct-timing-v1"),
+  source_tree = source_tree_identity(normalizePath("..")),
+  artifacts = artifacts,
+  timing_policy = timing_policy,
+  measurement_mode = if (correctness_only) "correctness_only" else "timed",
+  command = as.list(commandArgs())
+)
+write_run_manifest(run_dir, metadata)
+
+completed <- FALSE
+failure <- NULL
+on.exit({
+  if (!completed) {
+    metadata$status <- "incomplete"
+    metadata$status_message <- if (is.null(failure)) geterrmessage() else failure
+    metadata$finished_at <- run_manifest_timestamp()
+    try(write_run_manifest(run_dir, metadata), silent = TRUE)
+  }
+}, add = TRUE)
+
+staging <- file.path(run_dir, ".staging")
+correctness_staging <- file.path(staging, "correctness")
+sizing_staging <- file.path(staging, "sizing")
+timing_staging <- file.path(staging, "timing")
+dir.create(correctness_staging, recursive = TRUE, showWarnings = FALSE)
+blas_environment <- c("OPENBLAS_NUM_THREADS=1")
+task_argument <- paste(selected_tasks, collapse = ",")
+
+cat("Correctness\n")
+for (runner in selected_runners) {
+  status <- system2(
+    "Rscript",
+    c(
+      "benchmark_worker.R", paste0("--runner=", runner), "--mode=correctness",
+      paste0("--output-root=", correctness_staging), paste0("--tasks=", task_argument),
+      paste0("--master-seed=", master_seed)
+    ),
+    env = blas_environment,
+    stdout = "", stderr = "",
+    timeout = as.integer(timing_policy$worker_timeout_seconds)
+  )
+  if (!identical(status, 0L)) {
+    failure <- sprintf("correctness worker failed for %s with exit code %d", runner, status)
+    stop(failure)
+  }
+}
+correctness_files <- file.path(correctness_staging, paste0(selected_runners, ".csv"))
+combine_csv_files_once(correctness_files, file.path(run_dir, "correctness.csv"), "correctness")
+correctness <- read.csv(file.path(run_dir, "correctness.csv"), stringsAsFactors = FALSE)
+expected_correctness <- expand.grid(
+  runner = selected_runners, task = selected_tasks,
+  stringsAsFactors = FALSE
+)
+if (nrow(correctness) != nrow(expected_correctness) || any(correctness$status != "PASS") ||
+    !setequal(paste(correctness$runner, correctness$task),
+              paste(expected_correctness$runner, expected_correctness$task))) {
+  stop("correctness artifact does not cover every selected runner and task")
+}
+unlink(correctness_staging, recursive = TRUE)
+metadata$correctness_completed_at <- run_manifest_timestamp()
+write_run_manifest(run_dir, metadata)
 
 if (correctness_only) {
-  validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
-  run_metadata$status <- "correctness_complete"
-  write_run_manifest(run_dir, run_metadata)
-  run_complete <- TRUE
-  options(error = previous_error_handler)
-  cat("Correctness-only stage completed without timing artifacts.\n")
+  unlink(staging, recursive = TRUE)
+  validate_source_tree_identity(normalizePath(".."), metadata$source_tree)
+  metadata$status <- "correctness_complete"
+  metadata$finished_at <- run_manifest_timestamp()
+  metadata$outputs <- list(correctness = list(
+    relative_path = "correctness.csv",
+    md5 = unname(as.character(tools::md5sum(file.path(run_dir, "correctness.csv")))[[1L]])
+  ))
+  write_run_manifest(run_dir, metadata)
+  completed <- TRUE
+  cat("Correctness-only run complete.\n")
   quit(save = "no", status = 0L, runLast = FALSE)
 }
 
-timing_root <- file.path(run_dir, ".staging", "timing")
-dir.create(timing_root, recursive = TRUE, showWarnings = FALSE)
-timing_started_at <- proc.time()[["elapsed"]]
-timing_failures <- list()
-worker_process_epoch <- 0L
-
-prior_packing_hint <- function(universe, groups) {
-  runs_root <- file.path(root_dir, "results", "runs")
-  empty <- list(run_id = NULL, estimated_ms = stats::setNames(rep(0, length(groups)), groups))
-  if (!dir.exists(runs_root)) return(empty)
-  candidates <- list.dirs(runs_root, recursive = FALSE, full.names = TRUE)
-  candidates <- setdiff(candidates, normalizePath(run_dir, mustWork = FALSE))
-  if (length(candidates) == 0L) return(empty)
-  candidates <- candidates[order(file.info(candidates)$mtime, decreasing = TRUE)]
-  for (candidate in candidates) {
-    prior <- tryCatch(read_run_manifest(candidate), error = function(error) NULL)
-    if (is.null(prior) || !identical(as.character(prior$status), "complete") ||
-        !identical(
-          as.character(prior$environment$source_tree$digest),
-          as.character(run_metadata$environment$source_tree$digest)
-        ) || !all(names(all_runners) %in% run_manifest_values(prior$runners))) next
-    trusted <- tryCatch({
-      validate_run_completion_contract(prior)
-      validate_run_completion_artifacts(candidate, prior)
-      TRUE
-    }, error = function(error) FALSE)
-    if (!trusted) next
-    summary <- tryCatch(
-      read_run_summary_table(candidate, prior, universe, names(all_runners)),
-      error = function(error) NULL
-    )
-    if (is.null(summary)) next
-    id <- if (identical(universe, "task")) as.character(summary$task) else as.character(summary$fixture)
-    usable <- summary$status == "PASS" & summary$runner %in% names(all_runners) & id %in% groups &
-      is.finite(as.numeric(summary$median_ms)) & as.numeric(summary$median_ms) >= 0
-    estimates <- tapply(as.numeric(summary$median_ms[usable]), id[usable], sum)
-    hint <- empty$estimated_ms
-    hint[names(estimates)] <- as.numeric(estimates)
-    return(list(run_id = as.character(prior$run_id), estimated_ms = hint))
-  }
-  empty
-}
-
-stage_files <- function(universe, stage, pattern) {
-  root <- file.path(timing_root, universe, stage)
-  if (!dir.exists(root)) return(character(0))
-  list.files(root, pattern = pattern, recursive = TRUE, full.names = TRUE)
-}
-
-prepare_timing_stage <- function(stage, groups, counts, schedule_seed, packing_estimates = NULL) {
-  group_rows <- timing_group_schedule(groups, schedule_seed)
-  group_rows$estimated_ms <- if (identical(stage, "pilot")) {
-    if (is.null(packing_estimates)) rep(0, nrow(group_rows)) else {
-      as.numeric(packing_estimates[as.character(group_rows$group_id)]) *
-        as.integer(run_metadata$timing_policy$pilot_iterations)
-    }
-  } else {
-    as.numeric(counts$estimated_confirmation_ms[match(group_rows$group_id, counts$group_id)])
-  }
-  batches <- pack_timing_batches(group_rows, run_metadata$timing_policy)
-  schedule <- timing_batch_schedule(batches, names(all_runners))
-  list(schedule = schedule, batches = batches)
-}
-
-run_timing_stage <- function(universe, stage, groups, counts, schedule_seed, prepared = NULL,
-                             packing_estimates = NULL) {
-  if (is.null(prepared)) {
-    prepared <- prepare_timing_stage(stage, groups, counts, schedule_seed, packing_estimates)
-  }
-  schedule <- prepared$schedule
-  batches <- prepared$batches
-  executor <- function(rows, timeout_seconds, attempt, batch_epoch) {
-    batch_id <- unique(as.integer(rows$batch))
-    offset <- (batch_id - 1L) %% length(all_runners)
-    runner_order <- names(all_runners)[((seq_along(all_runners) - 1L + offset) %% length(all_runners)) + 1L]
-    output_root <- file.path(
-      timing_root, universe, stage,
-      sprintf("batch-%03d-attempt-%d-epoch-%d", batch_id, attempt, batch_epoch)
-    )
-    ids <- as.character(rows$group_id)
-    selected_counts <- if (identical(stage, "pilot")) {
-      stats::setNames(rep(as.integer(run_metadata$timing_policy$pilot_iterations), length(ids)), ids)
-    } else {
-      stats::setNames(as.integer(counts$confirmation_iterations[match(ids, counts$group_id)]), ids)
-    }
-    group_orders <- stats::setNames(as.integer(rows$group_order), ids)
-    codes <- integer(length(runner_order))
-    batch_started <- proc.time()[["elapsed"]]
-    for (index in seq_along(runner_order)) {
-      runner <- runner_order[[index]]
-      remaining_timeout <- floor(timeout_seconds - (proc.time()[["elapsed"]] - batch_started))
-      if (remaining_timeout < 1L) {
-        codes[index:length(codes)] <- 124L
-        break
-      }
-      output <- file.path(output_root, runner)
-      worker_process_epoch <<- worker_process_epoch + 1L
-      args <- worker_process_args(universe, runner, timing = list(
-        ids = ids, counts = selected_counts, group_orders = group_orders,
-        stage = stage, output = output, batch = batch_id, attempt = attempt,
-        process_epoch = worker_process_epoch, member_order = index
-      ))
-      codes[[index]] <- system2(
-        "Rscript", args = args, env = blas_env, stdout = "", stderr = "",
-        timeout = as.integer(remaining_timeout)
-      )
-    }
-    ok <- all(!is.na(codes) & codes == 0L)
-    timed_out <- any(codes == 124L, na.rm = TRUE)
-    if (!ok && dir.exists(output_root)) {
-      sample_files <- list.files(output_root, pattern = "^samples\\.csv$", recursive = TRUE, full.names = TRUE)
-      reason <- if (timed_out) "batch_timeout" else "worker_failure"
-      for (path in sample_files) {
-        rows <- read.csv(path, stringsAsFactors = FALSE)
-        rows$excluded <- TRUE
-        rows$exclusion_reason <- reason
-        write_csv(rows, path)
-      }
-      unlink(list.files(output_root, pattern = "_summary\\.csv$", recursive = TRUE, full.names = TRUE))
-    }
-    list(ok = ok, timed_out = timed_out, exit_codes = codes)
-  }
-  outcomes <- run_timing_batches(
-    batches, executor,
-    as.integer(run_metadata$timing_policy$batch_timeout_seconds),
-    as.integer(run_metadata$timing_policy$total_run_budget_seconds),
-    started_at = timing_started_at
+dir.create(sizing_staging, recursive = TRUE, showWarnings = FALSE)
+cat("Batch sizing\n")
+for (runner in selected_runners) {
+  status <- system2(
+    "Rscript",
+    c(
+      "benchmark_worker.R", paste0("--runner=", runner), "--mode=sizing",
+      paste0("--output-root=", sizing_staging), paste0("--tasks=", task_argument),
+      paste0("--master-seed=", master_seed)
+    ),
+    env = blas_environment,
+    stdout = "", stderr = "",
+    timeout = as.integer(timing_policy$worker_timeout_seconds)
   )
-  bad <- outcomes[!grepl("^complete$", outcomes$status), , drop = FALSE]
-  if (nrow(bad) > 0L) timing_failures[[paste(universe, stage, sep = ":")]] <<- bad
-  list(schedule = schedule, batches = batches, outcomes = outcomes)
-}
-
-read_stage_samples <- function(universe, stage) {
-  files <- stage_files(universe, stage, "^samples\\.csv$")
-  if (length(files) == 0L) return(data.frame())
-  do.call(rbind, lapply(files, read.csv, stringsAsFactors = FALSE))
-}
-
-pilot_plan_for <- function(universe, groups, eligible_groups) {
-  if (length(groups) == 0L) {
-    return(data.frame(
-      group_id = character(), pilot_complete = logical(), pilot_median_group_ms = numeric(),
-      pilot_median_planning_group_ms = numeric(),
-      pilot_max_cv_pct = numeric(), pilot_max_drift_pct = numeric(),
-      confirmation_iterations = integer(), estimated_confirmation_ms = numeric(),
-      status = character(), stringsAsFactors = FALSE
-    ))
+  if (!identical(status, 0L)) {
+    failure <- sprintf("sizing worker failed for %s with exit code %d", runner, status)
+    stop(failure)
   }
-  raw <- read_stage_samples(universe, "pilot")
-  if (nrow(raw) == 0L) {
-    return(data.frame(
-      group_id = groups, pilot_complete = FALSE, pilot_median_group_ms = NA_real_,
-      pilot_median_planning_group_ms = NA_real_,
-      pilot_max_cv_pct = NA_real_, pilot_max_drift_pct = NA_real_,
-      confirmation_iterations = NA_integer_, estimated_confirmation_ms = NA_real_,
-      status = ifelse(groups %in% eligible_groups, "incomplete", "unsupported"), stringsAsFactors = FALSE
-    ))
-  }
-  if ("excluded" %in% names(raw)) raw <- raw[!as.logical(raw$excluded), , drop = FALSE]
-  if ("phase" %in% names(raw)) raw <- raw[raw$phase == "timed", , drop = FALSE]
-  raw$group_id <- if (identical(universe, "task")) as.character(raw$task) else as.character(raw$fixture)
-  raw$member_id <- if (identical(universe, "task")) {
-    as.character(raw$runner)
-  } else paste(raw$runner, raw$row_id, sep = ":")
-  plan <- pilot_group_plan(
-    raw[c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")],
-    run_metadata$timing_policy
-  )
-  missing <- setdiff(groups, plan$group_id)
-  if (length(missing) > 0L) plan <- rbind(plan, data.frame(
-    group_id = missing, pilot_complete = FALSE, pilot_median_group_ms = NA_real_,
-    pilot_median_planning_group_ms = NA_real_,
-    pilot_max_cv_pct = NA_real_, pilot_max_drift_pct = NA_real_,
-    confirmation_iterations = NA_integer_, estimated_confirmation_ms = NA_real_,
-    status = ifelse(missing %in% eligible_groups, "incomplete", "unsupported"), stringsAsFactors = FALSE
-  ))
-  plan[match(groups, plan$group_id), , drop = FALSE]
 }
-
-task_groups <- as.character(selected_tasks)
-fixture_groups <- if (run_fixtures) as.character(evidence$fixtures) else character(0)
-task_eligible_groups <- unique(as.character(evidence$tasks$task[
-  evidence$tasks$runner %in% names(all_runners) & evidence$tasks$timing_eligible
-]))
-fixture_eligible_groups <- unique(as.character(evidence$fixture_rows$fixture[
-  evidence$fixture_rows$runner %in% names(all_runners) & evidence$fixture_rows$timing_eligible
-]))
-task_seed <- as.integer((as.double(master_seed) + 3001) %% 2147483646L)
-fixture_seed <- as.integer((as.double(master_seed) + 6001) %% 2147483646L)
-if (task_seed < 1L) task_seed <- 1L
-if (fixture_seed < 1L) fixture_seed <- 1L
-
-cat("Bounded pilot measurement\n")
-task_hint <- prior_packing_hint("task", task_groups)
-fixture_hint <- prior_packing_hint("fixture", fixture_groups)
-empty_timing_stage <- function() list(schedule = data.frame(), batches = data.frame(), outcomes = data.frame())
-task_pilot <- if (run_tasks) {
-  run_timing_stage(
-    "task", "pilot", task_groups, NULL, task_seed, packing_estimates = task_hint$estimated_ms
-  )
-} else empty_timing_stage()
-fixture_pilot <- if (run_fixtures) {
-  run_timing_stage(
-    "fixture", "pilot", fixture_groups, NULL, fixture_seed, packing_estimates = fixture_hint$estimated_ms
-  )
-} else empty_timing_stage()
-task_plan <- pilot_plan_for("task", task_groups, task_eligible_groups)
-fixture_plan <- pilot_plan_for("fixture", fixture_groups, fixture_eligible_groups)
-
-confirmation_candidates <- function(universe, plan, seed) {
-  eligible <- as.character(plan$group_id[plan$status == "confirmation"])
-  if (length(eligible) == 0L) {
-    return(data.frame(
-      universe = character(), group_id = character(), group_order = integer(),
-      estimated_ms = numeric(), stringsAsFactors = FALSE
-    ))
-  }
-  ordered <- timing_group_schedule(eligible, seed)
-  ordered$universe <- universe
-  ordered$estimated_ms <- as.numeric(
-    plan$estimated_confirmation_ms[match(ordered$group_id, plan$group_id)]
-  )
-  ordered[c("universe", "group_id", "group_order", "estimated_ms")]
+sizing_files <- file.path(sizing_staging, paste0(selected_runners, "-sizing.csv"))
+sizing_probe_summary_files <- file.path(sizing_staging, paste0(selected_runners, "-probe-summary.csv"))
+sizing <- do.call(rbind, lapply(sizing_files, read.csv, stringsAsFactors = FALSE))
+sizing_probe_summaries <- do.call(rbind, lapply(sizing_probe_summary_files, read.csv, stringsAsFactors = FALSE))
+rownames(sizing) <- NULL
+if (!identical(as.character(sizing_probe_summaries$runner), selected_runners)) {
+  stop("batch sizing timer-floor coverage is invalid")
 }
-confirmation_candidates <- rbind(
-  confirmation_candidates("task", task_plan, task_seed),
-  confirmation_candidates("fixture", fixture_plan, fixture_seed)
+batch_repetitions <- select_direct_batch_repetitions(
+  sizing,
+  setNames(as.numeric(sizing_probe_summaries$timer_floor_ms), selected_runners),
+  selected_runners, selected_tasks
 )
-confirmation_candidates$budget_order <- seq_len(nrow(confirmation_candidates))
-remaining_confirmation_budget_ms <- max(
-  0,
-  (as.numeric(run_metadata$timing_policy$total_run_budget_seconds) -
-    (proc.time()[["elapsed"]] - timing_started_at)) * 1000
+timing_policy$batch_repetitions <- as.list(batch_repetitions)
+metadata$timing_policy <- timing_policy
+write_run_manifest(run_dir, metadata)
+unlink(sizing_staging, recursive = TRUE)
+
+dir.create(timing_staging, recursive = TRUE, showWarnings = FALSE)
+cat("Direct timing\n")
+timing_started <- proc.time()[["elapsed"]]
+for (runner in selected_runners) {
+  elapsed <- proc.time()[["elapsed"]] - timing_started
+  remaining <- floor(timing_policy$total_run_timeout_seconds - elapsed)
+  if (remaining < 1L) stop("total direct timing timeout expired")
+  status <- system2(
+    "Rscript",
+    c(
+      "benchmark_worker.R", paste0("--runner=", runner), "--mode=timing",
+      paste0("--output-root=", timing_staging), paste0("--tasks=", task_argument),
+      paste0("--measurement-samples=", timing_policy$measurement_samples),
+      paste0("--batch-repetitions=", format_named_integer_map(batch_repetitions, "batch repetitions")),
+      paste0("--master-seed=", master_seed)
+    ),
+    env = blas_environment,
+    stdout = "", stderr = "",
+    timeout = as.integer(min(timing_policy$worker_timeout_seconds, remaining))
+  )
+  if (!identical(status, 0L)) {
+    failure <- sprintf("timing worker failed for %s with exit code %d", runner, status)
+    stop(failure)
+  }
+}
+
+sample_files <- file.path(timing_staging, paste0(selected_runners, "-samples.csv"))
+first_files <- file.path(timing_staging, paste0(selected_runners, "-first-call.csv"))
+probe_files <- file.path(timing_staging, paste0(selected_runners, "-probes.csv"))
+probe_summary_files <- file.path(timing_staging, paste0(selected_runners, "-probe-summary.csv"))
+samples <- do.call(rbind, lapply(sample_files, read.csv, stringsAsFactors = FALSE))
+first_calls <- do.call(rbind, lapply(first_files, read.csv, stringsAsFactors = FALSE))
+probe_samples <- do.call(rbind, lapply(probe_files, read.csv, stringsAsFactors = FALSE))
+probe_summaries <- do.call(rbind, lapply(probe_summary_files, read.csv, stringsAsFactors = FALSE))
+rownames(samples) <- NULL
+rownames(first_calls) <- NULL
+validate_direct_timing_samples(
+  samples, selected_runners, selected_tasks, timing_policy$measurement_samples
 )
-confirmation_budget <- admit_timing_budget(
-  confirmation_candidates, remaining_confirmation_budget_ms
+
+expected_probe_columns <- c(
+  "runner", "probe", "probe_sample", "batch_repetitions", "batch_elapsed_ms",
+  "elapsed_per_event_ms", "gc_elapsed_ms"
 )
-apply_confirmation_budget <- function(plan, universe) {
-  decisions <- confirmation_budget[
-    confirmation_budget$universe == universe & !confirmation_budget$admitted,
-    , drop = FALSE
+expected_probe_summary_columns <- c(
+  "runner", "timer_floor_ms", "nanotime_elapsed_ms", "independent_elapsed_ms"
+)
+expected_probe_runners <- rep(
+  selected_runners,
+  each = length(measurement_probe_names()) * timing_policy$measurement_probe_samples
+)
+if (!identical(names(probe_samples), expected_probe_columns) ||
+    !identical(names(probe_summaries), expected_probe_summary_columns) ||
+    !identical(as.character(probe_samples$runner), expected_probe_runners) ||
+    !identical(as.character(probe_summaries$runner), selected_runners)) {
+  stop("measurement probe staging order or coverage is invalid")
+}
+row_records <- function(rows) {
+  lapply(seq_len(nrow(rows)), function(index) as.list(rows[index, , drop = FALSE]))
+}
+metadata$measurement_probes <- setNames(lapply(selected_runners, function(runner) {
+  probe <- probe_summaries[probe_summaries$runner == runner, , drop = FALSE]
+  raw <- probe_samples[
+    probe_samples$runner == runner,
+    setdiff(names(probe_samples), "runner"),
+    drop = FALSE
   ]
-  if (nrow(decisions) > 0L) {
-    plan$status[match(decisions$group_id, plan$group_id)] <- "incomplete"
-  }
-  plan
-}
-task_plan <- apply_confirmation_budget(task_plan, "task")
-fixture_plan <- apply_confirmation_budget(fixture_plan, "fixture")
-
-task_confirmation_groups <- task_plan$group_id[task_plan$status == "confirmation"]
-fixture_confirmation_groups <- fixture_plan$group_id[fixture_plan$status == "confirmation"]
-task_confirmation_frozen <- if (length(task_confirmation_groups) > 0L) {
-  prepare_timing_stage("confirmation", task_confirmation_groups, task_plan, task_seed)
-} else list(schedule = data.frame(), batches = data.frame())
-fixture_confirmation_frozen <- if (length(fixture_confirmation_groups) > 0L) {
-  prepare_timing_stage("confirmation", fixture_confirmation_groups, fixture_plan, fixture_seed)
-} else list(schedule = data.frame(), batches = data.frame())
-
-run_metadata$timing_execution <- list(
-  schedule_seeds = list(task = task_seed, fixture = fixture_seed),
-  packing_hint_run_ids = list(task = task_hint$run_id, fixture = fixture_hint$run_id),
-  confirmation_budget = list(
-    available_ms = remaining_confirmation_budget_ms,
-    decisions = confirmation_budget
-  ),
-  task_plan = task_plan, fixture_plan = fixture_plan,
-  task_pilot_schedule = task_pilot$schedule, fixture_pilot_schedule = fixture_pilot$schedule,
-  task_pilot_batches = task_pilot$batches, fixture_pilot_batches = fixture_pilot$batches,
-  task_confirmation_schedule = task_confirmation_frozen$schedule,
-  fixture_confirmation_schedule = fixture_confirmation_frozen$schedule,
-  task_confirmation_batches = task_confirmation_frozen$batches,
-  fixture_confirmation_batches = fixture_confirmation_frozen$batches,
-  frozen_at = run_manifest_timestamp()
-)
-write_run_manifest(run_dir, run_metadata)
-
-task_confirmation <- if (length(task_confirmation_groups) > 0L) {
-  run_timing_stage(
-    "task", "confirmation", task_confirmation_groups, task_plan, task_seed,
-    prepared = task_confirmation_frozen
+  record <- list(
+    timer_floor_ms = probe$timer_floor_ms[[1L]],
+    nanotime_elapsed_ms = probe$nanotime_elapsed_ms[[1L]],
+    independent_elapsed_ms = probe$independent_elapsed_ms[[1L]],
+    samples = row_records(raw)
   )
-} else list(schedule = data.frame(), batches = data.frame(), outcomes = data.frame())
-fixture_confirmation <- if (length(fixture_confirmation_groups) > 0L) {
-  run_timing_stage(
-    "fixture", "confirmation", fixture_confirmation_groups, fixture_plan, fixture_seed,
-    prepared = fixture_confirmation_frozen
+  validate_measurement_probe_record(
+    record, runner, timing_policy$measurement_probe_samples
   )
-} else list(schedule = data.frame(), batches = data.frame(), outcomes = data.frame())
-
-run_metadata$timing_execution$outcomes <- list(
-  task_pilot = task_pilot$outcomes, fixture_pilot = fixture_pilot$outcomes,
-  task_confirmation = task_confirmation$outcomes,
-  fixture_confirmation = fixture_confirmation$outcomes
-)
-run_metadata$timing_execution$finished_at <- run_manifest_timestamp()
-write_run_manifest(run_dir, run_metadata)
-
-write_timing_samples <- function(universe) {
-  pilot_samples <- read_stage_samples(universe, "pilot")
-  confirmation_samples <- read_stage_samples(universe, "confirmation")
-  samples <- if (nrow(confirmation_samples) == 0L) pilot_samples else rbind(pilot_samples, confirmation_samples)
-  if (nrow(samples) == 0L) return(invisible(NULL))
-  write_csv_once(
-    samples,
-    run_sample_artifact_paths(run_dir, run_metadata, universe, names(all_runners)[[1L]], "."),
-    paste(universe, "samples")
-  )
+  record
+}), selected_runners)
+write_run_manifest(run_dir, metadata)
+timer_floors <- setNames(vapply(metadata$measurement_probes, function(probe) {
+  as.numeric(probe$timer_floor_ms)
+}, numeric(1)), selected_runners)
+summary <- summarize_direct_timing(samples, first_calls, timer_floors)
+if (any(summary$distribution_status == "BLOCK")) {
+  blocked <- summary[summary$distribution_status == "BLOCK", c(
+    "runner", "task", "distribution_reason"
+  ), drop = FALSE]
+  stop(paste("direct timing blocked unexplained rows:", paste(
+    paste(blocked$runner, blocked$task, blocked$distribution_reason, sep = "/"),
+    collapse = "; "
+  )))
 }
+write_csv_once(samples, file.path(run_dir, "timing_samples.csv"), "timing samples")
+write_csv_once(summary, file.path(run_dir, "timing_summary.csv"), "timing summary")
+unlink(staging, recursive = TRUE)
 
-if (run_tasks) write_timing_samples("task")
-if (run_fixtures) write_timing_samples("fixture")
-
-if (length(timing_failures) > 0L) {
-  run_error <- paste(
-    "bounded timing left incomplete batches after continuing the queue:",
-    paste(names(timing_failures), collapse = ", ")
-  )
-  stop(run_error)
-}
-
-consolidate_timing <- function(universe, plan, output = run_summary_artifact_paths(
-    run_dir, run_metadata, universe
-  )) {
-  pilot_files <- stage_files(universe, "pilot", "_summary\\.csv$")
-  confirmation_files <- stage_files(universe, "confirmation", "_summary\\.csv$")
-  pilot <- do.call(rbind, lapply(pilot_files, read.csv, stringsAsFactors = FALSE))
-  confirmation <- if (length(confirmation_files) == 0L) pilot[0, , drop = FALSE] else {
-    do.call(rbind, lapply(confirmation_files, read.csv, stringsAsFactors = FALSE))
-  }
-  id_field <- if (identical(universe, "task")) "task" else "fixture"
-  confirmed <- plan$group_id[plan$status == "confirmation"]
-  summary <- rbind(
-    pilot[!(as.character(pilot[[id_field]]) %in% confirmed), , drop = FALSE],
-    confirmation
-  )
-  key_fields <- if (identical(universe, "task")) c("runner", "task") else c("runner", "row_id")
-  keys <- do.call(paste, c(summary[key_fields], sep = "\r"))
-  if (anyDuplicated(keys)) stop(sprintf("%s staged summaries contain duplicate rows", universe))
-  write_csv_once(summary, output, paste(universe, "summary"))
-}
-
-if (run_tasks) consolidate_timing("task", task_plan)
-memory_root <- file.path(run_dir, ".staging", "memory")
-fixture_summary_staging <- file.path(memory_root, "fixture_summary.csv")
-if (run_fixtures) consolidate_timing("fixture", fixture_plan, fixture_summary_staging)
-unlink(timing_root, recursive = TRUE)
-
-if (run_fixtures) {
-  fixture_summary_path <- run_summary_artifact_paths(run_dir, run_metadata, "fixture")
-  fixture_summary <- read.csv(fixture_summary_staging, stringsAsFactors = FALSE)
-  host_support <- peak_rss_host_support()
-  memory_results <- NULL
-  eligible <- peak_rss_fixture_eligible(
-    fixture_summary$fixture, fixture_summary$variant, fixture_summary$status, run_metadata$timing_policy
-  )
-  if (isTRUE(host_support$supported) && any(eligible)) {
-    output_paths <- character(sum(eligible))
-    eligible_rows <- which(eligible)
-    for (output_index in seq_along(eligible_rows)) {
-      row <- fixture_summary[eligible_rows[[output_index]], , drop = FALSE]
-      output <- file.path(memory_root, paste0(row$runner, "-", row$row_id, ".csv"))
-      output_paths[[output_index]] <- output
-      code <- system2(
-        "Rscript",
-        args = worker_process_args(
-          "fixture", as.character(row$runner),
-          memory = list(row_id = as.character(row$row_id), output = output)
-        ),
-        env = blas_env, stdout = "", stderr = "",
-        timeout = as.integer(run_metadata$timing_policy$peak_rss_timeout_seconds)
-      )
-      if (!identical(code, 0L)) {
-        unlink(memory_root, recursive = TRUE)
-        stop(sprintf("peak RSS worker failed for %s/%s with exit code %d", row$runner, row$row_id, code))
-      }
-    }
-    memory_results <- do.call(rbind, lapply(output_paths, read.csv, stringsAsFactors = FALSE))
-  }
-  fixture_summary <- apply_peak_rss_results(
-    fixture_summary, memory_results, run_metadata$timing_policy, host_support
-  )
-  write_csv_once(fixture_summary, fixture_summary_path, "fixture summary with peak RSS")
-  unlink(memory_root, recursive = TRUE)
-}
-
-final_correctness_evidence <- validate_correctness_artifacts(run_dir, run_metadata, evidence)
-if (!identical(final_correctness_evidence, correctness_evidence)) {
-  stop("correctness evidence changed after validation preflight")
-}
-validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
-validate_run_artifacts(run_dir, run_metadata)
-if (run_fixtures) {
-  validate_fixture_measurement_artifacts(run_dir, run_metadata, evidence)
-}
-validate_source_tree_identity(normalizePath(".."), run_metadata$environment$source_tree)
-run_metadata$completion_artifacts <- capture_run_completion_artifacts(run_dir, run_metadata)
-run_metadata$status <- "complete"
-run_metadata$finished_at <- run_manifest_timestamp()
-run_metadata$status_message <- NULL
-run_metadata$completion_contract <- capture_run_completion_contract(run_metadata)
-validate_run_completion_contract(run_metadata)
-validate_run_completion_artifacts(run_dir, run_metadata)
-validate_run_core_artifact_set(run_dir, run_metadata)
-write_run_manifest(run_dir, run_metadata)
-published_metadata <- read_run_manifest(run_dir)
-validate_run_completion_contract(published_metadata)
-validate_run_completion_artifacts(run_dir, published_metadata)
-validate_run_core_artifact_set(run_dir, published_metadata)
-run_complete <- TRUE
-options(error = previous_error_handler)
-
-timestamp_seconds <- function(start, end) {
-  parse <- function(value) as.POSIXct(value, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
-  as.numeric(difftime(parse(end), parse(start), units = "secs"))
-}
-format_duration <- function(seconds) {
-  seconds <- max(0, round(as.numeric(seconds)))
-  sprintf("%dm %02ds", seconds %/% 60L, seconds %% 60L)
-}
-task_summary <- if (run_tasks) {
-  read.csv(run_summary_artifact_paths(run_dir, run_metadata, "task"), stringsAsFactors = FALSE)
-} else data.frame()
-fixture_summary <- if (run_fixtures) {
-  read.csv(run_summary_artifact_paths(run_dir, run_metadata, "fixture"), stringsAsFactors = FALSE)
-} else data.frame()
-samples <- lapply(c(if (run_tasks) "task" else character(), if (run_fixtures) "fixture" else character()), function(universe) {
-  read.csv(run_sample_artifact_paths(run_dir, run_metadata, universe, names(all_runners)[[1L]], "."), stringsAsFactors = FALSE)
+validate_source_tree_identity(normalizePath(".."), metadata$source_tree)
+current_artifacts <- lapply(artifacts, function(record) {
+  path <- artifact_path(record$runner)
+  unname(as.character(tools::md5sum(path))[[1L]])
 })
-retained_samples <- sum(vapply(samples, function(rows) {
-  sum(rows$phase == "timed" & !rows$excluded)
-}, integer(1)))
-excluded_samples <- sum(vapply(samples, function(rows) sum(rows$excluded), integer(1)))
-retry_groups <- sum(vapply(run_metadata$timing_execution$outcomes, function(rows) {
-  if (is.null(rows) || nrow(rows) == 0L) return(0L)
-  sum(as.integer(rows$attempt) > 1L)
-}, integer(1)))
-task_confirmed <- if (run_tasks) sum(run_metadata$timing_execution$task_plan$status == "confirmation") else 0L
-task_floor <- if (run_tasks) sum(run_metadata$timing_execution$task_plan$status == "below_timer_floor") else 0L
-fixture_confirmed <- if (run_fixtures) sum(run_metadata$timing_execution$fixture_plan$status == "confirmation") else 0L
-fixture_floor <- if (run_fixtures) sum(run_metadata$timing_execution$fixture_plan$status == "below_timer_floor") else 0L
-run_files <- list.files(run_dir, recursive = TRUE, full.names = TRUE, all.files = TRUE, no.. = TRUE)
-run_info <- file.info(run_files)
-artifact_bytes <- sum(run_info$size[!run_info$isdir])
+if (!identical(current_artifacts, lapply(artifacts, `[[`, "md5"))) {
+  stop("runner artifacts changed during the run")
+}
 
-cat("\nRun summary\n")
+metadata$status <- "complete"
+metadata$finished_at <- run_manifest_timestamp()
+metadata$outputs <- lapply(
+  c("correctness.csv", "timing_samples.csv", "timing_summary.csv"),
+  function(name) list(relative_path = name, md5 = unname(as.character(
+    tools::md5sum(file.path(run_dir, name))
+  )[[1L]]))
+)
+names(metadata$outputs) <- c("correctness", "timing_samples", "timing_summary")
+write_run_manifest(run_dir, metadata)
+completed <- TRUE
+
 cat(sprintf(
-  "  Scope: %d runners | %d task workloads (%d rows) | %d fixture families (%d rows)\n",
-  length(all_runners), length(selected_tasks), nrow(task_summary),
-  if (run_fixtures) length(evidence$fixtures) else 0L, nrow(fixture_summary)
+  "Complete: %d runners, %d tasks, %d measurement samples.\n",
+  length(selected_runners), length(selected_tasks), nrow(samples)
 ))
-cat(sprintf(
-  "  Results: %d PASS | %d explicit gaps or non-timed rows\n",
-  sum(task_summary$status == "PASS") + sum(fixture_summary$status == "PASS"),
-  sum(task_summary$status != "PASS") + sum(fixture_summary$status != "PASS")
-))
-cat(sprintf(
-  "  Timing: tasks %d confirmed, %d below floor | fixtures %d confirmed, %d below floor\n",
-  task_confirmed, task_floor, fixture_confirmed, fixture_floor
-))
-cat(sprintf(
-  "  Samples: %d retained | %d excluded | %d retried groups\n",
-  retained_samples, excluded_samples, retry_groups
-))
-cat(sprintf(
-  "  Duration: correctness %s | pilot %s | confirmation %s | seal %s | total %s\n",
-  format_duration(timestamp_seconds(run_metadata$started_at, run_metadata$correctness_stage$completed_at)),
-  format_duration(timestamp_seconds(run_metadata$correctness_stage$completed_at, run_metadata$timing_execution$frozen_at)),
-  format_duration(timestamp_seconds(run_metadata$timing_execution$frozen_at, run_metadata$timing_execution$finished_at)),
-  format_duration(timestamp_seconds(run_metadata$timing_execution$finished_at, run_metadata$finished_at)),
-  format_duration(timestamp_seconds(run_metadata$started_at, run_metadata$finished_at))
-))
-cat(sprintf("  Artifacts: %d files | %.2f MiB\n", sum(!run_info$isdir), artifact_bytes / 1024^2))
-cat("Report generation is a separate explicit command.\n")
-cat("Done.\n")

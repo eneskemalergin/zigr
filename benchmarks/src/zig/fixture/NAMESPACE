@@ -1,3 +1,2 @@
 useDynLib(zigrFixture, .registration = TRUE, .fixes = "C_")
-exportPattern("^fixture_")
-
+exportPattern("^(bench|fixture)_")

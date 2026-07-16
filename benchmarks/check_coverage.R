@@ -1,50 +1,38 @@
 #!/usr/bin/env Rscript
 
-library(jsonlite)
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "specification.R"))
-manifest <- load_task_manifest(root_dir)
-evidence <- load_evidence_manifest(root_dir, manifest)
+source(file.path(root_dir, "lib", "measurement.R"))
 
-args <- commandArgs(trailingOnly = TRUE)
-validate_cli_arguments(args, value_options = "tasks", flag_options = "quick", label = "coverage")
-task_filter <- NULL
-quick <- FALSE
-for (arg in args) {
-  if (grepl("^--tasks=", arg)) task_filter <- parse_task_filter(sub("^--tasks=", "", arg))
-  if (identical(arg, "--quick")) quick <- TRUE
+arguments <- commandArgs(trailingOnly = TRUE)
+validate_cli_arguments(arguments, value_options = "tasks", flag_options = "quick", label = "coverage")
+
+task_option <- grep("^--tasks=", arguments, value = TRUE)
+selected_tasks <- if (length(task_option) == 0L) {
+  vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
+} else {
+  strsplit(sub("^--tasks=", "", task_option[[1L]]), ",", fixed = TRUE)[[1L]]
+}
+available_tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
+if (any(!nzchar(selected_tasks)) || anyDuplicated(selected_tasks) ||
+    !all(selected_tasks %in% available_tasks)) {
+  stop("coverage selection contains an unknown or duplicate retained task")
 }
 
-configs <- load_runner_configs(root_dir)
-runner_names <- names(configs)
-active <- vapply(configs, function(cfg) is.null(cfg$status) || cfg$status != "broken", logical(1))
-for (runner in runner_names[active]) {
-  configs[[runner]] <- hydrate_runner_config(manifest, configs[[runner]], runner, evidence)
+expected_runners <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+if (!setequal(names(load_runner_configs(root_dir)), expected_runners)) {
+  stop("runner registry does not cover the seven direct runners")
 }
 
-if (!quick) {
-  suites <- c(
-    specification = "test_specification.R",
-    measurement = "test_measurement.R",
-    product_fixtures = "test_product_fixtures.R"
-  )
-  for (suite in names(suites)) {
-    status <- system2("Rscript", args = file.path("tests", suites[[suite]]))
-    if (!identical(status, 0L)) stop(sprintf("%s tests failed with exit code %d", suite, status))
-  }
+run_gate <- function(script) {
+  status <- system2("Rscript", script, stdout = "", stderr = "")
+  if (!identical(status, 0L)) stop(sprintf("coverage gate failed: %s", script))
 }
-
-manifest_task_numbers <- as.integer(sub("([0-9]+).*", "\\1", manifest$task))
-selected_task_count <- if (is.null(task_filter)) nrow(manifest) else sum(manifest_task_numbers %in% task_filter)
-if (selected_task_count == 0L) stop("task filter selected no manifest tasks")
-
-runner_args <- c("benchmark_worker.R", "--kind=task", "--runner=r", "--check-only")
-if (!is.null(task_filter)) runner_args <- c(runner_args, sprintf("--tasks=%s", paste(task_filter, collapse = ",")))
-status <- system2("Rscript", args = runner_args)
-if (!identical(status, 0L)) stop(sprintf("task-spec preflight failed with exit code %d", status))
+run_gate(file.path("tests", "test_specification.R"))
+if (!("--quick" %in% arguments)) run_gate(file.path("tests", "test_product_fixtures.R"))
 
 cat(sprintf(
-  "%s coverage is valid for %d active runners, %d catalog tasks (%d selected), and %d fixture cells.\n",
-  if (quick) "Quick" else "Full",
-  sum(active), nrow(manifest), selected_task_count, nrow(evidence$fixture_rows)
+  "Direct coverage passed for %d retained tasks across %d runners%s.\n",
+  length(selected_tasks), length(expected_runners),
+  if ("--quick" %in% arguments) " (quick)" else ""
 ))

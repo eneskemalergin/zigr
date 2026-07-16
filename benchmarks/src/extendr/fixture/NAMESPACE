@@ -1,4 +1,4 @@
 useDynLib(zigrExtendr, .registration = TRUE)
 S3method("$", FixtureState)
 S3method("[[", FixtureState)
-exportPattern("^fixture_")
+exportPattern("^(bench|fixture)_")

@@ -1,6 +1,9 @@
 #include <cpp11.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
+#include <vector>
 
 #include "zigrCpp11_types.h"
 
@@ -180,6 +183,12 @@ double integer_sum(const cpp11::integers& value) {
   return state->value;
 }
 
+[[cpp11::register]] int diagnostic_state_read(
+    cpp11::external_pointer<FixtureState> state) {
+  if (state.get() == nullptr) cpp11::stop("fixture state pointer is cleared");
+  return state->value;
+}
+
 [[cpp11::register]] void fixture_error(double trigger) {
   (void)trigger;
   ++lifecycle_counts.error;
@@ -228,4 +237,163 @@ double integer_sum(const cpp11::integers& value) {
 bench_external_ptr(cpp11::integers value) {
   require_length(value.size(), 1, "external pointer input");
   return cpp11::external_pointer<FixtureState>(new FixtureState(value[0]));
+}
+
+[[cpp11::register]] double bench_vector_sum(cpp11::doubles x) {
+  return numeric_sum(x);
+}
+
+[[cpp11::register]] cpp11::doubles bench_numeric_transform(cpp11::doubles x) {
+  return fixture_numeric(x);
+}
+
+[[cpp11::register]] double bench_broadcast(cpp11::doubles x, double scalar) {
+  long double total = 0.0;
+  for (double value : x) total += value + scalar;
+  return static_cast<double>(total);
+}
+
+[[cpp11::register]] cpp11::doubles bench_sort(cpp11::doubles x) {
+  std::vector<double> sorted(x.begin(), x.end());
+  std::sort(sorted.begin(), sorted.end());
+  cpp11::writable::doubles result(sorted.size());
+  for (R_xlen_t i = 0; i < result.size(); ++i) result[i] = sorted[i];
+  return result;
+}
+
+[[cpp11::register]] double bench_missing_mean(cpp11::doubles x) {
+  double total = 0.0;
+  R_xlen_t count = 0;
+  for (double value : x) if (!R_IsNA(value) && !R_IsNaN(value)) { total += value; ++count; }
+  return total / static_cast<double>(count);
+}
+
+[[cpp11::register]] cpp11::sexp bench_transpose(cpp11::sexp x) {
+  return cpp11::package("base")["t"](x);
+}
+
+[[cpp11::register]] cpp11::sexp bench_rowcol(cpp11::sexp x) {
+  cpp11::writable::list result(2);
+  result[0] = cpp11::package("base")["rowMeans"](x);
+  result[1] = cpp11::package("base")["colSums"](x);
+  result.names() = {"row_means", "column_sums"};
+  return result;
+}
+
+[[cpp11::register]] cpp11::sexp bench_matmul(cpp11::sexp x, cpp11::sexp y) {
+  return cpp11::package("base")["%*%"](x, y);
+}
+
+[[cpp11::register]] cpp11::sexp bench_dataframe(cpp11::list data) {
+  cpp11::doubles x(data[0]), y(data[1]);
+  cpp11::integers group(data[2]);
+  cpp11::writable::doubles totals(10);
+  cpp11::writable::integers groups(10);
+  for (R_xlen_t i = 0; i < 10; ++i) { totals[i] = 0.0; groups[i] = i + 1; }
+  for (R_xlen_t i = 0; i < x.size(); ++i) {
+    if (!R_IsNA(x[i]) && !R_IsNaN(x[i]) && x[i] > 0.0) totals[group[i] - 1] += x[i] / y[i];
+  }
+  return cpp11::package("base")["data.frame"]("grp"_nm = groups, "z_sum"_nm = totals);
+}
+
+[[cpp11::register]] double bench_list_sum(cpp11::list x) {
+  double total = 0.0;
+  for (SEXP item : x) total += numeric_sum(cpp11::doubles(item));
+  return total;
+}
+
+[[cpp11::register]] cpp11::sexp bench_string_concat(cpp11::strings x) {
+  return cpp11::package("base")["paste"](x, "collapse"_nm = ", ");
+}
+
+[[cpp11::register]] cpp11::integers bench_string_metadata(cpp11::strings x) {
+  cpp11::writable::integers result(5);
+  for (R_xlen_t i = 0; i < result.size(); ++i) result[i] = 0;
+  for (SEXP value : x) {
+    if (value == NA_STRING) { ++result[4]; continue; }
+    result[0] += LENGTH(value);
+    switch (Rf_getCharCE(value)) {
+      case CE_UTF8: ++result[1]; break;
+      case CE_LATIN1: ++result[2]; break;
+      case CE_BYTES: ++result[3]; break;
+      default: break;
+    }
+  }
+  result.names() = {"bytes", "utf8", "latin1", "bytes_marked", "missing"};
+  return result;
+}
+
+[[cpp11::register]] cpp11::sexp bench_factor(cpp11::strings x) {
+  cpp11::sexp levels = cpp11::package("base")["sprintf"]("level_%03d", cpp11::package("base")["seq_len"](100));
+  return cpp11::package("base")["factor"](x, "levels"_nm = levels);
+}
+
+[[cpp11::register]] cpp11::sexp bench_attributes(cpp11::sexp x) {
+  cpp11::sexp result(Rf_duplicate(x));
+  Rf_setAttrib(result, R_ClassSymbol, cpp11::as_sexp(cpp11::writable::strings({"bench_class"})));
+  Rf_setAttrib(result, Rf_install("creator"), cpp11::as_sexp(cpp11::writable::strings({"zigr_bench"})));
+  (void) Rf_getAttrib(result, R_ClassSymbol);
+  (void) Rf_getAttrib(result, Rf_install("creator"));
+  return result;
+}
+
+[[cpp11::register]] cpp11::sexp bench_s4(cpp11::sexp x) {
+  cpp11::sexp object = cpp11::package("methods")["new"]("BenchS4", "slot_x"_nm = x);
+  return R_do_slot(object, Rf_install("slot_x"));
+}
+
+[[cpp11::register]] cpp11::integers bench_logical_counts(cpp11::logicals x) { return fixture_logical_counts(x); }
+[[cpp11::register]] cpp11::raws bench_raw_copy(cpp11::raws x) { return fixture_raw(x); }
+
+[[cpp11::register]] cpp11::sexp bench_complex_conjugate(cpp11::sexp x) {
+  R_xlen_t n = Rf_xlength(x);
+  cpp11::sexp result = cpp11::package("base")["complex"]("length.out"_nm = n);
+  Rcomplex* source = COMPLEX(x);
+  Rcomplex* target = COMPLEX(result);
+  for (R_xlen_t i = 0; i < n; ++i) target[i] = Rcomplex{source[i].r, -source[i].i};
+  return result;
+}
+
+[[cpp11::register]] cpp11::list bench_schema(cpp11::list x) { return fixture_schema(x); }
+[[cpp11::register]] double bench_altrep_sum(cpp11::integers x) { return integer_sum(x); }
+
+[[cpp11::register]] double bench_altrep_index(cpp11::integers x) {
+  double total = 0.0;
+  for (R_xlen_t i = 0; i < x.size(); i += 10000) total += x[i];
+  return total;
+}
+
+[[cpp11::register]] cpp11::integers bench_altrep_materialize(cpp11::integers x) {
+  cpp11::writable::integers result(x.size());
+  for (R_xlen_t i = 0; i < x.size(); ++i) result[i] = x[i];
+  return result;
+}
+
+[[cpp11::register]] cpp11::sexp bench_eval(cpp11::sexp x) {
+  cpp11::writable::list bindings({x});
+  bindings.names() = {"x"};
+  cpp11::sexp environment = cpp11::package("base")["list2env"](bindings, "parent"_nm = cpp11::package("base")["baseenv"]());
+  cpp11::sexp expression = cpp11::package("base")["parse"]("text"_nm = "sum(x) + mean(x)");
+  return cpp11::package("base")["eval"](expression, environment);
+}
+
+[[cpp11::register]] cpp11::sexp bench_serialize(cpp11::sexp x) {
+  cpp11::sexp bytes = cpp11::package("base")["serialize"](x, R_NilValue, "version"_nm = 3);
+  return cpp11::package("base")["unserialize"](bytes);
+}
+
+[[cpp11::register]] cpp11::sexp bench_rng(int n) { return cpp11::package("stats")["rnorm"](n); }
+
+[[cpp11::register]] cpp11::sexp bench_outputs() {
+  cpp11::writable::doubles numeric({1.5, NA_REAL});
+  cpp11::writable::strings string({"fixture"});
+  cpp11::writable::raws raw({1, 2, 3});
+  cpp11::writable::doubles real({1.0, NA_REAL}), imaginary({2.0, NA_REAL});
+  cpp11::sexp complex = cpp11::package("base")["complex"]("real"_nm = real, "imaginary"_nm = imaginary);
+  cpp11::writable::logicals logical({false, true, NA_LOGICAL});
+  cpp11::writable::list nested({cpp11::as_sexp(7)});
+  nested.names() = {"value"};
+  cpp11::writable::list result({numeric, string, raw, complex, logical, nested});
+  result.names() = {"numeric", "string", "raw", "complex", "logical", "list"};
+  return result;
 }

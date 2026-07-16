@@ -147,6 +147,293 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// bench_vector_sum
+double bench_vector_sum(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_vector_sum(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_vector_sum(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_numeric_transform
+Rcpp::NumericVector bench_numeric_transform(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_numeric_transform(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_numeric_transform(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_broadcast
+double bench_broadcast(Rcpp::NumericVector x, double scalar);
+RcppExport SEXP _zigrRcpp_bench_broadcast(SEXP xSEXP, SEXP scalarSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    Rcpp::traits::input_parameter< double >::type scalar(scalarSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_broadcast(x, scalar));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_sort
+Rcpp::NumericVector bench_sort(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_sort(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_sort(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_missing_mean
+double bench_missing_mean(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_missing_mean(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_missing_mean(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_transpose
+Rcpp::NumericMatrix bench_transpose(Rcpp::NumericMatrix x);
+RcppExport SEXP _zigrRcpp_bench_transpose(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_transpose(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_rowcol
+Rcpp::List bench_rowcol(Rcpp::NumericMatrix x);
+RcppExport SEXP _zigrRcpp_bench_rowcol(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_rowcol(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_matmul
+SEXP bench_matmul(Rcpp::NumericMatrix x, Rcpp::NumericMatrix y);
+RcppExport SEXP _zigrRcpp_bench_matmul(SEXP xSEXP, SEXP ySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type y(ySEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_matmul(x, y));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_dataframe
+Rcpp::DataFrame bench_dataframe(Rcpp::DataFrame data);
+RcppExport SEXP _zigrRcpp_bench_dataframe(SEXP dataSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::DataFrame >::type data(dataSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_dataframe(data));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_list_sum
+double bench_list_sum(Rcpp::List x);
+RcppExport SEXP _zigrRcpp_bench_list_sum(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::List >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_list_sum(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_string_concat
+SEXP bench_string_concat(Rcpp::CharacterVector x);
+RcppExport SEXP _zigrRcpp_bench_string_concat(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_string_concat(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_string_metadata
+Rcpp::IntegerVector bench_string_metadata(Rcpp::CharacterVector x);
+RcppExport SEXP _zigrRcpp_bench_string_metadata(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_string_metadata(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_factor
+SEXP bench_factor(Rcpp::CharacterVector x);
+RcppExport SEXP _zigrRcpp_bench_factor(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_factor(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_attributes
+SEXP bench_attributes(SEXP x);
+RcppExport SEXP _zigrRcpp_bench_attributes(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< SEXP >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_attributes(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_s4
+SEXP bench_s4(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_s4(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_s4(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_logical_counts
+Rcpp::IntegerVector bench_logical_counts(Rcpp::LogicalVector x);
+RcppExport SEXP _zigrRcpp_bench_logical_counts(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::LogicalVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_logical_counts(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_raw_copy
+Rcpp::RawVector bench_raw_copy(Rcpp::RawVector x);
+RcppExport SEXP _zigrRcpp_bench_raw_copy(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::RawVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_raw_copy(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_complex_conjugate
+Rcpp::ComplexVector bench_complex_conjugate(Rcpp::ComplexVector x);
+RcppExport SEXP _zigrRcpp_bench_complex_conjugate(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::ComplexVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_complex_conjugate(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_schema
+Rcpp::List bench_schema(Rcpp::List x);
+RcppExport SEXP _zigrRcpp_bench_schema(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::List >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_schema(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_altrep_sum
+double bench_altrep_sum(Rcpp::IntegerVector x);
+RcppExport SEXP _zigrRcpp_bench_altrep_sum(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_altrep_sum(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_altrep_index
+double bench_altrep_index(Rcpp::IntegerVector x);
+RcppExport SEXP _zigrRcpp_bench_altrep_index(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_altrep_index(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_altrep_materialize
+Rcpp::IntegerVector bench_altrep_materialize(Rcpp::IntegerVector x);
+RcppExport SEXP _zigrRcpp_bench_altrep_materialize(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_altrep_materialize(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_eval
+double bench_eval(Rcpp::NumericVector x);
+RcppExport SEXP _zigrRcpp_bench_eval(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_eval(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_serialize
+SEXP bench_serialize(SEXP x);
+RcppExport SEXP _zigrRcpp_bench_serialize(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< SEXP >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_serialize(x));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_rng
+Rcpp::NumericVector bench_rng(int n);
+RcppExport SEXP _zigrRcpp_bench_rng(SEXP nSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type n(nSEXP);
+    rcpp_result_gen = Rcpp::wrap(bench_rng(n));
+    return rcpp_result_gen;
+END_RCPP
+}
+// bench_outputs
+Rcpp::List bench_outputs();
+RcppExport SEXP _zigrRcpp_bench_outputs() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(bench_outputs());
+    return rcpp_result_gen;
+END_RCPP
+}
 
 RcppExport SEXP _rcpp_module_boot_zigr_fixture_module();
 
@@ -164,6 +451,32 @@ static const R_CallMethodDef CallEntries[] = {
     {"_zigrRcpp_fixture_lifecycle_reset", (DL_FUNC) &_zigrRcpp_fixture_lifecycle_reset, 0},
     {"_zigrRcpp_fixture_lifecycle_counts", (DL_FUNC) &_zigrRcpp_fixture_lifecycle_counts, 0},
     {"_zigrRcpp_fixture_outputs", (DL_FUNC) &_zigrRcpp_fixture_outputs, 0},
+    {"_zigrRcpp_bench_vector_sum", (DL_FUNC) &_zigrRcpp_bench_vector_sum, 1},
+    {"_zigrRcpp_bench_numeric_transform", (DL_FUNC) &_zigrRcpp_bench_numeric_transform, 1},
+    {"_zigrRcpp_bench_broadcast", (DL_FUNC) &_zigrRcpp_bench_broadcast, 2},
+    {"_zigrRcpp_bench_sort", (DL_FUNC) &_zigrRcpp_bench_sort, 1},
+    {"_zigrRcpp_bench_missing_mean", (DL_FUNC) &_zigrRcpp_bench_missing_mean, 1},
+    {"_zigrRcpp_bench_transpose", (DL_FUNC) &_zigrRcpp_bench_transpose, 1},
+    {"_zigrRcpp_bench_rowcol", (DL_FUNC) &_zigrRcpp_bench_rowcol, 1},
+    {"_zigrRcpp_bench_matmul", (DL_FUNC) &_zigrRcpp_bench_matmul, 2},
+    {"_zigrRcpp_bench_dataframe", (DL_FUNC) &_zigrRcpp_bench_dataframe, 1},
+    {"_zigrRcpp_bench_list_sum", (DL_FUNC) &_zigrRcpp_bench_list_sum, 1},
+    {"_zigrRcpp_bench_string_concat", (DL_FUNC) &_zigrRcpp_bench_string_concat, 1},
+    {"_zigrRcpp_bench_string_metadata", (DL_FUNC) &_zigrRcpp_bench_string_metadata, 1},
+    {"_zigrRcpp_bench_factor", (DL_FUNC) &_zigrRcpp_bench_factor, 1},
+    {"_zigrRcpp_bench_attributes", (DL_FUNC) &_zigrRcpp_bench_attributes, 1},
+    {"_zigrRcpp_bench_s4", (DL_FUNC) &_zigrRcpp_bench_s4, 1},
+    {"_zigrRcpp_bench_logical_counts", (DL_FUNC) &_zigrRcpp_bench_logical_counts, 1},
+    {"_zigrRcpp_bench_raw_copy", (DL_FUNC) &_zigrRcpp_bench_raw_copy, 1},
+    {"_zigrRcpp_bench_complex_conjugate", (DL_FUNC) &_zigrRcpp_bench_complex_conjugate, 1},
+    {"_zigrRcpp_bench_schema", (DL_FUNC) &_zigrRcpp_bench_schema, 1},
+    {"_zigrRcpp_bench_altrep_sum", (DL_FUNC) &_zigrRcpp_bench_altrep_sum, 1},
+    {"_zigrRcpp_bench_altrep_index", (DL_FUNC) &_zigrRcpp_bench_altrep_index, 1},
+    {"_zigrRcpp_bench_altrep_materialize", (DL_FUNC) &_zigrRcpp_bench_altrep_materialize, 1},
+    {"_zigrRcpp_bench_eval", (DL_FUNC) &_zigrRcpp_bench_eval, 1},
+    {"_zigrRcpp_bench_serialize", (DL_FUNC) &_zigrRcpp_bench_serialize, 1},
+    {"_zigrRcpp_bench_rng", (DL_FUNC) &_zigrRcpp_bench_rng, 1},
+    {"_zigrRcpp_bench_outputs", (DL_FUNC) &_zigrRcpp_bench_outputs, 0},
     {"_rcpp_module_boot_zigr_fixture_module", (DL_FUNC) &_rcpp_module_boot_zigr_fixture_module, 0},
     {NULL, NULL, 0}
 };

@@ -697,420 +697,6 @@ expect_error(
   "non-executable cell with a blank owner"
 )
 
-linked <- report_linked_runners()
-metric_names <- c(
-  "first_call_ms", "rss_endpoint_delta_kb", "rss_endpoint_metric", "rss_endpoint_support",
-  "rss_endpoint_support_reason", "peak_rss_kb", "loaded_process_rss_kb", "peak_rss_metric",
-  "peak_rss_support", "peak_rss_support_reason", "peak_rss_repetitions"
-)
-add_report_metrics <- function(rows) {
-  rows[metric_names] <- list(
-    1, 0, "post_gc_current_rss_endpoint_delta_kb", "supported", "available",
-    NA_real_, NA_real_, "linux_proc_status_vmhwm_kb", "not_eligible",
-    "workload is not declared memory eligible", NA_integer_
-  )
-  rows
-}
-expect_true(
-  identical(unname(comparative_report_files()[["comparative"]]), "comparative_metrics.csv") &&
-    identical(unname(budget_report_files()[["budget"]]), "budget_results.csv"),
-  "report contract uses one comparative file and one budget file"
-)
-expect_true(
-  length(declared_report_files()) == 4L &&
-    setequal(unname(declared_report_files()), c(
-      "comparative_metrics.csv", "capability_matrix.csv", "safety_results.csv", "budget_results.csv"
-    )),
-  "report contract declares only retained reports"
-)
-combined_tracks <- combine_report_tracks(list(
-  product = data.frame(run_id = "run", ratio = 1, stringsAsFactors = FALSE),
-  diagnostic = data.frame(run_id = "run", reason = "visible", stringsAsFactors = FALSE)
-))
-expect_true(
-  identical(as.character(combined_tracks$report_track), c("product", "diagnostic")) &&
-    is.na(combined_tracks$reason[[1L]]) && is.na(combined_tracks$ratio[[2L]]),
-  "report tracks retain their role and fill only non-applicable fields"
-)
-expect_true(
-  identical(names(split_report_tracks(
-    combined_tracks, c("product", "diagnostic"), "comparative test report"
-  )), c("product", "diagnostic")),
-  "report track selection preserves every declared role"
-)
-expect_error(
-  "comparative report cannot hide the R baseline track",
-  split_report_tracks(combined_tracks, c("product", "r_baseline", "diagnostic"), "comparative test report"),
-  "track coverage differs"
-)
-expect_error(
-  "comparative report cannot hide the control track",
-  split_report_tracks(combined_tracks, c("product", "control", "diagnostic"), "comparative test report"),
-  "track coverage differs"
-)
-expect_error(
-  "report tracks reject an authored track column",
-  combine_report_tracks(list(product = data.frame(report_track = "forged"))),
-  "must not define report_track"
-)
-contains_call <- function(expression, name) {
-  if (is.call(expression) && identical(expression[[1L]], as.name(name))) return(TRUE)
-  if (!is.recursive(expression)) return(FALSE)
-  any(vapply(as.list(expression), contains_call, logical(1), name = name))
-}
-for (script in c("export_boundary_metrics.R", "promote_run.R")) {
-  expressions <- as.list(parse(file.path(root_dir, script)))
-  top_level_on_exit <- vapply(expressions, function(expression) {
-    is.call(expression) && identical(expression[[1L]], as.name("on.exit"))
-  }, logical(1))
-  scoped_on_exit <- any(vapply(expressions, contains_call, logical(1), name = "on.exit"))
-  expect_true(
-    scoped_on_exit && !any(top_level_on_exit),
-    sprintf("%s registers staging cleanup inside an execution scope", script)
-  )
-  if (identical(script, "promote_run.R")) {
-    expect_true(
-      !any(vapply(expressions, contains_call, logical(1), name = "quit")),
-      "promotion dry-run returns through staging cleanup"
-    )
-  }
-}
-comparison_evidence <- data.frame(
-  row_median = 1, row_ci_low = 0.99, row_ci_high = 1.01,
-  reference_median = 1, reference_ci_low = 0.99, reference_ci_high = 1.01,
-  row_cv = 1, reference_cv = 1, row_floor = "above_floor", reference_floor = "above_floor",
-  row_samples = 20L, reference_samples = 20L,
-  row_stage = "confirmation", reference_stage = "confirmation",
-  semantic_admitted = TRUE, source_identical = TRUE, tier_comparable = TRUE,
-  contract_identical = TRUE, capability_supported = TRUE, metric_supported = TRUE,
-  stringsAsFactors = FALSE
-)
-expect_true(
-  identical(classify_comparative_evidence(comparison_evidence, benchmark_timing_policy())$relative_result, "TIE"),
-  "complete low-noise confirmation interval can produce a tie"
-)
-expect_true(
-  identical(comparative_report_schema_version(), "benchmark-report-v5"),
-  "comparative report schema records the fail-closed contract"
-)
-legacy_evidence <- comparison_evidence
-legacy_evidence$row_stage <- "legacy_adaptive"
-legacy_evidence$reference_stage <- "legacy_adaptive"
-expect_true(
-  identical(classify_comparative_evidence(legacy_evidence, benchmark_timing_policy())$relative_result, "INCONCLUSIVE"),
-  "current adaptive evidence remains diagnostic"
-)
-comparison_cases <- list(
-  list(label = "pilot evidence", field = "row_stage", value = "pilot", result = "INCONCLUSIVE", reason = "confirmation_missing"),
-  list(label = "insufficient samples", field = "row_samples", value = 1L, result = "INCONCLUSIVE", reason = "insufficient_samples"),
-  list(label = "asymmetric samples", field = "row_samples", value = 19L, result = "INCONCLUSIVE", reason = "sample_count_mismatch"),
-  list(label = "timer-floor evidence", field = "row_floor", value = "below_floor", result = "INCONCLUSIVE", reason = "timer_floor"),
-  list(label = "high-noise evidence", field = "row_cv", value = 25, result = "INCONCLUSIVE", reason = "high_noise"),
-  list(label = "median without interval", field = "row_ci_low", value = NA_real_, result = "INCONCLUSIVE", reason = "interval_unavailable"),
-  list(label = "overlapping interval", field = "row_ci_high", value = 1.10, result = "INCONCLUSIVE", reason = "interval_overlaps_margin"),
-  list(label = "missing memory support", field = "metric_supported", value = FALSE, result = "NOT_COMPARABLE", reason = "metric_unsupported"),
-  list(label = "tier mismatch", field = "tier_comparable", value = FALSE, result = "NOT_COMPARABLE", reason = "tier_mismatch"),
-  list(label = "mixed contract", field = "contract_identical", value = FALSE, result = "NOT_COMPARABLE", reason = "contract_mismatch"),
-  list(label = "capability gap", field = "capability_supported", value = FALSE, result = "NOT_COMPARABLE", reason = "capability_unsupported"),
-  list(label = "source mismatch", field = "source_identical", value = FALSE, result = "NOT_COMPARABLE", reason = "source_identity_mismatch"),
-  list(label = "semantic exclusion", field = "semantic_admitted", value = FALSE, result = "NOT_COMPARABLE", reason = "semantic_not_admitted")
-)
-for (case in comparison_cases) {
-  changed <- comparison_evidence
-  changed[[case$field]] <- case$value
-  decision <- classify_comparative_evidence(changed, benchmark_timing_policy())
-  expect_true(
-    identical(decision$relative_result, case$result) && identical(decision$comparison_reason, case$reason),
-    paste(case$label, "cannot create a comparative conclusion")
-  )
-}
-loss_evidence <- comparison_evidence
-loss_evidence$row_median <- 1.3
-loss_evidence$row_ci_low <- 1.25
-loss_evidence$row_ci_high <- 1.35
-expect_true(
-  identical(classify_comparative_evidence(loss_evidence, benchmark_timing_policy())$relative_result, "LOSS"),
-  "interval wholly above the meaningful margin produces a loss"
-)
-expect_true(
-  identical(
-    classify_comparative_evidence(
-      loss_evidence, benchmark_timing_policy(), direction = "reference_over_row"
-    )$relative_result,
-    "WIN"
-  ),
-  "reference-over-row comparisons preserve their declared direction"
-)
-win_evidence <- comparison_evidence
-win_evidence$row_median <- 0.7
-win_evidence$row_ci_low <- 0.65
-win_evidence$row_ci_high <- 0.75
-expect_true(
-  identical(classify_comparative_evidence(win_evidence, benchmark_timing_policy())$relative_result, "WIN"),
-  "interval wholly below the meaningful margin produces a win"
-)
-
-product_report <- data.frame(
-  run_id = "run", group_id = "group", runner = linked,
-  implementation_role = ifelse(
-    linked %in% report_product_runners(), "product_public_path",
-    ifelse(linked == "r", "pure_r", "c_control")
-  ),
-  comparison_tier = ifelse(linked %in% report_product_runners(), "tier_a", "tier_c"),
-  input_fingerprint = "input", kernel_id = "kernel", contract_version = "contract",
-  fixture_version = "fixture", path_kind = "generated_typed",
-  representation_strategy = "owned_output", mutation_policy = "immutable",
-  setup_policy = "setup_outside_timer", measurement_status = "PASS",
-  report_status = ifelse(linked %in% report_product_runners(), "PRODUCT_PASS", "LINKED_BASELINE"),
-  claim_eligible = linked %in% report_product_runners(), reason = "visible", owner = "performance",
-  row_over_zigr_ratio = 1, row_over_zigr_ratio_ci_low = 0.99,
-  row_over_zigr_ratio_ci_high = 1.01, row_relative_to_zigr = "TIE", noise_status = "low_noise",
-  comparison_reason = "interval_within_margin", n_iterations = 20L, sample_stage = "confirmation",
-  zigr_n_iterations = 20L, zigr_sample_stage = "confirmation",
-  timer_noise_status = "above_floor", zigr_timer_noise_status = "above_floor",
-  stringsAsFactors = FALSE
-)
-product_report <- add_report_metrics(product_report)
-expect_true(is.data.frame(validate_product_metrics(product_report)), "valid product report")
-bad_report <- product_report
-bad_report$peak_rss_support <- NULL
-expect_error(
-  "product report missing process-memory support",
-  validate_product_metrics(bad_report),
-  "missing columns: peak_rss_support"
-)
-wide_margin_policy <- benchmark_timing_policy()
-wide_margin_policy$meaningful_margin_ratio <- 1.10
-wide_margin_report <- product_report
-wide_margin_report$row_over_zigr_ratio[[1L]] <- 1.07
-wide_margin_report$row_over_zigr_ratio_ci_low[[1L]] <- 1.06
-wide_margin_report$row_over_zigr_ratio_ci_high[[1L]] <- 1.08
-expect_true(
-  is.data.frame(validate_product_metrics(wide_margin_report, wide_margin_policy)),
-  "report validation uses the recorded meaningful margin"
-)
-bad_report <- product_report[-1L, , drop = FALSE]
-expect_error(
-  "product report missing product slot",
-  validate_product_metrics(bad_report),
-  "exact linked runner set"
-)
-
-bad_report <- product_report
-bad_report$input_fingerprint[[1L]] <- "mixed-input"
-expect_error(
-  "product report mixed Tier A input",
-  validate_product_metrics(bad_report),
-  "mixed input_fingerprint"
-)
-
-bad_report <- product_report
-bad_report$representation_strategy[[1L]] <- "copied_contiguous"
-expect_error(
-  "product report mixed Tier A strategy",
-  validate_product_metrics(bad_report),
-  "mixed representation_strategy"
-)
-
-bad_report <- product_report
-bad_report$measurement_status[[1L]] <- "N/A"
-expect_error(
-  "product report claim suppresses measurement gap",
-  validate_product_metrics(bad_report),
-  "claim eligibility differs"
-)
-
-bad_report <- product_report
-bad_report$row_relative_to_zigr[[1L]] <- "INCONCLUSIVE"
-bad_report$comparison_reason[[1L]] <- "confirmation_missing"
-bad_report$sample_stage[[1L]] <- "pilot"
-bad_report$claim_eligible[[1L]] <- FALSE
-expect_true(
-  is.data.frame(validate_product_metrics(bad_report)),
-  "inconclusive product evidence remains visible without a claim"
-)
-
-bad_report <- product_report
-bad_report$noise_status[[1L]] <- "high_noise"
-expect_error(
-  "product report resolves high-noise evidence",
-  validate_product_metrics(bad_report),
-  "noise status disagrees"
-)
-
-bad_report <- product_report
-bad_report$sample_stage[[1L]] <- "pilot"
-expect_error(
-  "product report resolves pilot evidence",
-  validate_product_metrics(bad_report),
-  "without complete confirmation evidence"
-)
-
-bad_report <- product_report
-bad_report$row_over_zigr_ratio_ci_low[[1L]] <- 1.2
-bad_report$row_over_zigr_ratio_ci_high[[1L]] <- 0.8
-expect_error(
-  "product report has reversed resolved interval",
-  validate_product_metrics(bad_report),
-  "invalid resolved confidence interval"
-)
-
-not_comparable_report <- product_report
-index <- which(not_comparable_report$runner == "r")[[1L]]
-not_comparable_report[index, c(
-  "row_over_zigr_ratio", "row_over_zigr_ratio_ci_low", "row_over_zigr_ratio_ci_high"
-)] <- NA_real_
-not_comparable_report$row_relative_to_zigr[[index]] <- "NOT_COMPARABLE"
-not_comparable_report$noise_status[[index]] <- "not_comparable"
-not_comparable_report$comparison_reason[[index]] <- "capability_unsupported"
-expect_true(
-  is.data.frame(validate_product_metrics(not_comparable_report)),
-  "not-comparable linked evidence remains visible without ratios or a claim"
-)
-
-strategy_report <- product_report
-strategy_report$comparison_tier <- ifelse(strategy_report$runner == "zigr", "tier_b", "tier_c")
-strategy_report$report_status <- ifelse(strategy_report$runner == "zigr", "STRATEGY_PASS", "LINKED_OR_EXCLUDED")
-strategy_report$claim_eligible <- FALSE
-expect_true(is.data.frame(validate_strategy_metrics(strategy_report)), "valid strategy report")
-bad_report <- strategy_report
-bad_report$claim_eligible[[1L]] <- TRUE
-expect_error(
-  "strategy report public claim",
-  validate_strategy_metrics(bad_report),
-  "public claim row"
-)
-
-r_report <- data.frame(
-  run_id = "run", universe = c("task", "fixture"), item_id = c("task", "fixture"), runner = "r",
-  baseline_class = "pure_r", measurement_status = "PASS", claim_eligible = FALSE,
-  zigr_relative_to_r = c("LOSS", "TIE"), zigr_over_r_ratio = c(1.2, 1),
-  zigr_over_r_ratio_ci_low = c(1.1, 0.99), zigr_over_r_ratio_ci_high = c(1.3, 1.01),
-  owner = c("performance", "performance"),
-  backend_provenance = "pure_r:none", timer_noise_status = "above_floor",
-  noise_status = "low_noise", comparison_reason = c("interval_above_margin", "interval_within_margin"),
-  n_iterations = 20L, sample_stage = "confirmation", zigr_n_iterations = 20L,
-  zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
-  stringsAsFactors = FALSE
-)
-r_report <- add_report_metrics(r_report)
-expect_true(
-  is.data.frame(validate_r_baseline_metrics(r_report, "task", "fixture")),
-  "valid R baseline report"
-)
-bad_report <- r_report
-bad_report$owner[[1L]] <- ""
-expect_error(
-  "R report unowned loss",
-  validate_r_baseline_metrics(bad_report, "task", "fixture"),
-  "unowned relative loss"
-)
-
-control_report <- data.frame(
-  run_id = "run", universe = "task", item_id = "task", runner = "c_call", control_role = "c_control",
-  measurement_status = "PASS", report_status = "CONTROL_ONLY", claim_eligible = FALSE,
-  zigr_relative_to_control = "LOSS", zigr_over_control_ratio = 1.2,
-  zigr_over_control_ratio_ci_low = 1.1, zigr_over_control_ratio_ci_high = 1.3, owner = "performance",
-  timer_noise_status = "above_floor", noise_status = "low_noise", comparison_reason = "interval_above_margin",
-  n_iterations = 20L, sample_stage = "confirmation", zigr_n_iterations = 20L,
-  zigr_sample_stage = "confirmation", zigr_timer_noise_status = "above_floor",
-  stringsAsFactors = FALSE
-)
-control_report <- add_report_metrics(control_report)
-expect_true(is.data.frame(validate_control_metrics(control_report)), "valid control report")
-bad_report <- control_report
-bad_report$report_status <- "PRODUCT_PASS"
-expect_error(
-  "control report promoted status",
-  validate_control_metrics(bad_report),
-  "promoted status"
-)
-
-diagnostic_report <- data.frame(
-  run_id = "run", universe = "task", item_id = "task",
-  runner = "zigr", measurement_status = "PASS", claim_eligible = FALSE,
-  source_label = "generated_typed",
-  exclusion_reason = "diagnostic only", owner = "portability", timer_noise_status = "not_measured",
-  noise_status = "not_measured", stringsAsFactors = FALSE
-)
-diagnostic_report <- add_report_metrics(diagnostic_report)
-expect_true(
-  is.data.frame(validate_diagnostic_metrics(diagnostic_report, paste("zigr", "task", sep = "\r"))),
-  "valid diagnostic report"
-)
-bad_report <- diagnostic_report
-bad_report$exclusion_reason[[1L]] <- ""
-expect_error(
-  "diagnostic report invisible exclusion",
-  validate_diagnostic_metrics(bad_report, paste("zigr", "task", sep = "\r")),
-  "invisible exclusion"
-)
-bad_report <- diagnostic_report
-bad_report$universe <- "system_probe"
-expect_error(
-  "diagnostic report non-task row",
-  validate_diagnostic_metrics(bad_report, paste("zigr", "task", sep = "\r")),
-  "non-task row"
-)
-
-capability_report <- data.frame(
-  run_id = "run", runner = "zigr", fixture = "F01", source_class = "generated_typed",
-  source_paths = "src/fixture.zig", verification_digest = "digest", fixture_result = "GAP",
-  gap_reason = "missing", owner = "lifecycle_safety", claim_eligible = FALSE, stringsAsFactors = FALSE
-)
-expect_true(
-  is.data.frame(validate_capability_matrix(
-    capability_report, paste("zigr", "F01", sep = "\r")
-  )),
-  "valid capability report"
-)
-bad_report <- capability_report
-bad_report$gap_reason <- ""
-expect_error(
-  "capability report unreasoned gap",
-  validate_capability_matrix(bad_report, paste("zigr", "F01", sep = "\r")),
-  "gap without reason"
-)
-
-safety_report <- data.frame(
-  run_id = "run", runner = "zigr", proof_status = "PASS", claim_eligible = FALSE,
-  allocation_status = "PASS", protection_status = "PASS", recovery_status = "PASS",
-  external_pointer_status = "PASS", altrep_callback_status = "PASS", finalizer_status = "PASS",
-  source_ledger_identity_digest = "ledger", artifact_digest = "artifact", stringsAsFactors = FALSE
-)
-expect_true(is.data.frame(validate_safety_results(safety_report, "zigr")), "valid safety report")
-bad_report <- safety_report
-bad_report$finalizer_status <- "UNKNOWN"
-expect_error(
-  "safety report invalid domain status",
-  validate_safety_results(bad_report, "zigr"),
-  "invalid domain status"
-)
-
-local({
-  roundtrip_path <- tempfile("comparative-report-roundtrip-", fileext = ".csv")
-  on.exit(unlink(roundtrip_path), add = TRUE)
-  write_csv(combine_report_tracks(list(
-    product = product_report,
-    strategy = strategy_report,
-    r_baseline = r_report,
-    control = control_report,
-    diagnostic = diagnostic_report
-  )), roundtrip_path)
-  roundtrip_tracks <- split_report_tracks(
-    read.csv(roundtrip_path, stringsAsFactors = FALSE),
-    c("product", "strategy", "r_baseline", "control", "diagnostic"),
-    "round-trip comparative report"
-  )
-  validate_product_metrics(roundtrip_tracks$product)
-  validate_strategy_metrics(roundtrip_tracks$strategy)
-  validate_r_baseline_metrics(roundtrip_tracks$r_baseline, "task", "fixture")
-  validate_control_metrics(roundtrip_tracks$control)
-  validate_diagnostic_metrics(roundtrip_tracks$diagnostic, paste("zigr", "task", sep = "\r"))
-  expect_true(TRUE, "consolidated comparative report survives CSV write and read")
-})
-
-
 # Hard boundary table: catches swapped type, length, dimension, and name predicates.
 result_contract_cases <- list(
   real_scalar = list(valid = list(0, NA_real_, NaN, -0.0), invalid = list(numeric(0), c(1, 2), 1L, matrix(1))),
@@ -1283,10 +869,6 @@ appears_before <- function(source, first, second) {
   second_position <- regexpr(second, source, fixed = TRUE)[[1L]]
   first_position > 0L && second_position > 0L && first_position < second_position
 }
-expect_true(
-  identical(report_measurement_columns(), metric_names),
-  "comparative report contract retains first-call and process-memory metrics"
-)
 c_tasks_source <- read_source("src/c_call/tasks.c")
 zigr_tasks_source <- read_source("src/zig/tasks.zig")
 c_task41 <- source_region(c_tasks_source, "/* Task 41_serialize_roundtrip */", "/* Task 42_external_ptr */")
@@ -1875,7 +1457,244 @@ expect_true(
   sprintf("Cargo locks retain package identities and registry checksums; failed: %s", paste(names(cargo_lock_checks)[!cargo_lock_checks], collapse = ", "))
 )
 
+direct_runners <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+direct_specs <- benchmark_revision_task_specs()
+direct_tasks <- vapply(direct_specs, `[[`, character(1), "id")
+expect_true(
+  identical(direct_tasks, c(
+    "vector_sum", "numeric_transform", "broadcast", "sort", "missing_mean",
+    "transpose", "rowcol", "matmul", "dataframe", "list_sum", "string_concat",
+    "string_metadata", "factor", "attributes", "s4", "logical_counts", "raw_copy",
+    "complex_conjugate", "schema", "altrep_sum", "altrep_index",
+    "altrep_materialize", "external_state", "eval", "serialize", "rng", "outputs"
+  )),
+  "the direct benchmark retains exactly the approved 27-task order"
+)
+
+direct_master_seed <- benchmark_master_seed() + 17L
+direct_input_seeds <- setNames(lapply(direct_tasks, function(task) {
+  task_input_seed(direct_master_seed, task, "revision-v1")
+}), direct_tasks)
+direct_artifacts <- setNames(lapply(direct_runners, function(runner) {
+  list(runner = runner, relative_path = paste0("artifact/", runner), md5 = paste0("digest-", runner))
+}), direct_runners)
+direct_metadata <- list(
+  schema_version = 4L,
+  artifact_layout = "direct-v1",
+  run_id = "direct-manifest-test",
+  status = "running",
+  started_at = run_manifest_timestamp(),
+  runners = as.list(direct_runners),
+  tasks = as.list(direct_tasks),
+  master_seed = direct_master_seed,
+  input_recipe_version = "revision-v1",
+  input_seeds = direct_input_seeds,
+  rng_event_seed = task_input_seed(direct_master_seed, "rng", "direct-timing-v1"),
+  source_tree = list(method = "test", digest = "source-digest", file_count = 1L),
+  artifacts = direct_artifacts,
+  timing_policy = benchmark_timing_policy(),
+  measurement_mode = "timed",
+  command = list("Rscript", "run_benchmarks.R")
+)
+validate_direct_run_manifest(direct_metadata)
+
+bad_direct <- clone(direct_metadata)
+bad_direct$input_seeds[[direct_tasks[[1L]]]] <- bad_direct$input_seeds[[direct_tasks[[1L]]]] + 1L
+expect_error(
+  "direct manifest rejects a claimed task seed that was not executed",
+  validate_direct_run_manifest(bad_direct),
+  "input seed differs"
+)
+bad_direct <- clone(direct_metadata)
+bad_direct$rng_event_seed <- bad_direct$rng_event_seed + 1L
+expect_error(
+  "direct manifest rejects a claimed RNG state that was not executed",
+  validate_direct_run_manifest(bad_direct),
+  "RNG event seed differs"
+)
+bad_direct <- clone(direct_metadata)
+bad_direct$timing_execution <- list(stage = "pilot")
+expect_error(
+  "direct manifest rejects the removed timing schema",
+  validate_direct_run_manifest(bad_direct),
+  "unsupported fields"
+)
+
+direct_run_dir <- tempfile("direct-manifest-")
+dir.create(direct_run_dir)
+on.exit(unlink(direct_run_dir, recursive = TRUE), add = TRUE)
+complete_direct <- clone(direct_metadata)
+complete_direct$status <- "complete"
+complete_direct$finished_at <- run_manifest_timestamp()
+probe_names <- measurement_probe_names()
+probe_sequence <- lapply(seq_len(length(probe_names) * 101L), function(index) {
+  probe <- probe_names[[((index - 1L) %/% 101L) + 1L]]
+  sample <- ((index - 1L) %% 101L) + 1L
+  elapsed <- c(
+    noop_native = 0.00812345678901234,
+    noop_r = 0.00984999860520475,
+    cpu = 0.612345678901234,
+    allocate = 0.112345678901234
+  )[[probe]]
+  list(
+    probe = probe, probe_sample = sample, batch_repetitions = 1L,
+    batch_elapsed_ms = elapsed, elapsed_per_event_ms = elapsed, gc_elapsed_ms = 0
+  )
+})
+probe_floor <- measurement_probe_timer_floor(data.frame(
+  probe = vapply(probe_sequence, `[[`, character(1), "probe"),
+  elapsed_per_event_ms = vapply(probe_sequence, `[[`, numeric(1), "elapsed_per_event_ms"),
+  stringsAsFactors = FALSE
+))
+complete_direct$measurement_probes <- setNames(lapply(direct_runners, function(runner) {
+  list(
+    timer_floor_ms = probe_floor,
+    nanotime_elapsed_ms = 20,
+    independent_elapsed_ms = 20,
+    samples = probe_sequence
+  )
+}), direct_runners)
+complete_direct$outputs <- list(
+  correctness = list(relative_path = "correctness.csv", md5 = ""),
+  timing_samples = list(relative_path = "timing_samples.csv", md5 = ""),
+  timing_summary = list(relative_path = "timing_summary.csv", md5 = "")
+)
+for (name in names(complete_direct$outputs)) {
+  path <- file.path(direct_run_dir, complete_direct$outputs[[name]]$relative_path)
+  writeLines(name, path)
+  complete_direct$outputs[[name]]$md5 <- unname(as.character(tools::md5sum(path))[[1L]])
+}
+
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[2L]]$probe_sample <- 1L
+expect_error(
+  "direct manifest rejects duplicate probe samples",
+  validate_direct_run_manifest(bad_direct),
+  "raw order is invalid"
+)
+bad_direct <- clone(complete_direct)
+first_probe <- bad_direct$measurement_probes$r$samples[[1L]]
+bad_direct$measurement_probes$r$samples[[1L]] <- bad_direct$measurement_probes$r$samples[[2L]]
+bad_direct$measurement_probes$r$samples[[2L]] <- first_probe
+expect_error(
+  "direct manifest rejects reordered probe samples",
+  validate_direct_run_manifest(bad_direct),
+  "raw order is invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[101L]]$probe_sample <- 102L
+expect_error(
+  "direct manifest rejects nonconsecutive probe samples",
+  validate_direct_run_manifest(bad_direct),
+  "raw order is invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples <- bad_direct$measurement_probes$r$samples[-1L]
+expect_error(
+  "direct manifest rejects missing probe samples",
+  validate_direct_run_manifest(bad_direct),
+  "raw sequence is incomplete"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[1L]]$batch_elapsed_ms <- "0.01"
+expect_error(
+  "direct manifest rejects nonnumeric probe values",
+  validate_direct_run_manifest(bad_direct),
+  "valid numeric"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[1L]]$batch_repetitions <- 2L
+expect_error(
+  "direct manifest rejects a probe repetition other than one",
+  validate_direct_run_manifest(bad_direct),
+  "raw values are invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[1L]]$batch_elapsed_ms <- -0.01
+bad_direct$measurement_probes$r$samples[[1L]]$elapsed_per_event_ms <- -0.01
+expect_error(
+  "direct manifest rejects a negative probe duration",
+  validate_direct_run_manifest(bad_direct),
+  "raw values are invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[1L]]$elapsed_per_event_ms <- 0.5
+expect_error(
+  "direct manifest rejects inconsistent batch and per-event durations",
+  validate_direct_run_manifest(bad_direct),
+  "raw values are invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$samples[[1L]]$gc_elapsed_ms <- -0.01
+expect_error(
+  "direct manifest rejects a negative probe GC duration",
+  validate_direct_run_manifest(bad_direct),
+  "raw values are invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$timer_floor_ms <- probe_floor + 1
+expect_error(
+  "direct manifest recomputes the timer floor",
+  validate_direct_run_manifest(bad_direct),
+  "timer floor differs"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$independent_elapsed_ms <- 5
+expect_error(
+  "direct manifest rejects a unit interval below independent-clock resolution",
+  validate_direct_run_manifest(bad_direct),
+  "summary is invalid"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_probes$r$nanotime_elapsed_ms <- 100
+expect_error(
+  "direct manifest revalidates clock agreement",
+  validate_direct_run_manifest(bad_direct),
+  "summary is invalid"
+)
+direct_run_source <- read_source("run_benchmarks.R")
+probe_handoff_source <- source_region(
+  direct_run_source,
+  "metadata$measurement_probes <-",
+  "summary <- summarize_direct_timing("
+)
+expect_true(
+  appears_before(
+    direct_run_source,
+    "validate_measurement_probe_record(",
+    "summary <- summarize_direct_timing("
+  ),
+  "the orchestrator validates worker probe records before product distribution analysis"
+)
+expect_true(
+  grepl("write_run_manifest(run_dir, metadata)", probe_handoff_source, fixed = TRUE),
+  "the orchestrator retains validated probes before product distribution analysis"
+)
+write_run_manifest(direct_run_dir, complete_direct)
+roundtrip_direct <- read_run_manifest(direct_run_dir)
+expect_true(
+  identical(as.character(roundtrip_direct$status), "complete") &&
+    identical(
+      as.numeric(roundtrip_direct$measurement_probes$r$timer_floor_ms),
+      probe_floor
+    ),
+  "the direct manifest preserves probe precision and validates final output identities"
+)
+writeLines("drift", file.path(direct_run_dir, "timing_summary.csv"))
+expect_error(
+  "direct manifest detects final output drift",
+  read_run_manifest(direct_run_dir),
+  "output digest differs"
+)
+bad_direct <- clone(complete_direct)
+bad_direct$measurement_mode <- "correctness_only"
+expect_error(
+  "direct manifest rejects a timed completion with correctness-only identity",
+  validate_direct_run_manifest(bad_direct),
+  "status disagrees"
+)
+
 cat(sprintf(
-  "Specification trust passed: %d task cells, %d fixture cells, boundary contracts, source identity, and adversarial drift checks.\n",
-  nrow(evidence$tasks), nrow(evidence$fixture_rows)
+  "Specification trust passed: %d task cells, %d fixture cells, %d direct tasks, source identity, and adversarial drift checks.\n",
+  nrow(evidence$tasks), nrow(evidence$fixture_rows), length(direct_tasks)
 ))

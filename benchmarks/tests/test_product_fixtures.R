@@ -419,6 +419,10 @@ live_runner <- if (length(runner_argument) == 1L) {
 }
 if (live && nzchar(live_runner)) {
   run_live_product_fixture_gate(root_dir, evidence, live_runner)
+  expect_true(
+    identical(run_benchmark_revision_gate(root_dir, live_runner), 27L),
+    paste(live_runner, "passes all 27 retained benchmark events against R and C truth")
+  )
 } else if (live) {
   # The benchmark harness isolates runners by process. Keep generated class
   # registries isolated here too while testing load, unload, and reload inside

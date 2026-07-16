@@ -6,6 +6,23 @@ static METHOD_COUNT: AtomicI32 = AtomicI32::new(0);
 static ERROR_COUNT: AtomicI32 = AtomicI32::new(0);
 static FINALIZER_COUNT: AtomicI32 = AtomicI32::new(0);
 
+fn call_r1(code: &str, value: Sexp) -> savvy::Result<Sexp> {
+    let function = FunctionSexp::try_from(Sexp(eval_parse_text(code)?.inner()))?;
+    let mut args = FunctionArgs::new();
+    args.add("", value)?;
+    let result = function.call(args)?;
+    Ok(result.into())
+}
+
+fn call_r2(code: &str, first: Sexp, second: Sexp) -> savvy::Result<Sexp> {
+    let function = FunctionSexp::try_from(Sexp(eval_parse_text(code)?.inner()))?;
+    let mut args = FunctionArgs::new();
+    args.add("", first)?;
+    args.add("", second)?;
+    let result = function.call(args)?;
+    Ok(result.into())
+}
+
 #[savvy]
 fn fixture_zero() -> savvy::Result<Sexp> {
     OwnedIntegerSexp::try_from_scalar(1)?.into()
@@ -160,6 +177,264 @@ fn fixture_outputs() -> savvy::Result<Sexp> {
     result.set_name_and_value(4, "logical", logical)?;
     result.set_name_and_value(5, "list", nested)?;
     result.into()
+}
+
+#[savvy]
+fn bench_vector_sum(x: RealSexp) -> savvy::Result<Sexp> {
+    OwnedRealSexp::try_from_scalar(x.as_slice().iter().sum::<f64>())?.into()
+}
+
+#[savvy]
+fn bench_numeric_transform(x: RealSexp) -> savvy::Result<Sexp> {
+    fixture_numeric(x)
+}
+
+#[savvy]
+fn bench_broadcast(x: RealSexp, scalar: f64) -> savvy::Result<Sexp> {
+    let mut total = 0.0;
+    let mut correction = 0.0;
+    for value in x.as_slice().iter().map(|value| value + scalar) {
+        let adjusted = value - correction;
+        let next = total + adjusted;
+        correction = (next - total) - adjusted;
+        total = next;
+    }
+    OwnedRealSexp::try_from_scalar(total)?.into()
+}
+
+#[savvy]
+fn bench_sort(x: RealSexp) -> savvy::Result<Sexp> {
+    let mut values = x.as_slice().to_vec();
+    values.sort_by(|a, b| a.total_cmp(b));
+    OwnedRealSexp::try_from_slice(values)?.into()
+}
+
+#[savvy]
+fn bench_missing_mean(x: RealSexp) -> savvy::Result<Sexp> {
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for value in x.as_slice() {
+        if !value.is_nan() {
+            total += value;
+            count += 1;
+        }
+    }
+    OwnedRealSexp::try_from_scalar(total / count as f64)?.into()
+}
+
+#[savvy]
+fn bench_transpose(x: RealSexp) -> savvy::Result<Sexp> {
+    let dimensions = x
+        .get_dim()
+        .ok_or_else(|| savvy_err!("transpose input must be a matrix"))?;
+    let rows = dimensions[0] as usize;
+    let columns = dimensions[1] as usize;
+    let mut result = OwnedRealSexp::new(x.len())?;
+    for column in 0..columns {
+        for row in 0..rows {
+            result.as_mut_slice()[column + row * columns] = x.as_slice()[row + column * rows];
+        }
+    }
+    result.set_dim(&[columns, rows])?;
+    result.into()
+}
+
+#[savvy]
+fn bench_rowcol(x: RealSexp) -> savvy::Result<Sexp> {
+    let dimensions = x
+        .get_dim()
+        .ok_or_else(|| savvy_err!("row and column input must be a matrix"))?;
+    let rows = dimensions[0] as usize;
+    let columns = dimensions[1] as usize;
+    let mut row_means = OwnedRealSexp::new(rows)?;
+    let mut column_sums = OwnedRealSexp::new(columns)?;
+    for column in 0..columns {
+        for row in 0..rows {
+            let value = x.as_slice()[row + column * rows];
+            row_means.as_mut_slice()[row] += value;
+            column_sums.as_mut_slice()[column] += value;
+        }
+    }
+    for value in row_means.as_mut_slice() {
+        *value /= columns as f64;
+    }
+    let mut result = OwnedListSexp::new(2, true)?;
+    result.set_name_and_value(0, "row_means", row_means)?;
+    result.set_name_and_value(1, "column_sums", column_sums)?;
+    result.into()
+}
+
+#[savvy]
+fn bench_matmul(x: Sexp, y: Sexp) -> savvy::Result<Sexp> {
+    call_r2("function(x,y) x %*% y", x, y)
+}
+
+#[savvy]
+fn bench_dataframe(data: ListSexp) -> savvy::Result<Sexp> {
+    let x = RealSexp::try_from(
+        data.get("x")
+            .ok_or_else(|| savvy_err!("data frame is missing x"))?,
+    )?;
+    let y = RealSexp::try_from(
+        data.get("y")
+            .ok_or_else(|| savvy_err!("data frame is missing y"))?,
+    )?;
+    let group_value = data
+        .get("grp")
+        .ok_or_else(|| savvy_err!("data frame is missing grp"))?;
+    let group = IntegerSexp(group_value.0);
+    let mut totals = [0.0; 10];
+    for index in 0..x.len() {
+        let value = x.as_slice()[index];
+        if !value.is_nan() && value > 0.0 {
+            totals[(group.as_slice()[index] - 1) as usize] += value / y.as_slice()[index];
+        }
+    }
+    let groups = OwnedIntegerSexp::try_from_slice([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])?;
+    let sums = OwnedRealSexp::try_from_slice(totals)?;
+    let mut result = OwnedListSexp::new(2, true)?;
+    result.set_name_and_value(0, "grp", groups)?;
+    result.set_name_and_value(1, "z_sum", sums)?;
+    result.set_class(["data.frame"])?;
+    let mut row_names = OwnedIntegerSexp::new(2)?;
+    row_names.set_na(0)?;
+    row_names.as_mut_slice()[1] = -10;
+    result.set_attrib("row.names", Sexp(row_names.inner()))?;
+    result.into()
+}
+
+#[savvy]
+fn bench_list_sum(x: ListSexp) -> savvy::Result<Sexp> {
+    let mut total = 0.0;
+    for value in x.values_iter() {
+        total += RealSexp::try_from(value)?.as_slice().iter().sum::<f64>();
+    }
+    OwnedRealSexp::try_from_scalar(total)?.into()
+}
+
+#[savvy]
+fn bench_string_concat(x: Sexp) -> savvy::Result<Sexp> {
+    call_r1("function(x) paste(x,collapse=', ')", x)
+}
+
+#[savvy]
+fn bench_string_metadata(x: Sexp) -> savvy::Result<Sexp> {
+    call_r1(
+        "function(x) { e <- Encoding(x); c(bytes=sum(nchar(x,type='bytes'),na.rm=TRUE),utf8=sum(e=='UTF-8'),latin1=sum(e=='latin1'),bytes_marked=sum(e=='bytes'),missing=sum(is.na(x))) }",
+        x,
+    )
+}
+
+#[savvy]
+fn bench_factor(x: StringSexp) -> savvy::Result<Sexp> {
+    let mut result = OwnedIntegerSexp::new(x.len())?;
+    for (index, value) in x.iter().enumerate() {
+        if value.is_na() {
+            result.set_na(index)?;
+        } else {
+            let code = value
+                .strip_prefix("level_")
+                .and_then(|suffix| suffix.parse::<i32>().ok())
+                .filter(|code| (1..=100).contains(code))
+                .ok_or_else(|| savvy_err!("factor value is outside the declared levels"))?;
+            result.as_mut_slice()[index] = code;
+        }
+    }
+    let labels: Vec<String> = (1..=100).map(|code| format!("level_{code:03}")).collect();
+    let levels = OwnedStringSexp::try_from_slice(labels)?;
+    result.set_attrib("levels", Sexp(levels.inner()))?;
+    result.set_class(["factor"])?;
+    result.into()
+}
+
+#[savvy]
+fn bench_attributes(x: RealSexp) -> savvy::Result<Sexp> {
+    let mut copy = OwnedRealSexp::new(x.len())?;
+    for (index, element) in x.as_slice().iter().enumerate() {
+        copy.set_elt(index, *element)?;
+    }
+    let mut result = Sexp(copy.inner());
+    result.set_class(["bench_class"])?;
+    let creator = OwnedStringSexp::try_from_slice(["zigr_bench"])?;
+    result.set_attrib("creator", Sexp(creator.inner()))?;
+    drop(result.get_class());
+    drop(result.get_attrib("creator")?);
+    Ok(result)
+}
+
+#[savvy]
+fn bench_s4(x: Sexp) -> savvy::Result<Sexp> {
+    call_r1(
+        "function(x) methods::slot(methods::new('BenchS4',slot_x=x),'slot_x')",
+        x,
+    )
+}
+
+#[savvy]
+fn bench_logical_counts(x: LogicalSexp) -> savvy::Result<Sexp> {
+    fixture_logical_counts(x)
+}
+
+#[savvy]
+fn bench_raw_copy(x: RawSexp) -> savvy::Result<Sexp> {
+    fixture_raw(x)
+}
+
+#[savvy]
+fn bench_complex_conjugate(x: ComplexSexp) -> savvy::Result<Sexp> {
+    let mut result = OwnedComplexSexp::new(x.len())?;
+    for (index, value) in x.as_slice().iter().enumerate() {
+        result.set_elt(index, Complex64::new(value.re, -value.im))?;
+    }
+    result.into()
+}
+
+#[savvy]
+fn bench_schema(x: ListSexp) -> savvy::Result<Sexp> {
+    fixture_schema(x)
+}
+
+#[savvy]
+fn bench_altrep_sum(x: IntegerSexp) -> savvy::Result<Sexp> {
+    fixture_altrep_integer(x)
+}
+
+#[savvy]
+fn bench_altrep_index(x: IntegerSexp) -> savvy::Result<Sexp> {
+    let total = (0..x.len())
+        .step_by(10000)
+        .map(|i| x.as_slice()[i] as f64)
+        .sum::<f64>();
+    OwnedRealSexp::try_from_scalar(total)?.into()
+}
+
+#[savvy]
+fn bench_altrep_materialize(x: IntegerSexp) -> savvy::Result<Sexp> {
+    OwnedIntegerSexp::try_from_slice(x.as_slice())?.into()
+}
+
+#[savvy]
+fn bench_eval(x: Sexp) -> savvy::Result<Sexp> {
+    call_r1(
+        "function(x) eval(quote(sum(x)+mean(x)),list2env(list(x=x),parent=baseenv()))",
+        x,
+    )
+}
+
+#[savvy]
+fn bench_serialize(x: Sexp) -> savvy::Result<Sexp> {
+    call_r1("function(x) unserialize(serialize(x,NULL,version=3L))", x)
+}
+
+#[savvy]
+fn bench_rng(n: i32) -> savvy::Result<Sexp> {
+    let value = OwnedIntegerSexp::try_from_scalar(n)?;
+    call_r1("stats::rnorm", Sexp(value.inner()))
+}
+
+#[savvy]
+fn bench_outputs() -> savvy::Result<Sexp> {
+    fixture_outputs()
 }
 
 #[savvy]

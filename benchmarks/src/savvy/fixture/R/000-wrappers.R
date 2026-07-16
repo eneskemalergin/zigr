@@ -38,6 +38,136 @@ NULL
 }
 
 
+`bench_altrep_index` <- function(`x`) {
+  .Call(savvy_bench_altrep_index__impl, `x`)
+}
+
+
+`bench_altrep_materialize` <- function(`x`) {
+  .Call(savvy_bench_altrep_materialize__impl, `x`)
+}
+
+
+`bench_altrep_sum` <- function(`x`) {
+  .Call(savvy_bench_altrep_sum__impl, `x`)
+}
+
+
+`bench_attributes` <- function(`x`) {
+  .Call(savvy_bench_attributes__impl, `x`)
+}
+
+
+`bench_broadcast` <- function(`x`, `scalar`) {
+  .Call(savvy_bench_broadcast__impl, `x`, `scalar`)
+}
+
+
+`bench_complex_conjugate` <- function(`x`) {
+  .Call(savvy_bench_complex_conjugate__impl, `x`)
+}
+
+
+`bench_dataframe` <- function(`x`) {
+  .Call(savvy_bench_dataframe__impl, `x`)
+}
+
+
+`bench_eval` <- function(`x`) {
+  .Call(savvy_bench_eval__impl, `x`)
+}
+
+
+`bench_factor` <- function(`x`) {
+  .Call(savvy_bench_factor__impl, `x`)
+}
+
+
+`bench_list_sum` <- function(`x`) {
+  .Call(savvy_bench_list_sum__impl, `x`)
+}
+
+
+`bench_logical_counts` <- function(`x`) {
+  .Call(savvy_bench_logical_counts__impl, `x`)
+}
+
+
+`bench_matmul` <- function(`x`, `y`) {
+  .Call(savvy_bench_matmul__impl, `x`, `y`)
+}
+
+
+`bench_missing_mean` <- function(`x`) {
+  .Call(savvy_bench_missing_mean__impl, `x`)
+}
+
+
+`bench_numeric_transform` <- function(`x`) {
+  .Call(savvy_bench_numeric_transform__impl, `x`)
+}
+
+
+`bench_outputs` <- function() {
+  .Call(savvy_bench_outputs__impl)
+}
+
+
+`bench_raw_copy` <- function(`x`) {
+  .Call(savvy_bench_raw_copy__impl, `x`)
+}
+
+
+`bench_rng` <- function(`n`) {
+  .Call(savvy_bench_rng__impl, `n`)
+}
+
+
+`bench_rowcol` <- function(`x`) {
+  .Call(savvy_bench_rowcol__impl, `x`)
+}
+
+
+`bench_s4` <- function(`x`) {
+  .Call(savvy_bench_s4__impl, `x`)
+}
+
+
+`bench_schema` <- function(`x`) {
+  .Call(savvy_bench_schema__impl, `x`)
+}
+
+
+`bench_serialize` <- function(`x`) {
+  .Call(savvy_bench_serialize__impl, `x`)
+}
+
+
+`bench_sort` <- function(`x`) {
+  .Call(savvy_bench_sort__impl, `x`)
+}
+
+
+`bench_string_concat` <- function(`x`) {
+  .Call(savvy_bench_string_concat__impl, `x`)
+}
+
+
+`bench_string_metadata` <- function(`x`) {
+  .Call(savvy_bench_string_metadata__impl, `x`)
+}
+
+
+`bench_transpose` <- function(`x`) {
+  .Call(savvy_bench_transpose__impl, `x`)
+}
+
+
+`bench_vector_sum` <- function(`x`) {
+  .Call(savvy_bench_vector_sum__impl, `x`)
+}
+
+
 `fixture_altrep_integer` <- function(`value`) {
   .Call(savvy_fixture_altrep_integer__impl, `value`)
 }

@@ -605,3 +605,61 @@ r_bench_memory_bandwidth <- function(x) {
     c("copy_temp", "copy_out", "fill_out")
   )
 }
+
+# These event names are shared by every benchmark runner.
+bench_vector_sum <- function(x) sum(x)
+bench_numeric_transform <- r_fixture_numeric
+bench_broadcast <- function(x, scalar) sum(x + scalar)
+bench_sort <- function(x) sort(x)
+bench_missing_mean <- function(x) mean(x, na.rm = TRUE)
+bench_transpose <- function(x) t(x)
+bench_rowcol <- function(x) list(row_means = rowMeans(x), column_sums = colSums(x))
+bench_matmul <- function(x, y) x %*% y
+bench_dataframe <- function(x) {
+  keep <- !is.na(x$x) & x$x > 0
+  z <- x$x[keep] / x$y[keep]
+  grp <- as.integer(x$grp[keep])
+  data.frame(grp = 1:10, z_sum = vapply(1:10, function(group) sum(z[grp == group]), numeric(1)))
+}
+bench_list_sum <- function(x) sum(vapply(x, sum, numeric(1)))
+bench_string_concat <- function(x) {
+  result <- paste(x, collapse = ", ")
+  Encoding(result) <- "bytes"
+  result
+}
+bench_string_metadata <- function(x) {
+  marks <- Encoding(x)
+  c(bytes = sum(nchar(x, type = "bytes"), na.rm = TRUE), utf8 = sum(marks == "UTF-8"),
+    latin1 = sum(marks == "latin1"), bytes_marked = sum(marks == "bytes"), missing = sum(is.na(x)))
+}
+bench_factor <- function(x) factor(x, levels = sprintf("level_%03d", 1:100))
+bench_attributes <- function(x) {
+  x <- x[]
+  class(x) <- "bench_class"
+  attr(x, "creator") <- "zigr_bench"
+  class(x)
+  attr(x, "creator")
+  x
+}
+bench_s4 <- function(x) methods::slot(methods::new("BenchS4", slot_x = x), "slot_x")
+bench_logical_counts <- r_fixture_logical_counts
+bench_raw_copy <- r_fixture_raw
+bench_complex_conjugate <- function(x) Conj(x)
+bench_schema <- r_fixture_schema
+bench_altrep_sum <- r_fixture_altrep_integer
+bench_altrep_index <- function(x) {
+  total <- 0
+  for (index in seq.int(1L, length(x), by = 10000L)) total <- total + x[[index]]
+  total
+}
+bench_altrep_materialize <- function(x) as.integer(x) + 0L
+bench_external_state <- function() {
+  state <- new.env(parent = emptyenv())
+  state$value <- 0L
+  for (i in seq_len(100L)) state$value <- state$value + 7L
+  state$value
+}
+bench_eval <- function(x) eval(quote(sum(x) + mean(x)), envir = list2env(list(x = x), parent = baseenv()))
+bench_serialize <- function(x) unserialize(serialize(x, NULL, version = 3L))
+bench_rng <- function(n) rnorm(n)
+bench_outputs <- r_fixture_outputs

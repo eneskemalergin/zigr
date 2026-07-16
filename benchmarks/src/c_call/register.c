@@ -2,6 +2,7 @@
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -70,6 +71,37 @@ typedef struct {
 static c_benchmark_lifecycle_counts c_benchmark_lifecycle = {0, 0, 0, 0};
 static c_benchmark_altrep_counts c_benchmark_altrep = {0, 0, 0, 0};
 static R_altrep_class_t c_benchmark_altrep_integer_class;
+static volatile double c_measurement_probe_sink = 0.0;
+
+static SEXP c_measurement_probe_noop(void) {
+    return R_NilValue;
+}
+
+static SEXP c_measurement_probe_cpu(SEXP value) {
+    R_xlen_t length;
+    const double *values;
+    double total = 0.0;
+    if (TYPEOF(value) != REALSXP) Rf_error("CPU probe expected a numeric vector");
+    if (ALTREP(value)) Rf_error("CPU probe expected an ordinary numeric vector");
+    length = XLENGTH(value);
+    values = REAL(value);
+    for (R_xlen_t index = 0; index < length; ++index) total += values[index];
+    c_measurement_probe_sink = total;
+    return value;
+}
+
+static SEXP c_measurement_probe_allocate(SEXP size) {
+    int length;
+    SEXP result;
+    if (TYPEOF(size) != INTSXP || XLENGTH(size) != 1 || INTEGER(size)[0] < 1) {
+        Rf_error("allocation probe expected one positive integer");
+    }
+    length = INTEGER(size)[0];
+    result = PROTECT(Rf_allocVector(REALSXP, length));
+    for (int index = 0; index < length; ++index) REAL(result)[index] = (double) index;
+    UNPROTECT(1);
+    return result;
+}
 
 static SEXP fixture_tag(void) {
     if (fixture_tag_symbol == NULL) fixture_tag_symbol = Rf_install("zigr_fixture_state");
@@ -649,7 +681,250 @@ static SEXP c_benchmark_fixture_outputs(void) {
     return result;
 }
 
+static SEXP c_revision_vector_sum(SEXP x) {
+    R_xlen_t n = XLENGTH(x);
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < n; ++i) total += REAL(x)[i];
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_revision_numeric_transform(SEXP x) { return c_benchmark_fixture_numeric(x); }
+
+static SEXP c_revision_broadcast(SEXP x, SEXP scalar) {
+    R_xlen_t n = XLENGTH(x);
+    long double total = 0.0;
+    double value = Rf_asReal(scalar);
+    for (R_xlen_t i = 0; i < n; ++i) total += REAL(x)[i] + value;
+    return Rf_ScalarReal((double) total);
+}
+
+static SEXP c_revision_sort(SEXP x) { return c_call_bench_sort(x); }
+
+static SEXP c_revision_missing_mean(SEXP x) {
+    R_xlen_t n = XLENGTH(x), count = 0;
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < n; ++i) if (!ISNAN(REAL(x)[i])) { total += REAL(x)[i]; ++count; }
+    return Rf_ScalarReal(total / (double) count);
+}
+
+static SEXP c_revision_transpose(SEXP x) { return c_call_bench_matrix_transpose(x); }
+
+static SEXP c_revision_rowcol(SEXP x) {
+    int rows = Rf_nrows(x), columns = Rf_ncols(x);
+    SEXP row_means = PROTECT(Rf_allocVector(REALSXP, rows));
+    SEXP column_sums = PROTECT(Rf_allocVector(REALSXP, columns));
+    for (int row = 0; row < rows; ++row) REAL(row_means)[row] = 0.0;
+    for (int column = 0; column < columns; ++column) {
+        double total = 0.0;
+        for (int row = 0; row < rows; ++row) {
+            double value = REAL(x)[row + column * rows];
+            REAL(row_means)[row] += value;
+            total += value;
+        }
+        REAL(column_sums)[column] = total;
+    }
+    for (int row = 0; row < rows; ++row) REAL(row_means)[row] /= columns;
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 2));
+    SET_VECTOR_ELT(result, 0, row_means);
+    SET_VECTOR_ELT(result, 1, column_sums);
+    const char *names[] = {"row_means", "column_sums"};
+    c_benchmark_set_names(result, names, 2);
+    UNPROTECT(3);
+    return result;
+}
+
+static SEXP c_revision_matmul(SEXP x, SEXP y) { return c_call_bench_matmul(x, y); }
+
+static SEXP c_revision_dataframe(SEXP data) {
+    SEXP x = VECTOR_ELT(data, 0), y = VECTOR_ELT(data, 1), group = VECTOR_ELT(data, 2);
+    SEXP groups = PROTECT(Rf_allocVector(INTSXP, 10));
+    SEXP sums = PROTECT(Rf_allocVector(REALSXP, 10));
+    for (int i = 0; i < 10; ++i) { INTEGER(groups)[i] = i + 1; REAL(sums)[i] = 0.0; }
+    for (R_xlen_t i = 0; i < XLENGTH(x); ++i) {
+        double value = REAL(x)[i];
+        if (!ISNAN(value) && value > 0.0) REAL(sums)[INTEGER(group)[i] - 1] += value / REAL(y)[i];
+    }
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 2));
+    SET_VECTOR_ELT(result, 0, groups);
+    SET_VECTOR_ELT(result, 1, sums);
+    const char *names[] = {"grp", "z_sum"};
+    c_benchmark_set_names(result, names, 2);
+    SEXP row_names = PROTECT(Rf_allocVector(INTSXP, 2));
+    SEXP class_name = PROTECT(Rf_mkString("data.frame"));
+    INTEGER(row_names)[0] = NA_INTEGER;
+    INTEGER(row_names)[1] = -10;
+    Rf_setAttrib(result, R_ClassSymbol, class_name);
+    Rf_setAttrib(result, R_RowNamesSymbol, row_names);
+    UNPROTECT(5);
+    return result;
+}
+
+static SEXP c_revision_list_sum(SEXP x) {
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < XLENGTH(x); ++i) {
+        SEXP values = VECTOR_ELT(x, i);
+        for (R_xlen_t j = 0; j < XLENGTH(values); ++j) total += REAL(values)[j];
+    }
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_revision_string_concat(SEXP x) {
+    SEXP separator = PROTECT(Rf_mkString(", "));
+    SEXP call = PROTECT(Rf_lang3(Rf_install("paste"), x, separator));
+    SET_TAG(CDDR(call), Rf_install("collapse"));
+    SEXP result = Rf_eval(call, R_BaseEnv);
+    UNPROTECT(2);
+    return result;
+}
+
+static SEXP c_revision_string_metadata(SEXP x) {
+    int counts[5] = {0, 0, 0, 0, 0};
+    for (R_xlen_t i = 0; i < XLENGTH(x); ++i) {
+        SEXP value = STRING_ELT(x, i);
+        if (value == NA_STRING) { ++counts[4]; continue; }
+        counts[0] += LENGTH(value);
+        switch (Rf_getCharCE(value)) {
+            case CE_UTF8: ++counts[1]; break;
+            case CE_LATIN1: ++counts[2]; break;
+            case CE_BYTES: ++counts[3]; break;
+            default: break;
+        }
+    }
+    SEXP result = PROTECT(Rf_allocVector(INTSXP, 5));
+    memcpy(INTEGER(result), counts, sizeof(counts));
+    const char *names[] = {"bytes", "utf8", "latin1", "bytes_marked", "missing"};
+    c_benchmark_set_names(result, names, 5);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_revision_factor(SEXP x) {
+    SEXP levels = PROTECT(Rf_allocVector(STRSXP, 100));
+    char level[16];
+    for (int i = 0; i < 100; ++i) {
+        snprintf(level, sizeof(level), "level_%03d", i + 1);
+        SET_STRING_ELT(levels, i, Rf_mkChar(level));
+    }
+    SEXP call = PROTECT(Rf_lang3(Rf_install("factor"), x, levels));
+    SET_TAG(CDDR(call), Rf_install("levels"));
+    SEXP result = Rf_eval(call, R_BaseEnv);
+    UNPROTECT(2);
+    return result;
+}
+
+static SEXP c_revision_attributes(SEXP x) {
+    SEXP result = PROTECT(Rf_duplicate(x));
+    SEXP class_name = PROTECT(Rf_mkString("bench_class"));
+    SEXP creator = PROTECT(Rf_mkString("zigr_bench"));
+    Rf_setAttrib(result, R_ClassSymbol, class_name);
+    Rf_setAttrib(result, Rf_install("creator"), creator);
+    (void) Rf_getAttrib(result, R_ClassSymbol);
+    (void) Rf_getAttrib(result, Rf_install("creator"));
+    UNPROTECT(3);
+    return result;
+}
+
+static SEXP c_revision_s4(SEXP x) { return c_call_bench_s4_slot_access(x); }
+static SEXP c_revision_logical_counts(SEXP x) { return c_benchmark_fixture_logical_counts(x); }
+static SEXP c_revision_raw_copy(SEXP x) { return c_benchmark_fixture_raw(x); }
+
+static SEXP c_revision_complex_conjugate(SEXP x) {
+    R_xlen_t n = XLENGTH(x);
+    SEXP result = PROTECT(Rf_allocVector(CPLXSXP, n));
+    for (R_xlen_t i = 0; i < n; ++i) {
+        COMPLEX(result)[i].r = COMPLEX(x)[i].r;
+        COMPLEX(result)[i].i = -COMPLEX(x)[i].i;
+    }
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_revision_schema(SEXP x) { return c_benchmark_fixture_schema(x); }
+static SEXP c_revision_altrep_sum(SEXP x) { return c_benchmark_fixture_altrep_integer(x); }
+
+static SEXP c_revision_altrep_index(SEXP x) {
+    R_xlen_t n = XLENGTH(x);
+    double total = 0.0;
+    for (R_xlen_t i = 0; i < n; i += 10000) total += INTEGER_ELT(x, i);
+    return Rf_ScalarReal(total);
+}
+
+static SEXP c_revision_altrep_materialize(SEXP x) {
+    R_xlen_t n = XLENGTH(x);
+    SEXP result = PROTECT(Rf_allocVector(INTSXP, n));
+    for (R_xlen_t i = 0; i < n; ++i) INTEGER(result)[i] = INTEGER_ELT(x, i);
+    UNPROTECT(1);
+    return result;
+}
+
+static SEXP c_revision_external_state(void) {
+    SEXP state = PROTECT(c_benchmark_fixture_new());
+    SEXP amount = PROTECT(Rf_ScalarInteger(7));
+    for (int i = 0; i < 100; ++i) c_benchmark_fixture_method(state, amount);
+    SEXP result = c_benchmark_fixture_read(state);
+    UNPROTECT(2);
+    return result;
+}
+
+static SEXP c_revision_eval(SEXP x) {
+    SEXP environment = PROTECT(R_NewEnv(R_BaseEnv, TRUE, 1));
+    Rf_defineVar(Rf_install("x"), x, environment);
+    SEXP sum = PROTECT(Rf_lang2(Rf_install("sum"), Rf_install("x")));
+    SEXP mean = PROTECT(Rf_lang2(Rf_install("mean"), Rf_install("x")));
+    SEXP expression = PROTECT(Rf_lang3(Rf_install("+"), sum, mean));
+    SEXP result = Rf_eval(expression, environment);
+    UNPROTECT(4);
+    return result;
+}
+
+static SEXP c_revision_serialize(SEXP x) {
+    SEXP version = PROTECT(Rf_ScalarInteger(3));
+    SEXP call = PROTECT(Rf_lang4(Rf_install("serialize"), x, R_NilValue, version));
+    SET_TAG(CDDDR(call), Rf_install("version"));
+    SEXP bytes = PROTECT(Rf_eval(call, R_BaseEnv));
+    SEXP restore = PROTECT(Rf_lang2(Rf_install("unserialize"), bytes));
+    SEXP result = Rf_eval(restore, R_BaseEnv);
+    UNPROTECT(4);
+    return result;
+}
+
+static SEXP c_revision_rng(SEXP n) { return c_call_bench_rng_stress(n); }
+static SEXP c_revision_outputs(void) { return c_benchmark_fixture_outputs(); }
+static SEXP c_revision_is_altrep(SEXP x) { return Rf_ScalarLogical(ALTREP(x)); }
+static SEXP c_revision_altrep_unmaterialized(SEXP x) {
+    return Rf_ScalarLogical(ALTREP(x) && DATAPTR_OR_NULL(x) == NULL);
+}
+
 static const R_CallMethodDef CallEntries[] = {
+  {"c_revision_vector_sum",         (DL_FUNC) &c_revision_vector_sum,         1},
+  {"c_revision_numeric_transform",  (DL_FUNC) &c_revision_numeric_transform,  1},
+  {"c_revision_broadcast",          (DL_FUNC) &c_revision_broadcast,          2},
+  {"c_revision_sort",               (DL_FUNC) &c_revision_sort,               1},
+  {"c_revision_missing_mean",       (DL_FUNC) &c_revision_missing_mean,       1},
+  {"c_revision_transpose",          (DL_FUNC) &c_revision_transpose,          1},
+  {"c_revision_rowcol",             (DL_FUNC) &c_revision_rowcol,             1},
+  {"c_revision_matmul",             (DL_FUNC) &c_revision_matmul,             2},
+  {"c_revision_dataframe",          (DL_FUNC) &c_revision_dataframe,          1},
+  {"c_revision_list_sum",           (DL_FUNC) &c_revision_list_sum,           1},
+  {"c_revision_string_concat",      (DL_FUNC) &c_revision_string_concat,      1},
+  {"c_revision_string_metadata",    (DL_FUNC) &c_revision_string_metadata,    1},
+  {"c_revision_factor",             (DL_FUNC) &c_revision_factor,             1},
+  {"c_revision_attributes",         (DL_FUNC) &c_revision_attributes,         1},
+  {"c_revision_s4",                 (DL_FUNC) &c_revision_s4,                 1},
+  {"c_revision_logical_counts",     (DL_FUNC) &c_revision_logical_counts,     1},
+  {"c_revision_raw_copy",           (DL_FUNC) &c_revision_raw_copy,           1},
+  {"c_revision_complex_conjugate",  (DL_FUNC) &c_revision_complex_conjugate,  1},
+  {"c_revision_schema",             (DL_FUNC) &c_revision_schema,             1},
+  {"c_revision_altrep_sum",         (DL_FUNC) &c_revision_altrep_sum,         1},
+  {"c_revision_altrep_index",       (DL_FUNC) &c_revision_altrep_index,       1},
+  {"c_revision_altrep_materialize", (DL_FUNC) &c_revision_altrep_materialize, 1},
+  {"c_revision_external_state",     (DL_FUNC) &c_revision_external_state,     0},
+  {"c_revision_eval",               (DL_FUNC) &c_revision_eval,               1},
+  {"c_revision_serialize",          (DL_FUNC) &c_revision_serialize,          1},
+  {"c_revision_rng",                (DL_FUNC) &c_revision_rng,                1},
+  {"c_revision_outputs",            (DL_FUNC) &c_revision_outputs,            0},
+  {"c_revision_is_altrep",          (DL_FUNC) &c_revision_is_altrep,          1},
+  {"c_revision_altrep_unmaterialized", (DL_FUNC) &c_revision_altrep_unmaterialized, 1},
   {"c_call_bench_vectorsum",        (DL_FUNC) &c_call_bench_vectorsum,        1},
   {"c_call_bench_elem_ops",         (DL_FUNC) &c_call_bench_elem_ops,         1},
   {"c_call_bench_memcpy_bandwidth", (DL_FUNC) &c_call_bench_memcpy_bandwidth, 1},
@@ -739,6 +1014,9 @@ static const R_CallMethodDef CallEntries[] = {
   {"c_benchmark_altrep_new",                 (DL_FUNC) &c_benchmark_altrep_new,                 2},
   {"c_benchmark_altrep_reset",               (DL_FUNC) &c_benchmark_altrep_reset,               0},
   {"c_benchmark_altrep_snapshot",            (DL_FUNC) &c_benchmark_altrep_snapshot,            1},
+  {"c_measurement_probe_noop",                (DL_FUNC) &c_measurement_probe_noop,                0},
+  {"c_measurement_probe_cpu",                 (DL_FUNC) &c_measurement_probe_cpu,                 1},
+  {"c_measurement_probe_allocate",            (DL_FUNC) &c_measurement_probe_allocate,            1},
   {NULL, NULL, 0}
 };
 
