@@ -60,9 +60,6 @@ summary_row <- function(runner, task, pass_required = TRUE) {
   row <- summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE]
   if (nrow(row) != 1L) stop(sprintf("%s/%s is not one summary row", runner, task))
   if (pass_required && row$status[[1]] != "PASS") stop(sprintf("%s/%s is not one PASS row", runner, task))
-  if (pass_required && row$sample_stage[[1]] != "confirmation") {
-    stop(sprintf("%s/%s has no fixed confirmation sample", runner, task))
-  }
   row
 }
 
@@ -92,8 +89,12 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
   c_below_floor <- generated_samples$median < floor_ms || c_samples$median < floor_ms
   c_low_noise <- max(generated_samples$cv_pct, c_samples$cv_pct) <= as.numeric(timing_policy$low_noise_cv_threshold_pct)
   comparable_work <- group != "altrep_integer"
-  eligible <- !below_floor && low_noise && comparable_work
-  c_eligible <- !c_below_floor && c_low_noise && comparable_work
+  confirmed <- generated$sample_stage[[1]] == "confirmation" &&
+    handwritten$sample_stage[[1]] == "confirmation"
+  c_confirmed <- generated$sample_stage[[1]] == "confirmation" &&
+    c_reference$sample_stage[[1]] == "confirmation"
+  eligible <- confirmed && !below_floor && low_noise && comparable_work
+  c_eligible <- c_confirmed && !c_below_floor && c_low_noise && comparable_work
 
   data.frame(
     matrix_group = group,
@@ -124,7 +125,9 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     c_reference_n_iterations = c_reference$n_iterations[[1]],
     c_reference_sample_stage = c_reference$sample_stage[[1]],
     c_comparison_eligible = c_eligible,
-    c_comparison_reason = if (!comparable_work) {
+    c_comparison_reason = if (!c_confirmed) {
+      "confirmation missing"
+    } else if (!comparable_work) {
       "different ownership strategy"
     } else if (c_below_floor) {
       "below timer floor"
@@ -157,7 +160,9 @@ boundary_rows <- lapply(generated_tasks, function(generated_task) {
     timer_noise_status = if (below_floor) "below_floor" else "above_floor",
     low_noise = low_noise,
     comparison_eligible = eligible,
-    comparison_reason = if (!comparable_work) {
+    comparison_reason = if (!confirmed) {
+      "confirmation missing"
+    } else if (!comparable_work) {
       "different ownership strategy"
     } else if (below_floor) {
       "below timer floor"

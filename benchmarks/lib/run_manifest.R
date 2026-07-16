@@ -385,9 +385,6 @@ run_completion_artifact_paths <- function(run_dir, metadata) {
         paths,
         run_sample_artifact_paths("", metadata, "task", runner, task_ids)
       )
-      if (length(task_ids) > 0L && identical(benchmark_artifact_layout(metadata), "per-cell-v1")) {
-        paths <- c(paths, file.path(runner, "cold_start.csv"))
-      }
     }
     if (benchmark_run_includes(metadata, "fixture")) {
       fixture_summary <- fixture_summaries[as.character(fixture_summaries$runner) == runner, , drop = FALSE]
@@ -746,12 +743,8 @@ read_run_manifest <- function(run_dir) {
   if (is.null(metadata$run_id) || !nzchar(as.character(metadata$run_id))) {
     stop(sprintf("run manifest has no run_id: %s", path))
   }
-  if (is.null(metadata$schema_version) || !(as.integer(metadata$schema_version) %in% c(2L, 3L))) {
+  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 3L) {
     stop(sprintf("unsupported run manifest schema version: %s", path))
-  }
-  if (as.integer(metadata$schema_version) == 2L &&
-      !identical(as.character(metadata$run_id), legacy_run_manifest_id())) {
-    stop("schema-2 run manifests are retained only for the named accepted historical run")
   }
   benchmark_artifact_layout(metadata)
   metadata
@@ -918,7 +911,7 @@ validate_environment_manifest <- function(environment) {
 }
 
 validate_run_artifacts <- function(run_dir, metadata) {
-  if (is.null(metadata$schema_version) || !(as.integer(metadata$schema_version) %in% c(2L, 3L))) {
+  if (is.null(metadata$schema_version) || as.integer(metadata$schema_version) != 3L) {
     stop("unsupported run manifest schema version")
   }
   benchmark_artifact_layout(metadata)
@@ -1294,15 +1287,13 @@ validate_run_artifacts <- function(run_dir, metadata) {
   keys <- paste(summaries$runner, summaries$task, sep = "\r")
   if (anyDuplicated(keys)) stop("run summaries contain duplicate runner/task rows")
 
-  layout <- benchmark_artifact_layout(metadata)
-  if (identical(layout, "grouped-v1")) {
-    shared_samples <- run_sample_artifact_paths(run_dir, metadata, "task", expected_runners[[1L]], ".")
-    if (!identical(file.exists(shared_samples), any(summaries$status == "PASS"))) {
-      stop("shared task timing artifact presence differs from PASS summaries")
-    }
-    if (any(dir.exists(file.path(run_dir, expected_runners)))) {
-      stop("grouped run retains per-runner task artifact directories")
-    }
+  benchmark_artifact_layout(metadata)
+  shared_samples <- run_sample_artifact_paths(run_dir, metadata, "task", expected_runners[[1L]], ".")
+  if (!identical(file.exists(shared_samples), any(summaries$status == "PASS"))) {
+    stop("shared task timing artifact presence differs from PASS summaries")
+  }
+  if (any(dir.exists(file.path(run_dir, expected_runners)))) {
+    stop("grouped run retains per-runner task artifact directories")
   }
   for (runner in expected_runners) {
     runner_tasks <- sort(unique(as.character(summaries$task[summaries$runner == runner])))
@@ -1310,27 +1301,18 @@ validate_run_artifacts <- function(run_dir, metadata) {
       stop(sprintf("run summary coverage for %s differs from the run manifest", runner))
     }
 
-    runner_dir <- file.path(run_dir, runner)
     expected_raw_tasks <- sort(as.character(summaries$task[summaries$runner == runner & summaries$status == "PASS"]))
-    if (identical(layout, "per-cell-v1")) {
-      expected_raw_files <- basename(run_sample_artifact_paths(run_dir, metadata, "task", runner, expected_raw_tasks))
-      actual_raw_files <- if (dir.exists(runner_dir)) list.files(runner_dir, pattern = "^task_.*\\.csv$") else character(0)
-      if (!identical(sort(unique(expected_raw_files)), sort(actual_raw_files))) {
-        stop(sprintf("raw timing artifact set for %s differs from PASS summaries", runner))
-      }
-    }
     raw_samples <- read_run_sample_table(run_dir, metadata, "task", runner, expected_raw_tasks)
     required_raw <- c("run_id", "runner", "task", "iteration", "wall_ms")
     if (is_bounded_timing_policy(metadata$timing_policy)) required_raw <- c(
       required_raw, "stage", "process_epoch", "batch", "attempt", "group_order", "member_order",
       "excluded", "exclusion_reason", "rss_endpoint_delta_kb"
     )
-    if (identical(layout, "grouped-v1")) required_raw <- c(required_raw, "phase")
+    required_raw <- c(required_raw, "phase")
     if (nrow(raw_samples) > 0L && length(setdiff(required_raw, names(raw_samples))) > 0L) {
       stop(sprintf("raw timing samples have missing columns for %s", runner))
     }
-    if (identical(layout, "grouped-v1") && nrow(raw_samples) > 0L &&
-        !setequal(unique(as.character(raw_samples$phase)), c("first_call", "timed"))) {
+    if (nrow(raw_samples) > 0L && !setequal(unique(as.character(raw_samples$phase)), c("first_call", "timed"))) {
       stop(sprintf("raw timing samples have invalid phases for %s", runner))
     }
     actual_raw_tasks <- sort(unique(as.character(raw_samples$task)))
@@ -1365,12 +1347,10 @@ validate_run_artifacts <- function(run_dir, metadata) {
       if (is_bounded_timing_policy(metadata$timing_policy)) {
         raw <- raw[!(as.logical(raw$excluded) %in% TRUE), , drop = FALSE]
       }
-      if (identical(layout, "grouped-v1")) {
-        raw <- raw[as.character(raw$phase) == "timed", , drop = FALSE]
-        if (is_bounded_timing_policy(metadata$timing_policy)) raw <- raw[
-          as.character(raw$stage) == as.character(summary_row$sample_stage[[1L]]), , drop = FALSE
-        ]
-      }
+      raw <- raw[as.character(raw$phase) == "timed", , drop = FALSE]
+      if (is_bounded_timing_policy(metadata$timing_policy)) raw <- raw[
+        as.character(raw$stage) == as.character(summary_row$sample_stage[[1L]]), , drop = FALSE
+      ]
       if (nrow(summary_row) != 1L || nrow(raw) != summary_row$n_iterations[[1]]) {
         stop(sprintf("raw result sample count differs from summary: %s/%s", runner, task))
       }
@@ -1405,42 +1385,23 @@ validate_run_artifacts <- function(run_dir, metadata) {
       }
     }
     if (!is.null(metadata$timing_policy)) {
-      if (identical(layout, "grouped-v1")) {
-        first_call <- raw_samples[as.character(raw_samples$phase) == "first_call", , drop = FALSE]
-        if (is_bounded_timing_policy(metadata$timing_policy)) first_call <- first_call[
-          !(as.logical(first_call$excluded) %in% TRUE) &
-            as.character(first_call$stage) == as.character(summaries$sample_stage[
-              match(paste(first_call$runner, first_call$task, sep = "\r"), paste(summaries$runner, summaries$task, sep = "\r"))
-            ]), , drop = FALSE
-        ]
-        actual_first_call_tasks <- sort(as.character(first_call$task))
-        if (!identical(expected_raw_tasks, actual_first_call_tasks)) {
-          stop(sprintf("first-call samples differ from PASS summaries for %s", runner))
-        }
-        for (task in expected_raw_tasks) {
-          validate_first_call_raw(
-            summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE],
-            first_call[as.character(first_call$task) == task, , drop = FALSE],
-            paste(runner, task, sep = "/")
-          )
-        }
-        next
+      first_call <- raw_samples[as.character(raw_samples$phase) == "first_call", , drop = FALSE]
+      if (is_bounded_timing_policy(metadata$timing_policy)) first_call <- first_call[
+        !(as.logical(first_call$excluded) %in% TRUE) &
+          as.character(first_call$stage) == as.character(summaries$sample_stage[
+            match(paste(first_call$runner, first_call$task, sep = "\r"), paste(summaries$runner, summaries$task, sep = "\r"))
+          ]), , drop = FALSE
+      ]
+      actual_first_call_tasks <- sort(as.character(first_call$task))
+      if (!identical(expected_raw_tasks, actual_first_call_tasks)) {
+        stop(sprintf("first-call samples differ from PASS summaries for %s", runner))
       }
-      cold_file <- file.path(runner_dir, "cold_start.csv")
-      if (length(expected_raw_tasks) == 0L) {
-        if (file.exists(cold_file)) stop(sprintf("cold-start results exist without PASS rows for %s", runner))
-        next
-      }
-      if (!file.exists(cold_file)) stop(sprintf("cold-start results missing for %s", runner))
-      cold <- read.csv(cold_file, stringsAsFactors = FALSE)
-      missing_cold <- setdiff(c("runner", "task", "wall_ms", "run_id"), names(cold))
-      if (length(missing_cold) > 0L) {
-        stop(sprintf("cold-start results missing columns: %s", paste(missing_cold, collapse = ", ")))
-      }
-      if (!all(as.character(cold$run_id) == expected_run_id)) stop("cold-start results contain mixed run IDs")
-      actual_cold_tasks <- sort(as.character(cold$task))
-      if (!identical(expected_raw_tasks, actual_cold_tasks)) {
-        stop(sprintf("cold-start coverage for %s differs from PASS summaries", runner))
+      for (task in expected_raw_tasks) {
+        validate_first_call_raw(
+          summaries[summaries$runner == runner & summaries$task == task, , drop = FALSE],
+          first_call[as.character(first_call$task) == task, , drop = FALSE],
+          paste(runner, task, sep = "/")
+        )
       }
     }
   }

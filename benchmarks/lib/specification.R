@@ -507,6 +507,13 @@ parse_task_filter <- function(value) {
   tasks
 }
 
+select_task_ids <- function(task_ids, task_numbers) {
+  available_numbers <- as.integer(sub("([0-9]+).*", "\\1", as.character(task_ids)))
+  missing <- setdiff(as.integer(task_numbers), available_numbers)
+  if (length(missing) > 0L) stop("task filter differs from available task numbers")
+  as.character(task_ids)[available_numbers %in% as.integer(task_numbers)]
+}
+
 parse_benchmark_suite <- function(value) {
   value <- as.character(value)
   if (length(value) != 1L || is.na(value) || !(value %in% c("tasks", "fixtures", "all"))) {

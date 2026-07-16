@@ -1004,18 +1004,10 @@ log_error <- function(runner, task, msg, dir = "results") {
   write_csv(df, path, append = !header)
 }
 
-legacy_run_manifest_id <- function() "20260715T040721Z-pid2"
-
 benchmark_artifact_layout <- function(metadata) {
   schema <- suppressWarnings(as.integer(metadata$schema_version))
-  if (length(schema) != 1L || is.na(schema) || !(schema %in% c(2L, 3L))) {
+  if (length(schema) != 1L || is.na(schema) || schema != 3L) {
     stop("unsupported run manifest schema version")
-  }
-  if (schema == 2L) {
-    if (is.null(metadata$run_id) || !identical(as.character(metadata$run_id), legacy_run_manifest_id())) {
-      stop("schema-2 artifact compatibility is retained only for the named accepted historical run")
-    }
-    return("per-cell-v1")
   }
   layout <- as.character(metadata$artifact_layout)
   if (length(layout) != 1L || is.na(layout) || !identical(layout, "grouped-v1")) {
@@ -1027,11 +1019,8 @@ benchmark_artifact_layout <- function(metadata) {
 run_summary_artifact_paths <- function(run_dir, metadata, universe, runners = character(0)) {
   if (!(universe %in% c("task", "fixture"))) stop("summary universe must be task or fixture")
   rooted <- function(path) if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
-  if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    return(rooted(paste0(universe, "_summary.csv")))
-  }
-  prefix <- if (identical(universe, "fixture")) "fixture_" else ""
-  rooted(paste0(prefix, as.character(runners), "_summary.csv"))
+  benchmark_artifact_layout(metadata)
+  rooted(paste0(universe, "_summary.csv"))
 }
 
 read_run_summary_table <- function(run_dir, metadata, universe, runners) {
@@ -1044,26 +1033,17 @@ read_run_summary_table <- function(run_dir, metadata, universe, runners) {
 run_correctness_artifact_paths <- function(run_dir, metadata, universe, runners = character(0)) {
   if (!(universe %in% c("task", "fixture"))) stop("correctness universe must be task or fixture")
   rooted <- function(path) if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
-  if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    return(rooted(file.path("correctness", paste0(universe, "s.csv"))))
-  }
-  rooted(file.path("correctness", paste0(universe, "s"), paste0(as.character(runners), ".csv")))
+  benchmark_artifact_layout(metadata)
+  rooted(file.path("correctness", paste0(universe, "s.csv")))
 }
 
 run_sample_artifact_paths <- function(run_dir, metadata, universe, runner, ids = character(0)) {
   if (!(universe %in% c("task", "fixture"))) stop("sample universe must be task or fixture")
   ids <- as.character(ids)
   if (length(ids) == 0L) return(character(0))
-  if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    path <- paste0(universe, "_samples.csv")
-    return(if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path)
-  }
-  relative_base <- if (identical(universe, "task")) runner else file.path("fixtures", runner)
-  base <- if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) {
-    file.path(run_dir, relative_base)
-  } else relative_base
-  names <- if (identical(universe, "task")) paste0("task_", ids, ".csv") else paste0(ids, ".csv")
-  file.path(base, names)
+  benchmark_artifact_layout(metadata)
+  path <- paste0(universe, "_samples.csv")
+  if (length(run_dir) == 1L && !is.na(run_dir) && nzchar(run_dir)) file.path(run_dir, path) else path
 }
 
 read_run_sample_table <- function(run_dir, metadata, universe, runner, ids) {
@@ -1076,24 +1056,18 @@ read_run_sample_table <- function(run_dir, metadata, universe, runner, ids) {
   }
   tables <- lapply(paths, read.csv, stringsAsFactors = FALSE)
   samples <- do.call(rbind, tables)
-  if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    if (!("runner" %in% names(samples))) stop("grouped raw timing samples lack runner")
-    samples <- samples[as.character(samples$runner) == runner, , drop = FALSE]
-  }
+  if (!("runner" %in% names(samples))) stop("grouped raw timing samples lack runner")
+  samples <- samples[as.character(samples$runner) == runner, , drop = FALSE]
   samples
 }
 
 read_run_wall_time_samples <- function(
     run_dir, metadata, universe, runner, id, expected_n = NULL, minimum_n = 2L, stage = NULL) {
   paths <- run_sample_artifact_paths(run_dir, metadata, universe, runner, id)
-  filters <- if (identical(benchmark_artifact_layout(metadata), "grouped-v1")) {
-    if (identical(universe, "task")) list(runner = runner, task = id) else list(runner = runner, row_id = id)
-  } else NULL
-  header_names <- if (is.null(filters)) character(0) else {
-    names(read.csv(paths[[1L]], nrows = 0L, stringsAsFactors = FALSE))
-  }
+  filters <- if (identical(universe, "task")) list(runner = runner, task = id) else list(runner = runner, row_id = id)
+  header_names <- names(read.csv(paths[[1L]], nrows = 0L, stringsAsFactors = FALSE))
   if ("phase" %in% header_names) filters$phase <- "timed"
-  if (!is.null(filters) && is.null(stage)) {
+  if (is.null(stage)) {
     if ("stage" %in% header_names) {
       header <- read.csv(paths[[1L]], stringsAsFactors = FALSE)
       keep <- rep(TRUE, nrow(header))
@@ -1102,10 +1076,8 @@ read_run_wall_time_samples <- function(
       stage <- if ("confirmation" %in% stages) "confirmation" else if ("pilot" %in% stages) "pilot" else NULL
     }
   }
-  if (!is.null(filters)) {
-    if (!is.null(stage) && "stage" %in% header_names) filters$stage <- stage
-    if ("excluded" %in% header_names) filters$excluded <- FALSE
-  }
+  if (!is.null(stage) && "stage" %in% header_names) filters$stage <- stage
+  if ("excluded" %in% header_names) filters$excluded <- FALSE
   read_wall_time_samples(paths[[1L]], expected_n = expected_n, minimum_n = minimum_n, filters = filters)
 }
 
@@ -1659,27 +1631,17 @@ validate_fixture_measurement_artifacts <- function(run_dir, metadata, evidence) 
       any(as.character(summaries$timer_noise_status[not_measured]) != "not_measured")) {
     stop("untimed fixture summaries contain measurement evidence")
   }
-  layout <- benchmark_artifact_layout(metadata)
-  if (identical(layout, "grouped-v1")) {
-    shared_samples <- run_sample_artifact_paths(run_dir, metadata, "fixture", expected_runners[[1L]], ".")
-    if (!identical(file.exists(shared_samples), nrow(pass) > 0L)) {
-      stop("shared fixture timing artifact presence differs from PASS summaries")
-    }
-    if (dir.exists(file.path(run_dir, "fixtures"))) {
-      stop("grouped run retains per-runner fixture artifact directories")
-    }
+  benchmark_artifact_layout(metadata)
+  shared_samples <- run_sample_artifact_paths(run_dir, metadata, "fixture", expected_runners[[1L]], ".")
+  if (!identical(file.exists(shared_samples), nrow(pass) > 0L)) {
+    stop("shared fixture timing artifact presence differs from PASS summaries")
+  }
+  if (dir.exists(file.path(run_dir, "fixtures"))) {
+    stop("grouped run retains per-runner fixture artifact directories")
   }
   for (runner in expected_runners) {
     runner_rows <- pass[pass$runner == runner, , drop = FALSE]
-    raw_dir <- file.path(run_dir, "fixtures", runner)
     expected_raw <- sort(as.character(runner_rows$row_id))
-    if (identical(layout, "per-cell-v1")) {
-      expected_raw_files <- basename(run_sample_artifact_paths(run_dir, metadata, "fixture", runner, expected_raw))
-      actual_raw_files <- if (dir.exists(raw_dir)) list.files(raw_dir, pattern = "^[^.].*\\.csv$") else character(0)
-      if (!identical(sort(unique(expected_raw_files)), sort(actual_raw_files))) {
-        stop(sprintf("fixture raw timing artifact set differs for %s", runner))
-      }
-    }
     raw_samples <- read_run_sample_table(run_dir, metadata, "fixture", runner, expected_raw)
     actual_raw <- sort(unique(as.character(raw_samples$row_id)))
     if (!identical(actual_raw, expected_raw)) {

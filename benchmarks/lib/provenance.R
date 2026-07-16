@@ -1767,28 +1767,36 @@ source_ledger_validate_admission <- function(spec, r_build, runner_records, requ
   }
   require_version(r_build$runtime_version, admission$r_version, "R runtime")
   require_version(r_build$header_version, admission$r_version, "R headers")
-  records <- setNames(runner_records, vapply(runner_records, function(record) as.character(record$name), character(1)))
-  require_version(records$zigr$toolchain$version, admission$zig_version, "Zig")
-  access_mode <- as.character(records$zigr$toolchain$r_access_mode)
-  if (!(access_mode %in%
-        as.character(unlist(admission$zigr_access_modes, use.names = FALSE)))) {
-    stop(sprintf("zigr R access mode %s is not admitted", access_mode))
+  record_names <- vapply(runner_records, function(record) as.character(record$name), character(1))
+  if (anyDuplicated(record_names)) stop("tool source ledger has duplicate runner records")
+  unknown_records <- setdiff(record_names, names(spec$runners))
+  if (length(unknown_records) > 0L) {
+    stop(sprintf("tool source ledger has unknown runner records: %s", paste(unknown_records, collapse = ", ")))
   }
-  resolved_access_mode <- source_ledger_zigr_access_mode(
-    records$zigr$toolchain$checked_sexp,
-    records$zigr$toolchain$effective_target,
-    r_build$header_version
-  )
-  if (!identical(access_mode, resolved_access_mode)) {
-    stop(sprintf("zigr R access mode %s differs from resolved mode %s", access_mode, resolved_access_mode))
+  records <- setNames(runner_records, record_names)
+  if ("zigr" %in% names(records)) {
+    require_version(records$zigr$toolchain$version, admission$zig_version, "Zig")
+    access_mode <- as.character(records$zigr$toolchain$r_access_mode)
+    if (!(access_mode %in%
+          as.character(unlist(admission$zigr_access_modes, use.names = FALSE)))) {
+      stop(sprintf("zigr R access mode %s is not admitted", access_mode))
+    }
+    resolved_access_mode <- source_ledger_zigr_access_mode(
+      records$zigr$toolchain$checked_sexp,
+      records$zigr$toolchain$effective_target,
+      r_build$header_version
+    )
+    if (!identical(access_mode, resolved_access_mode)) {
+      stop(sprintf("zigr R access mode %s differs from resolved mode %s", access_mode, resolved_access_mode))
+    }
   }
   r_package_map <- c(rcpp = "Rcpp", cpp11 = "cpp11")
-  for (runner in names(r_package_map)) {
+  for (runner in intersect(names(r_package_map), names(records))) {
     package <- unname(r_package_map[[runner]])
     require_version(records[[runner]]$toolchain$version, admission$r_packages[[package]], package)
   }
   cargo_package_map <- c(extendr = "extendr-api", savvy = "savvy")
-  for (runner in names(cargo_package_map)) {
+  for (runner in intersect(names(cargo_package_map), names(records))) {
     package <- unname(cargo_package_map[[runner]])
     packages <- records[[runner]]$toolchain$packages
     matches <- Filter(function(record) identical(record$name, package) && isTRUE(record$selected), packages)

@@ -50,6 +50,7 @@ run_task_worker <- function(cli) {
   timing_options <- timing_worker_options(cli)
   runner_name <- NA
   task_filter <- NULL
+  task_id_filter <- NULL
   check_only <- FALSE
   validation_only <- FALSE
   validation_output_arg <- NULL
@@ -62,6 +63,9 @@ run_task_worker <- function(cli) {
   for (a in cli) {
     if (grepl("^--runner=", a)) runner_name <- sub("^--runner=", "", a)
     if (grepl("^--tasks=", a)) task_filter <- parse_task_filter(sub("^--tasks=", "", a))
+    if (grepl("^--task-ids=", a)) {
+      task_id_filter <- parse_csv_option(sub("^--task-ids=", "", a), "task ID filter")
+    }
     if (a == "--check-only") check_only <- TRUE
     if (a == "--validation-only") validation_only <- TRUE
     if (grepl("^--validation-output=", a)) validation_output_arg <- sub("^--validation-output=", "", a)
@@ -77,6 +81,9 @@ run_task_worker <- function(cli) {
     if (grepl("^--master-seed=", a)) master_seed_arg <- sub("^--master-seed=", "", a)
   }
   if (is.na(runner_name) && is.null(prepare_inputs_arg)) stop("--runner= required")
+  if (!is.null(task_filter) && !is.null(task_id_filter)) {
+    stop("--tasks and --task-ids cannot be combined")
+  }
   if (is.na(runner_name)) runner_name <- "r"
   if (validation_only && is.null(validation_output_arg)) stop("--validation-output= is required with --validation-only")
   if (validation_only && !is.null(validated_correctness_arg)) {
@@ -118,13 +125,14 @@ run_task_worker <- function(cli) {
   all_tasks <- order_task_specs(manifest, all_tasks)
   
   if (!is.null(task_filter)) {
-    task_numbers <- vapply(
-      all_tasks,
-      function(task) as.integer(sub("([0-9]+).*", "\\1", task$id)),
-      integer(1)
-    )
-    all_tasks <- all_tasks[ordered_selection(task_numbers, task_filter, "task filter")]
-    if (length(all_tasks) == 0L) stop("task filter selected no manifest tasks")
+    task_ids <- vapply(all_tasks, function(task) task$id, character(1))
+    selected_ids <- select_task_ids(task_ids, task_filter)
+    all_tasks <- all_tasks[task_ids %in% selected_ids]
+  }
+  if (!is.null(task_id_filter)) {
+    task_ids <- vapply(all_tasks, function(task) task$id, character(1))
+    all_tasks <- all_tasks[ordered_selection(task_ids, task_id_filter, "task ID filter")]
+    if (length(all_tasks) == 0L) stop("task ID filter selected no manifest tasks")
   }
   
   if (!is.null(prepare_inputs_arg)) {
@@ -1635,7 +1643,7 @@ if (identical(kind, "task")) {
   validate_cli_arguments(
     worker_args,
     value_options = c(
-      "runner", "tasks", "validation-output", "validated-correctness", "results-dir",
+      "runner", "tasks", "task-ids", "validation-output", "validated-correctness", "results-dir",
       "prepare-inputs", "input-manifest", "expected-input-manifest-digest", "master-seed",
       "timing-stage", "timing-counts", "batch-output", "batch", "attempt", "process-epoch",
       "member-order", "group-orders"

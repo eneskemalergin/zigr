@@ -77,6 +77,18 @@ expect_error(
 )
 expect_true(identical(parse_task_filter("1,7,86"), c(1L, 7L, 86L)), "task filter parses exact positive integers")
 expect_true(
+  identical(
+    select_task_ids(c("07a_protect_shallow", "07b_protect_scaling", "52_boundary_scalar_generated"), c(7L, 52L)),
+    c("07a_protect_shallow", "07b_protect_scaling", "52_boundary_scalar_generated")
+  ),
+  "numeric task selection retains every distinct task with the selected prefix"
+)
+expect_true(
+  identical(parse_csv_option("07a_protect_shallow,07b_protect_scaling", "task ID filter"),
+            c("07a_protect_shallow", "07b_protect_scaling")),
+  "internal task ID selection keeps tasks that share a numeric prefix distinct"
+)
+expect_true(
   identical(unname(vapply(c("tasks", "fixtures", "all"), parse_benchmark_suite, character(1))), c("tasks", "fixtures", "all")) &&
     benchmark_run_includes(list(suite = "tasks"), "task") &&
     !benchmark_run_includes(list(suite = "tasks"), "fixture") &&
@@ -1696,6 +1708,13 @@ expect_true(
     spec, list(runtime_version = "4.6.1", header_version = "4.6.1"), admitted_records
   )),
   "the frozen tool, API, dependency, and R access-mode set is admitted"
+)
+expect_true(
+  isTRUE(source_ledger_validate_admission(
+    spec, list(runtime_version = "4.6.1", header_version = "4.6.1"),
+    admitted_records[c(1L, 2L)]
+  )),
+  "filtered runs admit exactly the selected runner toolchains"
 )
 checked_records <- clone(admitted_records)
 checked_records[[1L]]$toolchain$checked_sexp <- TRUE

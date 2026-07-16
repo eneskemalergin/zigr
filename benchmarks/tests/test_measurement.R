@@ -645,23 +645,12 @@ expect_true(
   identical(read_run_wall_time_samples(layout_root, grouped_metadata, "task", "r", "b", expected_n = 3L), 4:6),
   "grouped artifact layout reads a selected task"
 )
-legacy_metadata <- list(schema_version = 2L, run_id = legacy_run_manifest_id())
-dir.create(file.path(layout_root, "r"))
-write.csv(
-  data.frame(task = "b", iteration = 1:3, wall_ms = 7:9),
-  file.path(layout_root, "r", "task_b.csv"),
-  row.names = FALSE
-)
-expect_true(
-  identical(read_run_wall_time_samples(layout_root, legacy_metadata, "task", "r", "b", expected_n = 3L), 7:9),
-  "low-level schema-two artifact reader remains available for the accepted historical run"
-)
-unnamed_legacy_metadata <- legacy_metadata
-unnamed_legacy_metadata$run_id <- "unaccepted-schema-two"
 expect_error(
-  "low-level schema-two reader rejects an unnamed run",
-  read_run_wall_time_samples(layout_root, unnamed_legacy_metadata, "task", "r", "b", expected_n = 3L),
-  "retained only for the named accepted historical run"
+  "schema-two artifact reader is retired",
+  read_run_wall_time_samples(
+    layout_root, list(schema_version = 2L, run_id = "historical"), "task", "r", "b", expected_n = 3L
+  ),
+  "unsupported run manifest schema version"
 )
 unlink(layout_root, recursive = TRUE)
 legacy_manifest_root <- tempfile("legacy-run-manifest-")
@@ -671,17 +660,9 @@ jsonlite::write_json(
   run_manifest_path(legacy_manifest_root), auto_unbox = TRUE
 )
 expect_error(
-  "unnamed schema-two run manifest",
+  "schema-two run manifest is retired",
   read_run_manifest(legacy_manifest_root),
-  "retained only for the named accepted historical run"
-)
-jsonlite::write_json(
-  list(schema_version = 2L, run_id = legacy_run_manifest_id()),
-  run_manifest_path(legacy_manifest_root), auto_unbox = TRUE
-)
-expect_true(
-  identical(as.character(read_run_manifest(legacy_manifest_root)$run_id), legacy_run_manifest_id()),
-  "named accepted historical run retains schema-two compatibility"
+  "unsupported run manifest schema version"
 )
 unlink(legacy_manifest_root, recursive = TRUE)
 write.csv(data.frame(wall_ms = c(0.1, Inf)), sample_file, row.names = FALSE)

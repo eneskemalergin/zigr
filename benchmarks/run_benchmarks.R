@@ -79,11 +79,9 @@ if (!is.null(runners_filter)) {
 }
 if (length(all_runners) == 0L) stop("no active runners selected")
 
-task_numbers <- as.integer(sub("([0-9]+).*", "\\1", manifest$task))
 selected_tasks <- if (run_tasks) manifest$task else character(0)
 if (!is.null(tasks_filter) && length(selected_tasks) > 0L) {
-  selected_tasks <- manifest$task[task_numbers %in% tasks_filter]
-  if (length(selected_tasks) == 0L) stop("task filter selected no manifest tasks")
+  selected_tasks <- select_task_ids(manifest$task, tasks_filter)
 }
 
 source(file.path(root_dir, "src", "r", "run_all.R"))
@@ -179,7 +177,7 @@ if (run_tasks) {
     sprintf("--master-seed=%d", master_seed)
   )
   if (!is.null(tasks_filter)) {
-    prepare_args <- c(prepare_args, sprintf("--tasks=%s", paste(tasks_filter, collapse = ",")))
+    prepare_args <- c(prepare_args, sprintf("--task-ids=%s", paste(selected_tasks, collapse = ",")))
   }
   prepare_code <- system2("Rscript", args = prepare_args, env = blas_env, stdout = "", stderr = "")
   if (!identical(prepare_code, 0L)) stop(sprintf("canonical input preparation failed with exit code %d", prepare_code))
@@ -276,8 +274,7 @@ worker_process_args <- function(kind, runner_name, validation_only = FALSE, vali
     if (anyNA(counts) || anyNA(group_orders)) stop("worker timing selection is incomplete")
     if (identical(kind, "task")) {
       worker_args <- worker_args[!grepl("^--tasks=", worker_args)]
-      task_ids <- as.integer(sub("([0-9]+).*", "\\1", ids))
-      worker_args <- c(worker_args, sprintf("--tasks=%s", paste(task_ids, collapse = ",")))
+      worker_args <- c(worker_args, sprintf("--task-ids=%s", paste(ids, collapse = ",")))
     } else {
       worker_args <- c(worker_args, sprintf("--fixtures=%s", paste(ids, collapse = ",")))
     }
