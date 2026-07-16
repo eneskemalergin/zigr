@@ -31,6 +31,23 @@ expect_true(
     !anyDuplicated(vapply(specs, `[[`, character(1), "function_name")),
   "the direct path has one unique identity for each retained event"
 )
+suitability <- validate_direct_task_suitability()
+task_set <- function(field) suitability$task[suitability[[field]]]
+expect_true(
+  all(suitability$immutable_input) && !any(suitability$input_mutating) &&
+    identical(task_set("stateful"), c("external_state", "rng")) &&
+    identical(task_set("representation_changing"), c("altrep_sum", "altrep_index", "altrep_materialize")) &&
+    identical(task_set("large_output"), c(
+      "numeric_transform", "sort", "transpose", "matmul", "attributes", "raw_copy",
+      "complex_conjugate", "altrep_materialize", "serialize", "rng"
+    )) &&
+    identical(task_set("small_output"), c(
+      "rowcol", "dataframe", "string_concat", "string_metadata", "factor", "logical_counts",
+      "outputs"
+    )) &&
+    identical(task_set("matrix_task"), c("transpose", "rowcol", "matmul")),
+  "the task suitability map records the declared input, state, representation, output, and matrix contracts"
+)
 
 first <- benchmark_revision_arguments(specs[[1L]])
 second <- benchmark_revision_arguments(specs[[1L]])
@@ -193,6 +210,28 @@ expect_true(
   "a .External batch expression contains exactly the declared number of events"
 )
 
+released_batch_results <- 0L
+batch_result <- function() {
+  value <- new.env(parent = emptyenv())
+  reg.finalizer(value, function(...) released_batch_results <<- released_batch_results + 1L,
+                onexit = FALSE)
+  value
+}
+retained_batch_result <- measure_direct_batch(
+  direct_function_call(batch_result), environment(), 4L, constant_clock
+)
+invisible(gc(full = TRUE))
+expect_true(
+  identical(released_batch_results, 3L),
+  "a repeated batch retains only its final result while its intermediate results become unreachable"
+)
+rm(retained_batch_result)
+invisible(gc(full = TRUE))
+expect_true(
+  identical(released_batch_results, 4L),
+  "the harness releases the final batch result when its owning phase drops it"
+)
+
 preparations <- 0L
 prepare <- function() {
   preparations <<- preparations + 1L
@@ -223,6 +262,7 @@ samples <- data.frame(
   batch_elapsed_ms = c(2, 4, 6, 3, 5, 7),
   elapsed_per_event_ms = c(1, 2, 3, 1.5, 2.5, 3.5),
   gc_elapsed_ms = 0,
+  vector_heap_trigger_vcells = 8388608L,
   stringsAsFactors = FALSE
 )
 validate_direct_timing_samples(samples, c("r", "c_call"))
@@ -257,6 +297,15 @@ expect_true(
     c("one", "one", "one", "one", "one", "repeat", "repeat")
   ),
   "only stateful, RNG, and representation-changing events require a single invocation"
+)
+allocation_classes <- vapply(
+  c("complex_conjugate", "schema", "outputs"), direct_task_allocation_class, character(1)
+)
+expect_true(
+  identical(unname(allocation_classes), c("large_output", "ordinary_result", "ordinary_result")) &&
+    identical(direct_task_output_vcells("complex_conjugate"), 65536L) &&
+    identical(direct_task_output_vcells("schema"), 0L),
+  "only the declared large complex output has a GC-observation requirement"
 )
 expect_true(
   identical(remaining_direct_run_seconds(10, 609.9, 600L), 0) &&
@@ -352,6 +401,136 @@ expect_true(
   )$status, "PASS_GC"),
   "measured GC can explain a periodic allocating-task spike without deleting its sample"
 )
+alternating_values <- rep(c(1, 10), length.out = 11L)
+alternating_classification <- classify_direct_distribution(
+  alternating_values, alternating_values, numeric(length(alternating_values)), 0.01
+)
+expect_true(
+  identical(alternating_classification$status, "BLOCK") &&
+    grepl("separated-mode ratio", alternating_classification$reason, fixed = TRUE) &&
+    grepl("alternating mode sequence", alternating_classification$reason, fixed = TRUE) &&
+    is.na(alternating_classification$metrics$ordered_regime_ratio),
+  "alternating separated modes block without being mislabeled as one ordered transition"
+)
+separated_bimodal_values <- c(1, 1, 1, 10, 10, 1, 1, 10, 10, 10, 1)
+separated_bimodal_classification <- classify_direct_distribution(
+  separated_bimodal_values, separated_bimodal_values,
+  numeric(length(separated_bimodal_values)), 0.01
+)
+expect_true(
+  identical(separated_bimodal_classification$status, "BLOCK") &&
+    separated_bimodal_classification$metrics$separated_mode_ratio >
+      direct_distribution_policy()$regime_median_ratio_limit &&
+    !isTRUE(separated_bimodal_classification$metrics$alternating_regime) &&
+    is.na(separated_bimodal_classification$metrics$ordered_regime_ratio),
+  "a separated bimodal sequence blocks even when it is neither alternating nor one ordered transition"
+)
+expect_true(
+  identical(classify_direct_distribution(seq(1, 2, length.out = 11L), seq(1, 2, length.out = 11L),
+                                         numeric(11L), 0.01)$status, "PASS"),
+  "gradual drift below every declared threshold remains visible but does not create a false regime"
+)
+scheduler_spike <- classify_direct_distribution(c(rep(1, 10L), 30), c(rep(1, 10L), 30), numeric(11L), 0.01)
+expect_true(
+  identical(scheduler_spike$status, "BLOCK") &&
+    grepl("max/median 30 exceeds 20", scheduler_spike$reason, fixed = TRUE),
+  "an unexplained scheduler spike reports its exact threshold breach"
+)
+threshold_metrics <- list(
+  median_ms = 1, mean_ms = 1, max_over_median = 20, p99_over_median = 5,
+  cv_pct = 50, ordered_regime_ratio = 3, separated_mode_ratio = 3,
+  alternating_switches = 0L, alternating_regime = FALSE
+)
+expect_true(
+  length(direct_distribution_triggers(threshold_metrics)) == 0L &&
+    length(direct_distribution_triggers(utils::modifyList(threshold_metrics, list(max_over_median = 20.001)))) == 1L &&
+    length(direct_distribution_triggers(utils::modifyList(threshold_metrics, list(p99_over_median = 5.001)))) == 1L &&
+    length(direct_distribution_triggers(utils::modifyList(threshold_metrics, list(cv_pct = 50.001)))) == 1L &&
+    length(direct_distribution_triggers(utils::modifyList(threshold_metrics, list(ordered_regime_ratio = 3.001)))) == 1L,
+  "all four inspection thresholds use strict declared boundaries"
+)
+zero_classification <- classify_direct_distribution(rep(0, 11L), rep(1, 11L), numeric(11L), 0.01)
+expect_true(
+  identical(zero_classification$status, "BLOCK") &&
+    grepl("undefined ratio", zero_classification$reason, fixed = TRUE),
+  "zero per-event medians receive a specific blocked reason"
+)
+manual_values <- seq(9.5, 10.5, length.out = 11L)
+manual_samples <- data.frame(
+  runner = "r", task = "manual", phase = "measurement", measurement_sample = seq_len(11L),
+  batch_repetitions = 1L, batch_elapsed_ms = manual_values,
+  elapsed_per_event_ms = manual_values, gc_elapsed_ms = 0,
+  vector_heap_trigger_vcells = 8388608L, stringsAsFactors = FALSE
+)
+manual_summary <- summarize_direct_timing(
+  manual_samples,
+  data.frame(runner = "r", task = "manual", first_call_ms = 12, stringsAsFactors = FALSE),
+  c(r = 0.01)
+)
+manual_expected <- data.frame(
+  runner = "r", task = "manual", distribution_policy_digest = direct_distribution_policy_digest(),
+  measurement_samples = 11L, batch_repetitions = 1L,
+  median_ms = stats::median(manual_values), mean_ms = mean(manual_values),
+  q1_ms = unname(stats::quantile(manual_values, 0.25, type = 7)),
+  q3_ms = unname(stats::quantile(manual_values, 0.75, type = 7)),
+  p95_ms = unname(stats::quantile(manual_values, 0.95, type = 7)),
+  p99_ms = unname(stats::quantile(manual_values, 0.99, type = 7)),
+  min_ms = min(manual_values), max_ms = max(manual_values), sd_ms = stats::sd(manual_values),
+  cv_pct = stats::sd(manual_values) / mean(manual_values) * 100,
+  max_over_median = max(manual_values) / stats::median(manual_values),
+  p99_over_median = unname(stats::quantile(manual_values, 0.99, type = 7)) / stats::median(manual_values),
+  allocation_class = "ordinary_result", fixed_sequence_output_vcells = 0,
+  vector_heap_trigger_vcells = 8388608L, allocation_gc_status = "NOT_REQUIRED",
+  regime_change = FALSE, separated_modes = FALSE, alternating_switches = 0L,
+  alternating_regime = FALSE, timer_floor_ms = 0.01,
+  distribution_status = "PASS", distribution_reason = "ordered samples pass the distribution gates",
+  first_call_ms = 12, stringsAsFactors = FALSE
+)
+expect_true(
+  isTRUE(all.equal(manual_summary, manual_expected, tolerance = 1e-12, check.attributes = FALSE)),
+  "an independent 11-sample calculation matches every published summary field"
+)
+allocation_samples <- manual_samples
+allocation_samples$task <- "complex_conjugate"
+allocation_samples$batch_repetitions <- 64L
+allocation_samples$batch_elapsed_ms <- 64
+allocation_samples$elapsed_per_event_ms <- 1
+allocation_samples$vector_heap_trigger_vcells <- 8388608L
+allocation_blocked <- summarize_direct_timing(
+  allocation_samples,
+  data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
+  c(r = 0.01)
+)
+expect_true(
+  identical(allocation_blocked$allocation_class, "large_output") &&
+    identical(allocation_blocked$allocation_gc_status, "GC_NOT_OBSERVED") &&
+    identical(allocation_blocked$distribution_status, "BLOCK") &&
+    grepl("GC not observed", allocation_blocked$distribution_reason, fixed = TRUE),
+  "a large fixed sequence without measured GC cannot claim amortized allocation timing"
+)
+allocation_samples$vector_heap_trigger_vcells <- 50000000L
+allocation_not_required <- summarize_direct_timing(
+  allocation_samples,
+  data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
+  c(r = 0.01)
+)
+expect_true(
+  identical(allocation_not_required$allocation_gc_status, "NOT_REQUIRED") &&
+    identical(allocation_not_required$distribution_status, "PASS"),
+  "a large output below its prephase vector-heap trigger does not require measured GC"
+)
+allocation_samples$vector_heap_trigger_vcells <- 8388608L
+allocation_samples$gc_elapsed_ms[[1L]] <- 0.5
+allocation_observed <- summarize_direct_timing(
+  allocation_samples,
+  data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
+  c(r = 0.01)
+)
+expect_true(
+  identical(allocation_observed$allocation_gc_status, "GC_OBSERVED") &&
+    identical(allocation_observed$distribution_status, "PASS"),
+  "a required large-output sequence records measured GC without changing its timing distribution"
+)
 extra_first_call <- rbind(
   first_calls,
   data.frame(runner = "zigr", task = "vector_sum", first_call_ms = 1, stringsAsFactors = FALSE)
@@ -435,6 +614,20 @@ expect_error(
   "GC time exceeds batch time",
   validate_direct_timing_samples(bad_gc),
   "invalid measurements"
+)
+bad_heap_trigger <- samples
+bad_heap_trigger$vector_heap_trigger_vcells[[1L]] <- 0
+expect_error(
+  "nonpositive vector-heap trigger",
+  validate_direct_timing_samples(bad_heap_trigger),
+  "invalid measurements"
+)
+mixed_heap_trigger <- samples
+mixed_heap_trigger$vector_heap_trigger_vcells[[2L]] <- 8388609L
+expect_error(
+  "mixed runner-task vector-heap trigger",
+  validate_direct_timing_samples(mixed_heap_trigger),
+  "one vector-heap trigger"
 )
 
 expect_error(

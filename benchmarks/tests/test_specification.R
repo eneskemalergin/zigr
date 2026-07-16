@@ -1513,6 +1513,19 @@ direct_metadata <- list(
 )
 validate_direct_run_manifest(direct_metadata)
 
+incomplete_direct <- clone(direct_metadata)
+incomplete_direct$status <- "incomplete"
+incomplete_direct$finished_at <- run_manifest_timestamp()
+incomplete_direct$status_message <- "batch sizing cannot meet the shared policy"
+validate_direct_run_manifest(incomplete_direct)
+bad_direct <- clone(incomplete_direct)
+bad_direct$status_message <- NULL
+expect_error(
+  "incomplete manifest requires its diagnostic",
+  validate_direct_run_manifest(bad_direct),
+  "incomplete status message"
+)
+
 bad_direct <- clone(direct_metadata)
 bad_direct$timing_policy$batch_repetitions$vector_sum <- 7L
 expect_error(
@@ -1534,12 +1547,26 @@ expect_error(
   validate_direct_run_manifest(bad_direct),
   "invalid R JIT policy"
 )
+bad_direct <- clone(direct_metadata)
+bad_direct$timing_policy$distribution_policy$cv_pct_limit <- 0
+expect_error(
+  "direct manifest rejects an invalid distribution policy",
+  validate_direct_run_manifest(bad_direct),
+  "invalid limits"
+)
+bad_direct <- clone(direct_metadata)
+bad_direct$timing_policy$allocation_policy$large_output_vcells$complex_conjugate <- 1L
+expect_error(
+  "direct manifest rejects an invalid allocating-event policy",
+  validate_direct_run_manifest(bad_direct),
+  "invalid complex output size"
+)
 worker_source <- read_source("benchmark_worker.R")
 timing_phase_source <- source_region(worker_source, "for (spec in specs) {\n  truth <- phase_truth(spec)", "samples <- do.call(rbind, sample_rows)")
 expect_true(
   appears_before(worker_source, "compiler::enableJIT(0L)", "source(file.path(root_dir, \"src\", \"r\", \"run_all.R\")") &&
     appears_before(worker_source, "runner_entries <-", "if (identical(mode, \"sizing\"))") &&
-    appears_before(worker_source, "gc(full = TRUE)\n  repetitions <-", "calibration_result <-") &&
+    appears_before(worker_source, "vector_heap_trigger_vcells <- direct_vector_heap_trigger_vcells(gc(full = TRUE))\n  repetitions <-", "calibration_result <-") &&
     appears_before(worker_source, "calibration_result <-", "last_result <- NULL"),
   "workers disable JIT, resolve entries, and force GC before the local calibration boundary"
 )
@@ -1622,7 +1649,8 @@ for (name in names(complete_direct$outputs)) {
         data.frame(
           runner = runner, task = task, phase = "measurement", measurement_sample = 1:11,
           batch_repetitions = repetitions, batch_elapsed_ms = as.numeric(repetitions),
-          elapsed_per_event_ms = 1, gc_elapsed_ms = 0, stringsAsFactors = FALSE
+          elapsed_per_event_ms = 1, gc_elapsed_ms = 0,
+          vector_heap_trigger_vcells = 8388608L, stringsAsFactors = FALSE
         )
       }))
     }))
@@ -1632,6 +1660,20 @@ for (name in names(complete_direct$outputs)) {
   }
   complete_direct$outputs[[name]]$md5 <- unname(as.character(tools::md5sum(path))[[1L]])
 }
+summary_samples <- read.csv(file.path(direct_run_dir, "timing_samples.csv"), stringsAsFactors = FALSE)
+summary_first_calls <- expand.grid(
+  runner = direct_runners, task = direct_tasks, stringsAsFactors = FALSE
+)
+summary_first_calls$first_call_ms <- 1
+summary_rows <- summarize_direct_timing(
+  summary_samples, summary_first_calls,
+  setNames(rep(probe_floor, length(direct_runners)), direct_runners),
+  complete_direct$timing_policy$distribution_policy
+)
+write.csv(summary_rows, file.path(direct_run_dir, "timing_summary.csv"), row.names = FALSE)
+complete_direct$outputs$timing_summary$md5 <- unname(as.character(tools::md5sum(
+  file.path(direct_run_dir, "timing_summary.csv")
+)[[1L]]))
 
 bad_direct <- clone(complete_direct)
 bad_direct$measurement_probes$r$samples[[2L]]$probe_sample <- 1L
@@ -1769,11 +1811,54 @@ restored_samples <- do.call(rbind, lapply(direct_runners, function(runner) {
     data.frame(
       runner = runner, task = task, phase = "measurement", measurement_sample = 1:11,
       batch_repetitions = repetitions, batch_elapsed_ms = as.numeric(repetitions),
-      elapsed_per_event_ms = 1, gc_elapsed_ms = 0, stringsAsFactors = FALSE
+      elapsed_per_event_ms = 1, gc_elapsed_ms = 0,
+      vector_heap_trigger_vcells = 8388608L, stringsAsFactors = FALSE
     )
   }))
 }))
 write.csv(restored_samples, file.path(direct_run_dir, "timing_samples.csv"), row.names = FALSE)
+write_run_manifest(direct_run_dir, complete_direct)
+forged_direct <- clone(complete_direct)
+forged_summary <- read.csv(file.path(direct_run_dir, "timing_summary.csv"), stringsAsFactors = FALSE)
+forged_summary$median_ms[[1L]] <- forged_summary$median_ms[[1L]] + 1
+write.csv(forged_summary, file.path(direct_run_dir, "timing_summary.csv"), row.names = FALSE)
+forged_direct$outputs$timing_summary$md5 <- unname(as.character(tools::md5sum(
+  file.path(direct_run_dir, "timing_summary.csv")
+)[[1L]]))
+jsonlite::write_json(forged_direct, run_manifest_path(direct_run_dir), auto_unbox = TRUE,
+                     pretty = TRUE, null = "null", digits = NA)
+expect_error(
+  "completed manifest rejects a summary that differs from raw samples",
+  read_run_manifest(direct_run_dir),
+  "summary differs from raw samples or distribution policy"
+)
+write.csv(summary_rows, file.path(direct_run_dir, "timing_summary.csv"), row.names = FALSE)
+write_run_manifest(direct_run_dir, complete_direct)
+forged_direct <- clone(complete_direct)
+forged_summary <- read.csv(file.path(direct_run_dir, "timing_summary.csv"), stringsAsFactors = FALSE)
+forged_summary$distribution_policy_digest[[1L]] <- "forged-distribution-policy-digest"
+write.csv(forged_summary, file.path(direct_run_dir, "timing_summary.csv"), row.names = FALSE)
+forged_direct$outputs$timing_summary$md5 <- unname(as.character(tools::md5sum(
+  file.path(direct_run_dir, "timing_summary.csv")
+)[[1L]]))
+jsonlite::write_json(forged_direct, run_manifest_path(direct_run_dir), auto_unbox = TRUE,
+                     pretty = TRUE, null = "null", digits = NA)
+expect_error(
+  "completed manifest rejects a forged distribution-policy digest",
+  read_run_manifest(direct_run_dir),
+  "summary differs from raw samples or distribution policy"
+)
+write.csv(summary_rows, file.path(direct_run_dir, "timing_summary.csv"), row.names = FALSE)
+write_run_manifest(direct_run_dir, complete_direct)
+forged_direct <- clone(complete_direct)
+forged_direct$timing_policy$distribution_policy$cv_pct_limit <- 51
+jsonlite::write_json(forged_direct, run_manifest_path(direct_run_dir), auto_unbox = TRUE,
+                     pretty = TRUE, null = "null", digits = NA)
+expect_error(
+  "completed manifest rejects a valid but different distribution policy",
+  read_run_manifest(direct_run_dir),
+  "summary differs from raw samples or distribution policy"
+)
 write_run_manifest(direct_run_dir, complete_direct)
 writeLines("drift", file.path(direct_run_dir, "timing_summary.csv"))
 expect_error(

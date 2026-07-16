@@ -176,6 +176,10 @@ validate_direct_run_manifest <- function(metadata) {
        !identical(measurement_mode, "correctness_only"))) {
     stop("run manifest status disagrees with its measurement mode")
   }
+  if (identical(status, "incomplete")) {
+    manifest_scalar(metadata$finished_at, "incomplete finish timestamp")
+    manifest_scalar(metadata$status_message, "incomplete status message")
+  }
   if (!is.list(metadata$source_tree) ||
       !all(c("method", "digest", "file_count") %in% names(metadata$source_tree))) {
     stop("run manifest has no source-tree identity")
@@ -197,10 +201,10 @@ validate_direct_run_manifest <- function(metadata) {
   policy_fields <- c(
     "policy_version", "warmup_iterations", "local_calibration_batches",
     "measurement_samples", "measurement_probe_samples", "sizing_policy", "batch_repetitions", "worker_timeout_seconds",
-    "total_run_timeout_seconds", "r_jit_policy", "gc_policy"
+    "total_run_timeout_seconds", "r_jit_policy", "distribution_policy", "allocation_policy", "gc_policy"
   )
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v4")) {
+      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v6")) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
@@ -208,6 +212,11 @@ validate_direct_run_manifest <- function(metadata) {
   }
   if (!identical(manifest_scalar(policy$r_jit_policy, "R JIT policy"), "disabled-before-runner-load")) {
     stop("run manifest has an invalid R JIT policy")
+  }
+  distribution_policy <- validate_direct_distribution_policy(policy$distribution_policy)
+  validate_direct_allocation_policy(policy$allocation_policy)
+  if (!identical(as.integer(policy$measurement_samples), distribution_policy$measurement_samples)) {
+    stop("run manifest measurement samples differ from its distribution policy")
   }
   validate_direct_sizing_policy(policy$sizing_policy)
   if (!is.list(policy$batch_repetitions) || !setequal(names(policy$batch_repetitions), tasks)) {
@@ -267,6 +276,25 @@ validate_direct_run_manifest <- function(metadata) {
   invisible(metadata)
 }
 
+validate_direct_timing_summary <- function(summary, samples, metadata) {
+  if (!is.data.frame(summary)) stop("completed timing summary is invalid")
+  policy <- metadata$timing_policy
+  runners <- run_manifest_values(metadata$runners)
+  probes <- metadata$measurement_probes
+  timer_floors <- setNames(vapply(probes[runners], function(probe) {
+    as.numeric(probe$timer_floor_ms)
+  }, numeric(1)), runners)
+  first_calls <- summary[c("runner", "task", "first_call_ms")]
+  expected <- summarize_direct_timing(
+    samples, first_calls, timer_floors, policy$distribution_policy, policy$allocation_policy
+  )
+  if (!identical(names(summary), names(expected)) || nrow(summary) != nrow(expected) ||
+      !isTRUE(all.equal(summary, expected, tolerance = 1e-12, check.attributes = FALSE))) {
+    stop("completed timing summary differs from raw samples or distribution policy")
+  }
+  invisible(summary)
+}
+
 validate_direct_run_outputs <- function(run_dir, metadata) {
   if (!(as.character(metadata$status) %in% c("correctness_complete", "complete"))) {
     return(invisible(metadata))
@@ -295,6 +323,8 @@ validate_direct_run_outputs <- function(run_dir, metadata) {
     if (!identical(unname(observed), unname(declared))) {
       stop("completed timing repetitions differ from the manifest sizing map")
     }
+    summary <- read.csv(file.path(run_dir, "timing_summary.csv"), stringsAsFactors = FALSE)
+    validate_direct_timing_summary(summary, samples, metadata)
   }
   invisible(metadata)
 }
@@ -303,6 +333,14 @@ write_run_manifest <- function(run_dir, metadata) {
   validate_direct_run_manifest(metadata)
   validate_direct_run_outputs(run_dir, metadata)
   write_run_manifest_json_atomic(metadata, run_manifest_path(run_dir))
+}
+
+write_incomplete_run_manifest <- function(run_dir, metadata, message) {
+  metadata$status <- "incomplete"
+  metadata$status_message <- manifest_scalar(message, "incomplete status message")
+  metadata$finished_at <- run_manifest_timestamp()
+  write_run_manifest(run_dir, metadata)
+  metadata
 }
 
 read_run_manifest <- function(run_dir) {

@@ -114,16 +114,15 @@ metadata <- list(
   measurement_mode = if (correctness_only) "correctness_only" else "timed",
   command = as.list(commandArgs())
 )
+run_direct_benchmark <- function() {
 write_run_manifest(run_dir, metadata)
 
 completed <- FALSE
 failure <- NULL
 on.exit({
   if (!completed) {
-    metadata$status <- "incomplete"
-    metadata$status_message <- if (is.null(failure)) geterrmessage() else failure
-    metadata$finished_at <- run_manifest_timestamp()
-    try(write_run_manifest(run_dir, metadata), silent = TRUE)
+    message <- if (is.null(failure)) geterrmessage() else failure
+    try(write_incomplete_run_manifest(run_dir, metadata, message), silent = TRUE)
   }
 }, add = TRUE)
 
@@ -348,7 +347,10 @@ write_run_manifest(run_dir, metadata)
 timer_floors <- setNames(vapply(metadata$measurement_probes, function(probe) {
   as.numeric(probe$timer_floor_ms)
 }, numeric(1)), selected_runners)
-summary <- summarize_direct_timing(samples, first_calls, timer_floors)
+summary <- summarize_direct_timing(
+  samples, first_calls, timer_floors, timing_policy$distribution_policy,
+  timing_policy$allocation_policy
+)
 if (any(summary$distribution_status == "BLOCK")) {
   blocked <- summary[summary$distribution_status == "BLOCK", c(
     "runner", "task", "distribution_reason"
@@ -387,3 +389,6 @@ cat(sprintf(
   "Complete: %d runners, %d tasks, %d measurement samples.\n",
   length(selected_runners), length(selected_tasks), nrow(samples)
 ))
+}
+
+run_direct_benchmark()

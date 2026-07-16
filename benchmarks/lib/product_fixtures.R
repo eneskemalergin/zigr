@@ -981,7 +981,7 @@ fixture_visible_output_nodes <- function(value) {
 }
 
 fixture_assert_fresh_tree <- function(left, right, diagnostics, label) {
-  if (isTRUE(diagnostics$same_sexp(left, right))) {
+  if ((is.list(left) || length(left) != 1L) && isTRUE(diagnostics$same_sexp(left, right))) {
     stop(sprintf("fixture reused an output SEXP for %s", label), call. = FALSE)
   }
   if (is.list(left) && is.list(right)) {
@@ -1694,11 +1694,9 @@ run_benchmark_revision_gate <- function(
   is_unmaterialized_altrep <- function(x) {
     isTRUE(revision_native_call(c_dll, "c_revision_altrep_unmaterialized", list(x)))
   }
-  allocating <- c(
-    "numeric_transform", "sort", "transpose", "factor", "attributes", "raw_copy",
-    "complex_conjugate", "altrep_materialize", "serialize"
-  )
-  altrep_tasks <- c("altrep_sum", "altrep_index", "altrep_materialize")
+  suitability <- validate_direct_task_suitability()
+  allocating <- suitability$task[suitability$large_output | suitability$small_output]
+  altrep_tasks <- suitability$task[suitability$representation_changing]
   master_seed <- input_scalar_integer(master_seed, "revision correctness master seed")
   rng_seed <- task_input_seed(master_seed, "rng", "direct-timing-v1")
 
@@ -1795,7 +1793,8 @@ run_benchmark_revision_gate <- function(
       rm(runner_repeat_result)
     }
 
-    if (spec$id %in% allocating && same_sexp(runner_arguments[[1L]], runner_result)) {
+    if (spec$id %in% allocating && length(runner_arguments) > 0L &&
+        same_sexp(runner_arguments[[1L]], runner_result)) {
       stop(sprintf("%s/%s returned its input instead of a fresh result", runner, spec$id))
     }
     if (identical(spec$id, "altrep_materialize") && is_altrep(runner_result)) {

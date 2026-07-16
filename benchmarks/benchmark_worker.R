@@ -127,7 +127,7 @@ is_unmaterialized_altrep <- function(value) {
   isTRUE(revision_native_call(c_dll, "c_revision_altrep_unmaterialized", list(value)))
 }
 
-altrep_tasks <- c("altrep_sum", "altrep_index", "altrep_materialize")
+altrep_tasks <- task_ids[vapply(task_ids, direct_task_is_altrep, logical(1))]
 rng_seed <- task_input_seed(master_seed, "rng", "direct-timing-v1")
 reset_rng <- function(spec) {
   if (isTRUE(spec$rng)) {
@@ -234,7 +234,7 @@ for (spec in specs) {
   warmup_result <- run_prepared_phase(spec, "warmup", 1L, truth, timed = FALSE)
   rm(warmup_result)
 
-  gc(full = TRUE)
+  vector_heap_trigger_vcells <- direct_vector_heap_trigger_vcells(gc(full = TRUE))
   repetitions <- batch_repetitions[[spec$id]]
   calibration_result <- run_prepared_phase(spec, "local calibration", repetitions, truth)
   rm(calibration_result)
@@ -251,6 +251,7 @@ for (spec in specs) {
       batch_elapsed_ms = result$batch_elapsed_ms,
       elapsed_per_event_ms = result$elapsed_per_event_ms,
       gc_elapsed_ms = result$gc_elapsed_ms,
+      vector_heap_trigger_vcells = vector_heap_trigger_vcells,
       stringsAsFactors = FALSE
     )
     last_result <- result$result

@@ -94,17 +94,116 @@ benchmark_revision_task_specs <- function() {
   )
 }
 
+direct_task_suitability <- function() {
+  data.frame(
+    task = vapply(benchmark_revision_task_specs(), `[[`, character(1), "id"),
+    immutable_input = TRUE,
+    input_mutating = FALSE,
+    stateful = c(rep(FALSE, 22L), TRUE, FALSE, FALSE, TRUE, FALSE),
+    representation_changing = c(rep(FALSE, 19L), TRUE, TRUE, TRUE, rep(FALSE, 5L)),
+    large_output = c(
+      FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, FALSE,
+      FALSE, FALSE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, FALSE, TRUE,
+      FALSE, FALSE, TRUE, TRUE, FALSE
+    ),
+    small_output = c(
+      FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE,
+      TRUE, TRUE, FALSE, FALSE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+      FALSE, FALSE, FALSE, FALSE, TRUE
+    ),
+    gc_relevant = c(
+      FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, FALSE,
+      FALSE, FALSE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, FALSE, TRUE,
+      FALSE, FALSE, TRUE, TRUE, FALSE
+    ),
+    matrix_task = c(
+      FALSE, FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, rep(FALSE, 19L)
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+validate_direct_task_suitability <- function(rows = direct_task_suitability()) {
+  required <- c(
+    "task", "immutable_input", "input_mutating", "stateful", "representation_changing",
+    "large_output", "small_output", "gc_relevant", "matrix_task"
+  )
+  expected_tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
+  if (!is.data.frame(rows) || !identical(names(rows), required) ||
+      !identical(as.character(rows$task), expected_tasks) || anyDuplicated(rows$task) ||
+      any(!vapply(rows[-1L], is.logical, logical(1))) ||
+      any(rows$immutable_input == rows$input_mutating) ||
+      any(rows$large_output & rows$small_output) ||
+      any(rows$gc_relevant & !rows$large_output)) {
+    stop("direct task suitability is invalid")
+  }
+  rows
+}
+
+direct_task_suitability_row <- function(task_id, rows = direct_task_suitability()) {
+  rows <- validate_direct_task_suitability(rows)
+  index <- match(as.character(task_id), rows$task)
+  if (is.na(index)) stop(sprintf("no direct task suitability is declared for %s", task_id))
+  rows[index, , drop = FALSE]
+}
+
 # One event is one invocation with freshly prepared deterministic arguments.
 # These tasks cannot repeat that event against one prepared object: they mutate
 # it, consume RNG state, or may change ALTREP representation.
 direct_task_batchability <- function(task_id) {
-  if (task_id %in% c(
-    "altrep_sum", "altrep_index", "altrep_materialize",
-    "external_state", "rng"
-  )) {
+  suitability <- direct_task_suitability_row(task_id)
+  if (isTRUE(suitability$stateful) || isTRUE(suitability$representation_changing)) {
     return("one")
   }
   "repeat"
+}
+
+direct_task_is_altrep <- function(task_id) {
+  isTRUE(direct_task_suitability_row(task_id)$representation_changing)
+}
+
+direct_allocation_policy <- function() {
+  list(
+    policy_version = "large-output-gc-v1",
+    large_output_vcells = list(complex_conjugate = 65536L),
+    gc_requirement = "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1"
+  )
+}
+
+validate_direct_allocation_policy <- function(policy) {
+  fields <- c("policy_version", "large_output_vcells", "gc_requirement")
+  if (!is.list(policy) || !identical(names(policy), fields) ||
+      !identical(as.character(policy$policy_version), "large-output-gc-v1") ||
+      !identical(as.character(policy$gc_requirement),
+                 "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1") ||
+      !is.list(policy$large_output_vcells) ||
+      !identical(names(policy$large_output_vcells), "complex_conjugate")) {
+    stop("direct allocation policy is invalid")
+  }
+  output_vcells <- input_scalar_integer(
+    policy$large_output_vcells$complex_conjugate, "complex conjugate output vcells"
+  )
+  if (!identical(output_vcells, 65536L)) {
+    stop("direct allocation policy has an invalid complex output size")
+  }
+  list(
+    policy_version = "large-output-gc-v1",
+    large_output_vcells = list(complex_conjugate = output_vcells),
+    gc_requirement = "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1"
+  )
+}
+
+direct_task_allocation_class <- function(task_id, policy = direct_allocation_policy()) {
+  policy <- validate_direct_allocation_policy(policy)
+  if (task_id %in% names(policy$large_output_vcells)) "large_output" else "ordinary_result"
+}
+
+direct_task_output_vcells <- function(task_id, policy = direct_allocation_policy()) {
+  policy <- validate_direct_allocation_policy(policy)
+  if (task_id %in% names(policy$large_output_vcells)) {
+    return(as.integer(policy$large_output_vcells[[task_id]]))
+  }
+  0L
 }
 
 direct_batch_repetition_map <- function(tasks, repetitions = 1L) {
@@ -623,11 +722,24 @@ measure_direct_batch <- function(
   )
 }
 
+direct_vector_heap_trigger_vcells <- function(gc_state) {
+  if (!is.matrix(gc_state) || !identical(rownames(gc_state), c("Ncells", "Vcells")) ||
+      !("gc trigger" %in% colnames(gc_state))) {
+    stop("R GC state has no vector-heap trigger")
+  }
+  trigger <- as.numeric(gc_state["Vcells", "gc trigger"])
+  if (length(trigger) != 1L || !is.finite(trigger) || trigger <= 0 ||
+      trigger != floor(trigger)) {
+    stop("R GC state has an invalid vector-heap trigger")
+  }
+  trigger
+}
+
 validate_direct_timing_samples <- function(
     samples, runners = NULL, tasks = NULL, measurement_samples = NULL) {
   required <- c(
     "runner", "task", "phase", "measurement_sample", "batch_repetitions",
-    "batch_elapsed_ms", "elapsed_per_event_ms", "gc_elapsed_ms"
+    "batch_elapsed_ms", "elapsed_per_event_ms", "gc_elapsed_ms", "vector_heap_trigger_vcells"
   )
   if (!is.data.frame(samples) || !identical(names(samples), required)) {
     stop("direct timing samples have the wrong columns")
@@ -642,7 +754,7 @@ validate_direct_timing_samples <- function(
   }
   numeric_fields <- c(
     "measurement_sample", "batch_repetitions", "batch_elapsed_ms", "elapsed_per_event_ms",
-    "gc_elapsed_ms"
+    "gc_elapsed_ms", "vector_heap_trigger_vcells"
   )
   if (any(!vapply(samples[numeric_fields], is.numeric, logical(1))) ||
       anyNA(samples[numeric_fields]) ||
@@ -652,7 +764,9 @@ validate_direct_timing_samples <- function(
       any(samples$batch_repetitions < 1L) ||
       any(samples$batch_repetitions != as.integer(samples$batch_repetitions)) ||
       any(samples$batch_elapsed_ms < 0) || any(samples$elapsed_per_event_ms < 0) ||
-      any(samples$gc_elapsed_ms < 0) || any(samples$gc_elapsed_ms > samples$batch_elapsed_ms)) {
+      any(samples$gc_elapsed_ms < 0) || any(samples$gc_elapsed_ms > samples$batch_elapsed_ms) ||
+      any(samples$vector_heap_trigger_vcells < 1L) ||
+      any(samples$vector_heap_trigger_vcells != floor(samples$vector_heap_trigger_vcells))) {
     stop("direct timing samples contain invalid measurements")
   }
   expected_elapsed <- samples$batch_elapsed_ms / samples$batch_repetitions
@@ -667,6 +781,10 @@ validate_direct_timing_samples <- function(
   repetitions <- split(samples$batch_repetitions, samples$task)
   if (any(vapply(repetitions, function(value) length(unique(value)) != 1L, logical(1)))) {
     stop("a task does not use one shared batch repetition count")
+  }
+  heap_triggers <- split(samples$vector_heap_trigger_vcells, paste(samples$runner, samples$task, sep = "\r"))
+  if (any(vapply(heap_triggers, function(value) length(unique(value)) != 1L, logical(1)))) {
+    stop("a runner-task does not use one vector-heap trigger")
   }
   if (!is.null(runners)) {
     runners <- as.character(runners)
@@ -705,71 +823,222 @@ validate_direct_timing_samples <- function(
   invisible(samples)
 }
 
-direct_distribution_metrics <- function(values) {
+direct_distribution_policy <- function() {
+  list(
+    policy_version = "ordered-distribution-v2",
+    timer_floor_method = "max-noop-p99-v1",
+    quantile_type = 7L,
+    measurement_samples = 11L,
+    max_over_median_limit = 20,
+    p99_over_median_limit = 5,
+    cv_pct_limit = 50,
+    regime_median_ratio_limit = 3,
+    regime_detector = "ordered-split-and-separated-modes-v1",
+    gc_explanation_rule = "remove-only-measured-gc-samples-then-recheck-v1"
+  )
+}
+
+validate_direct_distribution_policy <- function(policy) {
+  fields <- c(
+    "policy_version", "timer_floor_method", "quantile_type", "measurement_samples",
+    "max_over_median_limit", "p99_over_median_limit", "cv_pct_limit",
+    "regime_median_ratio_limit", "regime_detector", "gc_explanation_rule"
+  )
+  if (!is.list(policy) || !identical(names(policy), fields) ||
+      !identical(as.character(policy$policy_version), "ordered-distribution-v2") ||
+      !identical(as.character(policy$timer_floor_method), "max-noop-p99-v1") ||
+      !identical(as.character(policy$regime_detector), "ordered-split-and-separated-modes-v1") ||
+      !identical(as.character(policy$gc_explanation_rule), "remove-only-measured-gc-samples-then-recheck-v1")) {
+    stop("direct distribution policy is invalid")
+  }
+  integers <- c(quantile_type = 7L, measurement_samples = 11L)
+  for (field in names(integers)) {
+    if (!identical(input_scalar_integer(policy[[field]], field), integers[[field]])) {
+      stop("direct distribution policy has invalid fixed values")
+    }
+  }
+  limits <- unlist(policy[c(
+    "max_over_median_limit", "p99_over_median_limit", "cv_pct_limit", "regime_median_ratio_limit"
+  )], use.names = FALSE)
+  if (length(limits) != 4L || any(!is.finite(limits)) || any(limits <= 0)) {
+    stop("direct distribution policy has invalid limits")
+  }
+  list(
+    policy_version = "ordered-distribution-v2",
+    timer_floor_method = "max-noop-p99-v1",
+    quantile_type = 7L,
+    measurement_samples = 11L,
+    max_over_median_limit = as.numeric(limits[[1L]]),
+    p99_over_median_limit = as.numeric(limits[[2L]]),
+    cv_pct_limit = as.numeric(limits[[3L]]),
+    regime_median_ratio_limit = as.numeric(limits[[4L]]),
+    regime_detector = "ordered-split-and-separated-modes-v1",
+    gc_explanation_rule = "remove-only-measured-gc-samples-then-recheck-v1"
+  )
+}
+
+direct_distribution_policy_digest <- function(policy = direct_distribution_policy()) {
+  serialized_md5(validate_direct_distribution_policy(policy))
+}
+
+direct_distribution_metrics <- function(values, policy = direct_distribution_policy()) {
+  policy <- validate_direct_distribution_policy(policy)
   values <- as.numeric(values)
   if (length(values) < 1L || anyNA(values) || any(!is.finite(values)) || any(values < 0)) {
     stop("distribution values are invalid")
   }
   median_ms <- stats::median(values)
   mean_ms <- mean(values)
-  denominator <- max(median_ms, .Machine$double.eps)
-  regime_change <- FALSE
+  ordered_regime_ratio <- NA_real_
   if (length(values) >= 6L) {
     for (split in 3L:(length(values) - 3L)) {
-      left <- stats::median(values[seq_len(split)])
-      right <- stats::median(values[(split + 1L):length(values)])
-      ratio <- max(left, right) / max(min(left, right), .Machine$double.eps)
-      if (ratio > 3) {
-        regime_change <- TRUE
-        break
+      left_values <- values[seq_len(split)]
+      right_values <- values[(split + 1L):length(values)]
+      if (!(max(left_values) < min(right_values) || max(right_values) < min(left_values))) next
+      left <- stats::median(left_values)
+      right <- stats::median(right_values)
+      ratio <- if (min(left, right) > 0) max(left, right) / min(left, right) else Inf
+      ordered_regime_ratio <- max(ordered_regime_ratio, ratio, na.rm = TRUE)
+    }
+  }
+  separated_mode_ratio <- NA_real_
+  alternating_switches <- 0L
+  if (length(values) >= 6L) {
+    sorted <- sort(values)
+    for (split in 3L:(length(values) - 3L)) {
+      ratio <- if (sorted[[split]] > 0) sorted[[split + 1L]] / sorted[[split]] else Inf
+      if (is.na(separated_mode_ratio) || ratio > separated_mode_ratio) {
+        separated_mode_ratio <- ratio
+        threshold <- (sorted[[split]] + sorted[[split + 1L]]) / 2
+        labels <- values > threshold
+        alternating_switches <- sum(labels[-1L] != labels[-length(labels)])
       }
     }
   }
+  alternating_regime <- is.finite(separated_mode_ratio) &&
+    separated_mode_ratio > policy$regime_median_ratio_limit &&
+    alternating_switches >= floor(length(values) / 2)
+  if (!is.finite(separated_mode_ratio) || separated_mode_ratio <= policy$regime_median_ratio_limit) {
+    alternating_switches <- 0L
+  }
+  q1 <- unname(stats::quantile(values, 0.25, names = FALSE, type = policy$quantile_type))
+  q3 <- unname(stats::quantile(values, 0.75, names = FALSE, type = policy$quantile_type))
+  p95 <- unname(stats::quantile(values, 0.95, names = FALSE, type = policy$quantile_type))
+  p99 <- unname(stats::quantile(values, 0.99, names = FALSE, type = policy$quantile_type))
+  denominator <- if (median_ms > 0) median_ms else NA_real_
   list(
     median_ms = median_ms,
     mean_ms = mean_ms,
-    q1_ms = unname(stats::quantile(values, 0.25, names = FALSE)),
-    q3_ms = unname(stats::quantile(values, 0.75, names = FALSE)),
-    p95_ms = unname(stats::quantile(values, 0.95, names = FALSE)),
-    p99_ms = unname(stats::quantile(values, 0.99, names = FALSE)),
+    q1_ms = q1, q3_ms = q3, p95_ms = p95, p99_ms = p99,
     min_ms = min(values),
     max_ms = max(values),
     sd_ms = if (length(values) > 1L) stats::sd(values) else 0,
-    cv_pct = if (mean_ms > 0 && length(values) > 1L) stats::sd(values) / mean_ms * 100 else 0,
+    cv_pct = if (mean_ms > 0 && length(values) > 1L) stats::sd(values) / mean_ms * 100 else NA_real_,
     max_over_median = max(values) / denominator,
-    p99_over_median = unname(stats::quantile(values, 0.99, names = FALSE)) / denominator,
-    regime_change = regime_change
+    p99_over_median = p99 / denominator,
+    ordered_regime_ratio = ordered_regime_ratio,
+    separated_mode_ratio = separated_mode_ratio,
+    alternating_switches = as.integer(alternating_switches),
+    alternating_regime = alternating_regime,
+    regime_change = (is.finite(ordered_regime_ratio) && ordered_regime_ratio > policy$regime_median_ratio_limit) ||
+      (is.finite(separated_mode_ratio) && separated_mode_ratio > policy$regime_median_ratio_limit)
   )
 }
 
-direct_distribution_needs_explanation <- function(metrics) {
-  metrics$max_over_median > 20 || metrics$p99_over_median > 5 ||
-    metrics$cv_pct > 50 || isTRUE(metrics$regime_change)
+direct_distribution_triggers <- function(metrics, policy = direct_distribution_policy()) {
+  policy <- validate_direct_distribution_policy(policy)
+  if (!is.finite(metrics$median_ms) || metrics$median_ms <= 0 ||
+      any(!is.finite(unlist(metrics[c("max_over_median", "p99_over_median", "cv_pct")])))) {
+    return("per-event distribution has an undefined ratio because its median or mean is zero")
+  }
+  if (is.infinite(metrics$ordered_regime_ratio) || is.infinite(metrics$separated_mode_ratio)) {
+    return("distribution detector has an undefined separation ratio")
+  }
+  triggers <- character()
+  add <- function(condition, text) if (isTRUE(condition)) triggers <<- c(triggers, text)
+  add(metrics$max_over_median > policy$max_over_median_limit,
+      sprintf("max/median %.6g exceeds %.6g", metrics$max_over_median, policy$max_over_median_limit))
+  add(metrics$p99_over_median > policy$p99_over_median_limit,
+      sprintf("p99/median %.6g exceeds %.6g", metrics$p99_over_median, policy$p99_over_median_limit))
+  add(metrics$cv_pct > policy$cv_pct_limit,
+      sprintf("CV %.6g%% exceeds %.6g%%", metrics$cv_pct, policy$cv_pct_limit))
+  add(is.finite(metrics$ordered_regime_ratio) && metrics$ordered_regime_ratio > policy$regime_median_ratio_limit,
+      sprintf("ordered split median ratio %.6g exceeds %.6g", metrics$ordered_regime_ratio, policy$regime_median_ratio_limit))
+  add(is.finite(metrics$separated_mode_ratio) && metrics$separated_mode_ratio > policy$regime_median_ratio_limit,
+      sprintf("separated-mode ratio %.6g exceeds %.6g", metrics$separated_mode_ratio, policy$regime_median_ratio_limit))
+  add(isTRUE(metrics$alternating_regime),
+      sprintf("alternating mode sequence has %d switches", metrics$alternating_switches))
+  triggers
 }
 
-classify_direct_distribution <- function(values, batch_elapsed_ms, gc_elapsed_ms, timer_floor_ms) {
-  metrics <- direct_distribution_metrics(values)
-  batch_metrics <- direct_distribution_metrics(batch_elapsed_ms)
+classify_direct_distribution <- function(values, batch_elapsed_ms, gc_elapsed_ms, timer_floor_ms,
+                                         policy = direct_distribution_policy()) {
+  policy <- validate_direct_distribution_policy(policy)
+  metrics <- direct_distribution_metrics(values, policy)
+  batch_metrics <- direct_distribution_metrics(batch_elapsed_ms, policy)
+  triggers <- direct_distribution_triggers(metrics, policy)
+  if (length(triggers) == 1L && startsWith(triggers, "per-event distribution has an undefined ratio")) {
+    return(list(status = "BLOCK", reason = triggers, metrics = metrics))
+  }
   if (batch_metrics$median_ms <= timer_floor_ms) {
     return(list(status = "BLOCK", reason = "median is at or below the measured timer floor", metrics = metrics))
   }
-  if (!direct_distribution_needs_explanation(metrics)) {
+  if (length(triggers) == 0L) {
     return(list(status = "PASS", reason = "ordered samples pass the distribution gates", metrics = metrics))
   }
   gc_samples <- which(as.numeric(gc_elapsed_ms) > 0)
   if (length(gc_samples) > 0L && length(gc_samples) <= length(values) - 3L) {
-    without_gc <- direct_distribution_metrics(values[-gc_samples])
-    if (!direct_distribution_needs_explanation(without_gc)) {
+    without_gc <- direct_distribution_metrics(values[-gc_samples], policy)
+    if (length(direct_distribution_triggers(without_gc, policy)) == 0L) {
       return(list(
-        status = "PASS_GC", reason = "distribution spread is explained by measured R GC time",
+        status = "PASS_GC", reason = paste("measured R GC explains", paste(triggers, collapse = "; ")),
         metrics = metrics
       ))
     }
   }
-  list(status = "BLOCK", reason = "ordered samples contain unexplained spread or a regime change", metrics = metrics)
+  list(status = "BLOCK", reason = paste(triggers, collapse = "; "), metrics = metrics)
 }
 
-summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL) {
+classify_direct_allocation_gc <- function(task, batch_repetitions, measurement_samples,
+                                          vector_heap_trigger_vcells, gc_elapsed_ms,
+                                          policy = direct_allocation_policy()) {
+  policy <- validate_direct_allocation_policy(policy)
+  output_vcells <- direct_task_output_vcells(task, policy)
+  allocation_class <- direct_task_allocation_class(task, policy)
+  fixed_sequence_output_vcells <- as.double(output_vcells) * batch_repetitions * measurement_samples
+  if (allocation_class != "large_output" || fixed_sequence_output_vcells < vector_heap_trigger_vcells) {
+    return(list(
+      allocation_class = allocation_class,
+      fixed_sequence_output_vcells = fixed_sequence_output_vcells,
+      vector_heap_trigger_vcells = vector_heap_trigger_vcells,
+      status = "NOT_REQUIRED", reason = "GC observation is not required for this fixed sequence"
+    ))
+  }
+  if (any(gc_elapsed_ms > 0)) {
+    return(list(
+      allocation_class = allocation_class,
+      fixed_sequence_output_vcells = fixed_sequence_output_vcells,
+      vector_heap_trigger_vcells = vector_heap_trigger_vcells,
+      status = "GC_OBSERVED", reason = "measured R GC occurred during the fixed sequence"
+    ))
+  }
+  list(
+    allocation_class = allocation_class,
+    fixed_sequence_output_vcells = fixed_sequence_output_vcells,
+    vector_heap_trigger_vcells = vector_heap_trigger_vcells,
+    status = "GC_NOT_OBSERVED",
+    reason = sprintf(
+      "GC not observed although %.0f declared output Vcells across the fixed sequence reaches the %.0f Vcell trigger",
+      fixed_sequence_output_vcells, vector_heap_trigger_vcells
+    )
+  )
+}
+
+summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL,
+                                    distribution_policy = direct_distribution_policy(),
+                                    allocation_policy = direct_allocation_policy()) {
+  distribution_policy <- validate_direct_distribution_policy(distribution_policy)
+  allocation_policy <- validate_direct_allocation_policy(allocation_policy)
   validate_direct_timing_samples(samples)
   first_required <- c("runner", "task", "first_call_ms")
   if (!is.data.frame(first_calls) || !identical(names(first_calls), first_required) ||
@@ -792,11 +1061,21 @@ summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL) {
       stop("direct timing summary is missing a valid runner timer floor")
     }
     classification <- classify_direct_distribution(
-      values, samples$batch_elapsed_ms[index], samples$gc_elapsed_ms[index], timer_floor
+      values, samples$batch_elapsed_ms[index], samples$gc_elapsed_ms[index], timer_floor,
+      distribution_policy
     )
+    allocation <- classify_direct_allocation_gc(
+      samples$task[index[[1L]]], samples$batch_repetitions[index[[1L]]], length(values),
+      samples$vector_heap_trigger_vcells[index[[1L]]], samples$gc_elapsed_ms[index], allocation_policy
+    )
+    if (identical(allocation$status, "GC_NOT_OBSERVED")) {
+      classification$status <- "BLOCK"
+      classification$reason <- paste(classification$reason, allocation$reason, sep = "; ")
+    }
     metrics <- classification$metrics
     data.frame(
       runner = samples$runner[index[[1L]]], task = samples$task[index[[1L]]],
+      distribution_policy_digest = direct_distribution_policy_digest(distribution_policy),
       measurement_samples = length(values),
       batch_repetitions = samples$batch_repetitions[index[[1L]]],
       median_ms = metrics$median_ms, mean_ms = metrics$mean_ms,
@@ -805,7 +1084,16 @@ summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL) {
       sd_ms = metrics$sd_ms, cv_pct = metrics$cv_pct,
       max_over_median = metrics$max_over_median,
       p99_over_median = metrics$p99_over_median,
-      regime_change = metrics$regime_change,
+      allocation_class = allocation$allocation_class,
+      fixed_sequence_output_vcells = allocation$fixed_sequence_output_vcells,
+      vector_heap_trigger_vcells = allocation$vector_heap_trigger_vcells,
+      allocation_gc_status = allocation$status,
+      regime_change = is.finite(metrics$ordered_regime_ratio) &&
+        metrics$ordered_regime_ratio > distribution_policy$regime_median_ratio_limit,
+      separated_modes = is.finite(metrics$separated_mode_ratio) &&
+        metrics$separated_mode_ratio > distribution_policy$regime_median_ratio_limit,
+      alternating_switches = metrics$alternating_switches,
+      alternating_regime = metrics$alternating_regime,
       timer_floor_ms = timer_floor,
       distribution_status = classification$status,
       distribution_reason = classification$reason,
@@ -821,6 +1109,7 @@ summarize_direct_timing <- function(samples, first_calls, timer_floors = NULL) {
 measurement_probe_names <- function() c("noop_native", "noop_r", "cpu", "allocate")
 
 measurement_probe_timer_floor <- function(samples) {
+  policy <- validate_direct_distribution_policy(direct_distribution_policy())
   values <- lapply(c("noop_native", "noop_r"), function(name) {
     samples$elapsed_per_event_ms[samples$probe == name]
   })
@@ -829,7 +1118,8 @@ measurement_probe_timer_floor <- function(samples) {
       any(!is.finite(noops)) || any(noops < 0)) {
     stop("no-op probe samples are invalid")
   }
-  max(vapply(values, stats::quantile, numeric(1), probs = 0.99, names = FALSE))
+  max(vapply(values, stats::quantile, numeric(1), probs = 0.99, names = FALSE,
+             type = policy$quantile_type))
 }
 
 measurement_unit_minimum_ms <- function() 10
@@ -917,7 +1207,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v4",
+    policy_version = "direct-batch-v6",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,
@@ -927,6 +1217,8 @@ benchmark_timing_policy <- function() {
     worker_timeout_seconds = 600L,
     total_run_timeout_seconds = 5400L,
     r_jit_policy = "disabled-before-runner-load",
+    distribution_policy = direct_distribution_policy(),
+    allocation_policy = direct_allocation_policy(),
     gc_policy = paste(
       "full before first call, warmup, and calibration; no forced collection between",
       "measurement samples; completed task state released before the next task"
