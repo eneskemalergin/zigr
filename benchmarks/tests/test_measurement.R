@@ -443,6 +443,27 @@ expect_true(
   )$status, "PASS_GC"),
   "measured GC can explain a periodic allocating-task spike without deleting its sample"
 )
+complex_values <- c(
+  0.321548375, 0.137349094, 0.224299906, 0.130848641, 0.11138675,
+  0.121308, 0.053524547, 0.090369406, 0.091502375, 0.052623297, 0.087147359
+)
+complex_gc <- c(6, 0, 3, 0, 2, 3, 0, 2, 2, 0, 2)
+complex_full_metrics <- direct_distribution_metrics(complex_values)
+complex_without_gc <- complex_values[complex_gc == 0]
+complex_residual <- direct_distribution_metrics(complex_without_gc)
+complex_classification <- classify_direct_distribution(
+  complex_values, complex_values, complex_gc, 0.01
+)
+
+expect_true(
+  length(complex_values) == 11L &&
+    isTRUE(all.equal(complex_classification$metrics, complex_full_metrics)) &&
+    length(complex_without_gc) == 4L && complex_residual$cv_pct > 50 &&
+    length(direct_distribution_triggers(complex_residual)) > 0L &&
+    identical(complex_classification$status, "BLOCK") &&
+    grepl("measured R GC did not explain", complex_classification$reason, fixed = TRUE),
+  "complex output remains blocked when non-GC samples retain unexplained spread"
+)
 alternating_values <- rep(c(1, 10), length.out = 11L)
 alternating_classification <- classify_direct_distribution(
   alternating_values, alternating_values, numeric(length(alternating_values)), 0.01

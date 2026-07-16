@@ -1039,12 +1039,17 @@ classify_direct_distribution <- function(values, batch_elapsed_ms, gc_elapsed_ms
   gc_samples <- which(as.numeric(gc_elapsed_ms) > 0)
   if (length(gc_samples) > 0L && length(gc_samples) <= length(values) - 3L) {
     without_gc <- direct_distribution_metrics(values[-gc_samples], policy)
-    if (length(direct_distribution_triggers(without_gc, policy)) == 0L) {
+    residual_triggers <- direct_distribution_triggers(without_gc, policy)
+    if (length(residual_triggers) == 0L) {
       return(list(
         status = "PASS_GC", reason = paste("measured R GC explains", paste(triggers, collapse = "; ")),
         metrics = metrics
       ))
     }
+    triggers <- c(
+      triggers,
+      paste("measured R GC did not explain", paste(residual_triggers, collapse = "; "))
+    )
   }
   list(status = "BLOCK", reason = paste(triggers, collapse = "; "), metrics = metrics)
 }
