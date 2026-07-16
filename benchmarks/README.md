@@ -1,174 +1,44 @@
-# zigr benchmark framework
+# Benchmarks
 
-This directory measures zigr against R and native integration methods while keeping product comparisons separate from language controls and diagnostics. A timing is publishable only after source, artifact, input, correctness, lifecycle, and measurement identities pass the trust gates.
+The benchmark harness measures one retained 27-task suite across R, registered C,
+zigr, Rcpp, cpp11, extendr, and Savvy. Every runner is checked against R and C
+truth before timing. Package fixtures are runner build and loading details, not a
+second benchmark suite.
 
-The framework has seven backends: R, registered C, zigr, Rcpp, cpp11, extendr, and Savvy. Not every historical task is a product comparison. The normalized fixture suite is the primary cross-product evidence; the historical task matrix remains visible as control and diagnostic evidence.
+The timed event excludes input construction, correctness comparison, timers, and
+result retention. Each timing sample is one timer interval around the declared
+fixed-count event batch. The batch count is selected once per task across all
+runners from the declared 1, 8, 64 ladder. Tasks with state, RNG, or ALTREP
+representation changes remain at one event per batch.
 
-## Benchmark suites
-
-### Normalized product fixtures
-
-F01 through F12 exercise package-shaped public APIs for zigr, Rcpp, cpp11, extendr, and Savvy, with R references and registered-C controls.
-
-- F01: zero-argument output
-- F02: scalar conversion
-- F03: numeric vector conversion
-- F04: compact integer ALTREP access
-- F05: encoded and missing strings
-- F06: raw vectors
-- F07: complex vectors
-- F08: logical values and missingness
-- F09: fixed-schema objects
-- F10: external state and methods
-- F11: invalid-input recovery
-- F12: multi-output construction and lifecycle behavior
-
-F01 through F10 and F12 can be timed after correctness validation. F11 is correctness-only. Unsupported product paths remain explicit gaps; the framework does not replace them with raw FFI substitutes.
-
-### Historical task matrix
-
-The task manifest contains 83 rows:
-
-- Tasks 01–43: historical compute, R API, object, numerical, ALTREP, and runtime controls.
-- Tasks 48–49: zigr lifecycle diagnostics.
-- Tasks 50–75: generated and handwritten boundary pairs.
-- Tasks 76–86: string, raw, and complex representation strategies.
-
-The historical Rcpp, extendr, and Savvy runners are implementation diagnostics, not complete product-package comparisons. Product conclusions must come from Tier A or disclosed Tier B evidence.
-
-C historical kernels are consolidated in `src/c_call/tasks.c`. Zig historical kernels are consolidated in `src/zig/tasks.zig`; each Zig task retains a private namespace inside that module.
-
-## Evidence tiers
-
-- Tier A: matching product paths, contracts, kernels, representations, and setup.
-- Tier B: valid product paths with a disclosed strategy or adapter difference.
-- Tier C: R baselines and registered-C controls.
-- Tier D: implementation diagnostics.
-- Gap: unsupported or non-meaningful cells.
-
-`evidence_manifest.json` expands into every runner/task and runner/fixture disposition. Timing eligibility is derived from those dispositions and checked again immediately before measurement.
-
-## Maintained configuration
-
-| File | Ownership |
-| --- | --- |
-| `task_manifest.csv` | Task IDs, workload groups, result contracts, correctness policy, and comparison policy |
-| `runners.json` | Runner libraries, call types, registered packages, fixtures, and executable symbol maps |
-| `evidence_manifest.json` | Comparison roles, tiers, strategies, applicability, gaps, and ownership |
-| `source_ledger.json` | Source sets, generated glue, build recipes, tools, and verification policy |
-| `results/CANONICAL_RUN.json` | Compact tracked receipt for the accepted run |
-
-These files intentionally remain separate: execution configuration, comparison policy, and provenance have different owners and drift rules.
-
-## Framework map
-
-| File | Responsibility |
-| --- | --- |
-| `lib/specification.R` | Task recipes, manifests, evidence expansion, budgets, and report contracts |
-| `lib/measurement.R` | Deterministic inputs, bounded pilot sizing, fixed timing, process-memory metrics, and fixture validation |
-| `lib/provenance.R` | Source verification, toolchains, generated glue, environment, and artifact identity |
-| `lib/run_manifest.R` | Run state, completion seals, retention, and artifact validation |
-| `lib/product_fixtures.R` | Product package gates, semantic cases, lifecycle checks, and capability gaps |
-| `run_benchmarks.R` | Correctness, bounded batch scheduling, timeouts, consolidation, and run-state transitions |
-| `benchmark_worker.R` | Fixed-count task or fixture batch execution selected with `--kind` |
-| `export_comparative_metrics.R` | Comparative, capability, and safety reports |
-| `export_boundary_metrics.R` | Consolidated boundary and representation budget report |
-| `promote_run.R` | Acceptance validation and compact receipt creation |
-| `check_coverage.R` | No-native trust suite and task preflight |
-
-## Build and validate
+## Commands
 
 ```sh
-# Build runners and normalized fixture packages
 bash build_all.sh
-
-# Run the full no-native trust suite
+Rscript tests/test_measurement.R
+Rscript tests/test_specification.R
 Rscript check_coverage.R
-
-# Validate a selected task without measuring it
-Rscript benchmark_worker.R --kind=task --runner=cpp11 --tasks=52 --check-only
-
-# Remove native build products and caches; retained results are untouched
-bash build_all.sh clean
+Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=vector_sum
+Rscript run_benchmarks.R --tasks=attributes --memory-task=attributes
 ```
 
-## Collect a run
+`--correctness-only` writes only `run_manifest.json` and `correctness.csv`.
+Timed runs publish only:
 
-```sh
-# Full seven-runner timed matrix
-Rscript run_benchmarks.R
+1. `run_manifest.json`
+2. `correctness.csv`
+3. `timing_samples.csv`
+4. `timing_summary.csv`
+5. `memory_summary.csv` when `--memory-task` is selected
 
-# Rebuild before collection
-Rscript run_benchmarks.R --build
+The manifest seals source-tree and built-artifact identities, selected task seeds,
+the timing policy, and output digests. A changed source tree, artifact, raw sample,
+or summary cannot be accepted as the same run.
 
-# Retain correctness evidence without timing
-Rscript run_benchmarks.R --correctness-only
+`memory_summary.csv` is a separate, one-event fresh-process safety measurement for
+one selected large-output task. On Linux it records loaded `VmRSS`, pre-event and
+post-event `VmHWM`, and swap. Its high-water difference is a process-growth cap,
+not an allocation claim.
 
-# Focused diagnostic run
-Rscript run_benchmarks.R --runners=r,zigr --tasks=48,49
-
-# Historical tasks only
-Rscript run_benchmarks.R --suite=tasks --runners=r,zigr --tasks=48,49
-
-# Normalized product fixtures only
-Rscript run_benchmarks.R --suite=fixtures --runners=r,zigr
-```
-
-Every selected task receives a deterministic seed derived from the run seed, task ID, and fixture version. Correctness, first-call, warmup, and timed phases receive isolated inputs. Mutation, RNG, external state, ALTREP intent, and input fingerprints are enforced by policy.
-
-Timed collection uses one equal-floor pilot for every eligible comparison group, then freezes one symmetric fixed-count confirmation stage. Group and tool order are reproducible, batches and the total run have declared limits, and a timed-out group receives at most one smaller retry while later batches continue. Pilot evidence remains diagnostic and cannot produce a comparative claim. `--suite=tasks`, `--suite=fixtures`, and the default `--suite=all` use the same workers, timing policy, and artifact validators.
-
-Single-suite, runner-filtered, task-filtered, and correctness-only runs are diagnostic evidence and record `promotion_eligible` as `false`. Promotion requires an unfiltered timed `--suite=all` run with the complete runner and task matrix.
-
-## Metric semantics
-
-- `wall_ms` records one declared benchmark call in milliseconds. Summary timing statistics use the fixed pilot or confirmation sample declared by `sample_stage`.
-- `first_call_ms` records the first measured call after the runner library or package is already loaded. It is not process startup, package load time, or a cold system start.
-- `wall_ms` and `first_call_ms` are supported only for `PASS` measurement rows. Untimed rows retain `NA`; their row status explains why no timing exists.
-- `rss_endpoint_delta_kb` is the non-negative difference between post-GC current process RSS before warmup and after the timed sequence. `rss_endpoint_metric`, `rss_endpoint_support`, and `rss_endpoint_support_reason` identify the method and whether the reading exists. This diagnostic is not peak memory or allocation.
-- `peak_rss_kb` is gross process high-water RSS from Linux `/proc/self/status` `VmHWM`. `loaded_process_rss_kb` is current RSS from `VmRSS` after the runner is loaded and a full GC completes. The harness reports both values and never calls their difference allocation.
-- Every `_kb` memory value uses the Linux `/proc` kB unit of 1024 bytes. Peak RSS uses three fixed calls in a fresh invocation of the existing worker for normalized F03, F04, and F06 rows. `peak_rss_repetitions` records that count. Other workloads use `not_eligible`; hosts without the validated Linux `/proc` method use `unsupported`, retain `NA`, and record the reason.
-- Allocation, copy, and ALTREP callback or materialization counts come only from fixtures with explicit instrumentation. They remain safety or strategy diagnostics with `claim_eligible` set to `false`.
-
-## Export and promotion
-
-```sh
-Rscript export_comparative_metrics.R --run-dir=results/runs/<run_id>
-Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
-Rscript promote_run.R --run-dir=results/runs/<run_id> --dry-run
-Rscript promote_run.R --run-dir=results/runs/<run_id>
-```
-
-Comparative export requires the current complete runner and task matrix. It writes `comparative_metrics.csv` with filterable product, strategy, R-baseline, control, and diagnostic tracks. Capability and safety remain separate because they contain source and lifecycle proof rather than timing evidence. Boundary export writes one `budget_results.csv` with boundary measurement, boundary budget, and representation budget tracks.
-
-Promotion accepts only an unfiltered timed run collected under the current source tree, evidence, timing policy, and boundary budget policy. The report manifest declares the exact four derived filenames, file and track row counts, and digests. Boundary export completes its record, and promotion rejects missing, undeclared, or miscounted output. Promotion regenerates reports in isolation, reruns safety proof, checks every required report track, and updates only `results/CANONICAL_RUN.json`.
-
-## Result retention
-
-Raw samples and generated reports are local and ignored by Git. Schema-3 runs declare the `grouped-v1` artifact layout. A timed `--suite=all` run retains up to two shared sample tables, two shared summary tables, two shared correctness tables, the input manifest, and the run manifest. A sample table is absent only when its suite has no passing timed row. A focused suite publishes only its own summary, correctness, and optional sample table; task runs also retain their canonical input manifest. Runner, task, and fixture identities are columns, and first-call observations are rows in the suite sample tables rather than separate files. Historical schema-2 measurements remain preserved by their compact acceptance receipt, but the live harness no longer reads or regenerates their per-cell layout.
-
-Workers write validation, timing, memory, and error batches only under the run's replaceable `.staging` tree. The parent writes each grouped artifact once, validates the exact core filename set, and atomically commits completion through `run_manifest.json`. Failed, interrupted, stale, or timed-out runs remove partial output and retain only one compact incomplete manifest. Zig and Cargo caches must resolve outside the run directory and are never deleted by run publication or failure cleanup.
-
-Run manifests retain only the selected execution-critical disposition fields and provenance digests. Detailed policy remains in the source-sealed manifests and canonical input artifact instead of being copied into every run record. Schema-2 loading is restricted to accepted historical run `20260715T040721Z-pid2`; remove that reader after one current-schema run is promoted.
-
-Keep only the runs needed for active investigation:
-
-```sh
-Rscript run_benchmarks.R --prune-runs=3
-```
-
-The accepted run ID is protected from pruning. Build cleanup and run retention are deliberately separate operations.
-
-## Tests
-
-The trust gate has three responsibility-based suites:
-
-- `tests/test_specification.R`: manifests, evidence, reports, source policy, configuration, and adversarial drift.
-- `tests/test_measurement.R`: deterministic fuzz, phase isolation, timing samples, run seals, and retained-artifact drift.
-- `tests/test_product_fixtures.R`: product semantics, invalid inputs, metadata, lifecycle behavior, and honest gaps.
-
-A benchmark failure, missing artifact, source drift, invalid disposition, input mutation, registration error, or correctness mismatch prevents completion and promotion.
-
-## Platform boundary
-
-Exact linked-library identity currently uses Linux `ldd`. Gross peak RSS uses Linux `/proc/self/status`. Unsupported hosts fail closed for provenance and preserve unsupported memory as `NA` with a reason.
+The harness reports medians and distribution diagnostics for each runner and task.
+It does not assign product tiers, aggregate winners, or comparative report tracks.

@@ -686,4 +686,48 @@ expect_error(
   "ordinary numeric vector"
 )
 
+status_lines <- c("VmRSS:\t  123 kB", "VmHWM:\t456 kB", "VmSwap:\t0 kB")
+expect_true(
+  identical(direct_proc_status_value_kb(status_lines, "VmRSS"), 123) &&
+    identical(direct_proc_status_value_kb(status_lines, "VmHWM"), 456) &&
+    identical(direct_proc_status_value_kb(status_lines, "VmSwap"), 0) &&
+    is.na(direct_proc_status_value_kb(status_lines, "VmPeak")),
+  "the Linux memory reader accepts only exact kilobyte status fields"
+)
+memory_rows <- data.frame(
+  runner = c("r", "c_call"), task = "complex_conjugate", memory_status = "PASS",
+  rss_metric = "VmRSS-and-VmHWM-kB", loaded_process_rss_kb = c(100, 110),
+  initial_process_high_water_rss_kb = c(110, 120),
+  process_high_water_rss_kb = c(120, 130), swap_before_kb = 0, swap_after_kb = 0,
+  reason = "process high-water RSS recorded", stringsAsFactors = FALSE
+)
+validate_direct_memory_summary(memory_rows, c("r", "c_call"), "complex_conjugate")
+bad_memory_policy <- direct_memory_policy()
+bad_memory_policy$maximum_high_water_growth_kb <- 65535L
+expect_error(
+  "memory policy rejects an undeclared high-water cap",
+  validate_direct_memory_policy(bad_memory_policy),
+  "memory policy is invalid"
+)
+baseline_memory <- list(rss_kb = 100, hwm_kb = 150, swap_kb = 0)
+after_memory <- list(rss_kb = 120, hwm_kb = 160, swap_kb = 0)
+expect_true(
+  identical(direct_memory_event_status(baseline_memory, after_memory)$status, "PASS") &&
+    identical(direct_memory_event_status(
+      baseline_memory, utils::modifyList(after_memory, list(swap_kb = 1))
+    )$status, "BLOCK") &&
+    identical(direct_memory_event_status(
+      baseline_memory,
+      utils::modifyList(after_memory, list(hwm_kb = 150 + 65537))
+    )$status, "BLOCK"),
+  "memory admission uses event high-water growth and blocks process swap"
+)
+bad_memory_rows <- memory_rows
+bad_memory_rows$process_high_water_rss_kb[[1L]] <- 99
+expect_error(
+  "memory summary rejects a high-water value below its loaded baseline",
+  validate_direct_memory_summary(bad_memory_rows, c("r", "c_call"), "complex_conjugate"),
+  "invalid measurements"
+)
+
 cat("Direct measurement gate passed: direct intervals, exact counts, ordered distributions, GC attribution, timer floor, and independent units.\n")

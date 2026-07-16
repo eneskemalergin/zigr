@@ -119,6 +119,7 @@ validate_direct_run_manifest <- function(metadata) {
     "runners", "tasks", "master_seed", "input_recipe_version", "input_seeds",
     "rng_event_seed",
     "source_tree", "artifacts", "timing_policy", "measurement_mode", "command",
+    "memory_task", "memory_policy",
     "correctness_completed_at", "measurement_probes", "finished_at", "outputs", "status_message"
   )
   extra <- setdiff(names(metadata), allowed)
@@ -175,6 +176,19 @@ validate_direct_run_manifest <- function(metadata) {
       (identical(status, "correctness_complete") &&
        !identical(measurement_mode, "correctness_only"))) {
     stop("run manifest status disagrees with its measurement mode")
+  }
+  has_memory_task <- "memory_task" %in% names(metadata)
+  has_memory_policy <- "memory_policy" %in% names(metadata)
+  if (has_memory_task != has_memory_policy) {
+    stop("run manifest memory selection is incomplete")
+  }
+  if (has_memory_task) {
+    memory_task <- manifest_scalar(metadata$memory_task, "memory task")
+    if (!(memory_task %in% tasks) ||
+        !isTRUE(direct_task_suitability_row(memory_task)$large_output)) {
+      stop("run manifest memory task is not a selected large-output task")
+    }
+    validate_direct_memory_policy(metadata$memory_policy)
   }
   if (identical(status, "incomplete")) {
     manifest_scalar(metadata$finished_at, "incomplete finish timestamp")
@@ -251,7 +265,8 @@ validate_direct_run_manifest <- function(metadata) {
   }
   if (status %in% c("correctness_complete", "complete")) {
     expected <- if (identical(status, "complete")) {
-      c("correctness", "timing_samples", "timing_summary")
+      c("correctness", "timing_samples", "timing_summary",
+        if (has_memory_task) "memory_summary")
     } else "correctness"
     if (!is.list(metadata$outputs) || !setequal(names(metadata$outputs), expected)) {
       stop("completed run manifest has the wrong output set")
@@ -264,7 +279,8 @@ validate_direct_run_manifest <- function(metadata) {
       expected_path <- c(
         correctness = "correctness.csv",
         timing_samples = "timing_samples.csv",
-        timing_summary = "timing_summary.csv"
+        timing_summary = "timing_summary.csv",
+        memory_summary = "memory_summary.csv"
       )[[name]]
       if (!identical(manifest_scalar(record$relative_path, "output path"), expected_path)) {
         stop(sprintf("run manifest output path differs for %s", name))
@@ -325,6 +341,10 @@ validate_direct_run_outputs <- function(run_dir, metadata) {
     }
     summary <- read.csv(file.path(run_dir, "timing_summary.csv"), stringsAsFactors = FALSE)
     validate_direct_timing_summary(summary, samples, metadata)
+    if ("memory_task" %in% names(metadata)) {
+      memory <- read.csv(file.path(run_dir, "memory_summary.csv"), stringsAsFactors = FALSE)
+      validate_direct_memory_summary(memory, runners, as.character(metadata$memory_task))
+    }
   }
   invisible(metadata)
 }

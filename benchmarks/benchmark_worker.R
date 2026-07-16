@@ -28,8 +28,8 @@ skip_probes <- "--skip-probes" %in% arguments
 
 runner_names <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
 if (!(runner %in% runner_names)) stop(sprintf("unknown runner: %s", runner))
-if (!(mode %in% c("correctness", "sizing", "timing"))) {
-  stop("worker mode must be correctness, sizing, or timing")
+if (!(mode %in% c("correctness", "sizing", "timing", "memory"))) {
+  stop("worker mode must be correctness, sizing, timing, or memory")
 }
 if (skip_probes && !identical(mode, "sizing")) {
   stop("--skip-probes is allowed only for later sizing rounds")
@@ -81,7 +81,7 @@ source(file.path(root_dir, "src", "r", "run_all.R"), local = .GlobalEnv)
 if (!methods::isClass("BenchS4")) methods::setClass("BenchS4", slots = c(slot_x = "numeric"))
 c_dll <- dyn.load(file.path(root_dir, "src", "c_call", "bench.so"), local = TRUE, now = TRUE)
 on.exit(try(dyn.unload(c_dll[["path"]]), silent = TRUE), add = TRUE)
-if (!skip_probes) {
+if (!skip_probes && !identical(mode, "memory")) {
   probes <- run_direct_measurement_probes(c_dll)
   probe_rows <- transform(probes$samples, runner = runner)
   probe_rows <- probe_rows[c(
@@ -188,6 +188,47 @@ run_prepared_phase <- function(spec, phase, repetitions, truth, verify_result = 
     if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, rng_state_snapshot(), spec$id)
   }
   measured
+}
+
+if (identical(mode, "memory")) {
+  if (length(specs) != 1L) stop("memory workers require exactly one task")
+  spec <- specs[[1L]]
+  truth <- phase_truth(spec)
+  prepared <- prepare_phase(spec)
+  before <- if (length(prepared$values) && !spec$id %in% altrep_tasks) {
+    task_arguments_fingerprint(spec$id, prepared$values, "ordinary_r_object")
+  } else NULL
+  reset_rng(spec)
+  gc(full = TRUE)
+  baseline <- direct_process_memory_snapshot()
+  result <- eval(prepared$call, envir = runner_environment)
+  if (!is.null(before)) {
+    assert_immutable_input(spec$id, prepared$values, before, "ordinary_r_object")
+  }
+  assert_altrep_phase(spec, prepared$values)
+  revision_assert_same(truth$result, result, paste0(spec$id, " memory"), isTRUE(spec$tolerance))
+  if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, rng_state_snapshot(), spec$id)
+  after <- direct_process_memory_snapshot()
+  supported <- !is.null(baseline) && !is.null(after)
+  memory_status <- direct_memory_event_status(baseline, after)
+  row <- data.frame(
+    runner = runner, task = spec$id,
+    memory_status = memory_status$status,
+    rss_metric = if (supported) direct_memory_policy()$rss_metric else "unsupported",
+    loaded_process_rss_kb = if (supported) baseline$rss_kb else NA_real_,
+    initial_process_high_water_rss_kb = if (supported) baseline$hwm_kb else NA_real_,
+    process_high_water_rss_kb = if (supported) after$hwm_kb else NA_real_,
+    swap_before_kb = if (supported) baseline$swap_kb else NA_real_,
+    swap_after_kb = if (supported) after$swap_kb else NA_real_,
+    reason = memory_status$reason,
+    stringsAsFactors = FALSE
+  )
+  rm(truth, prepared, result)
+  gc(FALSE)
+  validate_direct_memory_summary(row, runner, spec$id)
+  write_csv_once(row, file.path(output_root, paste0(runner, "-memory.csv")), "runner memory")
+  cat(sprintf("Direct memory recorded for %s/%s.\n", runner, spec$id))
+  quit(save = "no", status = 0L, runLast = FALSE)
 }
 
 if (mode %in% c("sizing", "timing") && any(vapply(task_ids, function(task) {

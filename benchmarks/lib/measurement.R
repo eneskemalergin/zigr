@@ -4,6 +4,29 @@ benchmark_input_schema_version <- function() "benchmark-input-v2"
 
 benchmark_master_seed <- function() 20260713L
 
+validate_cli_arguments <- function(args, value_options = character(0), flag_options = character(0), label = "command") {
+  args <- as.character(args)
+  value_options <- as.character(value_options)
+  flag_options <- as.character(flag_options)
+  known <- c(value_options, flag_options)
+  if (anyDuplicated(known) || any(!nzchar(known))) stop("CLI option declarations must be unique and non-empty")
+  keys <- character(length(args))
+  for (index in seq_along(args)) {
+    argument <- args[[index]]
+    value_match <- value_options[startsWith(argument, paste0("--", value_options, "="))]
+    flag_match <- flag_options[argument == paste0("--", flag_options)]
+    matches <- c(value_match, flag_match)
+    if (length(matches) != 1L) stop(sprintf("unknown %s argument: %s", label, argument))
+    if (matches[[1L]] %in% value_options && !nzchar(sub("^[^=]*=", "", argument))) {
+      stop(sprintf("%s argument --%s requires a value", label, matches[[1L]]))
+    }
+    keys[[index]] <- matches[[1L]]
+  }
+  duplicates <- unique(keys[duplicated(keys)])
+  if (length(duplicates) > 0L) stop(sprintf("repeated %s argument: --%s", label, duplicates[[1L]]))
+  invisible(args)
+}
+
 benchmark_encoded_strings <- function() {
   byte_marked <- rawToChar(as.raw(c(0x66, 0x61, 0xe7, 0x61, 0x64, 0x65)))
   values <- c(
@@ -1224,6 +1247,113 @@ benchmark_timing_policy <- function() {
       "measurement samples; completed task state released before the next task"
     )
   )
+}
+
+direct_memory_policy <- function() {
+  list(
+    policy_version = "linux-proc-status-v1",
+    event_repetitions = 1L,
+    rss_metric = "VmRSS-and-VmHWM-kB",
+    swap_metric = "VmSwap-kB",
+    maximum_high_water_growth_kb = 65536L
+  )
+}
+
+validate_direct_memory_policy <- function(policy = direct_memory_policy()) {
+  fields <- c(
+    "policy_version", "event_repetitions", "rss_metric", "swap_metric",
+    "maximum_high_water_growth_kb"
+  )
+  if (!is.list(policy) || !identical(names(policy), fields) ||
+      !identical(as.character(policy$policy_version), "linux-proc-status-v1") ||
+      !identical(input_scalar_integer(policy$event_repetitions, "memory event repetitions"), 1L) ||
+      !identical(as.character(policy$rss_metric), "VmRSS-and-VmHWM-kB") ||
+      !identical(as.character(policy$swap_metric), "VmSwap-kB") ||
+      !identical(input_scalar_integer(
+        policy$maximum_high_water_growth_kb, "maximum memory high-water growth"
+      ), 65536L)) {
+    stop("direct memory policy is invalid")
+  }
+  policy
+}
+
+direct_proc_status_value_kb <- function(lines, field) {
+  match <- grep(paste0("^", field, ":[[:space:]]+"), lines, value = TRUE)
+  if (length(match) != 1L) return(NA_real_)
+  value <- sub(paste0("^", field, ":[[:space:]]+([0-9]+)[[:space:]]+kB$"), "\\1", match)
+  if (identical(value, match) || !grepl("^[0-9]+$", value)) return(NA_real_)
+  as.numeric(value)
+}
+
+direct_process_memory_snapshot <- function(status_path = "/proc/self/status") {
+  if (!identical(.Platform$OS.type, "unix") || !file.exists(status_path)) return(NULL)
+  lines <- readLines(status_path, warn = FALSE)
+  values <- vapply(c("VmRSS", "VmHWM", "VmSwap"), function(field) {
+    direct_proc_status_value_kb(lines, field)
+  }, numeric(1))
+  if (any(!is.finite(values))) return(NULL)
+  list(rss_kb = values[["VmRSS"]], hwm_kb = values[["VmHWM"]], swap_kb = values[["VmSwap"]])
+}
+
+direct_memory_event_status <- function(baseline, after, policy = direct_memory_policy()) {
+  policy <- validate_direct_memory_policy(policy)
+  if (is.null(baseline) || is.null(after)) {
+    return(list(status = "UNSUPPORTED", reason = "Linux /proc/self/status is unavailable"))
+  }
+  fields <- c("rss_kb", "hwm_kb", "swap_kb")
+  valid_snapshot <- function(snapshot) {
+    is.list(snapshot) && identical(names(snapshot), fields) &&
+      all(is.finite(unlist(snapshot, use.names = FALSE))) &&
+      all(unlist(snapshot, use.names = FALSE) >= 0) && snapshot$hwm_kb >= snapshot$rss_kb
+  }
+  if (!valid_snapshot(baseline) || !valid_snapshot(after) || after$hwm_kb < baseline$hwm_kb) {
+    stop("direct memory snapshots are invalid")
+  }
+  if (baseline$swap_kb > 0 || after$swap_kb > 0) {
+    return(list(status = "BLOCK", reason = "process swap is nonzero during the memory event"))
+  }
+  high_water_growth <- after$hwm_kb - baseline$hwm_kb
+  if (high_water_growth > policy$maximum_high_water_growth_kb) {
+    return(list(
+      status = "BLOCK",
+      reason = sprintf(
+        "process high-water RSS growth %.0f kB exceeds the %d kB cap",
+        high_water_growth, policy$maximum_high_water_growth_kb
+      )
+    ))
+  }
+  list(status = "PASS", reason = "process high-water RSS recorded")
+}
+
+direct_memory_summary_schema <- function() c(
+  "runner", "task", "memory_status", "rss_metric", "loaded_process_rss_kb",
+  "initial_process_high_water_rss_kb", "process_high_water_rss_kb",
+  "swap_before_kb", "swap_after_kb", "reason"
+)
+
+validate_direct_memory_summary <- function(rows, runners, task) {
+  required <- direct_memory_summary_schema()
+  if (!is.data.frame(rows) || !identical(names(rows), required) ||
+      nrow(rows) != length(runners) || !identical(as.character(rows$runner), runners) ||
+      !identical(as.character(rows$task), rep(task, length(runners))) ||
+      any(!rows$memory_status %in% c("PASS", "UNSUPPORTED", "BLOCK")) ||
+      any(!nzchar(rows$rss_metric)) || any(!nzchar(rows$reason))) {
+    stop("direct memory summary is invalid")
+  }
+  numeric <- c(
+    "loaded_process_rss_kb", "initial_process_high_water_rss_kb",
+    "process_high_water_rss_kb", "swap_before_kb", "swap_after_kb"
+  )
+  supported <- rows$memory_status != "UNSUPPORTED"
+  if (any(vapply(rows[numeric], function(value) !is.numeric(value), logical(1))) ||
+      anyNA(as.matrix(rows[supported, numeric, drop = FALSE])) ||
+      any(as.matrix(rows[supported, numeric, drop = FALSE]) < 0) ||
+      any(rows$initial_process_high_water_rss_kb[supported] < rows$loaded_process_rss_kb[supported]) ||
+      any(rows$process_high_water_rss_kb[supported] < rows$initial_process_high_water_rss_kb[supported]) ||
+      any(!is.na(as.matrix(rows[!supported, numeric, drop = FALSE])))) {
+    stop("direct memory summary has invalid measurements")
+  }
+  invisible(rows)
 }
 
 write_csv <- function(df, path, append = FALSE) {

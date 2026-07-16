@@ -1,7 +1,6 @@
 #!/usr/bin/env Rscript
 
 root_dir <- normalizePath(".")
-source(file.path(root_dir, "lib", "specification.R"))
 source(file.path(root_dir, "lib", "measurement.R"))
 
 arguments <- commandArgs(trailingOnly = TRUE)
@@ -20,16 +19,13 @@ if (any(!nzchar(selected_tasks)) || anyDuplicated(selected_tasks) ||
 }
 
 expected_runners <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
-if (!setequal(names(load_runner_configs(root_dir)), expected_runners)) {
-  stop("runner registry does not cover the seven direct runners")
-}
 
 run_gate <- function(script) {
   status <- system2("Rscript", script, stdout = "", stderr = "")
   if (!identical(status, 0L)) stop(sprintf("coverage gate failed: %s", script))
 }
+run_gate(file.path("tests", "test_measurement.R"))
 run_gate(file.path("tests", "test_specification.R"))
-if (!("--quick" %in% arguments)) run_gate(file.path("tests", "test_product_fixtures.R"))
 
 cat(sprintf(
   "Direct coverage passed for %d retained tasks across %d runners%s.\n",

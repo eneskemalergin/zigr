@@ -208,9 +208,7 @@ Every generated wrapper runs inside `R_UnwindProtect`. Conversion scratch, arena
 | Generated zigr | Public target | Conversion, unwind, ownership, methods, and package-shaped registration | Higher-level package ergonomics or all-platform readiness |
 | Savvy | Architectural reference | Generated registration, typed ownership distinctions, result and unwind design | A direct performance baseline for zigr; most local Savvy rows use raw FFI |
 
-The published kernel report in `benchmarks/README.md` records canonical run `p0-7-20260710-full`. The published generated-boundary report there records focused run `20260711T232455Z-pid2`. Local raw runs and the promotion pointer live under the ignored `benchmarks/results/` tree, so I do not present those paths as files shipped by the repository. The two reports answer different questions and are not combined into one score.
-
-The current Rcpp, extendr, and Savvy rows measure specific runner implementations, not complete public tool paths. cpp11 now has a package-shaped public fixture for its supported first-wave subset, but it is not part of the published historical aggregate and does not complete the cross-product matrix. Savvy mostly uses raw R FFI, extendr uses raw FFI for four tasks, and the Rcpp runner does not exercise a complete generated package workflow. R is the semantic reference, and handwritten C is a lower-bound control. No current artifact establishes that zigr is a better tool than Rcpp, cpp11, extendr, or Savvy.
+The direct benchmark suite measures the same retained events across all seven runners. R and registered C remain correctness controls, and the benchmark does not turn those measurements into a product ranking.
 
 ### Acceptance checks
 
@@ -223,17 +221,16 @@ zig build test -Doptimize=ReleaseSafe
 Rscript tests/run_r_tests.R
 cd benchmarks
 Rscript check_coverage.R
-Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75
+Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=vector_sum
 ```
 
-The command above is the generated-versus-handwritten development smoke. It validates the run artifacts before marking the run complete, but it deliberately omits representation rows and cannot be exported as a budget baseline. A boundary baseline uses every boundary and representation row:
+The command above is a focused direct-suite smoke. It validates correctness, timing, source identity, artifact identity, and output digests before marking the run complete. A selected large-output task can additionally receive a separate one-event process-memory safety check:
 
 ```bash
-Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86 --build
-Rscript export_boundary_metrics.R --run-dir=results/runs/<run_id>
+Rscript run_benchmarks.R --tasks=attributes --memory-task=attributes --build
 ```
 
-The exporter validates the complete artifact again and rejects a stale budget policy or a failed budget. A new full release baseline uses all seven active runners through an unfiltered `run_benchmarks.R` invocation; the published canonical report remains the earlier six-runner artifact until a new run is promoted. Every path keeps the unchanged adaptive policy. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
+The memory result rejects swap and excessive process high-water growth. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
 
 This bare core does not close the later work. The primary direct-layout gate, checked fallback, advanced ALTREP callback workloads, and owned ALTREP lifecycle proof are complete, while cross-target runtime ABI parity remains open. The active core-readiness program must establish the bounded comparison set, close the API inventory, prove source-wide R semantics and lifecycle safety, run package-shaped public-path comparisons, and prove portability. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
 
@@ -250,13 +247,7 @@ All three native jobs are required. The cross targets run sequentially in one bo
 
 ## Performance
 
-The current reports in `benchmarks/README.md` measure kernel and runner implementation costs. They are not a product-tool scoreboard.
-
-- The published canonical matrix covers 36 comparable handwritten or direct-entry tasks across R, C, Rcpp, extendr, Savvy, and zigr runner implementations. It helps locate kernel and R-boundary costs. It predates the new partial cpp11 fixture and does not compare complete normal package-shaped public paths.
-- Generated zigr boundary costs are measured separately against handwritten zigr and C controls. R remains the semantic reference. These rows establish internal overhead budgets, not superiority over another tool.
-- A tool-level performance claim requires equivalent versioned package fixtures for Rcpp, cpp11, extendr, and Savvy through their normal public paths. That evidence does not exist yet.
-- ALTREP summary callbacks read owned native storage without materializing an R vector. They still iterate over the values.
-- String ops are slower because each `CHAR()` call produces a new Zig slice header. The header-free `StringSliceView` avoids those Zig headers but requires adapter code in export functions; R encoding translation may still use call-scoped storage.
+The benchmark harness reports per-task, per-runner distributions from the direct suite. It does not publish aggregate winners or separate report tracks. A complete source-matched run is still required before making any performance claim.
 
 ## Philosophy
 
