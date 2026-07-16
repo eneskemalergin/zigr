@@ -33,6 +33,7 @@ manifest <- load_task_manifest(root_dir)
 evidence <- load_evidence_manifest(root_dir, manifest)
 verification <- verify_fixture_source_paths(root_dir, evidence)
 records <- verification$records
+revision_gate_source <- readLines(file.path(root_dir, "lib", "product_fixtures.R"), warn = FALSE)
 
 expect_true(length(records) == 84L, "complete seven-runner fixture matrix")
 expect_true(
@@ -82,6 +83,12 @@ gap_keys <- sort(vapply(records[gaps], function(record) {
 expect_true(
   identical(gap_keys, sort(c("cpp11/F07", "cpp11/F10", "cpp11/F12", "r/F10", "zigr/F08"))),
   "only five source-backed fixture gaps remain"
+)
+expect_true(
+  any(grepl("direct_task_batchability(spec$id)", revision_gate_source, fixed = TRUE)) &&
+    any(grepl("runner_repeat_result <- runner_invoke(runner_arguments)", revision_gate_source, fixed = TRUE)) &&
+    any(grepl("reused its prior allocating result", revision_gate_source, fixed = TRUE)),
+  "the live correctness gate rechecks repeatable events against the same prepared input"
 )
 
 contract_cases <- fixture_contract_cases()

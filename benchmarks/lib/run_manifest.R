@@ -195,16 +195,19 @@ validate_direct_run_manifest <- function(metadata) {
   }
   policy <- metadata$timing_policy
   policy_fields <- c(
-    "policy_version", "warmup_iterations", "calibration_batches",
+    "policy_version", "warmup_iterations", "local_calibration_batches",
     "measurement_samples", "measurement_probe_samples", "sizing_policy", "batch_repetitions", "worker_timeout_seconds",
-    "total_run_timeout_seconds", "gc_policy"
+    "total_run_timeout_seconds", "r_jit_policy", "gc_policy"
   )
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v3")) {
+      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v4")) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
     input_scalar_integer(policy[[field]], field)
+  }
+  if (!identical(manifest_scalar(policy$r_jit_policy, "R JIT policy"), "disabled-before-runner-load")) {
+    stop("run manifest has an invalid R JIT policy")
   }
   validate_direct_sizing_policy(policy$sizing_policy)
   if (!is.list(policy$batch_repetitions) || !setequal(names(policy$batch_repetitions), tasks)) {
@@ -221,7 +224,7 @@ validate_direct_run_manifest <- function(metadata) {
     stop("direct timing batch repetitions violate a single-event task contract")
   }
   if (!identical(as.integer(policy$warmup_iterations), 1L) ||
-      !identical(as.integer(policy$calibration_batches), 1L) ||
+      !identical(as.integer(policy$local_calibration_batches), 1L) ||
       !identical(as.integer(policy$measurement_probe_samples), 101L)) {
     stop("direct timing requires one warmup, one calibration batch, and 101 probe samples")
   }

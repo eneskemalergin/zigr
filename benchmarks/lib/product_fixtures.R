@@ -1712,6 +1712,15 @@ run_benchmark_revision_gate <- function(
   }
 
   for (spec in specs) {
+    runner_invoke <- function(arguments) {
+      if (identical(runner, "r")) {
+        return(do.call(get(spec$function_name, envir = .GlobalEnv), arguments))
+      }
+      if (identical(runner, "c_call")) {
+        return(revision_native_call(c_dll, paste0("c_revision_", spec$id), arguments))
+      }
+      do.call(get(spec$function_name, envir = runner_environment), arguments)
+    }
     r_arguments <- benchmark_revision_arguments(spec, master_seed)
     r_input_fingerprint <- if (length(r_arguments) && !spec$id %in% altrep_tasks) {
       task_arguments_fingerprint(spec$id, r_arguments, "ordinary_r_object")
@@ -1759,13 +1768,7 @@ run_benchmark_revision_gate <- function(
     if (isTRUE(spec$rng)) {
       set.seed(rng_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
     }
-    runner_result <- if (identical(runner, "r")) {
-      do.call(get(spec$function_name, envir = .GlobalEnv), runner_arguments)
-    } else if (identical(runner, "c_call")) {
-      revision_native_call(c_dll, paste0("c_revision_", spec$id), runner_arguments)
-    } else {
-      do.call(get(spec$function_name, envir = runner_environment), runner_arguments)
-    }
+    runner_result <- runner_invoke(runner_arguments)
     if (!is.null(runner_input_fingerprint)) {
       assert_immutable_input(spec$id, runner_arguments, runner_input_fingerprint, "ordinary_r_object")
     }
@@ -1775,6 +1778,21 @@ run_benchmark_revision_gate <- function(
     if (isTRUE(spec$rng)) {
       assert_rng_state_equivalent(r_rng, runner_rng, spec$id)
       assert_rng_state_equivalent(c_rng, runner_rng, spec$id)
+    }
+
+    if (identical(direct_task_batchability(spec$id), "repeat")) {
+      runner_repeat_result <- runner_invoke(runner_arguments)
+      if (!is.null(runner_input_fingerprint)) {
+        assert_immutable_input(spec$id, runner_arguments, runner_input_fingerprint, "ordinary_r_object")
+      }
+      revision_assert_same(
+        runner_result, runner_repeat_result, paste0(spec$id, " repeated ", runner),
+        isTRUE(spec$tolerance)
+      )
+      if (spec$id %in% allocating && same_sexp(runner_result, runner_repeat_result)) {
+        stop(sprintf("%s/%s reused its prior allocating result", runner, spec$id))
+      }
+      rm(runner_repeat_result)
     }
 
     if (spec$id %in% allocating && same_sexp(runner_arguments[[1L]], runner_result)) {

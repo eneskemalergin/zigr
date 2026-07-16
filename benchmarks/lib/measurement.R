@@ -917,15 +917,16 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v3",
+    policy_version = "direct-batch-v4",
     warmup_iterations = 1L,
-    calibration_batches = 1L,
+    local_calibration_batches = 1L,
     measurement_samples = 11L,
     measurement_probe_samples = 101L,
     sizing_policy = direct_sizing_policy(),
     batch_repetitions = as.list(direct_batch_repetition_map(tasks)),
     worker_timeout_seconds = 600L,
     total_run_timeout_seconds = 5400L,
+    r_jit_policy = "disabled-before-runner-load",
     gc_policy = paste(
       "full before first call, warmup, and calibration; no forced collection between",
       "measurement samples; completed task state released before the next task"

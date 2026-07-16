@@ -36,6 +36,7 @@ if (skip_probes && !identical(mode, "sizing")) {
 }
 dir.create(output_root, recursive = TRUE, showWarnings = FALSE)
 master_seed <- input_scalar_integer(master_seed, "master seed")
+invisible(compiler::enableJIT(0L))
 
 specs <- benchmark_revision_task_specs()
 if (!is.null(task_filter)) {
@@ -105,17 +106,17 @@ if (!runner %in% c("r", "c_call")) {
   runner_environment <- loadNamespace(package$package, lib.loc = package$library)
 }
 
-runner_call <- function(spec, values) {
+runner_entry <- function(spec) {
   if (identical(runner, "c_call")) {
     symbol <- getNativeSymbolInfo(paste0("c_revision_", spec$id), c_dll)
-    return(direct_native_call(".Call", symbol, values))
+    return(function(values) direct_native_call(".Call", symbol, values))
   }
   function_object <- get(
     spec$function_name,
     envir = if (identical(runner, "r")) .GlobalEnv else runner_environment,
     inherits = FALSE
   )
-  direct_function_call(function_object, values)
+  function(values) direct_function_call(function_object, values)
 }
 
 r_call <- function(spec, values) {
@@ -142,7 +143,7 @@ prepare_phase <- function(spec) {
   if (spec$id %in% altrep_tasks && !is_unmaterialized_altrep(values[[1L]])) {
     stop(sprintf("%s/%s phase input is not an unmaterialized compact ALTREP", runner, spec$id))
   }
-  list(values = values, call = runner_call(spec, values))
+  list(values = values, call = runner_entries[[spec$id]](values))
 }
 
 assert_altrep_phase <- function(spec, values) {
@@ -150,6 +151,43 @@ assert_altrep_phase <- function(spec, values) {
       !is_unmaterialized_altrep(values[[1L]])) {
     stop(sprintf("%s/%s materialized compact ALTREP inside the timed call", runner, spec$id))
   }
+}
+
+runner_entries <- setNames(lapply(specs, runner_entry), vapply(specs, `[[`, character(1), "id"))
+
+phase_truth <- function(spec) {
+  arguments <- benchmark_revision_arguments(spec, master_seed)
+  reset_rng(spec)
+  result <- eval(r_call(spec, arguments), envir = .GlobalEnv)
+  list(
+    result = result,
+    rng = if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
+  )
+}
+
+run_prepared_phase <- function(spec, phase, repetitions, truth, verify_result = TRUE,
+                               timed = TRUE) {
+  prepared <- prepare_phase(spec)
+  before <- if (length(prepared$values) && !spec$id %in% altrep_tasks) {
+    task_arguments_fingerprint(spec$id, prepared$values, "ordinary_r_object")
+  } else NULL
+  reset_rng(spec)
+  measured <- if (timed) {
+    measure_direct_batch(prepared$call, runner_environment, repetitions)
+  } else {
+    list(result = eval(direct_batch_expression(prepared$call, repetitions), envir = runner_environment))
+  }
+  if (!is.null(before)) {
+    assert_immutable_input(spec$id, prepared$values, before, "ordinary_r_object")
+  }
+  assert_altrep_phase(spec, prepared$values)
+  if (verify_result) {
+    revision_assert_same(
+      truth$result, measured$result, paste0(spec$id, " ", phase), isTRUE(spec$tolerance)
+    )
+    if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, rng_state_snapshot(), spec$id)
+  }
+  measured
 }
 
 if (mode %in% c("sizing", "timing") && any(vapply(task_ids, function(task) {
@@ -162,29 +200,15 @@ if (identical(mode, "sizing")) {
   rows <- list()
   for (spec in specs) {
     count <- batch_repetitions[[spec$id]]
-    truth_arguments <- benchmark_revision_arguments(spec, master_seed)
-    reset_rng(spec)
-    truth <- eval(r_call(spec, truth_arguments), envir = .GlobalEnv)
-    truth_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
+    truth <- phase_truth(spec)
     gc(full = TRUE)
-    measured <- prepare_phase(spec)
-    before <- if (length(measured$values) && !spec$id %in% altrep_tasks) {
-      task_arguments_fingerprint(spec$id, measured$values, "ordinary_r_object")
-    } else NULL
-    reset_rng(spec)
-    result <- measure_direct_batch(measured$call, runner_environment, count)
-    if (!is.null(before)) {
-      assert_immutable_input(spec$id, measured$values, before, "ordinary_r_object")
-    }
-    assert_altrep_phase(spec, measured$values)
-    revision_assert_same(truth, result$result, paste0(spec$id, " sizing"), isTRUE(spec$tolerance))
-    if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth_rng, rng_state_snapshot(), spec$id)
+    result <- run_prepared_phase(spec, "shared sizing", count, truth)
     rows[[length(rows) + 1L]] <- data.frame(
       runner = runner, task = spec$id, batch_repetitions = count,
       batch_elapsed_ms = result$batch_elapsed_ms, gc_elapsed_ms = result$gc_elapsed_ms,
       stringsAsFactors = FALSE
     )
-    rm(truth_arguments, truth, truth_rng)
+    rm(truth, result)
     gc(FALSE)
   }
   write_csv_once(do.call(rbind, rows), file.path(output_root, paste0(runner, "-sizing.csv")), "runner sizing")
@@ -196,48 +220,29 @@ sample_rows <- list()
 first_rows <- list()
 
 for (spec in specs) {
+  truth <- phase_truth(spec)
+
   gc(full = TRUE)
-  first <- prepare_phase(spec)
-  reset_rng(spec)
-  first_result <- measure_direct_batch(first$call, runner_environment, 1L)
-  assert_altrep_phase(spec, first$values)
+  first_result <- run_prepared_phase(spec, "first call", 1L, truth)
   first_rows[[length(first_rows) + 1L]] <- data.frame(
     runner = runner, task = spec$id, first_call_ms = first_result$batch_elapsed_ms,
     stringsAsFactors = FALSE
   )
-  rm(first, first_result)
+  rm(first_result)
 
   gc(full = TRUE)
-  warmup <- prepare_phase(spec)
-  reset_rng(spec)
-  invisible(eval(warmup$call, envir = runner_environment))
-  assert_altrep_phase(spec, warmup$values)
-  rm(warmup)
+  warmup_result <- run_prepared_phase(spec, "warmup", 1L, truth, timed = FALSE)
+  rm(warmup_result)
 
   gc(full = TRUE)
-  calibration <- prepare_phase(spec)
-  reset_rng(spec)
   repetitions <- batch_repetitions[[spec$id]]
-  invisible(measure_direct_batch(calibration$call, runner_environment, repetitions))
-  assert_altrep_phase(spec, calibration$values)
-  rm(calibration)
+  calibration_result <- run_prepared_phase(spec, "local calibration", repetitions, truth)
+  rm(calibration_result)
 
   last_result <- NULL
   last_rng <- NULL
   for (sample in seq_len(measurement_samples)) {
-    measured <- prepare_phase(spec)
-    before <- if (length(measured$values) && !spec$id %in% altrep_tasks) {
-      task_arguments_fingerprint(spec$id, measured$values, "ordinary_r_object")
-    } else NULL
-    reset_rng(spec)
-    result <- measure_direct_batch(
-      measured$call, runner_environment,
-      repetitions
-    )
-    if (!is.null(before)) {
-      assert_immutable_input(spec$id, measured$values, before, "ordinary_r_object")
-    }
-    assert_altrep_phase(spec, measured$values)
+    result <- run_prepared_phase(spec, "measurement", repetitions, truth, verify_result = FALSE)
     if (isTRUE(spec$rng)) last_rng <- rng_state_snapshot()
     sample_rows[[length(sample_rows) + 1L]] <- data.frame(
       runner = runner, task = spec$id, phase = "measurement",
@@ -249,16 +254,12 @@ for (spec in specs) {
       stringsAsFactors = FALSE
     )
     last_result <- result$result
-    rm(measured, result)
+    rm(result)
   }
 
-  truth_arguments <- benchmark_revision_arguments(spec, master_seed)
-  reset_rng(spec)
-  truth <- eval(r_call(spec, truth_arguments), envir = .GlobalEnv)
-  truth_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
-  revision_assert_same(truth, last_result, paste0(spec$id, " post-timing"), isTRUE(spec$tolerance))
-  if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth_rng, last_rng, spec$id)
-  rm(truth_arguments, truth, truth_rng, last_result, last_rng)
+  revision_assert_same(truth$result, last_result, paste0(spec$id, " post-timing"), isTRUE(spec$tolerance))
+  if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, last_rng, spec$id)
+  rm(truth, last_result, last_rng)
   gc(FALSE)
 }
 

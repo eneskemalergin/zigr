@@ -1527,6 +1527,30 @@ expect_error(
   validate_direct_run_manifest(bad_direct),
   "invalid batch bounds"
 )
+bad_direct <- clone(direct_metadata)
+bad_direct$timing_policy$r_jit_policy <- "default"
+expect_error(
+  "direct manifest rejects an unpinned R JIT policy",
+  validate_direct_run_manifest(bad_direct),
+  "invalid R JIT policy"
+)
+worker_source <- read_source("benchmark_worker.R")
+timing_phase_source <- source_region(worker_source, "for (spec in specs) {\n  truth <- phase_truth(spec)", "samples <- do.call(rbind, sample_rows)")
+expect_true(
+  appears_before(worker_source, "compiler::enableJIT(0L)", "source(file.path(root_dir, \"src\", \"r\", \"run_all.R\")") &&
+    appears_before(worker_source, "runner_entries <-", "if (identical(mode, \"sizing\"))") &&
+    appears_before(worker_source, "gc(full = TRUE)\n  repetitions <-", "calibration_result <-") &&
+    appears_before(worker_source, "calibration_result <-", "last_result <- NULL"),
+  "workers disable JIT, resolve entries, and force GC before the local calibration boundary"
+)
+expect_true(
+  appears_before(worker_source, "if (!skip_probes)", "for (spec in specs) {\n  truth <- phase_truth(spec)") &&
+    length(gregexpr("gc(full = TRUE)", timing_phase_source, fixed = TRUE)[[1L]]) == 3L &&
+    !grepl("gc(", source_region(timing_phase_source, "calibration_result <-", "last_result <- NULL"), fixed = TRUE) &&
+    appears_before(timing_phase_source, "last_result <- NULL", "for (sample in seq_len(measurement_samples))") &&
+    appears_before(worker_source, "reset_rng(spec)\n  measured <- if (timed)", "if (verify_result)"),
+  "probes precede task phases, forced GC stops before measurement, and reset stays outside the timer"
+)
 
 bad_direct <- clone(direct_metadata)
 bad_direct$input_seeds[[direct_tasks[[1L]]]] <- bad_direct$input_seeds[[direct_tasks[[1L]]]] + 1L

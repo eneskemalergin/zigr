@@ -247,6 +247,17 @@ expect_true(
   identical(unname(batch_map), c(64L, 64L)),
   "fresh-output tasks may receive an expanded batch"
 )
+batchability <- vapply(
+  c("altrep_sum", "altrep_index", "altrep_materialize", "external_state", "rng", "sort", "attributes"),
+  direct_task_batchability, character(1)
+)
+expect_true(
+  identical(
+    unname(batchability),
+    c("one", "one", "one", "one", "one", "repeat", "repeat")
+  ),
+  "only stateful, RNG, and representation-changing events require a single invocation"
+)
 expect_true(
   identical(remaining_direct_run_seconds(10, 609.9, 600L), 0) &&
     identical(remaining_direct_run_seconds(10, 610, 600L), 0),
@@ -395,6 +406,15 @@ expect_error(
     reordered, c("r", "c_call"), "vector_sum", measurement_samples = 3L
   ),
   "raw sample order is invalid"
+)
+distinct_samples <- samples
+distinct_samples$batch_elapsed_ms <- c(2, 4, 6, 30, 50, 70)
+distinct_samples$elapsed_per_event_ms <- distinct_samples$batch_elapsed_ms / distinct_samples$batch_repetitions
+distinct_summary <- summarize_direct_timing(distinct_samples, first_calls)
+expect_true(
+  identical(distinct_summary$runner, c("c_call", "r")) &&
+    identical(distinct_summary$median_ms, c(25, 2)),
+  "summary grouping retains each runner's observed samples without cross-runner recycling"
 )
 fractional_sample <- samples
 fractional_sample$measurement_sample[[1L]] <- 1.5
