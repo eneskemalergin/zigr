@@ -514,10 +514,20 @@ read_stage_samples <- function(universe, stage) {
 }
 
 pilot_plan_for <- function(universe, groups, eligible_groups) {
+  if (length(groups) == 0L) {
+    return(data.frame(
+      group_id = character(), pilot_complete = logical(), pilot_median_group_ms = numeric(),
+      pilot_median_planning_group_ms = numeric(),
+      pilot_max_cv_pct = numeric(), pilot_max_drift_pct = numeric(),
+      confirmation_iterations = integer(), estimated_confirmation_ms = numeric(),
+      status = character(), stringsAsFactors = FALSE
+    ))
+  }
   raw <- read_stage_samples(universe, "pilot")
   if (nrow(raw) == 0L) {
     return(data.frame(
       group_id = groups, pilot_complete = FALSE, pilot_median_group_ms = NA_real_,
+      pilot_median_planning_group_ms = NA_real_,
       pilot_max_cv_pct = NA_real_, pilot_max_drift_pct = NA_real_,
       confirmation_iterations = NA_integer_, estimated_confirmation_ms = NA_real_,
       status = ifelse(groups %in% eligible_groups, "incomplete", "unsupported"), stringsAsFactors = FALSE
@@ -529,10 +539,14 @@ pilot_plan_for <- function(universe, groups, eligible_groups) {
   raw$member_id <- if (identical(universe, "task")) {
     as.character(raw$runner)
   } else paste(raw$runner, raw$row_id, sep = ":")
-  plan <- pilot_group_plan(raw[c("group_id", "member_id", "iteration", "wall_ms")], run_metadata$timing_policy)
+  plan <- pilot_group_plan(
+    raw[c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")],
+    run_metadata$timing_policy
+  )
   missing <- setdiff(groups, plan$group_id)
   if (length(missing) > 0L) plan <- rbind(plan, data.frame(
     group_id = missing, pilot_complete = FALSE, pilot_median_group_ms = NA_real_,
+    pilot_median_planning_group_ms = NA_real_,
     pilot_max_cv_pct = NA_real_, pilot_max_drift_pct = NA_real_,
     confirmation_iterations = NA_integer_, estimated_confirmation_ms = NA_real_,
     status = ifelse(missing %in% eligible_groups, "incomplete", "unsupported"), stringsAsFactors = FALSE
@@ -772,5 +786,67 @@ validate_run_completion_artifacts(run_dir, published_metadata)
 validate_run_core_artifact_set(run_dir, published_metadata)
 run_complete <- TRUE
 options(error = previous_error_handler)
+
+timestamp_seconds <- function(start, end) {
+  parse <- function(value) as.POSIXct(value, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC")
+  as.numeric(difftime(parse(end), parse(start), units = "secs"))
+}
+format_duration <- function(seconds) {
+  seconds <- max(0, round(as.numeric(seconds)))
+  sprintf("%dm %02ds", seconds %/% 60L, seconds %% 60L)
+}
+task_summary <- if (run_tasks) {
+  read.csv(run_summary_artifact_paths(run_dir, run_metadata, "task"), stringsAsFactors = FALSE)
+} else data.frame()
+fixture_summary <- if (run_fixtures) {
+  read.csv(run_summary_artifact_paths(run_dir, run_metadata, "fixture"), stringsAsFactors = FALSE)
+} else data.frame()
+samples <- lapply(c(if (run_tasks) "task" else character(), if (run_fixtures) "fixture" else character()), function(universe) {
+  read.csv(run_sample_artifact_paths(run_dir, run_metadata, universe, names(all_runners)[[1L]], "."), stringsAsFactors = FALSE)
+})
+retained_samples <- sum(vapply(samples, function(rows) {
+  sum(rows$phase == "timed" & !rows$excluded)
+}, integer(1)))
+excluded_samples <- sum(vapply(samples, function(rows) sum(rows$excluded), integer(1)))
+retry_groups <- sum(vapply(run_metadata$timing_execution$outcomes, function(rows) {
+  if (is.null(rows) || nrow(rows) == 0L) return(0L)
+  sum(as.integer(rows$attempt) > 1L)
+}, integer(1)))
+task_confirmed <- if (run_tasks) sum(run_metadata$timing_execution$task_plan$status == "confirmation") else 0L
+task_floor <- if (run_tasks) sum(run_metadata$timing_execution$task_plan$status == "below_timer_floor") else 0L
+fixture_confirmed <- if (run_fixtures) sum(run_metadata$timing_execution$fixture_plan$status == "confirmation") else 0L
+fixture_floor <- if (run_fixtures) sum(run_metadata$timing_execution$fixture_plan$status == "below_timer_floor") else 0L
+run_files <- list.files(run_dir, recursive = TRUE, full.names = TRUE, all.files = TRUE, no.. = TRUE)
+run_info <- file.info(run_files)
+artifact_bytes <- sum(run_info$size[!run_info$isdir])
+
+cat("\nRun summary\n")
+cat(sprintf(
+  "  Scope: %d runners | %d task workloads (%d rows) | %d fixture families (%d rows)\n",
+  length(all_runners), length(selected_tasks), nrow(task_summary),
+  if (run_fixtures) length(evidence$fixtures) else 0L, nrow(fixture_summary)
+))
+cat(sprintf(
+  "  Results: %d PASS | %d explicit gaps or non-timed rows\n",
+  sum(task_summary$status == "PASS") + sum(fixture_summary$status == "PASS"),
+  sum(task_summary$status != "PASS") + sum(fixture_summary$status != "PASS")
+))
+cat(sprintf(
+  "  Timing: tasks %d confirmed, %d below floor | fixtures %d confirmed, %d below floor\n",
+  task_confirmed, task_floor, fixture_confirmed, fixture_floor
+))
+cat(sprintf(
+  "  Samples: %d retained | %d excluded | %d retried groups\n",
+  retained_samples, excluded_samples, retry_groups
+))
+cat(sprintf(
+  "  Duration: correctness %s | pilot %s | confirmation %s | seal %s | total %s\n",
+  format_duration(timestamp_seconds(run_metadata$started_at, run_metadata$correctness_stage$completed_at)),
+  format_duration(timestamp_seconds(run_metadata$correctness_stage$completed_at, run_metadata$timing_execution$frozen_at)),
+  format_duration(timestamp_seconds(run_metadata$timing_execution$frozen_at, run_metadata$timing_execution$finished_at)),
+  format_duration(timestamp_seconds(run_metadata$timing_execution$finished_at, run_metadata$finished_at)),
+  format_duration(timestamp_seconds(run_metadata$started_at, run_metadata$finished_at))
+))
+cat(sprintf("  Artifacts: %d files | %.2f MiB\n", sum(!run_info$isdir), artifact_bytes / 1024^2))
 cat("Report generation is a separate explicit command.\n")
 cat("Done.\n")

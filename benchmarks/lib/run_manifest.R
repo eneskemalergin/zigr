@@ -631,7 +631,7 @@ validate_timing_execution <- function(execution, metadata) {
   for (universe in c("task", "fixture")) {
     plan <- timing_records_frame(execution[[paste0(universe, "_plan")]], paste(universe, "timing plan"))
     required_plan <- c(
-      "group_id", "pilot_complete", "pilot_median_group_ms", "pilot_max_cv_pct",
+      "group_id", "pilot_complete", "pilot_median_group_ms", "pilot_median_planning_group_ms", "pilot_max_cv_pct",
       "pilot_max_drift_pct", "confirmation_iterations", "estimated_confirmation_ms", "status"
     )
     selected <- benchmark_run_includes(metadata, universe)

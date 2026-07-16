@@ -360,6 +360,51 @@ evaluate_prepared_call <- function(prepared) {
   if (is.function(prepared)) prepared() else eval(prepared, envir = parent.frame())
 }
 
+prepared_call_function <- function(prepared, parent = parent.frame()) {
+  if (is.function(prepared)) return(prepared)
+  if (!is.call(prepared)) stop("prepared timing value must be a function or call")
+  parts <- as.list(prepared)
+  interface <- as.character(parts[[1L]])
+  native_interface <- interface %in% c(".Call", ".C", ".External")
+  target <- if (native_interface) {
+    parts[[2L]]
+  } else {
+    get(interface, envir = parent, inherits = TRUE)
+  }
+  arguments <- if (native_interface) {
+    if (length(parts) <= 2L) list() else parts[-c(1L, 2L)]
+  } else if (length(parts) <= 1L) list() else parts[-1L]
+  if (length(arguments) > 2L) stop("prepared timing calls support at most two arguments")
+  arg1 <- if (length(arguments) >= 1L) arguments[[1L]] else NULL
+  arg2 <- if (length(arguments) >= 2L) arguments[[2L]] else NULL
+  if (identical(interface, ".Call")) {
+    return(switch(as.character(length(arguments) + 1L),
+      "1" = function() .Call(target),
+      "2" = function() .Call(target, arg1),
+      "3" = function() .Call(target, arg1, arg2)
+    ))
+  }
+  if (identical(interface, ".C")) {
+    return(switch(as.character(length(arguments) + 1L),
+      "1" = function() .C(target),
+      "2" = function() .C(target, arg1),
+      "3" = function() .C(target, arg1, arg2)
+    ))
+  }
+  if (identical(interface, ".External")) {
+    return(switch(as.character(length(arguments) + 1L),
+      "1" = function() .External(target),
+      "2" = function() .External(target, arg1),
+      "3" = function() .External(target, arg1, arg2)
+    ))
+  }
+  switch(as.character(length(arguments) + 1L),
+    "1" = function() target(),
+    "2" = function() target(arg1),
+    "3" = function() target(arg1, arg2)
+  )
+}
+
 measure_first_call <- function(prepare_call) {
   gc(full = TRUE)
   prepared <- tryCatch(list(ok = TRUE, expression = prepare_call()), error = function(error) {
@@ -406,11 +451,12 @@ benchmark_timing_policy <- function() {
     peak_rss_repetitions = 3L,
     peak_rss_timeout_seconds = 60L,
     peak_rss_fixture_ids = c("F03", "F04", "F06"),
-    gc_policy = "full before first call and timed sequence; full after timed sequence before endpoint RSS; no forced GC between timed samples"
+    gc_policy = "full before warmup and timed sequence; full after timed sequence before endpoint RSS; no forced GC between timed samples"
   )
 }
 
 benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 10L,
+                           fresh_each_iteration = FALSE,
                            timer_noise_floor_ms = 0.01,
                            rss_endpoint_metric = "post_gc_current_rss_endpoint_delta_kb") {
 
@@ -420,37 +466,61 @@ benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 1
   }
 
   gc(full = TRUE)
-  rss_before <- current_rss_kb()
 
+  fixed_call <- if (isTRUE(fresh_each_iteration)) NULL else {
+    prepared_call_function(prepare_timed(), parent.frame())
+  }
   for (i in seq_len(warmup)) {
-    prepared <- tryCatch(list(ok = TRUE, expression = prepare_warmup()), error = function(error) {
+    prepared <- tryCatch(list(
+      ok = TRUE,
+      expression = if (is.null(fixed_call)) {
+        prepared_call_function(prepare_warmup(), parent.frame())
+      } else fixed_call
+    ), error = function(error) {
       list(ok = FALSE, error = conditionMessage(error))
     })
     if (!isTRUE(prepared$ok)) return(list(error = paste("warmup input preparation failed:", prepared$error)))
     call_ok <- TRUE
     t0 <- get_nanotime()
-    tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
+    tryCatch(prepared$expression(), error = function(error) {
       call_ok <<- FALSE
     })
     t1 <- get_nanotime()
     if (!call_ok) return(list(error = "warmup failed"))
   }
 
-  all_times <- numeric(iterations)
-  for (sample_index in seq_len(iterations)) {
-    prepared <- tryCatch(list(ok = TRUE, expression = prepare_timed()), error = function(error) {
-      list(ok = FALSE, error = conditionMessage(error))
-    })
-    if (!isTRUE(prepared$ok)) return(list(error = paste("timed input preparation failed:", prepared$error)))
-    call_error <- NULL
-    t0 <- get_nanotime()
-    tryCatch(evaluate_prepared_call(prepared$expression), error = function(error) {
-      call_error <<- conditionMessage(error)
-    })
-    t1 <- get_nanotime()
-    if (!is.null(call_error)) return(list(error = call_error))
-    all_times[[sample_index]] <- (t1 - t0) / 1e6
+  gc(full = TRUE)
+  rss_before <- current_rss_kb()
+
+  planning_times <- numeric(iterations)
+  measured <- tryCatch({
+    if (isTRUE(fresh_each_iteration)) {
+      times <- numeric(iterations)
+      for (sample_index in seq_len(iterations)) {
+        sample_started <- get_nanotime()
+        prepared <- prepared_call_function(prepare_timed(), parent.frame())
+        expression <- as.call(list(prepared))
+        sample <- microbenchmark::microbenchmark(
+          list = list(call = expression), times = 1L, unit = "ns"
+        )
+        times[[sample_index]] <- as.numeric(sample$time[[1L]]) / 1e6
+        planning_times[[sample_index]] <- (get_nanotime() - sample_started) / 1e6
+      }
+      times
+    } else {
+      batch_started <- get_nanotime()
+      expression <- as.call(list(fixed_call))
+      sample <- microbenchmark::microbenchmark(
+        list = list(call = expression), times = iterations, unit = "ns"
+      )
+      planning_times[] <- (get_nanotime() - batch_started) / 1e6 / iterations
+      as.numeric(sample$time) / 1e6
+    }
+  }, error = function(error) error)
+  if (inherits(measured, "error")) {
+    return(list(error = paste("timed call failed:", conditionMessage(measured))))
   }
+  all_times <- measured
 
   n <- length(all_times)
   mean_ms <- mean(all_times)
@@ -473,6 +543,7 @@ benchmark_call <- function(prepare_warmup, prepare_timed, iterations, warmup = 1
 
   list(
     times      = all_times,
+    planning_times = planning_times,
     n_runs     = n,
     warmup_iterations = warmup,
     fixed_iterations = iterations,
@@ -789,7 +860,7 @@ timing_batch_schedule <- function(batches, runners) {
 }
 
 pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
-  required <- c("group_id", "member_id", "iteration", "wall_ms")
+  required <- c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")
   missing <- setdiff(required, names(samples))
   if (length(missing) > 0L) stop(sprintf("pilot samples missing fields: %s", paste(missing, collapse = ", ")))
   if (nrow(samples) == 0L) return(data.frame())
@@ -797,9 +868,11 @@ pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
   samples$member_id <- as.character(samples$member_id)
   samples$iteration <- as.integer(samples$iteration)
   samples$wall_ms <- as.numeric(samples$wall_ms)
-  if (anyNA(samples[c("group_id", "member_id", "iteration", "wall_ms")]) ||
+  samples$planning_ms <- as.numeric(samples$planning_ms)
+  if (anyNA(samples[c("group_id", "member_id", "iteration", "wall_ms", "planning_ms")]) ||
       any(!nzchar(samples$group_id)) || any(!nzchar(samples$member_id)) ||
-      any(!is.finite(samples$wall_ms)) || any(samples$wall_ms < 0)) {
+      any(!is.finite(samples$wall_ms)) || any(samples$wall_ms < 0) ||
+      any(!is.finite(samples$planning_ms)) || any(samples$planning_ms < samples$wall_ms)) {
     stop("pilot samples contain invalid values")
   }
   keys <- paste(samples$group_id, samples$member_id, sep = "\r")
@@ -812,6 +885,7 @@ pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
       n = length(values),
       complete = identical(iterations, seq_len(as.integer(policy$pilot_iterations))),
       median_ms = median(values),
+      planning_median_ms = median(samples$planning_ms[indices]),
       cv_pct = if (mean(values) > 0) sd(values) / mean(values) * 100 else 0,
       drift_pct = if (length(values) >= 4L) {
         half <- floor(length(values) / 2L)
@@ -827,10 +901,13 @@ pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
     complete <- all(rows$complete)
     above_floor <- all(rows$median_ms >= as.numeric(policy$timer_noise_floor_ms))
     group_cost <- sum(rows$median_ms)
+    planning_group_cost <- sum(rows$planning_median_ms)
     worst_cv <- max(rows$cv_pct, na.rm = TRUE)
     desired <- ceiling(as.integer(policy$confirmation_min_iterations) *
       max(1, (worst_cv / as.numeric(policy$confirmation_target_cv_pct)) ^ 2))
-    affordable <- if (group_cost > 0) floor(as.numeric(policy$group_time_cap_ms) / group_cost) else 0L
+    affordable <- if (planning_group_cost > 0) {
+      floor(as.numeric(policy$group_time_cap_ms) / planning_group_cost)
+    } else 0L
     count <- min(as.integer(policy$confirmation_max_iterations), desired, affordable)
     status <- if (!complete) "incomplete" else if (!above_floor) "below_timer_floor" else if (
       count < as.integer(policy$confirmation_min_iterations)
@@ -838,9 +915,10 @@ pilot_group_plan <- function(samples, policy = benchmark_timing_policy()) {
     data.frame(
       group_id = rows$group_id[[1L]], pilot_complete = complete,
       pilot_median_group_ms = group_cost, pilot_max_cv_pct = worst_cv,
+      pilot_median_planning_group_ms = planning_group_cost,
       pilot_max_drift_pct = max(rows$drift_pct, na.rm = TRUE),
       confirmation_iterations = if (identical(status, "confirmation")) as.integer(count) else NA_integer_,
-      estimated_confirmation_ms = if (identical(status, "confirmation")) count * group_cost else NA_real_,
+      estimated_confirmation_ms = if (identical(status, "confirmation")) count * planning_group_cost else NA_real_,
       status = status, stringsAsFactors = FALSE
     )
   }))

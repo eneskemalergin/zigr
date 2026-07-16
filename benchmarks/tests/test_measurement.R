@@ -87,8 +87,9 @@ expect_error(
   "differs from available IDs"
 )
 
-synthetic_pilot <- function(group, member, values) data.frame(
+synthetic_pilot <- function(group, member, values, planning = values) data.frame(
   group_id = group, member_id = member, iteration = seq_along(values), wall_ms = values,
+  planning_ms = planning,
   stringsAsFactors = FALSE
 )
 stable <- rep(1, timing_policy$pilot_iterations)
@@ -101,7 +102,9 @@ pilot_samples <- do.call(rbind, list(
   synthetic_pilot("noisy", "a", noisy), synthetic_pilot("noisy", "b", noisy),
   synthetic_pilot("drifting", "a", drifting), synthetic_pilot("drifting", "b", drifting),
   synthetic_pilot("floor", "a", floor_bound), synthetic_pilot("floor", "b", floor_bound),
-  synthetic_pilot("slow", "a", slow), synthetic_pilot("slow", "b", slow)
+  synthetic_pilot("slow", "a", slow), synthetic_pilot("slow", "b", slow),
+  synthetic_pilot("setup", "a", noisy, rep(1000, length(noisy))),
+  synthetic_pilot("setup", "b", noisy, rep(1000, length(noisy)))
 ))
 pilot_plan <- pilot_group_plan(pilot_samples, timing_policy)
 pilot_by_group <- split(pilot_plan, pilot_plan$group_id)
@@ -111,7 +114,7 @@ expect_true(
     pilot_by_group$noisy$confirmation_iterations > pilot_by_group$stable$confirmation_iterations &&
     pilot_by_group$drifting$pilot_max_drift_pct > pilot_by_group$stable$pilot_max_drift_pct &&
     pilot_by_group$floor$status == "below_timer_floor" &&
-    pilot_by_group$slow$status == "incomplete",
+    pilot_by_group$slow$status == "incomplete" && pilot_by_group$setup$status == "incomplete",
   "pilot sizing handles stable, noisy, drifting, timer-floor, and slow groups within declared bounds"
 )
 expect_true(
@@ -194,6 +197,7 @@ expect_true(
 execution_plan <- data.frame(
   group_id = c("G01", "G02"), pilot_complete = TRUE,
   pilot_median_group_ms = c(2, 0.001), pilot_max_cv_pct = c(1, 1),
+  pilot_median_planning_group_ms = c(2, 0.001),
   pilot_max_drift_pct = c(0, 0), confirmation_iterations = c(20L, NA_integer_),
   estimated_confirmation_ms = c(40, NA_real_),
   status = c("confirmation", "below_timer_floor"), stringsAsFactors = FALSE
@@ -326,6 +330,32 @@ fixed_result <- benchmark_call(
 expect_true(
   fixed_calls == 7L && fixed_result$n_runs == 7L && fixed_result$fixed_iterations == 7L,
   "fixed timing takes exactly the predeclared confirmation count"
+)
+fresh_preparations <- 0L
+fresh_calls <- 0L
+fresh_result <- benchmark_call(
+  function() function() NULL,
+  function() {
+    fresh_preparations <<- fresh_preparations + 1L
+    function() fresh_calls <<- fresh_calls + 1L
+  },
+  iterations = 5L, warmup = 0L, fresh_each_iteration = TRUE
+)
+expect_true(
+  fresh_preparations == 5L && fresh_calls == 5L && fresh_result$n_runs == 5L,
+  "fresh timing prepares each mutable sample outside its measured call"
+)
+original_evaluate_prepared_call <- evaluate_prepared_call
+evaluate_prepared_call <- function(...) stop("R evaluator entered the timed boundary")
+direct_result <- benchmark_call(
+  function() function() NULL,
+  function() function() 42L,
+  iterations = 3L, warmup = 0L
+)
+evaluate_prepared_call <- original_evaluate_prepared_call
+expect_true(
+  direct_result$n_runs == 3L,
+  "timed repetitions bypass the R evaluator wrapper"
 )
 original_current_rss_kb <- current_rss_kb
 current_rss_kb <- function() NA_integer_

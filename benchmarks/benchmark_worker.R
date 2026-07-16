@@ -708,6 +708,16 @@ run_task_worker <- function(cli) {
     expression_for_arguments <- function(arguments) {
       make_call_expr(cfun, arguments, task_call_type)
     }
+    callable_for_arguments <- function(arguments) {
+      force(arguments)
+      force(cfun)
+      force(task_call_type)
+      if (identical(task_call_type, "r")) {
+        return(function() do.call(cfun, arguments))
+      }
+      interface <- switch(task_call_type, ".C" = .C, ".External" = .External, .Call)
+      function() do.call(interface, c(list(cfun), arguments))
+    }
     if (is.null(cfun)) {
       n_na <- n_na + 1
       na_allowed <- !isTRUE(disposition$executable)
@@ -943,6 +953,7 @@ run_task_worker <- function(cli) {
       phase = "first_call",
       iteration = 1L,
       wall_ms = first_call$wall_ms,
+      planning_ms = NA_real_,
       rss_endpoint_delta_kb = NA_integer_,
       error = first_call$error,
       run_id = run_id,
@@ -986,8 +997,8 @@ run_task_worker <- function(cli) {
       prepare_warmup <- function() expression_for_arguments(warmup_arguments)
       prepare_timed <- function() expression_for_arguments(timed_arguments)
     } else {
-      prepare_warmup <- function() expression_for_arguments(new_phase_arguments())
-      prepare_timed <- function() expression_for_arguments(new_phase_arguments())
+      prepare_warmup <- function() callable_for_arguments(new_phase_arguments())
+      prepare_timed <- function() callable_for_arguments(new_phase_arguments())
     }
   
     bm <- benchmark_call(
@@ -995,6 +1006,7 @@ run_task_worker <- function(cli) {
       prepare_timed,
       iterations = as.integer(timing_options$counts[[tid]]),
       warmup = as.integer(timing_policy$warmup_iterations),
+      fresh_each_iteration = !identical(mutation_policy, "immutable"),
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
       rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric)
     )
@@ -1033,6 +1045,7 @@ run_task_worker <- function(cli) {
       phase       = "timed",
       iteration   = seq_len(length(bm$times)),
       wall_ms     = bm$times,
+      planning_ms = bm$planning_times,
       rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1), bm$rss_endpoint_delta_kb),
       error       = NA_character_,
       run_id      = run_id,
@@ -1548,6 +1561,7 @@ run_fixture_worker <- function(args) {
       prepare_warmup, prepare_timed,
       iterations = as.integer(timing_options$counts[[fixture]]),
       warmup = as.integer(timing_policy$warmup_iterations),
+      fresh_each_iteration = !reusable,
       timer_noise_floor_ms = as.numeric(timing_policy$timer_noise_floor_ms),
       rss_endpoint_metric = as.character(timing_policy$rss_endpoint_metric)
     )
@@ -1559,7 +1573,8 @@ run_fixture_worker <- function(args) {
     first_call_raw <- data.frame(
       run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
       variant = variant, row_id = fields$row_id, phase = "first_call", iteration = 1L,
-      wall_ms = first_call$wall_ms, rss_endpoint_delta_kb = NA_integer_, stage = timing_options$stage,
+      wall_ms = first_call$wall_ms, planning_ms = NA_real_,
+      rss_endpoint_delta_kb = NA_integer_, stage = timing_options$stage,
       process_epoch = timing_options$process_epoch, batch = timing_options$batch,
       attempt = timing_options$attempt, group_order = timing_options$group_orders[[fixture]],
       member_order = timing_options$member_order, excluded = FALSE,
@@ -1569,6 +1584,7 @@ run_fixture_worker <- function(args) {
       run_id = as.character(metadata$run_id), runner = runner, fixture = fixture,
       variant = variant, row_id = fields$row_id, phase = "timed", iteration = seq_along(bm$times),
       wall_ms = bm$times,
+      planning_ms = bm$planning_times,
       rss_endpoint_delta_kb = c(rep(NA_integer_, length(bm$times) - 1L), bm$rss_endpoint_delta_kb),
       stage = timing_options$stage,
       process_epoch = timing_options$process_epoch, batch = timing_options$batch,
