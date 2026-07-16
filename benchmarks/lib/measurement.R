@@ -106,9 +106,9 @@ benchmark_revision_task_specs <- function() {
       list(x)
     }),
     list(id = "schema", function_name = "bench_schema", arguments = function() list(list(id = 1L, count = 2L, ratio = 0.5, enabled = TRUE))),
-    list(id = "altrep_sum", function_name = "bench_altrep_sum", arguments = function() list(seq_len(1000000L)), altrep = TRUE),
-    list(id = "altrep_index", function_name = "bench_altrep_index", arguments = function() list(seq_len(10000000L)), altrep = TRUE),
-    list(id = "altrep_materialize", function_name = "bench_altrep_materialize", arguments = function() list(seq_len(1000000L)), altrep = TRUE),
+    list(id = "altrep_sum", function_name = "bench_altrep_sum", arguments = function() list(seq_len(1000000L)), altrep = TRUE, altrep_input_postcondition = "preserve"),
+    list(id = "altrep_index", function_name = "bench_altrep_index", arguments = function() list(seq_len(10000000L)), altrep = TRUE, altrep_input_postcondition = "preserve"),
+    list(id = "altrep_materialize", function_name = "bench_altrep_materialize", arguments = function() list(seq_len(1000000L)), altrep = TRUE, altrep_input_postcondition = "allow_change"),
     list(id = "external_state", function_name = "bench_external_state", arguments = function() list()),
     list(id = "eval", function_name = "bench_eval", arguments = function() list(runif(100000L)), tolerance = TRUE),
     list(id = "serialize", function_name = "bench_serialize", arguments = function() list(runif(100000L))),
@@ -122,7 +122,7 @@ direct_task_suitability <- function() {
     task = vapply(benchmark_revision_task_specs(), `[[`, character(1), "id"),
     immutable_input = TRUE,
     input_mutating = FALSE,
-    stateful = c(rep(FALSE, 22L), TRUE, FALSE, FALSE, TRUE, FALSE),
+    stateful = c(rep(FALSE, 25L), TRUE, FALSE),
     representation_changing = c(rep(FALSE, 19L), TRUE, TRUE, TRUE, rep(FALSE, 5L)),
     large_output = c(
       FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, FALSE,
@@ -183,6 +183,33 @@ direct_task_batchability <- function(task_id) {
 
 direct_task_is_altrep <- function(task_id) {
   isTRUE(direct_task_suitability_row(task_id)$representation_changing)
+}
+
+direct_task_altrep_input_postcondition <- function(spec) {
+  if (!is.list(spec) || length(spec$id) != 1L || is.na(spec$id) || !nzchar(spec$id)) {
+    stop("ALTREP input postcondition requires one task specification")
+  }
+  if (!isTRUE(spec$altrep)) {
+    if (!is.null(spec$altrep_input_postcondition)) {
+      stop(sprintf("non-ALTREP task %s declares an ALTREP input postcondition", spec$id))
+    }
+    return("ordinary")
+  }
+  postcondition <- spec$altrep_input_postcondition
+  if (length(postcondition) != 1L || is.na(postcondition) ||
+      !postcondition %in% c("preserve", "allow_change")) {
+    stop(sprintf("ALTREP task %s has an invalid input postcondition", spec$id))
+  }
+  postcondition
+}
+
+assert_direct_task_altrep_input <- function(spec, unmaterialized, label = NULL) {
+  postcondition <- direct_task_altrep_input_postcondition(spec)
+  if (identical(postcondition, "preserve") && !isTRUE(unmaterialized)) {
+    if (is.null(label)) label <- spec$id
+    stop(sprintf("%s materialized compact ALTREP inside the timed call", label))
+  }
+  postcondition
 }
 
 direct_allocation_policy <- function() {

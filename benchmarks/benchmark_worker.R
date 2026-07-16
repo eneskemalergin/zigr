@@ -147,9 +147,10 @@ prepare_phase <- function(spec) {
 }
 
 assert_altrep_phase <- function(spec, values) {
-  if (spec$id %in% c("altrep_sum", "altrep_index") &&
-      !is_unmaterialized_altrep(values[[1L]])) {
-    stop(sprintf("%s/%s materialized compact ALTREP inside the timed call", runner, spec$id))
+  if (spec$id %in% altrep_tasks) {
+    assert_direct_task_altrep_input(
+      spec, is_unmaterialized_altrep(values[[1L]]), sprintf("%s/%s", runner, spec$id)
+    )
   }
 }
 

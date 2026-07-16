@@ -35,9 +35,13 @@ suitability <- validate_direct_task_suitability()
 task_set <- function(field) suitability$task[suitability[[field]]]
 expect_true(
   all(suitability$immutable_input) && !any(suitability$input_mutating) &&
-    identical(task_set("stateful"), c("external_state", "rng")) &&
+    identical(task_set("stateful"), "rng") &&
     identical(task_set("representation_changing"), c("altrep_sum", "altrep_index", "altrep_materialize")) &&
     identical(task_set("large_output"), c(
+      "numeric_transform", "sort", "transpose", "matmul", "attributes", "raw_copy",
+      "complex_conjugate", "altrep_materialize", "serialize", "rng"
+    )) &&
+    identical(task_set("gc_relevant"), c(
       "numeric_transform", "sort", "transpose", "matmul", "attributes", "raw_copy",
       "complex_conjugate", "altrep_materialize", "serialize", "rng"
     )) &&
@@ -45,8 +49,40 @@ expect_true(
       "rowcol", "dataframe", "string_concat", "string_metadata", "factor", "logical_counts",
       "outputs"
     )) &&
-    identical(task_set("matrix_task"), c("transpose", "rowcol", "matmul")),
-  "the task suitability map records the declared input, state, representation, output, and matrix contracts"
+    identical(task_set("matrix_task"), c("transpose", "rowcol", "matmul")) &&
+    identical(
+      vapply(specs, function(spec) isTRUE(spec$altrep), logical(1)),
+      suitability$representation_changing
+    ) &&
+    identical(
+      vapply(specs, function(spec) isTRUE(spec$rng), logical(1)),
+      suitability$stateful
+    ) &&
+    identical(
+      vapply(specs, direct_task_altrep_input_postcondition, character(1)),
+      c(rep("ordinary", 19L), "preserve", "preserve", "allow_change", rep("ordinary", 5L))
+    ),
+  "the task suitability map records the declared input, state, representation, output, matrix, and ALTREP contracts"
+)
+
+invalid_altrep_spec <- specs[[which(vapply(specs, `[[`, character(1), "id") == "altrep_sum")]]
+invalid_altrep_spec$altrep_input_postcondition <- "invalid"
+expect_error(
+  "ALTREP postcondition rejects an unrecognized preservation policy",
+  direct_task_altrep_input_postcondition(invalid_altrep_spec),
+  "invalid input postcondition"
+)
+preserve_spec <- specs[[which(vapply(specs, `[[`, character(1), "id") == "altrep_sum")]]
+materialize_spec <- specs[[which(vapply(specs, `[[`, character(1), "id") == "altrep_materialize")]]
+expect_error(
+  "ALTREP preserve policy rejects an observed materialized input",
+  assert_direct_task_altrep_input(preserve_spec, FALSE, "rcpp/altrep_sum"),
+  "rcpp/altrep_sum materialized compact ALTREP inside the timed call"
+)
+expect_true(
+  identical(assert_direct_task_altrep_input(preserve_spec, TRUE), "preserve") &&
+    identical(assert_direct_task_altrep_input(materialize_spec, FALSE), "allow_change"),
+  "ALTREP post-event checks preserve required inputs and allow the declared materializer"
 )
 
 first <- benchmark_revision_arguments(specs[[1L]])
@@ -287,6 +323,12 @@ expect_true(
   identical(unname(batch_map), c(64L, 64L)),
   "fresh-output tasks may receive an expanded batch"
 )
+external_state_batch <- direct_batch_repetition_map("external_state", 64L)
+expect_true(
+  identical(unname(external_state_batch), 64L) &&
+    identical(direct_task_batchability("external_state"), "repeat"),
+  "fresh external state is recreated for every repeated event"
+)
 batchability <- vapply(
   c("altrep_sum", "altrep_index", "altrep_materialize", "external_state", "rng", "sort", "attributes"),
   direct_task_batchability, character(1)
@@ -294,9 +336,9 @@ batchability <- vapply(
 expect_true(
   identical(
     unname(batchability),
-    c("one", "one", "one", "one", "one", "repeat", "repeat")
+    c("one", "one", "one", "repeat", "one", "repeat", "repeat")
   ),
-  "only stateful, RNG, and representation-changing events require a single invocation"
+  "only cross-event state, RNG, and representation-changing events require a single invocation"
 )
 allocation_classes <- vapply(
   c("complex_conjugate", "schema", "outputs"), direct_task_allocation_class, character(1)
