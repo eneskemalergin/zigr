@@ -372,6 +372,19 @@ expect_true(
   ),
   "sizing selects the smallest shared safe batch for immutable and fresh-output tasks"
 )
+progress <- advance_direct_sizing_tasks(
+  c("altrep_materialize", "vector_sum"), c(FALSE, FALSE), 1L
+)
+expect_true(
+  identical(progress$active_tasks, "vector_sum") &&
+    identical(progress$blocked_tasks, "altrep_materialize"),
+  "a blocked one-event task does not stop repeatable tasks from advancing"
+)
+expect_error(
+  "sizing rejects a repeatable task that misses the final ladder count",
+  advance_direct_sizing_tasks("vector_sum", FALSE, 64L),
+  "cannot meet"
+)
 expect_error(
   "sizing rejects a favorable-runner-only ladder step",
   select_direct_batch_repetitions(

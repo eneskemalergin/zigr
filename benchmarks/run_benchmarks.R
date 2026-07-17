@@ -208,6 +208,7 @@ run_direct_benchmark <- function() {
     )
   }
   active_tasks <- selected_tasks
+  blocked_tasks <- character()
   sizing_rows <- list()
   sizing_timer_floors <- NULL
   sizing_policy <- timing_policy$sizing_policy
@@ -255,13 +256,15 @@ run_direct_benchmark <- function() {
         selected_runners, sizing_policy
       )
     }, logical(1))
-    if (any(!complete_tasks) && (identical(count, 64L) || any(vapply(
-      active_tasks[!complete_tasks], direct_task_batchability, character(1)
-    ) == "one"))) {
-      blocked <- active_tasks[!complete_tasks]
-      stop(sprintf("batch sizing cannot meet the shared policy for: %s", paste(blocked, collapse = ", ")))
-    }
-    active_tasks <- active_tasks[!complete_tasks]
+    progress <- advance_direct_sizing_tasks(active_tasks, complete_tasks, count, blocked_tasks, sizing_policy)
+    active_tasks <- progress$active_tasks
+    blocked_tasks <- progress$blocked_tasks
+  }
+  if (length(blocked_tasks) > 0L) {
+    stop(sprintf(
+      "batch sizing cannot meet the shared policy for: %s",
+      paste(unique(blocked_tasks), collapse = ", ")
+    ))
   }
   sizing <- do.call(rbind, sizing_rows)
   rownames(sizing) <- NULL

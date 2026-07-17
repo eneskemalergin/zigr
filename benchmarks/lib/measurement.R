@@ -428,6 +428,37 @@ direct_sizing_count_accepted <- function(rows, timer_floors, runners,
   all(rows$batch_elapsed_ms > target_ms)
 }
 
+advance_direct_sizing_tasks <- function(active_tasks, complete_tasks, count,
+                                        blocked_tasks = character(),
+                                        policy = direct_sizing_policy()) {
+  policy <- validate_direct_sizing_policy(policy)
+  active_tasks <- as.character(active_tasks)
+  blocked_tasks <- as.character(blocked_tasks)
+  if (length(active_tasks) == 0L || length(complete_tasks) != length(active_tasks) ||
+      anyNA(active_tasks) || any(!nzchar(active_tasks)) || anyNA(complete_tasks) ||
+      !is.logical(complete_tasks) || anyDuplicated(active_tasks) ||
+      any(!active_tasks %in% vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")) ||
+      any(!blocked_tasks %in% vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")) ||
+      anyDuplicated(blocked_tasks)) {
+    stop("direct sizing task progress is invalid")
+  }
+  count <- input_scalar_integer(count, "sizing count")
+  if (!count %in% policy$ladder) stop("direct sizing count is not on the declared ladder")
+  failed_tasks <- active_tasks[!complete_tasks]
+  one_event_failures <- failed_tasks[vapply(failed_tasks, direct_task_batchability, character(1)) == "one"]
+  repeat_failures <- setdiff(failed_tasks, one_event_failures)
+  if (identical(count, max(policy$ladder)) && length(repeat_failures) > 0L) {
+    stop(sprintf(
+      "batch sizing cannot meet the shared policy for: %s",
+      paste(c(blocked_tasks, repeat_failures), collapse = ", ")
+    ))
+  }
+  list(
+    active_tasks = repeat_failures,
+    blocked_tasks = unique(c(blocked_tasks, one_event_failures))
+  )
+}
+
 select_direct_batch_repetitions <- function(sizing, timer_floors, runners, tasks,
                                             policy = direct_sizing_policy()) {
   required <- c("runner", "task", "batch_repetitions", "batch_elapsed_ms", "gc_elapsed_ms")
