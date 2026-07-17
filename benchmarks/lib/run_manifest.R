@@ -283,7 +283,7 @@ validate_direct_run_manifest <- function(metadata) {
     "total_run_timeout_seconds", "r_jit_policy", "distribution_policy", "allocation_policy", "gc_policy"
   )
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v6")) {
+      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v9")) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {

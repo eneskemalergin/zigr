@@ -225,10 +225,12 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-  identical(policy$policy_version, "direct-batch-v6") &&
+    identical(policy$policy_version, "direct-batch-v9") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L)) &&
-    identical(policy$measurement_samples, 11L),
-  "direct timing uses one bounded shared-count policy"
+    identical(policy$measurement_samples, 11L) &&
+    identical(policy$sizing_policy$target_batch_ms, 1) &&
+    grepl("each large-output measurement sample", policy$gc_policy, fixed = TRUE),
+  "direct timing uses one bounded shared-count policy and explicit large-output GC boundaries"
 )
 clone <- function(value) unserialize(serialize(value, NULL))
 direct_seed <- benchmark_master_seed() + 17L

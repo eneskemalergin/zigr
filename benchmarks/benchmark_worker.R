@@ -282,10 +282,22 @@ for (spec in specs) {
   repetitions <- batch_repetitions[[spec$id]]
   calibration_result <- run_prepared_phase(spec, "local calibration", repetitions, truth)
   rm(calibration_result)
+  if (identical(direct_task_allocation_class(spec$id), "large_output")) {
+    rm(truth)
+    gc(full = TRUE)
+    truth <- NULL
+  }
 
   last_result <- NULL
   last_rng <- NULL
   for (sample in seq_len(measurement_samples)) {
+    if (identical(direct_task_allocation_class(spec$id), "large_output")) {
+      if (!is.null(last_result)) {
+        rm(last_result)
+        last_result <- NULL
+      }
+      gc(full = TRUE)
+    }
     result <- run_prepared_phase(spec, "measurement", repetitions, truth, verify_result = FALSE)
     if (isTRUE(spec$rng)) last_rng <- rng_state_snapshot()
     sample_rows[[length(sample_rows) + 1L]] <- data.frame(
@@ -302,6 +314,7 @@ for (spec in specs) {
     rm(result)
   }
 
+  if (is.null(truth)) truth <- phase_truth(spec)
   direct_assert_result_parity(truth$result, last_result, spec, paste0(spec$id, " post-timing"))
   direct_assert_altrep_result(
     spec, last_result, native_checks$is_altrep, sprintf("%s/%s", runner, spec$id)

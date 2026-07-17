@@ -168,7 +168,7 @@ benchmark_revision_task_specs <- function() {
     list(id = "schema", function_name = "bench_schema", arguments = function() list(list(id = 1L, count = 2L, ratio = 0.5, enabled = TRUE))),
     list(id = "altrep_sum", function_name = "bench_altrep_sum", arguments = function() list(seq_len(1000000L)), altrep = TRUE, altrep_input_postcondition = "preserve"),
     list(id = "altrep_index", function_name = "bench_altrep_index", arguments = function() list(seq_len(10000000L)), altrep = TRUE, altrep_input_postcondition = "preserve"),
-    list(id = "altrep_materialize", function_name = "bench_altrep_materialize", arguments = function() list(seq_len(1000000L)), altrep = TRUE, altrep_input_postcondition = "allow_change"),
+    list(id = "altrep_materialize", function_name = "bench_altrep_materialize", arguments = function() list(seq_len(5000000L)), altrep = TRUE, altrep_input_postcondition = "allow_change"),
     list(id = "external_state", function_name = "bench_external_state", arguments = function() list()),
     list(id = "eval", function_name = "bench_eval", arguments = function() list(runif(100000L)), tolerance = TRUE),
     list(id = "serialize", function_name = "bench_serialize", arguments = function() list(runif(100000L))),
@@ -353,11 +353,11 @@ parse_named_integer_map <- function(value, expected_names, label) {
 
 direct_sizing_policy <- function() {
   list(
-    policy_version = "shared-ladder-v1",
+    policy_version = "shared-ladder-v2",
     ladder = as.list(c(1L, 8L, 64L)),
     minimum_batch_ms = 1,
     timer_floor_multiplier = 20L,
-    target_batch_ms = 5,
+    target_batch_ms = 1,
     maximum_batch_ms = 250
   )
 }
@@ -368,7 +368,7 @@ validate_direct_sizing_policy <- function(policy) {
     "target_batch_ms", "maximum_batch_ms"
   )
   if (!is.list(policy) || !identical(names(policy), fields) ||
-      !identical(as.character(policy$policy_version), "shared-ladder-v1") ||
+      !identical(as.character(policy$policy_version), "shared-ladder-v2") ||
       !identical(as.integer(unlist(policy$ladder, use.names = FALSE)), c(1L, 8L, 64L))) {
     stop("direct sizing policy is invalid")
   }
@@ -1329,7 +1329,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
     stop("allocation probe results alias each other")
   }
 
-  unit_batch <- direct_batch_expression(calls$cpu, 64L)
+  unit_batch <- direct_batch_expression(calls$cpu, 256L)
   proc_started <- proc.time()[["elapsed"]]
   nano_started <- microbenchmark::get_nanotime() / 1e9
   unit_result <- eval(unit_batch, envir = environment())
@@ -1353,7 +1353,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v6",
+    policy_version = "direct-batch-v9",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,
@@ -1366,8 +1366,8 @@ benchmark_timing_policy <- function() {
     distribution_policy = direct_distribution_policy(),
     allocation_policy = direct_allocation_policy(),
     gc_policy = paste(
-      "full before first call, warmup, and calibration; no forced collection between",
-      "measurement samples; completed task state released before the next task"
+      "full before first call, warmup, calibration, and each large-output measurement sample;",
+      "completed task state released before the next task"
     )
   )
 }

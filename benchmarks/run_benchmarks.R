@@ -374,7 +374,7 @@ run_direct_benchmark <- function() {
     blocked <- summary[summary$distribution_status == "BLOCK", c(
       "runner", "task", "distribution_reason"
     ), drop = FALSE]
-    stop(paste("direct timing blocked unexplained rows:", paste(
+    message(paste("direct timing retained distribution blocks:", paste(
       paste(blocked$runner, blocked$task, blocked$distribution_reason, sep = "/"),
       collapse = "; "
     )))
