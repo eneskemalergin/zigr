@@ -51,9 +51,29 @@ expect_error(
   "repeated benchmark argument"
 )
 
-direct_package_runners <- names(direct_runner_packages(root_dir))
+direct_runners <- direct_runner_names(root_dir)
+direct_specs <- direct_runner_registry(root_dir)
 expect_true(
-  identical(direct_package_runners, c("zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+  identical(direct_runners, c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+    !anyDuplicated(direct_runners) &&
+    identical(names(direct_specs), direct_runners) &&
+    identical(unname(vapply(direct_specs, `[[`, character(1), "name")), direct_runners) &&
+    all(vapply(direct_specs, function(spec) {
+      is.character(spec$artifact_path) && length(spec$artifact_path) == 1L && nzchar(spec$artifact_path)
+    }, logical(1))) &&
+    all(vapply(direct_specs, function(spec) {
+      identical(names(spec), c("name", "label", "invocation", "artifact_path", "package"))
+    }, logical(1))) &&
+    identical(
+      direct_runners[vapply(direct_specs, function(spec) !is.null(spec$package), logical(1))],
+      c("zigr", "rcpp", "cpp11", "extendr", "savvy")
+    ) &&
+    identical(
+      vapply(direct_specs, `[[`, character(1), "invocation"),
+      c(r = "r_function", c_call = "registered_native", zigr = "package_function",
+        rcpp = "package_function", cpp11 = "package_function", extendr = "package_function",
+        savvy = "package_function")
+    ) &&
     identical(
       direct_runner_artifact_path(root_dir, "r"),
       file.path(root_dir, "src", "r", "run_all.R")
@@ -66,10 +86,27 @@ expect_true(
     identical(direct_runner_environment(root_dir, "c_call"), .GlobalEnv),
   "one direct owner resolves package runners, artifacts, and non-package environments"
 )
+live_runner_sources <- c(
+  file.path(root_dir, "run_benchmarks.R"),
+  file.path(root_dir, "benchmark_worker.R"),
+  file.path(root_dir, "check_coverage.R"),
+  file.path(root_dir, "lib", "product_fixtures.R")
+)
+expect_true(
+  !any(vapply(live_runner_sources, function(path) {
+    any(grepl('c\\("r", "c_call", "zigr"', readLines(path, warn = FALSE), fixed = FALSE))
+  }, logical(1))),
+  "live runner callers do not define a second hard-coded registry"
+)
 expect_error(
-  "direct package lookup rejects an undeclared runner",
+  "direct runner lookup rejects an undeclared runner",
   direct_runner_package(root_dir, "unknown"),
-  "no direct runner package"
+  "unknown direct runner"
+)
+expect_error(
+  "direct runner spec rejects an undeclared runner",
+  direct_runner_spec(root_dir, "unknown"),
+  "unknown direct runner"
 )
 
 manifest_source <- readLines(file.path(root_dir, "lib", "run_manifest.R"), warn = FALSE)
@@ -194,7 +231,6 @@ expect_true(
   "direct timing uses one bounded shared-count policy"
 )
 clone <- function(value) unserialize(serialize(value, NULL))
-direct_runners <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
 direct_seed <- benchmark_master_seed() + 17L
 metadata <- list(
   schema_version = 4L,
@@ -241,8 +277,10 @@ expect_true(
     !file.exists(file.path(root_dir, "export_boundary_metrics.R")) &&
     !file.exists(file.path(root_dir, "promote_run.R")) &&
     !file.exists(file.path(root_dir, "task_manifest.csv")) &&
-    !file.exists(file.path(root_dir, "evidence_manifest.json")),
-  "historical suites, fixture metadata, report exporters, and promotion entry point are absent"
+    !file.exists(file.path(root_dir, "evidence_manifest.json")) &&
+    !file.exists(file.path(root_dir, "runners.json")) &&
+    !file.exists(file.path(root_dir, "source_ledger.json")),
+  "historical suites, legacy metadata, report exporters, and promotion entry point are absent"
 )
 expect_true(
   identical(

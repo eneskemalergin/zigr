@@ -23,7 +23,7 @@ option_value <- function(name) {
   sub(paste0("^--", name, "="), "", matches[[1L]])
 }
 
-runner_names <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+runner_names <- direct_runner_names(root_dir)
 selected_runners <- option_value("runners")
 selected_runners <- if (is.null(selected_runners)) {
   runner_names

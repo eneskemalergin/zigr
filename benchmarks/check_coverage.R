@@ -18,7 +18,7 @@ if (any(!nzchar(selected_tasks)) || anyDuplicated(selected_tasks) ||
   stop("coverage selection contains an unknown or duplicate retained task")
 }
 
-expected_runners <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+expected_runners <- direct_runner_names(root_dir)
 
 run_gate <- function(script) {
   status <- system2("Rscript", script, stdout = "", stderr = "")

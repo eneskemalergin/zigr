@@ -1,46 +1,3 @@
-direct_runner_packages <- function(root_dir) {
-  fixture_library <- file.path(root_dir, "tmp", "fixture-library")
-  list(
-    zigr = list(package = "zigrFixture", library = fixture_library, dll = "zigrFixture"),
-    rcpp = list(package = "zigrRcpp", library = fixture_library, dll = "zigrRcpp"),
-    cpp11 = list(
-      package = "zigrCpp11", library = file.path(root_dir, "tmp", "cpp11-library"),
-      dll = "zigrCpp11"
-    ),
-    extendr = list(package = "zigrExtendr", library = fixture_library, dll = "zigrExtendr"),
-    savvy = list(package = "zigrSavvy", library = fixture_library, dll = "zigrSavvy")
-  )
-}
-
-direct_runner_package <- function(root_dir, runner) {
-  if (length(runner) != 1L || is.na(runner) || !nzchar(runner)) {
-    stop("direct runner package requires one runner")
-  }
-  package <- direct_runner_packages(root_dir)[[runner]]
-  if (is.null(package)) stop(sprintf("no direct runner package is declared for %s", runner))
-  package
-}
-
-direct_runner_artifact_path <- function(root_dir, runner) {
-  if (identical(runner, "r")) {
-    return(file.path(root_dir, "src", "r", "run_all.R"))
-  }
-  if (identical(runner, "c_call")) {
-    return(file.path(root_dir, "src", "c_call", "bench.so"))
-  }
-  package <- direct_runner_package(root_dir, runner)
-  file.path(
-    package$library, package$package, "libs",
-    paste0(package$dll, .Platform$dynlib.ext)
-  )
-}
-
-direct_runner_environment <- function(root_dir, runner) {
-  if (runner %in% c("r", "c_call")) return(.GlobalEnv)
-  package <- direct_runner_package(root_dir, runner)
-  loadNamespace(package$package, lib.loc = package$library)
-}
-
 revision_native_call <- function(dll, symbol, arguments = list()) {
   address <- getNativeSymbolInfo(symbol, dll)$address
   do.call(.Call, c(list(address), arguments))
@@ -192,17 +149,12 @@ direct_assert_state_reset <- function(spec, runner, runner_invoke, runner_result
 
 run_benchmark_revision_gate <- function(
     root_dir, runner, task_ids = NULL, master_seed = benchmark_master_seed()) {
-  if (!runner %in% c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")) {
-    stop(sprintf("unknown revision runner: %s", runner))
-  }
   source(file.path(root_dir, "src", "r", "run_all.R"), local = .GlobalEnv)
   c_dll <- dyn.load(file.path(root_dir, "src", "c_call", "bench.so"), local = TRUE, now = TRUE)
   on.exit(try(dyn.unload(c_dll[["path"]]), silent = TRUE), add = TRUE)
 
-  runner_environment <- .GlobalEnv
-  if (!runner %in% c("r", "c_call")) {
-    runner_environment <- direct_runner_environment(root_dir, runner)
-  }
+  runner_spec <- direct_runner_spec(root_dir, runner)
+  runner_environment <- direct_runner_environment(root_dir, runner, runner_spec)
 
   native_checks <- direct_revision_native_checks(c_dll)
   suitability <- validate_direct_task_suitability()
@@ -221,13 +173,18 @@ run_benchmark_revision_gate <- function(
 
   for (spec in specs) {
     runner_invoke <- function(arguments) {
-      if (identical(runner, "r")) {
-        return(do.call(get(spec$function_name, envir = .GlobalEnv), arguments))
-      }
-      if (identical(runner, "c_call")) {
+      if (identical(runner_spec$invocation, "registered_native")) {
         return(revision_native_call(c_dll, paste0("c_revision_", spec$id), arguments))
       }
-      do.call(get(spec$function_name, envir = runner_environment), arguments)
+      do.call(
+        get(spec$function_name,
+            envir = if (identical(runner_spec$invocation, "r_function")) {
+              .GlobalEnv
+            } else {
+              runner_environment
+            }, inherits = FALSE),
+        arguments
+      )
     }
     r_arguments <- benchmark_revision_arguments(spec, master_seed)
     r_input_fingerprint <- if (length(r_arguments) && !spec$id %in% altrep_tasks) {

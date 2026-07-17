@@ -4,6 +4,66 @@ benchmark_input_schema_version <- function() "benchmark-input-v2"
 
 benchmark_master_seed <- function() 20260713L
 
+# The live runner contract is defined once here.  Callers derive names,
+# artifacts, package loading, and invocation dispatch from these records.
+direct_runner_registry <- function(root_dir) {
+  fixture_library <- file.path(root_dir, "tmp", "fixture-library")
+  package_runner <- function(name, package, library, dll) {
+    list(
+      name = name,
+      label = name,
+      invocation = "package_function",
+      artifact_path = file.path(library, package, "libs", paste0(dll, .Platform$dynlib.ext)),
+      package = list(package = package, library = library, dll = dll)
+    )
+  }
+  list(
+    r = list(
+      name = "r", label = "R", invocation = "r_function",
+      artifact_path = file.path(root_dir, "src", "r", "run_all.R"), package = NULL
+    ),
+    c_call = list(
+      name = "c_call", label = "c_call (C)", invocation = "registered_native",
+      artifact_path = file.path(root_dir, "src", "c_call", "bench.so"), package = NULL
+    ),
+    zigr = package_runner("zigr", "zigrFixture", fixture_library, "zigrFixture"),
+    rcpp = package_runner("rcpp", "zigrRcpp", fixture_library, "zigrRcpp"),
+    cpp11 = package_runner(
+      "cpp11", "zigrCpp11", file.path(root_dir, "tmp", "cpp11-library"), "zigrCpp11"
+    ),
+    extendr = package_runner("extendr", "zigrExtendr", fixture_library, "zigrExtendr"),
+    savvy = package_runner("savvy", "zigrSavvy", fixture_library, "zigrSavvy")
+  )
+}
+
+direct_runner_names <- function(root_dir) names(direct_runner_registry(root_dir))
+
+direct_runner_spec <- function(root_dir, runner) {
+  if (length(runner) != 1L || is.na(runner) || !nzchar(runner)) {
+    stop("direct runner requires one runner")
+  }
+  spec <- direct_runner_registry(root_dir)[[runner]]
+  if (is.null(spec)) stop(sprintf("unknown direct runner: %s", runner))
+  spec
+}
+
+direct_runner_package <- function(root_dir, runner) {
+  package <- direct_runner_spec(root_dir, runner)$package
+  if (is.null(package)) stop(sprintf("no direct runner package is declared for %s", runner))
+  package
+}
+
+direct_runner_artifact_path <- function(root_dir, runner) {
+  direct_runner_spec(root_dir, runner)$artifact_path
+}
+
+direct_runner_environment <- function(root_dir, runner, spec = NULL) {
+  if (is.null(spec)) spec <- direct_runner_spec(root_dir, runner)
+  if (spec$invocation %in% c("r_function", "registered_native")) return(.GlobalEnv)
+  package <- spec$package
+  loadNamespace(package$package, lib.loc = package$library)
+}
+
 validate_cli_arguments <- function(args, value_options = character(0), flag_options = character(0), label = "command") {
   args <- as.character(args)
   value_options <- as.character(value_options)

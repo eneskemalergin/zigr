@@ -26,7 +26,7 @@ batch_repetitions <- option_value(arguments, "batch-repetitions")
 master_seed <- option_value(arguments, "master-seed")
 skip_probes <- "--skip-probes" %in% arguments
 
-runner_names <- c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")
+runner_names <- direct_runner_names(root_dir)
 if (!(runner %in% runner_names)) stop(sprintf("unknown runner: %s", runner))
 if (!(mode %in% c("correctness", "sizing", "timing", "memory"))) {
   stop("worker mode must be correctness, sizing, timing, or memory")
@@ -101,16 +101,17 @@ if (!skip_probes && !identical(mode, "memory")) {
   ), file.path(output_root, paste0(runner, "-probe-summary.csv")), "runner probe summary")
 }
 
-runner_environment <- direct_runner_environment(root_dir, runner)
+runner_spec <- direct_runner_spec(root_dir, runner)
+runner_environment <- direct_runner_environment(root_dir, runner, runner_spec)
 
 runner_entry <- function(spec) {
-  if (identical(runner, "c_call")) {
+  if (identical(runner_spec$invocation, "registered_native")) {
     symbol <- getNativeSymbolInfo(paste0("c_revision_", spec$id), c_dll)
     return(function(values) direct_native_call(".Call", symbol, values))
   }
   function_object <- get(
     spec$function_name,
-    envir = if (identical(runner, "r")) .GlobalEnv else runner_environment,
+    envir = if (identical(runner_spec$invocation, "r_function")) .GlobalEnv else runner_environment,
     inherits = FALSE
   )
   function(values) direct_function_call(function_object, values)
