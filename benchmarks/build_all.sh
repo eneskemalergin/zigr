@@ -15,8 +15,8 @@ if [ "${1:-}" = "clean" ]; then
     zig-out \
     tmp \
     src/extendr/rust/target \
-    src/extendr/fixture/src/rust/target \
     src/savvy/rust/target \
+    src/extendr/fixture/src/rust/target \
     src/savvy/fixture/src/rust/target
   rm -f \
     src/c_call/*.o src/c_call/*.so \
@@ -87,20 +87,10 @@ R_CC=$(R CMD config CC)
 R_CFLAGS=$(R CMD config CFLAGS)
 cd src/c_call && make -f Makefile R_INCLUDE="$R_INCLUDE" R_LIB="$R_LIB" CC="$R_CC" R_CFLAGS="$R_CFLAGS" && cd ../..
 
-echo "=== Rcpp (C++) ==="
-PKG_CPPFLAGS=$(Rscript -e 'cat(paste0("-I", system.file("include", package="Rcpp")))') \
-  R CMD SHLIB -o src/cpp/rcpp_benchmarks.so src/cpp/main.cpp
-
 echo "=== cpp11 (C++) ==="
 CPP11_LIBRARY="$SCRIPT_DIR/tmp/cpp11-library"
 mkdir -p "$CPP11_LIBRARY"
 R CMD INSTALL --preclean --clean --no-multiarch --library="$CPP11_LIBRARY" src/cpp11
-
-echo "=== extendr (Rust) ==="
-make -C src/extendr CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
-
-echo "=== Savvy (Rust) ==="
-make -C src/savvy CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
 
 echo "=== Normalized product fixtures ==="
 FIXTURE_LIBRARY="$SCRIPT_DIR/tmp/fixture-library"
@@ -113,12 +103,8 @@ done
 echo "=== Done ==="
 echo ""
 echo "Built runners:"
-ls -lh zig-out/lib/zigr_benchmarks.so \
-      src/c_call/bench.so \
-      src/cpp/rcpp_benchmarks.so \
+ls -lh src/c_call/bench.so \
       tmp/cpp11-library/zigrCpp11/libs/zigrCpp11.so \
-      src/extendr/extendr_benchmarks.so \
-      src/savvy/savvy_benchmarks.so \
       tmp/fixture-library/zigrFixture/libs/zigrFixture.so \
       tmp/fixture-library/zigrRcpp/libs/zigrRcpp.so \
       tmp/fixture-library/zigrExtendr/libs/zigrExtendr.so \

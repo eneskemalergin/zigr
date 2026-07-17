@@ -279,8 +279,32 @@ expect_true(
     !file.exists(file.path(root_dir, "task_manifest.csv")) &&
     !file.exists(file.path(root_dir, "evidence_manifest.json")) &&
     !file.exists(file.path(root_dir, "runners.json")) &&
-    !file.exists(file.path(root_dir, "source_ledger.json")),
-  "historical suites, legacy metadata, report exporters, and promotion entry point are absent"
+    !file.exists(file.path(root_dir, "source_ledger.json")) &&
+    !file.exists(file.path(root_dir, "src", "zig", "main.zig")) &&
+    !file.exists(file.path(root_dir, "src", "zig", "tasks.zig")) &&
+    !file.exists(file.path(root_dir, "src", "cpp", "main.cpp")) &&
+    !file.exists(file.path(root_dir, "src", "extendr", "Makefile")) &&
+    !file.exists(file.path(root_dir, "src", "extendr", "entrypoint.c")) &&
+    !file.exists(file.path(root_dir, "src", "extendr", "rust", "Cargo.toml")) &&
+    !file.exists(file.path(root_dir, "src", "extendr", "rust", "Cargo.lock")) &&
+    !file.exists(file.path(root_dir, "src", "extendr", "rust", "src", "lib.rs")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "Makefile")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "api.h")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "init.c")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "rust", "Cargo.toml")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "rust", "Cargo.lock")) &&
+    !file.exists(file.path(root_dir, "src", "savvy", "rust", "src", "lib.rs")),
+  "historical suites, legacy metadata, standalone runners, report exporters, and promotion entry point are absent"
+)
+build_all_lines <- readLines(file.path(root_dir, "build_all.sh"), warn = FALSE)
+build_all_lines <- build_all_lines[seq.int(match("ZIG_BIN=${ZIG:-}", build_all_lines), length(build_all_lines))]
+build_sources <- c(file.path(root_dir, "build.zig"), build_all_lines)
+expect_true(
+  !any(vapply(build_sources, function(path) {
+    lines <- if (length(path) == 1L && file.exists(path)) readLines(path, warn = FALSE) else path
+    any(grepl("zigr_benchmarks|src/zig/(main|tasks)\\.zig|src/cpp/main\\.cpp|src/extendr/(Makefile|entrypoint\\.c|rust)|src/savvy/(Makefile|init\\.c|api\\.h|rust)", lines))
+  }, logical(1))),
+  "benchmark build only names retained sources and artifacts"
 )
 expect_true(
   identical(

@@ -56,44 +56,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
-    const bench_lib = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "zigr_benchmarks",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/zig/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "R", .module = r_mod },
-                .{ .name = "zigr", .module = zigr_mod },
-                .{ .name = "simd", .module = simd_mod },
-            },
-        }),
-    });
-    if (target.result.os.tag == .linux) bench_lib.lto = .full;
-    // The complex ALTREP shim belongs only to artifacts that export the
-    // matching Zig implementation. Keeping it on the shared zigr module made
-    // unrelated importers, such as the task 28 library, retain an unresolved
-    // reference after LTO discarded the implementation.
-    bench_lib.root_module.addIncludePath(.{ .cwd_relative = r_include });
-    bench_lib.root_module.addCSourceFile(.{ .file = b.path("../src/altrep_complex_shim.c"), .flags = &.{} });
-    bench_lib.root_module.addLibraryPath(.{ .cwd_relative = r_lib });
-    bench_lib.root_module.linkSystemLibrary("R", .{});
-    if (target.result.os.tag != .windows) {
-        bench_lib.root_module.linkSystemLibrary("blas", .{});
-        bench_lib.root_module.linkSystemLibrary("dl", .{});
-        bench_lib.root_module.linkSystemLibrary("m", .{});
-    }
-
-    const shared_lib_ext = switch (target.result.os.tag) {
-        .windows => ".dll",
-        .macos, .ios, .tvos, .watchos => ".dylib",
-        else => ".so",
-    };
-    b.getInstallStep().dependOn(&b.addInstallArtifact(bench_lib, .{
-        .dest_sub_path = b.fmt("zigr_benchmarks{s}", .{shared_lib_ext}),
-    }).step);
-
     const fixture_static_lib = b.addLibrary(.{
         .linkage = .static,
         .name = "zigrFixture",
