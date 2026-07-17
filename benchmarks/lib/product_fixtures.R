@@ -35,7 +35,7 @@ fixture_c_symbol_map <- function() {
   lapply(fixture_function_map(), function(functions) paste0("c_benchmark_", functions))
 }
 
-fixture_package_map <- function(root_dir) {
+direct_runner_packages <- function(root_dir) {
   fixture_library <- file.path(root_dir, "tmp", "fixture-library")
   list(
     zigr = list(package = "zigrFixture", library = fixture_library, dll = "zigrFixture"),
@@ -47,6 +47,35 @@ fixture_package_map <- function(root_dir) {
     extendr = list(package = "zigrExtendr", library = fixture_library, dll = "zigrExtendr"),
     savvy = list(package = "zigrSavvy", library = fixture_library, dll = "zigrSavvy")
   )
+}
+
+direct_runner_package <- function(root_dir, runner) {
+  if (length(runner) != 1L || is.na(runner) || !nzchar(runner)) {
+    stop("direct runner package requires one runner")
+  }
+  package <- direct_runner_packages(root_dir)[[runner]]
+  if (is.null(package)) stop(sprintf("no direct runner package is declared for %s", runner))
+  package
+}
+
+direct_runner_artifact_path <- function(root_dir, runner) {
+  if (identical(runner, "r")) {
+    return(file.path(root_dir, "src", "r", "run_all.R"))
+  }
+  if (identical(runner, "c_call")) {
+    return(file.path(root_dir, "src", "c_call", "bench.so"))
+  }
+  package <- direct_runner_package(root_dir, runner)
+  file.path(
+    package$library, package$package, "libs",
+    paste0(package$dll, .Platform$dynlib.ext)
+  )
+}
+
+direct_runner_environment <- function(root_dir, runner) {
+  if (runner %in% c("r", "c_call")) return(.GlobalEnv)
+  package <- direct_runner_package(root_dir, runner)
+  loadNamespace(package$package, lib.loc = package$library)
 }
 
 fixture_source_record <- function(row) {
@@ -1457,7 +1486,7 @@ fixture_lifecycle_symbols <- function(runner) {
 }
 
 run_fixture_package_gate <- function(root_dir, runner, evidence) {
-  package <- fixture_package_map(root_dir)[[runner]]
+  package <- direct_runner_package(root_dir, runner)
   rows <- evidence$fixture_rows[
     evidence$fixture_rows$runner == runner & evidence$fixture_rows$executable,
     , drop = FALSE
@@ -1681,8 +1710,7 @@ run_benchmark_revision_gate <- function(
 
   runner_environment <- .GlobalEnv
   if (!runner %in% c("r", "c_call")) {
-    package <- fixture_package_map(root_dir)[[runner]]
-    runner_environment <- loadNamespace(package$package, lib.loc = package$library)
+    runner_environment <- direct_runner_environment(root_dir, runner)
   }
 
   same_sexp <- function(x, y) {

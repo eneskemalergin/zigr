@@ -100,11 +100,7 @@ if (!skip_probes && !identical(mode, "memory")) {
   ), file.path(output_root, paste0(runner, "-probe-summary.csv")), "runner probe summary")
 }
 
-runner_environment <- .GlobalEnv
-if (!runner %in% c("r", "c_call")) {
-  package <- fixture_package_map(root_dir)[[runner]]
-  runner_environment <- loadNamespace(package$package, lib.loc = package$library)
-}
+runner_environment <- direct_runner_environment(root_dir, runner)
 
 runner_entry <- function(spec) {
   if (identical(runner, "c_call")) {

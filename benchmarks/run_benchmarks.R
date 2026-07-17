@@ -84,22 +84,8 @@ if (dir.exists(run_dir) && length(list.files(run_dir, all.files = TRUE, no.. = T
 }
 dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
 
-artifact_path <- function(runner) {
-  if (identical(runner, "r")) {
-    return(file.path(root_dir, "src", "r", "run_all.R"))
-  }
-  if (identical(runner, "c_call")) {
-    return(file.path(root_dir, "src", "c_call", "bench.so"))
-  }
-  package <- fixture_package_map(root_dir)[[runner]]
-  file.path(
-    package$library, package$package, "libs",
-    paste0(package$dll, .Platform$dynlib.ext)
-  )
-}
-
 artifacts <- lapply(selected_runners, function(runner) {
-  path <- artifact_path(runner)
+  path <- direct_runner_artifact_path(root_dir, runner)
   if (!file.exists(path)) stop(sprintf("runner artifact is missing for %s: %s", runner, path))
   list(
     runner = runner,
@@ -429,7 +415,7 @@ run_direct_benchmark <- function() {
 
   validate_source_tree_identity(normalizePath(".."), metadata$source_tree)
   current_artifacts <- lapply(artifacts, function(record) {
-    path <- artifact_path(record$runner)
+    path <- direct_runner_artifact_path(root_dir, record$runner)
     unname(as.character(tools::md5sum(path))[[1L]])
   })
   if (!identical(current_artifacts, lapply(artifacts, `[[`, "md5"))) {

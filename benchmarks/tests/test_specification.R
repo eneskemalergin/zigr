@@ -7,6 +7,7 @@ root_dir <- normalizePath(file.path(dirname(script_path), ".."))
 
 source(file.path(root_dir, "lib", "measurement.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
+source(file.path(root_dir, "lib", "product_fixtures.R"))
 
 expect_true <- function(condition, label) {
   if (!isTRUE(condition)) stop(sprintf("assertion failed: %s", label), call. = FALSE)
@@ -48,6 +49,27 @@ expect_error(
   "direct CLI rejects duplicate task selection",
   validate_cli_arguments(c("--tasks=vector_sum", "--tasks=sort"), "tasks", label = "benchmark"),
   "repeated benchmark argument"
+)
+
+direct_package_runners <- names(direct_runner_packages(root_dir))
+expect_true(
+  identical(direct_package_runners, c("zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+    identical(
+      direct_runner_artifact_path(root_dir, "r"),
+      file.path(root_dir, "src", "r", "run_all.R")
+    ) &&
+    identical(
+      direct_runner_artifact_path(root_dir, "c_call"),
+      file.path(root_dir, "src", "c_call", "bench.so")
+    ) &&
+    identical(direct_runner_environment(root_dir, "r"), .GlobalEnv) &&
+    identical(direct_runner_environment(root_dir, "c_call"), .GlobalEnv),
+  "one direct owner resolves package runners, artifacts, and non-package environments"
+)
+expect_error(
+  "direct package lookup rejects an undeclared runner",
+  direct_runner_package(root_dir, "unknown"),
+  "no direct runner package"
 )
 
 policy <- benchmark_timing_policy()
