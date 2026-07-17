@@ -4,7 +4,6 @@ library(jsonlite)
 
 root_dir <- normalizePath(".")
 source(file.path(root_dir, "lib", "measurement.R"))
-source(file.path(root_dir, "lib", "provenance.R"))
 source(file.path(root_dir, "lib", "run_manifest.R"))
 source(file.path(root_dir, "lib", "product_fixtures.R"))
 

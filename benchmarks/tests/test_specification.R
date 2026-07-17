@@ -73,12 +73,13 @@ expect_error(
 )
 
 manifest_source <- readLines(file.path(root_dir, "lib", "run_manifest.R"), warn = FALSE)
-provenance_source <- readLines(file.path(root_dir, "lib", "provenance.R"), warn = FALSE)
+entry_source <- readLines(file.path(root_dir, "run_benchmarks.R"), warn = FALSE)
 expect_true(
   any(grepl("^source_tree_identity[[:space:]]*<-[[:space:]]*function", manifest_source)) &&
     any(grepl("^validate_source_tree_identity[[:space:]]*<-[[:space:]]*function", manifest_source)) &&
-    !any(grepl("^(source_tree_identity|validate_source_tree_identity)[[:space:]]*<-[[:space:]]*function", provenance_source)),
-  "direct manifest owner keeps source identity out of legacy provenance"
+    !file.exists(file.path(root_dir, "lib", "provenance.R")) &&
+    !any(grepl("lib/provenance\\.R", entry_source, fixed = FALSE)),
+  "direct manifest owner keeps source identity after legacy provenance deletion"
 )
 source_identity <- source_tree_identity(root_dir)
 expect_true(
