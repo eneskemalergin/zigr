@@ -81,6 +81,7 @@ source(file.path(root_dir, "src", "r", "run_all.R"), local = .GlobalEnv)
 if (!methods::isClass("BenchS4")) methods::setClass("BenchS4", slots = c(slot_x = "numeric"))
 c_dll <- dyn.load(file.path(root_dir, "src", "c_call", "bench.so"), local = TRUE, now = TRUE)
 on.exit(try(dyn.unload(c_dll[["path"]]), silent = TRUE), add = TRUE)
+native_checks <- direct_revision_native_checks(c_dll)
 if (!skip_probes && !identical(mode, "memory")) {
   probes <- run_direct_measurement_probes(c_dll)
   probe_rows <- transform(probes$samples, runner = runner)
@@ -119,10 +120,6 @@ r_call <- function(spec, values) {
   direct_function_call(get(spec$function_name, envir = .GlobalEnv, inherits = FALSE), values)
 }
 
-is_unmaterialized_altrep <- function(value) {
-  isTRUE(revision_native_call(c_dll, "c_revision_altrep_unmaterialized", list(value)))
-}
-
 altrep_tasks <- task_ids[vapply(task_ids, direct_task_is_altrep, logical(1))]
 rng_seed <- task_input_seed(master_seed, "rng", "direct-timing-v1")
 reset_rng <- function(spec) {
@@ -136,16 +133,20 @@ reset_rng <- function(spec) {
 
 prepare_phase <- function(spec) {
   values <- benchmark_revision_arguments(spec, master_seed)
-  if (spec$id %in% altrep_tasks && !is_unmaterialized_altrep(values[[1L]])) {
-    stop(sprintf("%s/%s phase input is not an unmaterialized compact ALTREP", runner, spec$id))
+  if (spec$id %in% altrep_tasks) {
+    direct_assert_altrep_phase(
+      spec, values[[1L]], native_checks$is_unmaterialized_altrep,
+      sprintf("%s/%s", runner, spec$id), "before"
+    )
   }
   list(values = values, call = runner_entries[[spec$id]](values))
 }
 
 assert_altrep_phase <- function(spec, values) {
   if (spec$id %in% altrep_tasks) {
-    assert_direct_task_altrep_input(
-      spec, is_unmaterialized_altrep(values[[1L]]), sprintf("%s/%s", runner, spec$id)
+    direct_assert_altrep_phase(
+      spec, values[[1L]], native_checks$is_unmaterialized_altrep,
+      sprintf("%s/%s", runner, spec$id), "after"
     )
   }
 }
@@ -179,8 +180,9 @@ run_prepared_phase <- function(spec, phase, repetitions, truth, verify_result = 
   }
   assert_altrep_phase(spec, prepared$values)
   if (verify_result) {
-    revision_assert_same(
-      truth$result, measured$result, paste0(spec$id, " ", phase), isTRUE(spec$tolerance)
+    direct_assert_result_parity(truth$result, measured$result, spec, paste0(spec$id, " ", phase))
+    direct_assert_altrep_result(
+      spec, measured$result, native_checks$is_altrep, sprintf("%s/%s", runner, spec$id)
     )
     if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, rng_state_snapshot(), spec$id)
   }
@@ -203,7 +205,10 @@ if (identical(mode, "memory")) {
     assert_immutable_input(spec$id, prepared$values, before, "ordinary_r_object")
   }
   assert_altrep_phase(spec, prepared$values)
-  revision_assert_same(truth$result, result, paste0(spec$id, " memory"), isTRUE(spec$tolerance))
+  direct_assert_result_parity(truth$result, result, spec, paste0(spec$id, " memory"))
+  direct_assert_altrep_result(
+    spec, result, native_checks$is_altrep, sprintf("%s/%s", runner, spec$id)
+  )
   if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, rng_state_snapshot(), spec$id)
   after <- direct_process_memory_snapshot()
   supported <- !is.null(baseline) && !is.null(after)
@@ -296,7 +301,10 @@ for (spec in specs) {
     rm(result)
   }
 
-  revision_assert_same(truth$result, last_result, paste0(spec$id, " post-timing"), isTRUE(spec$tolerance))
+  direct_assert_result_parity(truth$result, last_result, spec, paste0(spec$id, " post-timing"))
+  direct_assert_altrep_result(
+    spec, last_result, native_checks$is_altrep, sprintf("%s/%s", runner, spec$id)
+  )
   if (isTRUE(spec$rng)) assert_rng_state_equivalent(truth$rng, last_rng, spec$id)
   rm(truth, last_result, last_rng)
   gc(FALSE)

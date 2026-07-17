@@ -72,6 +72,72 @@ expect_error(
   "no direct runner package"
 )
 
+parity_spec <- list(id = "parity-test", tolerance = FALSE, rng = FALSE)
+expect_true(
+  identical(direct_assert_result_parity(1L, 1L, parity_spec, "parity-test"), 1L),
+  "direct parity helper accepts an identical result"
+)
+expect_error(
+  "direct parity helper rejects a different result",
+  direct_assert_result_parity(1L, 2L, parity_spec, "parity-test"),
+  "parity-test result values differ"
+)
+expect_error(
+  "runner parity helper rejects an R/C mismatch",
+  direct_assert_runner_parity(parity_spec, 1L, 2L, 1L, "runner"),
+  "parity-test R/C result values differ"
+)
+expect_error(
+  "fresh-result helper rejects reused output",
+  direct_assert_fresh_result(
+    list(id = "numeric_transform", tolerance = FALSE), "runner", list(1:2), 1:2, 1:2,
+    function(left, right) identical(left, right)
+  ),
+  "reused its prior allocating result"
+)
+expect_error(
+  "fresh-result helper rejects input aliasing",
+  direct_assert_fresh_result(
+    list(id = "numeric_transform", tolerance = FALSE), "runner", list(1:2), 1:2, NULL,
+    function(left, right) identical(left, right)
+  ),
+  "returned its input instead of a fresh result"
+)
+altrep_sum_spec <- specs[[which(ids == "altrep_sum")]]
+expect_error(
+  "ALTREP phase helper rejects materialized pre-event input",
+  direct_assert_altrep_phase(altrep_sum_spec, 1:2, function(value) FALSE, "runner/altrep_sum", "before"),
+  "phase input is not an unmaterialized compact ALTREP"
+)
+expect_error(
+  "ALTREP phase helper rejects materialized preserve input",
+  direct_assert_altrep_phase(altrep_sum_spec, 1:2, function(value) FALSE, "runner/altrep_sum", "after"),
+  "materialized compact ALTREP inside the timed call"
+)
+expect_error(
+  "ALTREP result helper rejects an undeclared ALTREP result",
+  direct_assert_altrep_result(
+    specs[[which(ids == "altrep_materialize")]], 1:2, function(value) TRUE, "runner"
+  ),
+  "returned an ALTREP result"
+)
+expect_error(
+  "state reset helper rejects stale external state",
+  direct_assert_state_reset(
+    list(id = "external_state"), "runner", function(arguments) 699L, 700L,
+    function(left, right) FALSE
+  ),
+  "external state did not reset"
+)
+expect_error(
+  "state reset helper rejects reused output tree",
+  direct_assert_state_reset(
+    list(id = "outputs"), "runner", function(arguments) list(1:2), list(1:2),
+    function(left, right) TRUE
+  ),
+  "reused an output SEXP"
+)
+
 policy <- benchmark_timing_policy()
 expect_true(
   identical(policy$policy_version, "direct-batch-v6") &&

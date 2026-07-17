@@ -1699,6 +1699,93 @@ revision_assert_same <- function(expected, actual, task_id, tolerance = FALSE, p
   invisible(actual)
 }
 
+direct_revision_native_checks <- function(dll) {
+  list(
+    same_sexp = function(x, y) {
+      isTRUE(revision_native_call(dll, "c_benchmark_same_sexp", list(x, y)))
+    },
+    is_altrep = function(x) {
+      isTRUE(revision_native_call(dll, "c_revision_is_altrep", list(x)))
+    },
+    is_unmaterialized_altrep = function(x) {
+      isTRUE(revision_native_call(dll, "c_revision_altrep_unmaterialized", list(x)))
+    }
+  )
+}
+
+direct_assert_result_parity <- function(expected, actual, spec, label) {
+  revision_assert_same(expected, actual, label, isTRUE(spec$tolerance))
+  invisible(actual)
+}
+
+direct_assert_runner_parity <- function(spec, r_result, c_result, runner_result, runner,
+                                        r_rng = NULL, c_rng = NULL, runner_rng = NULL) {
+  direct_assert_result_parity(r_result, c_result, spec, paste0(spec$id, " R/C"))
+  direct_assert_result_parity(r_result, runner_result, spec, paste0(spec$id, " R/", runner))
+  direct_assert_result_parity(c_result, runner_result, spec, paste0(spec$id, " C/", runner))
+  if (isTRUE(spec$rng)) {
+    assert_rng_state_equivalent(r_rng, c_rng, spec$id)
+    assert_rng_state_equivalent(r_rng, runner_rng, spec$id)
+    assert_rng_state_equivalent(c_rng, runner_rng, spec$id)
+  }
+  invisible(runner_result)
+}
+
+direct_assert_fresh_result <- function(spec, runner, input, result, repeat_result,
+                                       same_sexp) {
+  allocating <- validate_direct_task_suitability()
+  allocating <- allocating$task[allocating$large_output | allocating$small_output]
+  if (!is.null(repeat_result)) {
+    direct_assert_result_parity(
+      result, repeat_result, spec, paste0(spec$id, " repeated ", runner)
+    )
+    if (spec$id %in% allocating && same_sexp(result, repeat_result)) {
+      stop(sprintf("%s/%s reused its prior allocating result", runner, spec$id))
+    }
+  }
+  if (spec$id %in% allocating && length(input) > 0L && same_sexp(input[[1L]], result)) {
+    stop(sprintf("%s/%s returned its input instead of a fresh result", runner, spec$id))
+  }
+  invisible(result)
+}
+
+direct_assert_altrep_phase <- function(spec, value, is_unmaterialized, label,
+                                       phase = c("before", "after")) {
+  phase <- match.arg(phase)
+  if (!direct_task_is_altrep(spec$id)) return(invisible(value))
+  observed <- isTRUE(is_unmaterialized(value))
+  if (identical(phase, "before")) {
+    if (!observed) {
+      stop(sprintf("%s phase input is not an unmaterialized compact ALTREP", label))
+    }
+  } else {
+    assert_direct_task_altrep_input(spec, observed, label)
+  }
+  invisible(value)
+}
+
+direct_assert_altrep_result <- function(spec, result, is_altrep, label) {
+  if (identical(spec$id, "altrep_materialize") && isTRUE(is_altrep(result))) {
+    stop(sprintf("%s/altrep_materialize returned an ALTREP result", label))
+  }
+  invisible(result)
+}
+
+direct_assert_state_reset <- function(spec, runner, runner_invoke, runner_result, same_sexp) {
+  if (identical(spec$id, "external_state")) {
+    second <- runner_invoke(list())
+    if (!identical(second, 700L)) stop(sprintf("%s external state did not reset", runner))
+  }
+  if (identical(spec$id, "outputs")) {
+    second <- runner_invoke(list())
+    fixture_assert_fresh_tree(
+      runner_result, second, list(same_sexp = same_sexp),
+      sprintf("%s/outputs", runner)
+    )
+  }
+  invisible(runner_result)
+}
+
 run_benchmark_revision_gate <- function(
     root_dir, runner, task_ids = NULL, master_seed = benchmark_master_seed()) {
   if (!runner %in% c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")) {
@@ -1713,17 +1800,8 @@ run_benchmark_revision_gate <- function(
     runner_environment <- direct_runner_environment(root_dir, runner)
   }
 
-  same_sexp <- function(x, y) {
-    isTRUE(revision_native_call(c_dll, "c_benchmark_same_sexp", list(x, y)))
-  }
-  is_altrep <- function(x) {
-    isTRUE(revision_native_call(c_dll, "c_revision_is_altrep", list(x)))
-  }
-  is_unmaterialized_altrep <- function(x) {
-    isTRUE(revision_native_call(c_dll, "c_revision_altrep_unmaterialized", list(x)))
-  }
+  native_checks <- direct_revision_native_checks(c_dll)
   suitability <- validate_direct_task_suitability()
-  allocating <- suitability$task[suitability$large_output | suitability$small_output]
   altrep_tasks <- suitability$task[suitability$representation_changing]
   master_seed <- input_scalar_integer(master_seed, "revision correctness master seed")
   rng_seed <- task_input_seed(master_seed, "rng", "direct-timing-v1")
@@ -1751,8 +1829,11 @@ run_benchmark_revision_gate <- function(
     r_input_fingerprint <- if (length(r_arguments) && !spec$id %in% altrep_tasks) {
       task_arguments_fingerprint(spec$id, r_arguments, "ordinary_r_object")
     } else NULL
-    if (spec$id %in% altrep_tasks && !is_unmaterialized_altrep(r_arguments[[1L]])) {
-      stop(sprintf("R truth did not start with unmaterialized compact ALTREP input for %s", spec$id))
+    if (spec$id %in% altrep_tasks) {
+      direct_assert_altrep_phase(
+        spec, r_arguments[[1L]], native_checks$is_unmaterialized_altrep,
+        sprintf("R truth for %s", spec$id), "before"
+      )
     }
 
     if (isTRUE(spec$rng)) {
@@ -1769,8 +1850,11 @@ run_benchmark_revision_gate <- function(
     c_input_fingerprint <- if (length(c_arguments) && !spec$id %in% altrep_tasks) {
       task_arguments_fingerprint(spec$id, c_arguments, "ordinary_r_object")
     } else NULL
-    if (spec$id %in% altrep_tasks && !is_unmaterialized_altrep(c_arguments[[1L]])) {
-      stop(sprintf("C truth did not start with unmaterialized compact ALTREP input for %s", spec$id))
+    if (spec$id %in% altrep_tasks) {
+      direct_assert_altrep_phase(
+        spec, c_arguments[[1L]], native_checks$is_unmaterialized_altrep,
+        sprintf("C truth for %s", spec$id), "before"
+      )
     }
     if (isTRUE(spec$rng)) {
       set.seed(rng_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
@@ -1780,7 +1864,9 @@ run_benchmark_revision_gate <- function(
       assert_immutable_input(spec$id, c_arguments, c_input_fingerprint, "ordinary_r_object")
     }
     c_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
-    revision_assert_same(r_result, c_result, paste0(spec$id, " R/C"), isTRUE(spec$tolerance))
+    direct_assert_result_parity(r_result, c_result, spec, paste0(spec$id, " R/C"))
+    direct_assert_altrep_result(spec, r_result, native_checks$is_altrep, "R truth")
+    direct_assert_altrep_result(spec, c_result, native_checks$is_altrep, "C truth")
     if (isTRUE(spec$rng)) assert_rng_state_equivalent(r_rng, c_rng, spec$id)
     rm(c_arguments)
 
@@ -1788,8 +1874,11 @@ run_benchmark_revision_gate <- function(
     runner_input_fingerprint <- if (length(runner_arguments) && !spec$id %in% altrep_tasks) {
       task_arguments_fingerprint(spec$id, runner_arguments, "ordinary_r_object")
     } else NULL
-    if (spec$id %in% altrep_tasks && !is_unmaterialized_altrep(runner_arguments[[1L]])) {
-      stop(sprintf("%s did not start with unmaterialized compact ALTREP input for %s", runner, spec$id))
+    if (spec$id %in% altrep_tasks) {
+      direct_assert_altrep_phase(
+        spec, runner_arguments[[1L]], native_checks$is_unmaterialized_altrep,
+        sprintf("%s/%s", runner, spec$id), "before"
+      )
     }
     if (isTRUE(spec$rng)) {
       set.seed(rng_seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
@@ -1799,60 +1888,27 @@ run_benchmark_revision_gate <- function(
       assert_immutable_input(spec$id, runner_arguments, runner_input_fingerprint, "ordinary_r_object")
     }
     runner_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
-    revision_assert_same(r_result, runner_result, paste0(spec$id, " R/", runner), isTRUE(spec$tolerance))
-    revision_assert_same(c_result, runner_result, paste0(spec$id, " C/", runner), isTRUE(spec$tolerance))
-    if (isTRUE(spec$rng)) {
-      assert_rng_state_equivalent(r_rng, runner_rng, spec$id)
-      assert_rng_state_equivalent(c_rng, runner_rng, spec$id)
-    }
+    direct_assert_runner_parity(
+      spec, r_result, c_result, runner_result, runner, r_rng, c_rng, runner_rng
+    )
 
+    runner_repeat_result <- NULL
     if (identical(direct_task_batchability(spec$id), "repeat")) {
       runner_repeat_result <- runner_invoke(runner_arguments)
       if (!is.null(runner_input_fingerprint)) {
         assert_immutable_input(spec$id, runner_arguments, runner_input_fingerprint, "ordinary_r_object")
       }
-      revision_assert_same(
-        runner_result, runner_repeat_result, paste0(spec$id, " repeated ", runner),
-        isTRUE(spec$tolerance)
-      )
-      if (spec$id %in% allocating && same_sexp(runner_result, runner_repeat_result)) {
-        stop(sprintf("%s/%s reused its prior allocating result", runner, spec$id))
-      }
-      rm(runner_repeat_result)
     }
+    direct_assert_fresh_result(
+      spec, runner, runner_arguments, runner_result, runner_repeat_result,
+      native_checks$same_sexp
+    )
+    direct_assert_altrep_result(spec, runner_result, native_checks$is_altrep, runner)
+    direct_assert_state_reset(
+      spec, runner, runner_invoke, runner_result, native_checks$same_sexp
+    )
 
-    if (spec$id %in% allocating && length(runner_arguments) > 0L &&
-        same_sexp(runner_arguments[[1L]], runner_result)) {
-      stop(sprintf("%s/%s returned its input instead of a fresh result", runner, spec$id))
-    }
-    if (identical(spec$id, "altrep_materialize") && is_altrep(runner_result)) {
-      stop(sprintf("%s/altrep_materialize returned an ALTREP result", runner))
-    }
-    if (identical(spec$id, "external_state")) {
-      second <- if (identical(runner, "r")) {
-        get(spec$function_name, envir = .GlobalEnv)()
-      } else if (identical(runner, "c_call")) {
-        revision_native_call(c_dll, "c_revision_external_state")
-      } else {
-        get(spec$function_name, envir = runner_environment)()
-      }
-      if (!identical(second, 700L)) stop(sprintf("%s external state did not reset", runner))
-    }
-    if (identical(spec$id, "outputs")) {
-      second <- if (identical(runner, "r")) {
-        get(spec$function_name, envir = .GlobalEnv)()
-      } else if (identical(runner, "c_call")) {
-        revision_native_call(c_dll, "c_revision_outputs")
-      } else {
-        get(spec$function_name, envir = runner_environment)()
-      }
-      fixture_assert_fresh_tree(
-        runner_result, second, list(same_sexp = same_sexp),
-        sprintf("%s/outputs", runner)
-      )
-    }
-
-    rm(runner_arguments, r_result, c_result, runner_result)
+    rm(runner_arguments, r_result, c_result, runner_result, runner_repeat_result)
     gc(FALSE)
   }
   invisible(length(specs))
