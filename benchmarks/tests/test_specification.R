@@ -72,6 +72,41 @@ expect_error(
   "no direct runner package"
 )
 
+manifest_source <- readLines(file.path(root_dir, "lib", "run_manifest.R"), warn = FALSE)
+provenance_source <- readLines(file.path(root_dir, "lib", "provenance.R"), warn = FALSE)
+expect_true(
+  any(grepl("^source_tree_identity[[:space:]]*<-[[:space:]]*function", manifest_source)) &&
+    any(grepl("^validate_source_tree_identity[[:space:]]*<-[[:space:]]*function", manifest_source)) &&
+    !any(grepl("^(source_tree_identity|validate_source_tree_identity)[[:space:]]*<-[[:space:]]*function", provenance_source)),
+  "direct manifest owner keeps source identity out of legacy provenance"
+)
+source_identity <- source_tree_identity(root_dir)
+expect_true(
+  identical(validate_source_tree_identity(root_dir, source_identity)$digest, source_identity$digest),
+  "direct source identity validates the current worktree"
+)
+forged_source_identity <- source_identity
+forged_source_identity$digest <- paste0(source_identity$digest, "-changed")
+expect_error(
+  "direct source identity rejects a changed recorded digest",
+  validate_source_tree_identity(root_dir, forged_source_identity),
+  "source tree identity field digest differs"
+)
+forged_source_identity <- source_identity
+forged_source_identity$method <- "changed-method"
+expect_error(
+  "direct source identity rejects a changed recorded method",
+  validate_source_tree_identity(root_dir, forged_source_identity),
+  "source tree identity field method differs"
+)
+forged_source_identity <- source_identity
+forged_source_identity$file_count <- source_identity$file_count + 1L
+expect_error(
+  "direct source identity rejects a changed recorded file count",
+  validate_source_tree_identity(root_dir, forged_source_identity),
+  "source tree identity field file_count differs"
+)
+
 product_source <- readLines(file.path(root_dir, "lib", "product_fixtures.R"), warn = FALSE)
 legacy_definition_pattern <- paste0(
   "^(", paste(c("fixture_", "verify_", "build_fixture_", "run_fixture_",

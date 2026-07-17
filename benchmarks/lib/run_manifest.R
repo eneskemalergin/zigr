@@ -8,6 +8,71 @@ run_manifest_values <- function(value) {
   if (is.null(value)) character(0) else as.character(unlist(value, use.names = FALSE))
 }
 
+# Worktree source identity used by the direct manifest.
+
+source_tree_files <- function(root_dir) {
+  git_files <- tryCatch(
+    system2(
+      "git",
+      c("-C", root_dir, "ls-files", "--cached", "--others", "--exclude-standard", "--"),
+      stdout = TRUE,
+      stderr = TRUE
+    ),
+    error = function(error) stop(sprintf("could not enumerate source files with git: %s", conditionMessage(error)))
+  )
+  status <- attr(git_files, "status")
+  if (!is.null(status) && status != 0L) stop("git source-file enumeration failed")
+  relative <- gsub("\\\\", "/", git_files[nzchar(git_files)])
+  if (length(relative) == 0L) stop("source tree contains no git worktree files")
+
+  relevant <- grepl(
+    "^(\\.gitignore|build\\.zig(?:\\.zon)?|\\.github/|src/|tests/|benchmarks/)",
+    relative
+  )
+  generated <- grepl(
+    "(^|/)(results|target|tmp|temp|zig-out|zig-cache|\\.zig-cache|\\.zig-global-cache)(/|$)|\\.(so|dll|dylib|o|a|d|obj|exe|stamp|tmp|log)$",
+    relative
+  )
+  relative <- sort(relative[relevant & !generated])
+  relative <- relative[file.exists(file.path(root_dir, relative))]
+  if (length(relative) == 0L) stop("source tree has no identity files after exclusions")
+  list(
+    relative = relative,
+    included_prefixes = c(".gitignore", "build.zig", "build.zig.zon", ".github/", "src/", "tests/", "benchmarks/"),
+    excluded_patterns = c("git ignored files", "**/{results,target,tmp,temp,zig-out,zig-cache,.zig-cache,.zig-global-cache}/", "**/*.{so,dll,dylib,o,a,d,obj,exe,stamp,tmp,log}")
+  )
+}
+
+source_tree_identity <- function(root_dir) {
+  root_dir <- normalizePath(root_dir)
+  selection <- source_tree_files(root_dir)
+  files <- file.path(root_dir, selection$relative)
+  file_md5 <- as.character(tools::md5sum(files))
+  if (anyNA(file_md5)) stop("could not hash every source identity file")
+  lines <- paste(selection$relative, file_md5, sep = "\t")
+  temporary <- tempfile("source-tree-")
+  on.exit(unlink(temporary), add = TRUE)
+  writeLines(lines, temporary, useBytes = TRUE)
+  digest <- as.character(tools::md5sum(temporary))
+  list(
+    method = "git-worktree-md5",
+    digest = unname(digest[[1L]]),
+    file_count = length(files),
+    included_prefixes = selection$included_prefixes,
+    excluded_patterns = selection$excluded_patterns
+  )
+}
+
+validate_source_tree_identity <- function(root_dir, recorded) {
+  actual <- source_tree_identity(root_dir)
+  for (field in c("method", "digest", "file_count")) {
+    if (!identical(as.character(actual[[field]]), as.character(recorded[[field]]))) {
+      stop(sprintf("source tree identity field %s differs from the recorded run", field))
+    }
+  }
+  invisible(actual)
+}
+
 write_run_manifest_json_atomic <- function(value, path) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   staged <- paste0(path, ".tmp-", Sys.getpid())
