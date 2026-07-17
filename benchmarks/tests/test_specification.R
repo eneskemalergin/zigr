@@ -72,6 +72,18 @@ expect_error(
   "no direct runner package"
 )
 
+product_source <- readLines(file.path(root_dir, "lib", "product_fixtures.R"), warn = FALSE)
+legacy_definition_pattern <- paste0(
+  "^(", paste(c("fixture_", "verify_", "build_fixture_", "run_fixture_",
+                 "validate_fixture_", "cpp11_fixture_"), collapse = "|"),
+  ")[_A-Za-z0-9]*[[:space:]]*<-[[:space:]]*function"
+)
+expect_true(
+  !any(grepl(legacy_definition_pattern, product_source)) &&
+    any(grepl("^direct_assert_fresh_tree[[:space:]]*<-[[:space:]]*function", product_source)),
+  "direct owner has no F01 through F12 verifier definitions"
+)
+
 parity_spec <- list(id = "parity-test", tolerance = FALSE, rng = FALSE)
 expect_true(
   identical(direct_assert_result_parity(1L, 1L, parity_spec, "parity-test"), 1L),
@@ -191,8 +203,10 @@ expect_true(
   !file.exists(file.path(root_dir, "lib", "specification.R")) &&
     !file.exists(file.path(root_dir, "export_comparative_metrics.R")) &&
     !file.exists(file.path(root_dir, "export_boundary_metrics.R")) &&
-    !file.exists(file.path(root_dir, "promote_run.R")),
-  "historical suites, report exporters, and promotion entry point are absent"
+    !file.exists(file.path(root_dir, "promote_run.R")) &&
+    !file.exists(file.path(root_dir, "task_manifest.csv")) &&
+    !file.exists(file.path(root_dir, "evidence_manifest.json")),
+  "historical suites, fixture metadata, report exporters, and promotion entry point are absent"
 )
 expect_true(
   identical(
