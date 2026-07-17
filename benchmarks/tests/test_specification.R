@@ -271,6 +271,52 @@ forged_memory <- clone(metadata)
 forged_memory$memory_task <- "vector_sum"
 forged_memory$memory_policy <- direct_memory_policy()
 expect_error("manifest rejects ineligible memory task", validate_direct_run_manifest(forged_memory), "not a selected large-output task")
+
+failure_root <- file.path(tempdir(), "zigr-direct-failure-policy")
+unlink(failure_root, recursive = TRUE)
+wrapper_dir <- file.path(tempdir(), "zigr-direct-failure-rscript")
+unlink(wrapper_dir, recursive = TRUE)
+count_file <- file.path(tempdir(), "zigr-direct-failure-count")
+unlink(count_file)
+dir.create(wrapper_dir, recursive = TRUE, showWarnings = FALSE)
+wrapper <- file.path(wrapper_dir, "Rscript")
+real_rscript <- unname(Sys.which("Rscript")[[1L]])
+writeLines(c(
+  "#!/bin/sh",
+  "for argument in \"$@\"; do",
+  "  case \"$argument\" in",
+  "    --mode=timing) echo timing >> \"$ZIGR_P12_COUNT\"; exit 42 ;;",
+  "  esac",
+  "done",
+  sprintf("exec %s \"$@\"", shQuote(real_rscript))
+), wrapper)
+Sys.chmod(wrapper, mode = "0755")
+failure_status <- system2(
+  "Rscript",
+  c(
+    file.path(root_dir, "run_benchmarks.R"),
+    "--runners=r", "--tasks=vector_sum",
+    paste0("--run-dir=", failure_root)
+  ),
+  env = c(
+    paste0("PATH=", wrapper_dir, .Platform$path.sep, Sys.getenv("PATH")),
+    paste0("ZIGR_P12_COUNT=", count_file)
+  ),
+  stdout = FALSE,
+  stderr = FALSE
+)
+expect_true(failure_status != 0L, "forced worker failure exits nonzero")
+failure_manifest <- read_run_manifest(failure_root)
+expect_true(
+  identical(failure_manifest$status, "incomplete") &&
+    grepl("timing worker failed for r with exit code 42", failure_manifest$status_message, fixed = TRUE) &&
+    file.exists(file.path(failure_root, "correctness.csv")) &&
+    identical(length(readLines(count_file, warn = FALSE)), 1L) &&
+    !file.exists(file.path(failure_root, "timing_samples.csv")) &&
+    !file.exists(file.path(failure_root, "timing_summary.csv")),
+  "worker failure preserves an incomplete diagnostic manifest without timing outputs"
+)
+unlink(c(failure_root, wrapper_dir, count_file), recursive = TRUE)
 expect_true(
   !file.exists(file.path(root_dir, "lib", "specification.R")) &&
     !file.exists(file.path(root_dir, "export_comparative_metrics.R")) &&
