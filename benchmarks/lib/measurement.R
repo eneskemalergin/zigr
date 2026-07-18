@@ -4,9 +4,24 @@ benchmark_input_schema_version <- function() "benchmark-input-v2"
 
 benchmark_master_seed <- function() 20260713L
 
+# This is the frozen comparison vocabulary for the current direct harness.
+# Pure R and optimized base R are task roles, not additional live runners.
+direct_comparison_scope <- function() {
+  products <- c("zigr", "rcpp", "cpp11", "extendr", "savvy")
+  list(
+    product_runners = products,
+    baseline_roles = c("pure_r", "optimized_base_r"),
+    control_runners = "c_call",
+    direct_runners = c("r", "c_call", products),
+    pure_r_runner = NA_character_,
+    optimized_base_r_runner = "r"
+  )
+}
+
 # The live runner contract is defined once here.  Callers derive names,
 # artifacts, package loading, and invocation dispatch from these records.
 direct_runner_registry <- function(root_dir) {
+  scope <- direct_comparison_scope()
   fixture_library <- file.path(root_dir, "tmp", "fixture-library")
   package_runner <- function(name, package, library, dll) {
     list(
@@ -17,15 +32,7 @@ direct_runner_registry <- function(root_dir) {
       package = list(package = package, library = library, dll = dll)
     )
   }
-  list(
-    r = list(
-      name = "r", label = "R", invocation = "r_function",
-      artifact_path = file.path(root_dir, "src", "r", "run_all.R"), package = NULL
-    ),
-    c_call = list(
-      name = "c_call", label = "c_call (C)", invocation = "registered_native",
-      artifact_path = file.path(root_dir, "src", "c_call", "bench.so"), package = NULL
-    ),
+  products <- list(
     zigr = package_runner("zigr", "zigrFixture", fixture_library, "zigrFixture"),
     rcpp = package_runner("rcpp", "zigrRcpp", fixture_library, "zigrRcpp"),
     cpp11 = package_runner(
@@ -34,9 +41,27 @@ direct_runner_registry <- function(root_dir) {
     extendr = package_runner("extendr", "zigrExtendr", fixture_library, "zigrExtendr"),
     savvy = package_runner("savvy", "zigrSavvy", fixture_library, "zigrSavvy")
   )
+  products <- products[scope$product_runners]
+  c(list(
+    r = list(
+      name = "r", label = "R", invocation = "r_function",
+      artifact_path = file.path(root_dir, "src", "r", "run_all.R"), package = NULL
+    ),
+    c_call = list(
+      name = "c_call", label = "c_call (C)", invocation = "registered_native",
+      artifact_path = file.path(root_dir, "src", "c_call", "bench.so"), package = NULL
+    )
+  ), products)
 }
 
-direct_runner_names <- function(root_dir) names(direct_runner_registry(root_dir))
+direct_runner_names <- function(root_dir) {
+  names <- names(direct_runner_registry(root_dir))
+  expected <- direct_comparison_scope()$direct_runners
+  if (!identical(names, expected)) {
+    stop("live runner registry differs from frozen comparison scope")
+  }
+  names
+}
 
 direct_runner_spec <- function(root_dir, runner) {
   if (length(runner) != 1L || is.na(runner) || !nzchar(runner)) {

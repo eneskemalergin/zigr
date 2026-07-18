@@ -53,8 +53,25 @@ expect_error(
 
 direct_runners <- direct_runner_names(root_dir)
 direct_specs <- direct_runner_registry(root_dir)
+comparison_scope <- direct_comparison_scope()
 expect_true(
-  identical(direct_runners, c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+  identical(
+    names(comparison_scope),
+    c("product_runners", "baseline_roles", "control_runners", "direct_runners",
+      "pure_r_runner", "optimized_base_r_runner")
+  ) &&
+    identical(comparison_scope$product_runners,
+              c("zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+    identical(comparison_scope$baseline_roles, c("pure_r", "optimized_base_r")) &&
+    identical(comparison_scope$control_runners, "c_call") &&
+    identical(comparison_scope$direct_runners,
+              c("r", "c_call", "zigr", "rcpp", "cpp11", "extendr", "savvy")) &&
+    is.na(comparison_scope$pure_r_runner) &&
+    identical(comparison_scope$optimized_base_r_runner, "r"),
+  "comparison scope freezes products, baseline roles, and controls"
+)
+expect_true(
+  identical(direct_runners, comparison_scope$direct_runners) &&
     !anyDuplicated(direct_runners) &&
     identical(names(direct_specs), direct_runners) &&
     identical(unname(vapply(direct_specs, `[[`, character(1), "name")), direct_runners) &&
@@ -86,6 +103,16 @@ expect_true(
     identical(direct_runner_environment(root_dir, "c_call"), .GlobalEnv),
   "one direct owner resolves package runners, artifacts, and non-package environments"
 )
+original_comparison_scope <- direct_comparison_scope
+forged_comparison_scope <- original_comparison_scope()
+forged_comparison_scope$direct_runners <- c("r", "c_call")
+direct_comparison_scope <- function() forged_comparison_scope
+expect_error(
+  "runtime runner lookup rejects registry drift",
+  direct_runner_names(root_dir),
+  "live runner registry differs from frozen comparison scope"
+)
+direct_comparison_scope <- original_comparison_scope
 live_runner_sources <- c(
   file.path(root_dir, "run_benchmarks.R"),
   file.path(root_dir, "benchmark_worker.R"),
@@ -117,6 +144,22 @@ expect_true(
     !file.exists(file.path(root_dir, "lib", "provenance.R")) &&
     !any(grepl("lib/provenance\\.R", entry_source, fixed = FALSE)),
   "direct manifest owner keeps source identity after legacy provenance deletion"
+)
+current_runtime_sources <- c(
+  entry_source,
+  readLines(file.path(root_dir, "benchmark_worker.R"), warn = FALSE),
+  manifest_source,
+  readLines(file.path(root_dir, "lib", "measurement.R"), warn = FALSE),
+  readLines(file.path(root_dir, "lib", "product_fixtures.R"), warn = FALSE)
+)
+historical_receipt_pattern <- paste(
+  c("CANONICAL_RUN", "benchmark-promotion-v1", "promotion_manifest", "source_ledger",
+    "report_manifest", "product_metrics", "capability_matrix", "promote_run\\.R"),
+  collapse = "|"
+)
+expect_true(
+  !any(grepl(historical_receipt_pattern, current_runtime_sources, fixed = FALSE)),
+  "current runtime owners do not consume historical receipt or promotion metadata"
 )
 source_identity <- source_tree_identity(root_dir)
 expect_true(
