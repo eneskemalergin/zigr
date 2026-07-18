@@ -164,6 +164,7 @@ I keep the generated layer small. `generateExports` builds registered `.Call` an
 | `[]const f64`, `[]const i32` | yes | yes | Convenience forms use the same borrowed ordinary input path and may copy ALTREP input into call-scoped storage |
 | `StringSliceView`, `CachedStringSliceView`, `[]const []const u8` | yes | no, no, yes | The two view types preserve `NA` and encoding metadata; the slice-of-slices form owns call-scoped headers and discards that metadata |
 | `RawSliceView`, `[]const u8` | yes | no, yes | Raw bytes are not strings; the view borrows ordinary RAWSXP storage and may own an ALTREP fallback |
+| `convert.VectorAccess(T, .one_pass)`, `.repeated_pass`, `.random_access` | yes | no | Explicit ALTREP access contract: direct storage is borrowed; one-pass non-direct input streams bounded regions; repeated/random input deliberately materializes a call-scoped native view |
 | `[]const convert.Rcomplex` | yes | yes | Uses R's complex layout and preserves component-level NA/NaN values |
 | `void` | no | yes | Returns `NULL` |
 | `R.SEXP` | yes | yes | Direct escape hatch with no conversion, ownership, or type guarantee |

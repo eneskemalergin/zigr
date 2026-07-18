@@ -4401,6 +4401,28 @@ fn spillThenError(values: zigr_convert.IntegerSliceView) void {
     R.Rf_error("zigr generated spill: expected error");
 }
 
+fn generatedAltrepOnePassSum(values: zigr_convert.VectorAccess(i32, .one_pass)) f64 {
+    var access = values;
+    defer access.deinit();
+    var total: f64 = 0.0;
+    while (access.next() catch |access_err| zigr_convert.signalError(access_err)) |chunk| {
+        for (chunk) |value| total += @floatFromInt(value);
+    }
+    return total;
+}
+
+fn generatedAltrepMaterialized(values: zigr_convert.VectorAccess(i32, .random_access)) []const i32 {
+    return values.contiguousSlice() orelse unreachable;
+}
+
+fn generatedAltrepOnePassRaw(values: zigr_convert.VectorAccess(u8, .one_pass)) void {
+    var access = values;
+    defer access.deinit();
+    while (access.next() catch |access_err| zigr_convert.signalError(access_err)) |chunk| {
+        _ = chunk;
+    }
+}
+
 fn invalidStringResult() []const []const u8 {
     const values = struct {
         const items = [_][]const u8{"invalid\x00string"};
@@ -4422,13 +4444,21 @@ const ArenaExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_spill_error", .func = spillThenError },
     .{ .name = "zigr_invalid_string_result", .func = invalidStringResult },
     .{ .name = "zigr_arena_borrowed_sum", .func = arenaBorrowedSum },
+    .{ .name = "zigr_altrep_one_pass_sum", .func = generatedAltrepOnePassSum },
+    .{ .name = "zigr_altrep_materialized", .func = generatedAltrepMaterialized },
+    .{ .name = "zigr_altrep_one_pass_raw", .func = generatedAltrepOnePassRaw },
 }, &.{});
 
 const ArenaCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+var generated_failure_input: SEXP = undefined;
 
 fn arenaCall(index: usize, arg: SEXP) SEXP {
     const fun: ArenaCall = @ptrCast(@alignCast(ArenaExports.call_defs[index].fun));
     return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+}
+
+fn generatedFailureCall() SEXP {
+    return arenaCall(9, generated_failure_input);
 }
 
 fn initArenaExports() bool {
@@ -4781,6 +4811,149 @@ export fn zigr_test_generated_spill_longjmp() SEXP {
     const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
     if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
     return arenaCall(4, compact);
+}
+
+export fn zigr_test_altrep_access_strategies() SEXP {
+    const direct_values = [_]i32{ 4, 2, 9, -1, 3 };
+    const direct = R.Rf_protect(MyAltInt.init(direct_values[0..]));
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(direct) == 0 or R.INTEGER_OR_NULL(direct) == null) return R.Rf_ScalarReal(0.0);
+
+    var direct_access = zigr_convert.toVectorAccessWithStrategy(i32, .one_pass, std.heap.page_allocator, direct, .direct) catch
+        return R.Rf_ScalarReal(0.0);
+    if (direct_access.strategy() != .direct) return R.Rf_ScalarReal(0.0);
+    const direct_slice = direct_access.contiguousSlice() orelse return R.Rf_ScalarReal(0.0);
+    if (direct_slice.len != direct_values.len or direct_slice[0] != 4 or direct_slice[4] != 3 or
+        R.INTEGER_OR_NULL(direct) == null) return R.Rf_ScalarReal(0.0);
+    const direct_chunk = direct_access.next() catch return R.Rf_ScalarReal(0.0);
+    if (direct_chunk == null) return R.Rf_ScalarReal(0.0);
+    const direct_end = direct_access.next() catch return R.Rf_ScalarReal(0.0);
+    if (direct_end != null) return R.Rf_ScalarReal(0.0);
+    direct_access.deinit();
+
+    const empty_values = [_]i32{};
+    const empty = R.Rf_protect(MyAltInt.init(empty_values[0..]));
+    defer R.Rf_unprotect(1);
+    var empty_access = zigr_convert.toVectorAccessWithStrategy(i32, .one_pass, std.heap.page_allocator, empty, .region) catch
+        return R.Rf_ScalarReal(0.0);
+    if (empty_access.strategy() != .region) return R.Rf_ScalarReal(0.0);
+    const empty_chunk = empty_access.next() catch return R.Rf_ScalarReal(0.0);
+    if (empty_chunk != null) return R.Rf_ScalarReal(0.0);
+    empty_access.deinit();
+
+    const missing_values = [_]i32{ 1, R.R_NaInt, 3 };
+    const missing = R.Rf_protect(MyAltInt.init(missing_values[0..]));
+    defer R.Rf_unprotect(1);
+    var missing_access = zigr_convert.toVectorAccessWithStrategy(i32, .random_access, std.heap.page_allocator, missing, .materialized) catch
+        return R.Rf_ScalarReal(0.0);
+    const missing_slice = missing_access.contiguousSlice() orelse return R.Rf_ScalarReal(0.0);
+    if (missing_slice.len != missing_values.len or missing_slice[0] != 1 or
+        missing_slice[1] != R.R_NaInt or missing_slice[2] != 3) return R.Rf_ScalarReal(0.0);
+    missing_access.deinit();
+
+    const region_input = R.Rf_protect(shortRegionAltInteger());
+    defer R.Rf_unprotect(1);
+    if (R.INTEGER_OR_NULL(region_input) != null) return R.Rf_ScalarReal(0.0);
+
+    const direct_failure = zigr_convert.toVectorAccessWithStrategy(i32, .one_pass, std.heap.page_allocator, region_input, .direct);
+    if (direct_failure) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |access_err| {
+        if (access_err != error.DirectPointerUnavailable) return R.Rf_ScalarReal(0.0);
+    }
+
+    short_region_get_calls = 0;
+    short_region_elt_calls = 0;
+    var region_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var region_access = zigr_convert.toVectorAccessWithStrategy(i32, .one_pass, region_counting.allocator(), region_input, .region) catch
+        return R.Rf_ScalarReal(0.0);
+    if (region_access.strategy() != .region or region_access.contiguousSlice() != null) return R.Rf_ScalarReal(0.0);
+    var region_sum: i64 = 0;
+    var region_chunks: usize = 0;
+    while (region_access.next() catch return R.Rf_ScalarReal(0.0)) |chunk| {
+        region_chunks += 1;
+        for (chunk) |value| region_sum += value;
+    }
+    if (region_sum != @as(i64, @intCast(short_region_len)) * @as(i64, @intCast(short_region_len + 1)) / 2 or
+        region_chunks != (short_region_len + 255) / 256 or short_region_get_calls != region_chunks or
+        short_region_elt_calls != 0 or R.INTEGER_OR_NULL(region_input) != null or
+        region_counting.stats.allocations != 1 or
+        region_counting.stats.bytes_allocated > 256 * @sizeOf(i32) or
+        region_counting.stats.peak_live_bytes > 256 * @sizeOf(i32)) return R.Rf_ScalarReal(0.0);
+    region_access.deinit();
+    if (region_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+
+    var materialized_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var materialized = zigr_convert.toVectorAccessWithStrategy(i32, .random_access, materialized_counting.allocator(), region_input, .materialized) catch
+        return R.Rf_ScalarReal(0.0);
+    if (materialized.strategy() != .materialized) return R.Rf_ScalarReal(0.0);
+    const materialized_slice = materialized.contiguousSlice() orelse return R.Rf_ScalarReal(0.0);
+    if (materialized_slice.len != short_region_len or materialized_slice[0] != 1 or
+        materialized_slice[4096] != 4097 or materialized_counting.stats.allocations != 1 or
+        materialized_counting.stats.bytes_allocated != short_region_len * @sizeOf(i32) or
+        materialized_counting.stats.peak_live_bytes != short_region_len * @sizeOf(i32) or
+        R.INTEGER_OR_NULL(region_input) != null) return R.Rf_ScalarReal(0.0);
+    materialized.deinit();
+    if (materialized_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+
+    var automatic = zigr_convert.toVectorAccess(i32, .one_pass, std.heap.page_allocator, region_input) catch
+        return R.Rf_ScalarReal(0.0);
+    if (automatic.strategy() != .region) return R.Rf_ScalarReal(0.0);
+    automatic.deinit();
+
+    const raw_input = R.Rf_protect(shortRegionAltRaw());
+    defer R.Rf_unprotect(1);
+    var raw_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var raw_access = zigr_convert.toVectorAccessWithStrategy(u8, .one_pass, raw_counting.allocator(), raw_input, .region) catch
+        return R.Rf_ScalarReal(0.0);
+    const raw_chunk = raw_access.next() catch return R.Rf_ScalarReal(0.0);
+    if (raw_chunk == null or raw_chunk.?.len != 256 or raw_chunk.?[0] != 0 or raw_chunk.?[250] != 250 or
+        raw_counting.stats.peak_live_bytes > 256 * @sizeOf(u8)) return R.Rf_ScalarReal(0.0);
+    raw_access.deinit();
+    if (raw_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+
+    const complex_input = R.Rf_protect(shortRegionAltComplex());
+    defer R.Rf_unprotect(1);
+    var complex_access = zigr_convert.toVectorAccessWithStrategy(zigr_convert.Rcomplex, .one_pass, std.heap.page_allocator, complex_input, .region) catch
+        return R.Rf_ScalarReal(0.0);
+    const complex_chunk = complex_access.next() catch return R.Rf_ScalarReal(0.0);
+    if (complex_chunk == null or complex_chunk.?.len != 256 or complex_chunk.?[0].r != 1.0 or
+        complex_chunk.?[0].i != -1.0 or complex_chunk.?[250].r != 251.0) return R.Rf_ScalarReal(0.0);
+    complex_access.deinit();
+
+    const failing = R.Rf_protect(failingRawRegion());
+    defer R.Rf_unprotect(1);
+    var failing_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var failing_access = zigr_convert.toVectorAccessWithStrategy(u8, .one_pass, failing_counting.allocator(), failing, .region) catch
+        return R.Rf_ScalarReal(0.0);
+    if (failing_access.next()) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |access_err| {
+        if (access_err != error.AltRepRegionRead) return R.Rf_ScalarReal(0.0);
+    }
+    failing_access.deinit();
+    if (failing_counting.stats.allocations != 1 or failing_counting.stats.frees != 1 or failing_counting.stats.live_bytes != 0) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    if (!initArenaExports()) return R.Rf_ScalarReal(0.0);
+    const before_failure_depth = protect.getDepth();
+    generated_failure_input = failing;
+    if (trycatch_mod.tryCatch(generatedFailureCall)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (protect.getDepth() != before_failure_depth) return R.Rf_ScalarReal(0.0);
+    generated_failure_input = R.R_NilValue;
+
+    const generated_sum = R.Rf_protect(arenaCall(7, region_input));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(generated_sum) != R.REALSXP or R.REAL(generated_sum)[0] != @as(f64, @floatFromInt(region_sum)) or
+        R.INTEGER_OR_NULL(region_input) != null) return R.Rf_ScalarReal(0.0);
+    const generated_materialized = R.Rf_protect(arenaCall(8, region_input));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(generated_materialized) != R.INTSXP or R.XLENGTH(generated_materialized) != short_region_len or
+        R.INTEGER(generated_materialized)[0] != 1 or R.INTEGER(generated_materialized)[4096] != 4097) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_generated_result_longjmp() SEXP {

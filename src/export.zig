@@ -62,9 +62,19 @@ fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
     R.Rf_error(&buf);
 }
 
+fn isVectorAccess(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"union" => @hasDecl(T, "zigr_vector_access"),
+        else => false,
+    };
+}
+
 fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime T == R.SEXP) {
         return sexp;
+    }
+    if (comptime isVectorAccess(T)) {
+        return convert.toVectorAccess(T.element_type, T.access_need, arena, sexp) catch |err| signalErrorMsg("toVectorAccess", @errorName(err));
     }
     // Avoid a second conversion for common non-null optional scalars.
     if (comptime T == ?f64) {
@@ -218,6 +228,7 @@ const TwoTierArena = struct {
 
 fn needsInputArena(comptime T: type) bool {
     if (comptime T == convert.StringSliceView) return false;
+    if (comptime isVectorAccess(T)) return true;
     if (comptime T == convert.RealSliceView or
         T == convert.IntegerSliceView or
         T == convert.RawSliceView or
@@ -730,6 +741,17 @@ fn generatedCoverageViews(
     return 1;
 }
 
+fn generatedCoverageAccess(
+    one_pass: convert.VectorAccess(i32, .one_pass),
+    repeated_pass: convert.VectorAccess(i32, .repeated_pass),
+    random_access: convert.VectorAccess(i32, .random_access),
+) i32 {
+    _ = one_pass;
+    _ = repeated_pass;
+    _ = random_access;
+    return 1;
+}
+
 fn generatedCoverageObject(value: R.SEXP) R.SEXP {
     return value;
 }
@@ -764,6 +786,7 @@ fn generatedCoverageMethod(_: *GeneratedCoverageState, logical: convert.LogicalS
 const GeneratedCoverageExports = generateExports(&.{
     .{ .name = "coverage_inputs", .func = generatedCoverageInputs },
     .{ .name = "coverage_views", .func = generatedCoverageViews },
+    .{ .name = "coverage_access", .func = generatedCoverageAccess },
     .{ .name = "coverage_object", .func = generatedCoverageObject },
     .{ .name = "coverage_strings", .func = generatedCoverageStrings },
     .{ .name = "coverage_optional", .func = generatedCoverageOptional },
@@ -792,6 +815,9 @@ test "generated coverage compiles logical vectors across entry forms" {
     try std.testing.expect(needsInputArena(convert.IntegerSliceView));
     try std.testing.expect(needsInputArena(convert.RawSliceView));
     try std.testing.expect(needsInputArena(convert.ComplexSliceView));
+    try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .one_pass)));
+    try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .repeated_pass)));
+    try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .random_access)));
 }
 
 test "scalar and optional scalar wrappers do not need an arena" {

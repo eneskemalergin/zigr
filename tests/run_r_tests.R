@@ -277,6 +277,7 @@ tests <- list(
   "zigr_test_allocation_diagnostics",
   "zigr_test_cleanup_diagnostics",
   list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
+  "zigr_test_altrep_access_strategies",
   "zigr_test_generated_result_longjmp",
   "zigr_test_externalptr_finalizer",
   "zigr_test_externalptr_finalizer_idempotent",

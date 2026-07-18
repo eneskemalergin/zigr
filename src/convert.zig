@@ -1,7 +1,8 @@
 //! Convert between Zig values and R SEXPs.
 //!
-//! Borrowed views stay within the source R call. ALTREP fallback copies one
-//! contiguous native buffer because R may expose only regions.
+//! Borrowed views stay within the source R call. Legacy slice converters use a
+//! contiguous native fallback when R exposes only regions; VectorAccess adds
+//! explicit direct, bounded-region, and deliberate-materialization policies.
 
 const std = @import("std");
 const SEXP = @import("sexp.zig").SEXP;
@@ -29,10 +30,10 @@ const AllocSliceCleanup = struct {
     alignment: std.mem.Alignment,
     return_address: usize,
 
-    fn init(comptime T: type, allocator: std.mem.Allocator, slice: []T, ra: usize) AllocSliceCleanup {
+    fn init(comptime T: type, allocator: std.mem.Allocator, slice: []const T, ra: usize) AllocSliceCleanup {
         return .{
             .allocator = allocator,
-            .memory = std.mem.sliceAsBytes(slice),
+            .memory = @constCast(std.mem.sliceAsBytes(slice)),
             .alignment = .fromByteUnits(@alignOf(T)),
             .return_address = ra,
         };
@@ -57,6 +58,7 @@ pub const ConvertError = error{
     ScalarLength,
     ScalarNA,
     AltRepRegionRead,
+    DirectPointerUnavailable,
     SchemaLength,
     SchemaNames,
     SchemaAttributes,
@@ -94,6 +96,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.ScalarLength => "scalar inputs must have length one",
         error.ScalarNA => "scalar inputs must not be NA",
         error.AltRepRegionRead => "ALTREP region read failed",
+        error.DirectPointerUnavailable => "ALTREP direct pointer is unavailable",
         error.SchemaLength => "fixed schema field count does not match",
         error.SchemaNames => "fixed schema names do not match",
         error.SchemaAttributes => "fixed schema has unsupported attributes",
@@ -279,6 +282,110 @@ pub fn SliceView(comptime T: type) type {
 
 pub const RawSliceView = SliceView(u8);
 
+/// Declares how a generated kernel consumes a vector input.
+pub const AccessNeed = enum {
+    one_pass,
+    repeated_pass,
+    random_access,
+};
+
+/// Identifies the representation selected for a vector input.
+pub const AccessStrategy = enum {
+    direct,
+    region,
+    materialized,
+};
+
+const region_chunk_elements = 256;
+
+/// A call-scoped vector input selected for one-pass, repeated, or random access.
+/// Direct storage borrows the R vector. Region storage owns one bounded buffer,
+/// and materialized storage owns one contiguous native representation. The
+/// caller must deinitialize the value before leaving its allocation scope. When
+/// multiple access values share a cleanup stack, deinitialize them in reverse
+/// construction order, as with the other zigr cleanup-frame contracts.
+pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
+    return union(enum) {
+        direct: struct {
+            data: []const T,
+            emitted: bool = false,
+        },
+        region: struct {
+            sexp: SEXP,
+            len: usize,
+            offset: usize,
+            buffer: []T,
+            allocator: std.mem.Allocator,
+            cleanup_registered: bool,
+        },
+        materialized: struct {
+            data: []const T,
+            allocator: std.mem.Allocator,
+            emitted: bool = false,
+            cleanup_registered: bool,
+        },
+
+        pub const zigr_vector_access = true;
+        pub const element_type = T;
+        pub const access_need = need;
+
+        pub fn strategy(self: @This()) AccessStrategy {
+            return switch (self) {
+                .direct => .direct,
+                .region => .region,
+                .materialized => .materialized,
+            };
+        }
+
+        pub fn contiguousSlice(self: @This()) ?[]const T {
+            return switch (self) {
+                .direct => |state| state.data,
+                .materialized => |state| state.data,
+                .region => null,
+            };
+        }
+
+        pub fn next(self: *@This()) ConvertError!?[]const T {
+            switch (self.*) {
+                .direct => |*state| {
+                    if (state.emitted) return null;
+                    state.emitted = true;
+                    return state.data;
+                },
+                .materialized => |*state| {
+                    if (state.emitted) return null;
+                    state.emitted = true;
+                    return state.data;
+                },
+                .region => |*state| {
+                    if (state.offset >= state.len) return null;
+                    const remaining = state.len - state.offset;
+                    const requested = @min(remaining, state.buffer.len);
+                    const got = readRegion(T, state.sexp, state.offset, requested, state.buffer);
+                    if (got <= 0 or got > requested) return error.AltRepRegionRead;
+                    state.offset += @intCast(got);
+                    return state.buffer[0..@as(usize, @intCast(got))];
+                },
+            }
+        }
+
+        pub fn deinit(self: *@This()) void {
+            switch (self.*) {
+                .direct => {},
+                .region => |state| {
+                    state.allocator.free(state.buffer);
+                    if (state.cleanup_registered) cleanup.popFrame();
+                },
+                .materialized => |state| {
+                    state.allocator.free(state.data);
+                    if (state.cleanup_registered) cleanup.popFrame();
+                },
+            }
+            self.* = undefined;
+        }
+    };
+}
+
 /// A read-only numeric input view. Ordinary R storage is borrowed; an ALTREP
 /// fallback owns a call-scoped contiguous representation.
 pub const RealSliceView = SliceView(f64);
@@ -308,6 +415,120 @@ pub const LogicalSliceView = struct {
 pub const LogicalSlice = struct {
     data: []const i32,
 };
+
+fn expectVectorType(comptime T: type, sexp: SEXP) ConvertError!void {
+    if (comptime T == f64) return expectType(sexp, R.REALSXP, error.ExpectedReal);
+    if (comptime T == i32) return expectType(sexp, R.INTSXP, error.ExpectedInteger);
+    if (comptime T == u8) return expectType(sexp, R.RAWSXP, error.ExpectedRaw);
+    if (comptime T == Rcomplex) return expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
+    @compileError("unsupported vector access type: " ++ @typeName(T));
+}
+
+fn directVectorSlice(comptime T: type, sexp: SEXP, representation: VectorRepresentation) ?[]const T {
+    if (comptime T == f64) return directRealSliceOrNull(sexp, representation);
+    if (comptime T == i32) return directIntSliceOrNull(sexp, representation);
+    if (comptime T == u8) return directRawSliceOrNull(sexp, representation);
+    if (comptime T == Rcomplex) return directComplexSliceOrNull(sexp, representation);
+    @compileError("unsupported vector access type: " ++ @typeName(T));
+}
+
+fn materializedVectorSlice(comptime T: type, allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const T {
+    if (comptime T == f64) return toRealSliceWithRepresentation(allocator, sexp, representation);
+    if (comptime T == i32) return toIntSliceWithRepresentation(allocator, sexp, representation);
+    if (comptime T == u8) return toRawSliceWithRepresentation(allocator, sexp, representation);
+    if (comptime T == Rcomplex) return toComplexSliceWithRepresentation(allocator, sexp, representation);
+    @compileError("unsupported vector access type: " ++ @typeName(T));
+}
+
+fn readRegion(comptime T: type, sexp: SEXP, start: usize, requested: usize, buffer: []T) R.R_xlen_t {
+    const offset: R.R_xlen_t = @intCast(start);
+    const count: R.R_xlen_t = @intCast(requested);
+    if (comptime T == f64) return R.REAL_GET_REGION(sexp, offset, count, buffer.ptr);
+    if (comptime T == i32) return R.INTEGER_GET_REGION(sexp, offset, count, buffer.ptr);
+    if (comptime T == u8) return R.RAW_GET_REGION(sexp, offset, count, buffer.ptr);
+    if (comptime T == Rcomplex) return R.COMPLEX_GET_REGION(sexp, offset, count, @ptrCast(buffer.ptr));
+    @compileError("unsupported vector access type: " ++ @typeName(T));
+}
+
+pub fn toVectorAccess(comptime T: type, comptime need: AccessNeed, allocator: std.mem.Allocator, sexp: SEXP) !VectorAccess(T, need) {
+    try expectVectorType(T, sexp);
+    const representation = try vectorRepresentation(sexp);
+    const direct = directVectorSlice(T, sexp, representation);
+    const strategy: AccessStrategy = if (direct != null) .direct else switch (need) {
+        .one_pass => .region,
+        .repeated_pass, .random_access => .materialized,
+    };
+    return toVectorAccessWithRepresentation(T, need, allocator, sexp, representation, strategy);
+}
+
+pub fn toVectorAccessWithStrategy(
+    comptime T: type,
+    comptime need: AccessNeed,
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    strategy: AccessStrategy,
+) !VectorAccess(T, need) {
+    try expectVectorType(T, sexp);
+    const representation = try vectorRepresentation(sexp);
+    return toVectorAccessWithRepresentation(T, need, allocator, sexp, representation, strategy);
+}
+
+fn toVectorAccessWithRepresentation(
+    comptime T: type,
+    comptime need: AccessNeed,
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    strategy: AccessStrategy,
+) !VectorAccess(T, need) {
+    switch (strategy) {
+        .direct => {
+            const data = directVectorSlice(T, sexp, representation) orelse return error.DirectPointerUnavailable;
+            return .{ .direct = .{ .data = data } };
+        },
+        .region => {
+            if (representation.len == 0) {
+                return .{ .region = .{
+                    .sexp = sexp,
+                    .len = 0,
+                    .offset = 0,
+                    .buffer = &.{},
+                    .allocator = allocator,
+                    .cleanup_registered = false,
+                } };
+            }
+            const buffer_len = @min(representation.len, region_chunk_elements);
+            const buffer = try allocator.alloc(T, buffer_len);
+            errdefer allocator.free(buffer);
+            _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(T, allocator, buffer, @returnAddress()), AllocSliceCleanup.fire);
+            return .{ .region = .{
+                .sexp = sexp,
+                .len = representation.len,
+                .offset = 0,
+                .buffer = buffer,
+                .allocator = allocator,
+                .cleanup_registered = true,
+            } };
+        },
+        .materialized => {
+            const data = try materializedVectorSlice(T, allocator, sexp, representation);
+            errdefer allocator.free(data);
+            if (data.len == 0) {
+                return .{ .materialized = .{
+                    .data = data,
+                    .allocator = allocator,
+                    .cleanup_registered = false,
+                } };
+            }
+            _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(T, allocator, data, @returnAddress()), AllocSliceCleanup.fire);
+            return .{ .materialized = .{
+                .data = data,
+                .allocator = allocator,
+                .cleanup_registered = true,
+            } };
+        },
+    }
+}
 
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RealSliceView {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);

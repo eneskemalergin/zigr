@@ -398,17 +398,37 @@ fn benchComplexConjugate(value: []const convert.Rcomplex) R.SEXP {
 fn benchSchema(value: R.SEXP) R.SEXP {
     return fixtureSchema(value);
 }
-fn benchAltrepSum(value: []const i32) f64 {
-    return fixtureAltrepInteger(value);
-}
-fn benchAltrepIndex(value: []const i32) f64 {
+fn benchAltrepSum(value: convert.VectorAccess(i32, .one_pass)) f64 {
+    var access = value;
+    defer access.deinit();
     var total: f64 = 0.0;
-    var index: usize = 0;
-    while (index < value.len) : (index += 10000) total += @floatFromInt(value[index]);
+    while (access.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk) |element| {
+            if (element == R.R_NaInt) return R.R_NaReal;
+            total += @floatFromInt(element);
+        }
+    }
     return total;
 }
-fn benchAltrepMaterialize(value: []const i32) []const i32 {
-    return value;
+fn benchAltrepIndex(value: convert.VectorAccess(i32, .one_pass)) f64 {
+    var access = value;
+    defer access.deinit();
+    var total: f64 = 0.0;
+    var offset: usize = 0;
+    var next_index: usize = 0;
+    while (access.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk, 0..) |element, index| {
+            if (offset + index == next_index) {
+                total += @floatFromInt(element);
+                next_index += 10000;
+            }
+        }
+        offset += chunk.len;
+    }
+    return total;
+}
+fn benchAltrepMaterialize(value: convert.VectorAccess(i32, .random_access)) []const i32 {
+    return value.contiguousSlice() orelse unreachable;
 }
 fn benchEval(value: R.SEXP) R.SEXP {
     return callR("function(x) eval(quote(sum(x)+mean(x)),list2env(list(x=x),parent=baseenv()))", &.{value});
