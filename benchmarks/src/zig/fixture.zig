@@ -74,7 +74,7 @@ fn fixtureAltrepInteger(value: []const i32) f64 {
     return total;
 }
 
-fn fixtureStrings(value: convert.StringSliceView) i32 {
+fn fixtureStrings(value: convert.StringMissingnessView) i32 {
     var count: i32 = 0;
     var iterator = value.iterator();
     while (iterator.next()) |element| {
@@ -309,7 +309,7 @@ fn benchStringConcat(value: R.SEXP) R.SEXP {
     return zigr.eval.callTaggedIn(function, &arguments, R.R_BaseEnv) catch
         zigr.@"error".signal("string concatenation call failed");
 }
-fn benchStringMetadata(value: convert.StringSliceView) R.SEXP {
+fn benchStringMetadata(value: convert.StringMetadataView) R.SEXP {
     var counts = [_]i32{ 0, 0, 0, 0, 0 };
     var iterator = value.iterator();
     while (iterator.next()) |element| {

@@ -1720,6 +1720,98 @@ export fn zigr_test_string_representations() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+export fn zigr_test_string_projections() SEXP {
+    const byte_marked = [_]u8{ 'x', 0xff, 'y' };
+    const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
+    const vector = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 5));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vector, 0, R.Rf_mkChar("alpha"));
+    R.SET_STRING_ELT(vector, 1, R.Rf_mkCharLenCE("", 0, @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vector, 2, R.R_NaString);
+    R.SET_STRING_ELT(vector, 3, R.Rf_mkCharLenCE(@ptrCast(&byte_marked), @intCast(byte_marked.len), @as(R.cetype_t, @intCast(R.CE_BYTES))));
+    R.SET_STRING_ELT(vector, 4, R.Rf_mkCharLenCE(@ptrCast(&latin1), @intCast(latin1.len), @as(R.cetype_t, @intCast(R.CE_LATIN1))));
+
+    var missing_probe = zigr_convert.StringProjectionProbe{};
+    const missing = zigr_convert.toStringProjectionViewWithProbe(.missingness, vector, &missing_probe) catch return R.Rf_ScalarReal(0.0);
+    var missing_count: usize = 0;
+    var missing_iterator = missing.iterator();
+    while (missing_iterator.next()) |element| {
+        if (element.is_na) missing_count += 1;
+    }
+    if (missing_count != 1 or missing_probe.requested != @as(?zigr_convert.StringProjection, .missingness) or
+        missing_probe.elements != 5 or missing_probe.missingness_reads != 5 or missing_probe.identity_reads != 0 or
+        missing_probe.byte_reads != 0 or missing_probe.encoding_reads != 0 or missing_probe.translation_reads != 0 or
+        missing_probe.broader_work != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var identity_probe = zigr_convert.StringProjectionProbe{};
+    const identity = zigr_convert.toStringProjectionViewWithProbe(.identity, vector, &identity_probe) catch return R.Rf_ScalarReal(0.0);
+    if (identity.at(3).charsxp != R.STRING_ELT(vector, 3) or identity_probe.requested != @as(?zigr_convert.StringProjection, .identity) or
+        identity_probe.identity_reads != 1 or identity_probe.byte_reads != 0 or identity_probe.encoding_reads != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var bytes_probe = zigr_convert.StringProjectionProbe{};
+    const bytes = zigr_convert.toStringProjectionViewWithProbe(.bytes, vector, &bytes_probe) catch return R.Rf_ScalarReal(0.0);
+    const raw = bytes.at(3);
+    if (!std.mem.eql(u8, raw.bytes, &byte_marked) or raw.bytes.len != byte_marked.len or bytes_probe.byte_reads != 1 or
+        bytes_probe.encoding_reads != 0 or bytes_probe.translation_reads != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var encoding_probe = zigr_convert.StringProjectionProbe{};
+    const encoding = zigr_convert.toStringProjectionViewWithProbe(.encoding_mark, vector, &encoding_probe) catch return R.Rf_ScalarReal(0.0);
+    if (encoding.at(4).encoding_mark != @as(R.cetype_t, @intCast(R.CE_LATIN1)) or encoding_probe.encoding_reads != 1 or
+        encoding_probe.byte_reads != 0 or encoding_probe.translation_reads != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var translated_probe = zigr_convert.StringProjectionProbe{};
+    const translated = zigr_convert.toStringProjectionViewWithProbe(.translated_text, vector, &translated_probe) catch return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, translated.at(3).bytes, &byte_marked) or !std.mem.eql(u8, translated.at(4).bytes, "caf\xc3\xa9") or translated_probe.translation_reads != 2 or
+        translated_probe.byte_reads != 0 or translated_probe.encoding_reads != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var metadata_probe = zigr_convert.StringProjectionProbe{};
+    const metadata = zigr_convert.toStringProjectionViewWithProbe(.metadata, vector, &metadata_probe) catch return R.Rf_ScalarReal(0.0);
+    var raw_length: usize = 0;
+    var metadata_iterator = metadata.iterator();
+    while (metadata_iterator.next()) |element| {
+        if (!element.is_na) raw_length += @intCast(R.XLENGTH(element.charsxp));
+    }
+    if (raw_length != 5 + byte_marked.len + latin1.len or metadata_probe.elements != 5 or metadata_probe.identity_reads != 5 or
+        metadata_probe.missingness_reads != 5 or metadata_probe.encoding_reads != 4 or metadata_probe.byte_reads != 0 or
+        metadata_probe.translation_reads != 0 or metadata_probe.broader_work != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const alt_data = [_][]const u8{ "alpha", "", "omega" };
+    const altrep = R.Rf_protect(MyAltString.init(alt_data[0..]));
+    defer R.Rf_unprotect(1);
+    var altrep_probe = zigr_convert.StringProjectionProbe{};
+    const altrep_missing = zigr_convert.toStringProjectionViewWithProbe(.missingness, altrep, &altrep_probe) catch return R.Rf_ScalarReal(0.0);
+    var altrep_count: usize = 0;
+    var altrep_iterator = altrep_missing.iterator();
+    while (altrep_iterator.next()) |element| {
+        if (!element.is_na) altrep_count += 1;
+    }
+    if (altrep_count != alt_data.len or altrep_probe.requested != @as(?zigr_convert.StringProjection, .missingness) or
+        altrep_probe.byte_reads != 0 or altrep_probe.encoding_reads != 0 or altrep_probe.translation_reads != 0 or
+        altrep_probe.broader_work != 0)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_altstring_inputs() SEXP {
     const data = [_][]const u8{ "alpha", "", "gamma" };
     const vec = MyAltString.init(data[0..]);

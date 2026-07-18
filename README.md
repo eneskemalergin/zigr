@@ -74,7 +74,7 @@ Run `zig build fmt` separately for formatting. Commands that compile zigr fail w
 - SEXP types and 22 `is*` classification helpers
 - PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated wrappers release call-scoped scratch on normal return and R errors
 - Type conversion (real, int, string, logical, raw, complex)
-- Explicit borrowed-or-owned export views for numeric and complex inputs, plus a header-free read-only string view via `convert.StringSliceView`
+- Explicit borrowed-or-owned export views for numeric and complex inputs, plus header-free read-only string projections via `convert.StringMissingnessView`, `StringBytesView`, `StringEncodingView`, `StringTranslatedTextView`, and `StringMetadataView`
 - SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
 - ALTREP consumption and owned creation for real, integer, logical, raw, complex, and string vectors
 - Data frames, attributes, S4 objects, external pointers, weak references
@@ -162,7 +162,8 @@ I keep the generated layer small. `generateExports` builds registered `.Call` an
 | `RealSliceView`, `IntegerSliceView`, `ComplexSliceView` | yes | no | Read-only views borrow ordinary input storage and may own an ALTREP fallback for the enclosing call |
 | `LogicalSliceView` | yes | no | Read-only logical view preserves `0`, `1`, and `R_NaInt`; ordinary storage is borrowed and ALTREP fallback is call-scoped |
 | `[]const f64`, `[]const i32` | yes | yes | Convenience forms use the same borrowed ordinary input path and may copy ALTREP input into call-scoped storage |
-| `StringSliceView`, `CachedStringSliceView`, `[]const []const u8` | yes | no, no, yes | The two view types preserve `NA` and encoding metadata; the slice-of-slices form owns call-scoped headers and discards that metadata |
+| `StringMissingnessView`, `StringBytesView`, `StringEncodingView`, `StringTranslatedTextView`, `StringMetadataView` | yes | no | Each generated projection requests only its declared fields; bytes and translated text borrow R-owned storage for the current call |
+| `StringSliceView`, `CachedStringSliceView`, `[]const []const u8` | yes | no, no, yes | Compatibility forms: the broad views preserve `NA` and encoding metadata; the slice-of-slices form owns call-scoped headers and discards that metadata |
 | `RawSliceView`, `[]const u8` | yes | no, yes | Raw bytes are not strings; the view borrows ordinary RAWSXP storage and may own an ALTREP fallback |
 | `convert.VectorAccess(T, .one_pass)`, `.repeated_pass`, `.random_access` | yes | no | Explicit ALTREP access contract: direct storage is borrowed; one-pass non-direct input streams bounded regions; repeated/random input deliberately materializes a call-scoped native view |
 | `[]const convert.Rcomplex` | yes | yes | Uses R's complex layout and preserves component-level NA/NaN values |
@@ -304,15 +305,15 @@ export R_HOME=/usr/lib/R && zig build
 zig build -Dr-include=/usr/share/R/include -Dr-lib=/usr/lib/R/lib
 ```
 
-For exported read-only character vectors, prefer `zigr.convert.StringSliceView` over `[]const []const u8`. The old slice-of-slices form still works, but it allocates Zig slice headers. `StringSliceView` avoids those headers and lets you iterate element-by-element; encoding translation may still use R-managed storage for the enclosing call.
+For exported read-only character vectors, choose the narrowest projection the kernel needs. `StringMissingnessView` performs only `NA_STRING` identity checks; `StringBytesView` borrows stored CHARSXP bytes with a length; `StringEncodingView` reads only the encoding mark; `StringTranslatedTextView` borrows R-managed UTF-8 translation; and `StringMetadataView` combines identity, missingness, and encoding for metadata kernels. All borrowed state expires before the next allocating R call, callback, thread crossing, or return. `StringSliceView` remains the broad compatibility form; `[]const []const u8` still allocates call-scoped Zig headers.
 
 ```zig
 const zigr = @import("zigr");
 
-fn stringTotalBytes(strings: zigr.convert.StringSliceView) i32 {
+fn stringTotalBytes(strings: zigr.convert.StringBytesView) i32 {
     var total: usize = 0;
     var it = strings.iterator();
-    while (it.next()) |s| total += s.len;
+    while (it.next()) |s| total += s.bytes.len;
     return @intCast(total);
 }
 ```

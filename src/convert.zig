@@ -692,6 +692,192 @@ pub const StringSliceView = struct {
     }
 };
 
+/// The fields a string kernel may request from each R character element.
+/// Projection values borrow R-owned state and are valid only for the current
+/// R call. `bytes` is the stored CHARSXP byte sequence; `translated_text` is
+/// R-managed UTF-8 text produced by `Rf_translateCharUTF8`.
+pub const StringProjection = enum {
+    identity,
+    missingness,
+    bytes,
+    encoding_mark,
+    translated_text,
+    metadata,
+};
+
+pub const StringProjectionProbe = struct {
+    requested: ?StringProjection = null,
+    elements: usize = 0,
+    identity_reads: usize = 0,
+    missingness_reads: usize = 0,
+    byte_reads: usize = 0,
+    encoding_reads: usize = 0,
+    translation_reads: usize = 0,
+    broader_work: usize = 0,
+
+    fn recordRequest(self: *StringProjectionProbe, comptime projection: StringProjection) void {
+        if (self.requested == null) {
+            self.requested = projection;
+        } else if (self.requested.? != projection) {
+            self.broader_work += 1;
+        }
+        self.elements += 1;
+    }
+
+    fn recordOperation(self: *StringProjectionProbe, comptime operation: StringProjection) void {
+        const requested = self.requested orelse return;
+        const allowed = switch (requested) {
+            .identity => operation == .identity,
+            .missingness => operation == .missingness,
+            .bytes => operation == .bytes,
+            .encoding_mark => operation == .encoding_mark,
+            .translated_text => operation == .translated_text,
+            .metadata => operation == .identity or operation == .missingness or operation == .encoding_mark,
+        };
+        if (!allowed) self.broader_work += 1;
+        switch (operation) {
+            .identity => self.identity_reads += 1,
+            .missingness => self.missingness_reads += 1,
+            .bytes => self.byte_reads += 1,
+            .encoding_mark => self.encoding_reads += 1,
+            .translated_text => self.translation_reads += 1,
+            .metadata => {},
+        }
+    }
+};
+
+pub const StringIdentity = struct { charsxp: SEXP };
+pub const StringMissingness = struct { is_na: bool };
+pub const StringBytes = struct { charsxp: SEXP, bytes: []const u8 };
+pub const StringEncoding = struct { charsxp: SEXP, encoding_mark: R.cetype_t };
+pub const StringTranslatedText = struct { charsxp: SEXP, bytes: []const u8 };
+pub const StringMetadata = struct {
+    charsxp: SEXP,
+    is_na: bool,
+    encoding_mark: R.cetype_t,
+};
+
+fn StringProjectionValue(comptime projection: StringProjection) type {
+    return switch (projection) {
+        .identity => StringIdentity,
+        .missingness => StringMissingness,
+        .bytes => StringBytes,
+        .encoding_mark => StringEncoding,
+        .translated_text => StringTranslatedText,
+        .metadata => StringMetadata,
+    };
+}
+
+fn stringProjectionValue(comptime projection: StringProjection, elt: SEXP, probe: ?*StringProjectionProbe) StringProjectionValue(projection) {
+    const is_na = elt == R.R_NaString;
+    if (comptime projection == .identity) {
+        if (probe) |p| p.recordOperation(.identity);
+        return .{ .charsxp = elt };
+    }
+    if (comptime projection == .missingness) {
+        if (probe) |p| p.recordOperation(.missingness);
+        return .{ .is_na = is_na };
+    }
+    if (comptime projection == .bytes) {
+        if (!is_na) {
+            if (probe) |p| p.recordOperation(.bytes);
+        }
+        return .{ .charsxp = elt, .bytes = if (is_na) "" else sexp_mod.charsxpRawBytes(elt) };
+    }
+    if (comptime projection == .encoding_mark) {
+        if (!is_na) {
+            if (probe) |p| p.recordOperation(.encoding_mark);
+        }
+        return .{
+            .charsxp = elt,
+            .encoding_mark = if (is_na) @as(R.cetype_t, @intCast(R.CE_NATIVE)) else R.Rf_getCharCE(elt),
+        };
+    }
+    if (comptime projection == .translated_text) {
+        if (!is_na) {
+            if (probe) |p| p.recordOperation(.translated_text);
+        }
+        return .{ .charsxp = elt, .bytes = if (is_na) "" else sexp_mod.charsxpTranslatedBytes(elt) };
+    }
+    if (probe) |p| {
+        p.recordOperation(.identity);
+        p.recordOperation(.missingness);
+        if (!is_na) p.recordOperation(.encoding_mark);
+    }
+    return .{
+        .charsxp = elt,
+        .is_na = is_na,
+        .encoding_mark = if (is_na) @as(R.cetype_t, @intCast(R.CE_NATIVE)) else R.Rf_getCharCE(elt),
+    };
+}
+
+/// A zero-allocation, call-scoped projection of an R character vector.
+pub fn StringProjectionView(comptime projection: StringProjection, comptime probe_enabled: bool) type {
+    return struct {
+        sexp: SEXP,
+        len: usize,
+        probe: if (probe_enabled) ?*StringProjectionProbe else void = if (probe_enabled) null else {},
+
+        pub const selected_projection = projection;
+
+        fn element(self: @This(), index: usize) SEXP {
+            if (R.ALTREP(self.sexp) == 0) return sexp_mod.fastVectorElt(self.sexp, index);
+            return R.STRING_ELT(self.sexp, @intCast(index));
+        }
+
+        pub fn at(self: @This(), index: usize) StringProjectionValue(projection) {
+            if (index >= self.len) @panic("StringProjectionView.at index out of bounds");
+            const elt = self.element(index);
+            if (comptime probe_enabled) {
+                if (self.probe) |probe| probe.recordRequest(projection);
+            }
+            return stringProjectionValue(projection, elt, if (comptime probe_enabled) self.probe else null);
+        }
+
+        pub const Iterator = struct {
+            view: StringProjectionView(projection, probe_enabled),
+            index: usize = 0,
+
+            pub fn next(self: *Iterator) ?StringProjectionValue(projection) {
+                if (self.index >= self.view.len) return null;
+                const value = self.view.at(self.index);
+                self.index += 1;
+                return value;
+            }
+        };
+
+        pub fn iterator(self: @This()) Iterator {
+            return .{ .view = self };
+        }
+    };
+}
+
+pub const StringIdentityView = StringProjectionView(.identity, false);
+pub const StringMissingnessView = StringProjectionView(.missingness, false);
+pub const StringBytesView = StringProjectionView(.bytes, false);
+pub const StringEncodingView = StringProjectionView(.encoding_mark, false);
+pub const StringTranslatedTextView = StringProjectionView(.translated_text, false);
+pub const StringMetadataView = StringProjectionView(.metadata, false);
+
+fn initStringProjectionView(comptime projection: StringProjection, comptime probe_enabled: bool, sexp: SEXP, probe: ?*StringProjectionProbe) !StringProjectionView(projection, probe_enabled) {
+    try expectType(sexp, R.STRSXP, error.ExpectedString);
+    return .{
+        .sexp = sexp,
+        .len = try tryXlength(sexp),
+        .probe = if (comptime probe_enabled) probe else {},
+    };
+}
+
+pub fn toStringProjectionView(comptime projection: StringProjection, sexp: SEXP) !StringProjectionView(projection, false) {
+    return initStringProjectionView(projection, false, sexp, null);
+}
+
+/// Diagnostic entry point. Generated wrappers use the probe-free constructor,
+/// so observing a projection has no production hot-path state.
+pub fn toStringProjectionViewWithProbe(comptime projection: StringProjection, sexp: SEXP, probe: *StringProjectionProbe) !StringProjectionView(projection, true) {
+    return initStringProjectionView(projection, true, sexp, probe);
+}
+
 pub const CachedStringSliceView = struct {
     items: []const StringView,
     len: usize,

@@ -149,6 +149,7 @@ tests <- list(
   "zigr_test_altcomplex_create",
   "zigr_test_altstring_create",
   "zigr_test_string_representations",
+  "zigr_test_string_projections",
   "zigr_test_altstring_inputs",
   "zigr_test_altrep_owned_storage",
   "zigr_test_altrep_finalizer_lifecycle",

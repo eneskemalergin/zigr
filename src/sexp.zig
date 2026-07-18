@@ -189,6 +189,23 @@ pub fn charsxpBytes(charsxp: SEXP) []const u8 {
     return std.mem.sliceTo(R.Rf_translateCharUTF8(charsxp), 0);
 }
 
+/// Returns the R-owned bytes exactly as stored in a CHARSXP. The length is
+/// taken from the CHARSXP, so embedded NUL bytes are retained.
+pub fn charsxpRawBytes(charsxp: SEXP) []const u8 {
+    if (charsxp == R.R_NaString) return "";
+    const length = xlength(charsxp);
+    const data: [*]const u8 = @ptrCast(R.R_CHAR(charsxp));
+    return data[0..length];
+}
+
+/// Returns translated UTF-8 bytes owned by R for the current R call.
+pub fn charsxpTranslatedBytes(charsxp: SEXP) []const u8 {
+    if (charsxp == R.R_NaString) return "";
+    // R does not translate CE_BYTES; the explicit branch preserves the
+    // stored byte contract while every other mark requests UTF-8 text.
+    return charsxpBytes(charsxp);
+}
+
 pub const XlengthError = error{
     NullPointer,
     NegativeLength,

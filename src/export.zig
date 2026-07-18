@@ -117,6 +117,24 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime T == convert.StringSliceView) {
         return convert.toStringSliceView(sexp) catch |err| signalErrorMsg("toStringSliceView", @errorName(err));
     }
+    if (comptime T == convert.StringIdentityView) {
+        return convert.toStringProjectionView(.identity, sexp) catch |err| signalErrorMsg("toStringIdentityView", @errorName(err));
+    }
+    if (comptime T == convert.StringMissingnessView) {
+        return convert.toStringProjectionView(.missingness, sexp) catch |err| signalErrorMsg("toStringMissingnessView", @errorName(err));
+    }
+    if (comptime T == convert.StringBytesView) {
+        return convert.toStringProjectionView(.bytes, sexp) catch |err| signalErrorMsg("toStringBytesView", @errorName(err));
+    }
+    if (comptime T == convert.StringEncodingView) {
+        return convert.toStringProjectionView(.encoding_mark, sexp) catch |err| signalErrorMsg("toStringEncodingView", @errorName(err));
+    }
+    if (comptime T == convert.StringTranslatedTextView) {
+        return convert.toStringProjectionView(.translated_text, sexp) catch |err| signalErrorMsg("toStringTranslatedTextView", @errorName(err));
+    }
+    if (comptime T == convert.StringMetadataView) {
+        return convert.toStringProjectionView(.metadata, sexp) catch |err| signalErrorMsg("toStringMetadataView", @errorName(err));
+    }
     if (comptime T == convert.CachedStringSliceView) {
         return convert.toCachedStringSliceView(arena, sexp) catch |err| signalErrorMsg("toCachedStringSliceView", @errorName(err));
     }
@@ -227,7 +245,13 @@ const TwoTierArena = struct {
 };
 
 fn needsInputArena(comptime T: type) bool {
-    if (comptime T == convert.StringSliceView) return false;
+    if (comptime T == convert.StringSliceView or
+        T == convert.StringIdentityView or
+        T == convert.StringMissingnessView or
+        T == convert.StringBytesView or
+        T == convert.StringEncodingView or
+        T == convert.StringTranslatedTextView or
+        T == convert.StringMetadataView) return false;
     if (comptime isVectorAccess(T)) return true;
     if (comptime T == convert.RealSliceView or
         T == convert.IntegerSliceView or
@@ -760,11 +784,23 @@ fn generatedCoverageStrings(
     strings: []const []const u8,
     string_view: convert.StringSliceView,
     cached_strings: convert.CachedStringSliceView,
+    identity: convert.StringIdentityView,
+    missingness: convert.StringMissingnessView,
+    bytes: convert.StringBytesView,
+    encoding: convert.StringEncodingView,
+    translated: convert.StringTranslatedTextView,
+    metadata: convert.StringMetadataView,
     complex: []const convert.Rcomplex,
 ) []const []const u8 {
     _ = strings;
     _ = string_view;
     _ = cached_strings;
+    _ = identity;
+    _ = missingness;
+    _ = bytes;
+    _ = encoding;
+    _ = translated;
+    _ = metadata;
     _ = complex;
     return &.{};
 }
@@ -828,6 +864,12 @@ test "scalar and optional scalar wrappers do not need an arena" {
     try std.testing.expect(!needsInputArena(?i32));
     try std.testing.expect(!needsInputArena(?bool));
     try std.testing.expect(!needsInputArena(convert.StringSliceView));
+    try std.testing.expect(!needsInputArena(convert.StringIdentityView));
+    try std.testing.expect(!needsInputArena(convert.StringMissingnessView));
+    try std.testing.expect(!needsInputArena(convert.StringBytesView));
+    try std.testing.expect(!needsInputArena(convert.StringEncodingView));
+    try std.testing.expect(!needsInputArena(convert.StringTranslatedTextView));
+    try std.testing.expect(!needsInputArena(convert.StringMetadataView));
     try std.testing.expect(needsInputArena(convert.RawSliceView));
     try std.testing.expect(needsInputArena(convert.CachedStringSliceView));
     try std.testing.expect(needsInputArena([]const f64));
