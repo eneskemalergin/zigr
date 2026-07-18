@@ -198,12 +198,21 @@ pub fn charsxpRawBytes(charsxp: SEXP) []const u8 {
     return data[0..length];
 }
 
-/// Returns translated UTF-8 bytes owned by R for the current R call.
+/// Returns R-owned translated UTF-8 bytes for the current R call, except that
+/// CE_BYTES remains the stored byte sequence because R does not translate it.
 pub fn charsxpTranslatedBytes(charsxp: SEXP) []const u8 {
     if (charsxp == R.R_NaString) return "";
-    // R does not translate CE_BYTES; the explicit branch preserves the
-    // stored byte contract while every other mark requests UTF-8 text.
-    return charsxpBytes(charsxp);
+    return charsxpTranslatedBytesWithEncoding(charsxp, R.Rf_getCharCE(charsxp));
+}
+
+/// Uses a caller-provided mark for `charsxp` to avoid repeating the required
+/// `CE_BYTES` classification when a projection already requested it.
+pub fn charsxpTranslatedBytesWithEncoding(charsxp: SEXP, encoding_mark: R.cetype_t) []const u8 {
+    if (charsxp == R.R_NaString) return "";
+    // R does not translate CE_BYTES; preserve those stored bytes while every
+    // other mark requests UTF-8 text.
+    if (encoding_mark == @as(R.cetype_t, @intCast(R.CE_BYTES))) return charsxpRawBytes(charsxp);
+    return std.mem.sliceTo(R.Rf_translateCharUTF8(charsxp), 0);
 }
 
 pub const XlengthError = error{

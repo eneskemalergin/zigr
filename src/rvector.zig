@@ -3,7 +3,6 @@
 const std = @import("std");
 const R = @import("R");
 const convert = @import("convert.zig");
-const protect = @import("protect.zig");
 const sexp_mod = @import("sexp.zig");
 
 pub fn RVector(comptime T: type) type {
@@ -105,46 +104,40 @@ pub fn RVector(comptime T: type) type {
             };
         }
 
-        fn allocResult(n: usize) protect.ScopedProtect {
-            return protect.scoped(R.Rf_allocVector(convert.typeToSEXPTYPE(T), @intCast(n)));
-        }
-
-        fn resultSlice(result: R.SEXP) []T {
-            const rlen = R.XLENGTH(result);
-            const ptr = convert.dataPtr(T, result) orelse @panic("dataPtr returned null on freshly allocated SEXP");
-            return ptr[0..@as(usize, @intCast(if (rlen < 0) @as(R.R_xlen_t, 0) else rlen))];
-        }
-
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {
+            var result = convert.ResultBuilder(T).init(self.len());
+            defer result.deinit();
+
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
             var input_view = self.view(arena.allocator()) catch convert.signalError(error.UnexpectedType);
             defer input_view.deinit();
             const data = input_view.constSlice();
 
-            var result = allocResult(data.len);
-            defer result.deinit();
-            const out = resultSlice(result.get());
+            const out = result.mutableSlice();
             for (data, 0..) |value, index| out[index] = op(value, scalar);
-            return result.get();
+            return result.finish();
         }
 
         fn mapBinary(self: Self, other: Self, allocator: std.mem.Allocator, comptime op: fn (T, T) T) R.SEXP {
+            const lhs_len = self.len();
+            const rhs_len = other.len();
+            const n = if (lhs_len == 0 or rhs_len == 0) @as(usize, 0) else @max(lhs_len, rhs_len);
+            var result = convert.ResultBuilder(T).init(n);
+            defer result.deinit();
+
             var lhs_view = self.view(allocator) catch convert.signalError(error.UnexpectedType);
             defer lhs_view.deinit();
             var rhs_view = other.view(allocator) catch convert.signalError(error.UnexpectedType);
             defer rhs_view.deinit();
             const lhs = lhs_view.constSlice();
             const rhs = rhs_view.constSlice();
-            const n = if (lhs.len == 0 or rhs.len == 0) @as(usize, 0) else @max(lhs.len, rhs.len);
 
-            var result = allocResult(n);
-            defer result.deinit();
-            const out = resultSlice(result.get());
+            const out = result.mutableSlice();
             for (0..n) |index| {
                 out[index] = op(lhs[index % lhs.len], rhs[index % rhs.len]);
             }
-            return result.get();
+            return result.finish();
         }
     };
 }

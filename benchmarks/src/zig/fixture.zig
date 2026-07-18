@@ -56,13 +56,13 @@ fn fixtureScalar(value: f64) f64 {
     return value;
 }
 
-fn fixtureNumeric(value: []const f64) R.SEXP {
-    var arena = zigr.memory.UnwindArena.init();
-    defer arena.deinit();
-    const result = arena.allocator().alloc(f64, value.len) catch
-        zigr.@"error".signal("numeric fixture allocation failed");
-    for (value, result) |source, *destination| destination.* = source * 2.0;
-    return convert.fromRealSlice(result);
+fn fixtureNumeric(value: R.SEXP) R.SEXP {
+    var result = convert.ResultBuilder(f64).initFromInput(value) catch |err| convert.signalError(err);
+    defer result.deinit();
+    const input = convert.dataPtr(f64, value) orelse zigr.@"error".signal("numeric input data unavailable");
+    const output = result.mutableSlice();
+    for (input[0..output.len], output) |source, *destination| destination.* = source * 2.0;
+    return result.finish();
 }
 
 fn fixtureAltrepInteger(value: []const i32) f64 {
@@ -183,7 +183,7 @@ fn benchVectorSum(value: []const f64) f64 {
     return total;
 }
 
-fn benchNumericTransform(value: []const f64) R.SEXP {
+fn benchNumericTransform(value: R.SEXP) R.SEXP {
     return fixtureNumeric(value);
 }
 
@@ -381,10 +381,13 @@ fn benchLogicalCounts(value: convert.LogicalSliceView) R.SEXP {
     return result.get();
 }
 
-fn benchRawCopy(value: convert.RawSliceView) []const u8 {
-    // The input is borrowed when ordinary RAW storage is available. The
-    // generated []const u8 result still copies into a fresh R result.
-    return value.constSlice();
+fn benchRawCopy(value: R.SEXP) R.SEXP {
+    var result = convert.ResultBuilder(u8).initFromInput(value) catch |build_err| convert.signalError(build_err);
+    defer result.deinit();
+    const input = convert.dataPtr(u8, value) orelse zigr.@"error".signal("raw input data unavailable");
+    const output = result.mutableSlice();
+    @memcpy(output, input[0..output.len]);
+    return result.finish();
 }
 
 fn benchComplexConjugate(value: []const convert.Rcomplex) R.SEXP {

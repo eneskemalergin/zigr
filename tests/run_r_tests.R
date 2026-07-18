@@ -280,6 +280,7 @@ tests <- list(
   list(name="zigr_test_generated_spill_longjmp", expect_error=TRUE),
   "zigr_test_altrep_access_strategies",
   "zigr_test_generated_result_longjmp",
+  "zigr_test_direct_result_builder",
   "zigr_test_externalptr_finalizer",
   "zigr_test_externalptr_finalizer_idempotent",
   "zigr_test_externalptr_typed_protected",
@@ -291,6 +292,7 @@ tests <- list(
   "zigr_test_generated_view_selection",
   "zigr_test_complex_boundary",
   "zigr_test_generated_string_shapes",
+  "zigr_test_generated_string_projections",
   "zigr_test_string_allocation_longjmp",
   "zigr_test_conversion_allocation_longjmp",
 

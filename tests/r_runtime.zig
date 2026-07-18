@@ -22,6 +22,8 @@ const weakref_mod = zigr.weakref;
 const trycatch_mod = zigr.trycatch;
 const protect = zigr.protect;
 
+extern var R_interrupts_pending: c_int;
+
 const SEXP = R.SEXP;
 
 var test_dll: ?*R.DllInfo = null;
@@ -1773,8 +1775,8 @@ export fn zigr_test_string_projections() SEXP {
 
     var translated_probe = zigr_convert.StringProjectionProbe{};
     const translated = zigr_convert.toStringProjectionViewWithProbe(.translated_text, vector, &translated_probe) catch return R.Rf_ScalarReal(0.0);
-    if (!std.mem.eql(u8, translated.at(3).bytes, &byte_marked) or !std.mem.eql(u8, translated.at(4).bytes, "caf\xc3\xa9") or translated_probe.translation_reads != 2 or
-        translated_probe.byte_reads != 0 or translated_probe.encoding_reads != 0)
+    if (!std.mem.eql(u8, translated.at(3).bytes, &byte_marked) or !std.mem.eql(u8, translated.at(4).bytes, "caf\xc3\xa9") or translated_probe.translation_reads != 1 or
+        translated_probe.byte_reads != 1 or translated_probe.encoding_reads != 2 or translated_probe.broader_work != 0)
     {
         return R.Rf_ScalarReal(0.0);
     }
@@ -4487,6 +4489,46 @@ fn arenaVectorOutput(_: f64) []const f64 {
     return arena_vector_output[0..];
 }
 
+fn directRealResult(value: R.SEXP) R.SEXP {
+    var result = zigr_convert.ResultBuilder(f64).initFromInput(value) catch |build_err| zigr_convert.signalError(build_err);
+    defer result.deinit();
+    const input = zigr_convert.dataPtr(f64, value) orelse zigr.@"error".signal("numeric input data unavailable");
+    const output = result.mutableSlice();
+    for (input[0..output.len], output) |source, *destination| destination.* = source * 2.0;
+    return result.finish();
+}
+
+fn directRawResult(value: R.SEXP) R.SEXP {
+    var result = zigr_convert.ResultBuilder(u8).initFromInput(value) catch |build_err| zigr_convert.signalError(build_err);
+    defer result.deinit();
+    const input = zigr_convert.dataPtr(u8, value) orelse zigr.@"error".signal("raw input data unavailable");
+    const output = result.mutableSlice();
+    @memcpy(output, input[0..output.len]);
+    return result.finish();
+}
+
+fn directResultThenError(value: R.SEXP) R.SEXP {
+    var result = zigr_convert.ResultBuilder(f64).initFromInput(value) catch |build_err| zigr_convert.signalError(build_err);
+    defer result.deinit();
+    const output = result.mutableSlice();
+    if (output.len != 0) output[0] = 99.0;
+    R.Rf_error("zigr direct result: expected error after partial fill");
+}
+
+fn directResultOversized() R.SEXP {
+    var result = zigr_convert.ResultBuilder(f64).init(@intCast(R.R_XLEN_T_MAX));
+    return result.finish();
+}
+
+fn directResultThenInterrupt(value: R.SEXP) R.SEXP {
+    var result = zigr_convert.ResultBuilder(f64).initFromInput(value) catch |build_err| zigr_convert.signalError(build_err);
+    defer result.deinit();
+    const output = result.mutableSlice();
+    if (output.len != 0) output[0] = 101.0;
+    ict.checkInterrupt();
+    return result.finish();
+}
+
 fn spillThenError(values: zigr_convert.IntegerSliceView) void {
     var view = values;
     defer view.deinit();
@@ -4539,6 +4581,11 @@ const ArenaExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_altrep_one_pass_sum", .func = generatedAltrepOnePassSum },
     .{ .name = "zigr_altrep_materialized", .func = generatedAltrepMaterialized },
     .{ .name = "zigr_altrep_one_pass_raw", .func = generatedAltrepOnePassRaw },
+    .{ .name = "zigr_direct_real_result", .func = directRealResult },
+    .{ .name = "zigr_direct_raw_result", .func = directRawResult },
+    .{ .name = "zigr_direct_result_error", .func = directResultThenError },
+    .{ .name = "zigr_direct_result_oversized", .func = directResultOversized },
+    .{ .name = "zigr_direct_result_interrupt", .func = directResultThenInterrupt },
 }, &.{});
 
 const ArenaCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
@@ -4585,6 +4632,84 @@ fn stringHeaderLengths(values: []const []const u8) i32 {
     var total: i32 = 0;
     for (values) |value| total += @intCast(value.len);
     return total;
+}
+
+fn generatedStringIdentity(values: zigr_convert.StringIdentityView) i32 {
+    var missing: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (value.charsxp == R.R_NaString) missing += 1;
+    }
+    return missing;
+}
+
+fn generatedStringMissingness(values: zigr_convert.StringMissingnessView) i32 {
+    var present: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (!value.is_na) present += 1;
+    }
+    return present;
+}
+
+fn generatedStringBytes(values: zigr_convert.StringBytesView) i32 {
+    var total: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (value.charsxp != R.R_NaString) total += @intCast(value.bytes.len);
+    }
+    return total;
+}
+
+fn generatedStringEncoding(values: zigr_convert.StringEncodingView) i32 {
+    var utf8: i32 = 0;
+    var latin1: i32 = 0;
+    var bytes: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (value.charsxp == R.R_NaString) continue;
+        if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_UTF8))) {
+            utf8 += 1;
+        } else if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_LATIN1))) {
+            latin1 += 1;
+        } else if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_BYTES))) {
+            bytes += 1;
+        }
+    }
+    return utf8 * 100 + latin1 * 10 + bytes;
+}
+
+fn generatedStringTranslated(values: zigr_convert.StringTranslatedTextView) i32 {
+    var total: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (value.charsxp != R.R_NaString) total += @intCast(value.bytes.len);
+    }
+    return total;
+}
+
+fn generatedStringMetadata(values: zigr_convert.StringMetadataView) i32 {
+    var raw_length: i32 = 0;
+    var missing: i32 = 0;
+    var utf8: i32 = 0;
+    var latin1: i32 = 0;
+    var bytes: i32 = 0;
+    var iterator = values.iterator();
+    while (iterator.next()) |value| {
+        if (value.is_na) {
+            missing += 1;
+            continue;
+        }
+        raw_length += @intCast(R.XLENGTH(value.charsxp));
+        if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_UTF8))) {
+            utf8 += 1;
+        } else if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_LATIN1))) {
+            latin1 += 1;
+        } else if (value.encoding_mark == @as(R.cetype_t, @intCast(R.CE_BYTES))) {
+            bytes += 1;
+        }
+    }
+    return raw_length + missing * 1000 + utf8 * 100 + latin1 * 10 + bytes;
 }
 
 fn rawViewSum(values: zigr_convert.RawSliceView) i32 {
@@ -4642,10 +4767,17 @@ const BoundaryExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_integer_view_representation", .func = integerViewRepresentation },
     .{ .name = "zigr_complex_view_representation", .func = complexViewRepresentation },
     .{ .name = "zigr_raw_view_echo", .func = rawViewEcho },
+    .{ .name = "zigr_string_projection_identity", .func = generatedStringIdentity },
+    .{ .name = "zigr_string_projection_missingness", .func = generatedStringMissingness },
+    .{ .name = "zigr_string_projection_bytes", .func = generatedStringBytes },
+    .{ .name = "zigr_string_projection_encoding", .func = generatedStringEncoding },
+    .{ .name = "zigr_string_projection_translated", .func = generatedStringTranslated },
+    .{ .name = "zigr_string_projection_metadata", .func = generatedStringMetadata },
 }, &.{});
 
 const BoundaryCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 threadlocal var generated_logical_error_arg: SEXP = null;
+threadlocal var generated_string_projection_error_arg: SEXP = null;
 
 fn boundaryCall(index: usize, arg: SEXP) SEXP {
     const fun: BoundaryCall = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
@@ -4654,6 +4786,10 @@ fn boundaryCall(index: usize, arg: SEXP) SEXP {
 
 fn generatedLogicalErrorCall() SEXP {
     return boundaryCall(5, generated_logical_error_arg);
+}
+
+fn generatedStringProjectionErrorCall() SEXP {
+    return boundaryCall(12, generated_string_projection_error_arg);
 }
 
 fn initBoundaryExports() bool {
@@ -5059,6 +5195,97 @@ export fn zigr_test_generated_result_longjmp() SEXP {
     } else |_| {}
 
     return arenaCall(0, R.Rf_ScalarReal(1.0));
+}
+
+var direct_result_failure_input: SEXP = undefined;
+
+fn directResultFailureCall() SEXP {
+    return arenaCall(12, direct_result_failure_input);
+}
+
+fn directResultWrongTypeCall() SEXP {
+    return arenaCall(10, direct_result_failure_input);
+}
+
+fn directResultOversizedCall() SEXP {
+    return arenaCall(13, R.R_NilValue);
+}
+
+fn directResultInterruptCall() SEXP {
+    return arenaCall(14, direct_result_failure_input);
+}
+
+export fn zigr_test_direct_result_builder() SEXP {
+    if (!initArenaExports()) return R.Rf_ScalarReal(0.0);
+
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    R.REAL(real)[0] = 1.5;
+    R.REAL(real)[1] = R.R_NaReal;
+    R.REAL(real)[2] = -4.0;
+    const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 3));
+    R.RAW(raw)[0] = 0;
+    R.RAW(raw)[1] = 127;
+    R.RAW(raw)[2] = 255;
+    const empty = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 0));
+    var protected_count: c_int = 3;
+    defer R.Rf_unprotect(protected_count);
+
+    const real_result = R.Rf_protect(arenaCall(10, real));
+    protected_count += 1;
+    const raw_result = R.Rf_protect(arenaCall(11, raw));
+    protected_count += 1;
+    if (real_result == real or raw_result == raw or R.TYPEOF(real_result) != R.REALSXP or
+        R.XLENGTH(real_result) != 3 or R.REAL(real_result)[0] != 3.0 or
+        R.ISNA(R.REAL(real_result)[1]) == 0 or R.REAL(real_result)[2] != -8.0 or
+        R.TYPEOF(raw_result) != R.RAWSXP or R.XLENGTH(raw_result) != 3 or
+        R.RAW(raw_result)[0] != 0 or R.RAW(raw_result)[1] != 127 or R.RAW(raw_result)[2] != 255 or
+        R.Rf_getAttrib(real_result, R.R_NamesSymbol) != R.R_NilValue) return R.Rf_ScalarReal(0.0);
+
+    const empty_result = R.Rf_protect(arenaCall(10, empty));
+    protected_count += 1;
+    if (empty_result == empty or R.TYPEOF(empty_result) != R.REALSXP or R.XLENGTH(empty_result) != 0) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    direct_result_failure_input = raw;
+    if (trycatch_mod.tryCatch(directResultWrongTypeCall)) |_| {
+        direct_result_failure_input = R.R_NilValue;
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    direct_result_failure_input = R.R_NilValue;
+
+    const before_failure_depth = zigr.protect.getDepth();
+    direct_result_failure_input = real;
+    if (trycatch_mod.tryCatch(directResultFailureCall)) |_| {
+        direct_result_failure_input = R.R_NilValue;
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    direct_result_failure_input = R.R_NilValue;
+    if (zigr.protect.getDepth() != before_failure_depth) return R.Rf_ScalarReal(0.0);
+
+    const before_oversized_depth = zigr.protect.getDepth();
+    if (trycatch_mod.tryCatch(directResultOversizedCall)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (zigr.protect.getDepth() != before_oversized_depth) return R.Rf_ScalarReal(0.0);
+
+    const before_interrupt_depth = zigr.protect.getDepth();
+    direct_result_failure_input = real;
+    R_interrupts_pending = 1;
+    if (trycatch_mod.tryCatch(directResultInterruptCall)) |_| {
+        R_interrupts_pending = 0;
+        direct_result_failure_input = R.R_NilValue;
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    R_interrupts_pending = 0;
+    direct_result_failure_input = R.R_NilValue;
+    if (zigr.protect.getDepth() != before_interrupt_depth) return R.Rf_ScalarReal(0.0);
+
+    const recovered = R.Rf_protect(arenaCall(10, real));
+    protected_count += 1;
+    if (R.TYPEOF(recovered) != R.REALSXP or R.XLENGTH(recovered) != 3 or R.REAL(recovered)[0] != 3.0 or
+        R.ISNA(R.REAL(recovered)[1]) == 0 or R.REAL(recovered)[2] != -8.0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 var externalptr_finalizer_count: u8 = 0;
@@ -5489,6 +5716,52 @@ export fn zigr_test_generated_string_shapes() SEXP {
     if (R.TYPEOF(view_result) != R.INTSXP or R.INTEGER(view_result)[0] != 9) return R.Rf_ScalarReal(0.0);
     if (R.TYPEOF(cached_result) != R.INTSXP or R.INTEGER(cached_result)[0] != 36) return R.Rf_ScalarReal(0.0);
     if (R.TYPEOF(headers_result) != R.INTSXP or R.INTEGER(headers_result)[0] != 9) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_generated_string_projections() SEXP {
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+
+    const utf8 = [_]u8{ 'c', 'a', 'f', 0xc3, 0xa9 };
+    const byte_marked = [_]u8{ 'x', 0xff, 'y' };
+    const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
+    const vector = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 5));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(vector, 0, R.Rf_mkCharLenCE(@ptrCast(&utf8), @intCast(utf8.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vector, 1, R.Rf_mkCharLenCE("", 0, @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    R.SET_STRING_ELT(vector, 2, R.R_NaString);
+    R.SET_STRING_ELT(vector, 3, R.Rf_mkCharLenCE(@ptrCast(&byte_marked), @intCast(byte_marked.len), @as(R.cetype_t, @intCast(R.CE_BYTES))));
+    R.SET_STRING_ELT(vector, 4, R.Rf_mkCharLenCE(@ptrCast(&latin1), @intCast(latin1.len), @as(R.cetype_t, @intCast(R.CE_LATIN1))));
+
+    const identity = R.Rf_protect(boundaryCall(11, vector));
+    const missingness = R.Rf_protect(boundaryCall(12, vector));
+    const bytes = R.Rf_protect(boundaryCall(13, vector));
+    const encoding = R.Rf_protect(boundaryCall(14, vector));
+    const translated = R.Rf_protect(boundaryCall(15, vector));
+    const metadata = R.Rf_protect(boundaryCall(16, vector));
+    defer R.Rf_unprotect(6);
+
+    const altrep_values = [_][]const u8{ "alpha", "", "omega" };
+    const altrep = R.Rf_protect(MyAltString.init(altrep_values[0..]));
+    const altrep_missingness = R.Rf_protect(boundaryCall(12, altrep));
+    defer R.Rf_unprotect(2);
+
+    const wrong_type = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    defer R.Rf_unprotect(1);
+    generated_string_projection_error_arg = wrong_type;
+    defer generated_string_projection_error_arg = null;
+    const condition = trycatch_mod.tryCatchError(generatedStringProjectionErrorCall) catch return R.Rf_ScalarReal(0.0);
+    if (condition == null or !std.mem.eql(u8, trycatch_mod.extractMessage(condition.?), "toStringMissingnessView: ExpectedString")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    if (R.INTEGER(identity)[0] != 1 or R.INTEGER(missingness)[0] != 4 or
+        R.INTEGER(bytes)[0] != 12 or R.INTEGER(encoding)[0] != 111 or
+        R.INTEGER(translated)[0] != 13 or R.INTEGER(metadata)[0] != 1123 or
+        R.INTEGER(altrep_missingness)[0] != 3)
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 

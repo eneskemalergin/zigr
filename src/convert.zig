@@ -16,11 +16,46 @@ const protect = @import("protect.zig");
 
 pub const Rcomplex = extern struct { r: f64, i: f64 };
 
-const Unprot = struct {
-    fn fire(_: ?*anyopaque) void {
-        // Keep ReleaseSafe/Debug depth accounting in step with the actual
-        // protection stack when R interrupts fromStringSlice mid-loop.
-        protect.unprotect();
+const ResultCleanup = struct {
+    protected: bool = false,
+
+    fn fire(state: *ResultCleanup) void {
+        if (state.protected) {
+            state.protected = false;
+            protect.unprotect();
+        }
+    }
+};
+
+const ResultGuard = struct {
+    protected: protect.ScopedProtect,
+    cleanup_state: *ResultCleanup,
+    active: bool = true,
+
+    fn init(sexptype: R.SEXPTYPE, len: usize) ResultGuard {
+        const cleanup_state = cleanup.pushFrameInline(ResultCleanup, .{}, ResultCleanup.fire);
+        const result = R.Rf_allocVector(sexptype, @intCast(len));
+        const protected = protect.scoped(result);
+        cleanup_state.protected = true;
+        return .{ .protected = protected, .cleanup_state = cleanup_state };
+    }
+
+    fn get(self: ResultGuard) SEXP {
+        return self.protected.get();
+    }
+
+    fn deinit(self: *ResultGuard) void {
+        if (!self.active) return;
+        self.active = false;
+        self.protected.deinit();
+        self.cleanup_state.protected = false;
+        cleanup.popFrame();
+    }
+
+    fn finish(self: *ResultGuard) SEXP {
+        const result = self.get();
+        self.deinit();
+        return result;
     }
 };
 
@@ -65,6 +100,7 @@ pub const ConvertError = error{
     OutOfMemory,
     NegativeLength,
     LengthOverflow,
+    NullPointer,
 };
 
 fn hasType(sexp: SEXP, expected: c_uint) bool {
@@ -101,6 +137,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.SchemaNames => "fixed schema names do not match",
         error.SchemaAttributes => "fixed schema has unsupported attributes",
         error.OutOfMemory => "out of memory during SEXP conversion",
+        error.NullPointer => "SEXP pointer is null",
         else => @errorName(err),
     };
 }
@@ -571,12 +608,126 @@ fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repre
     return result;
 }
 
+/// Owns one protected, final R vector. `mutableSlice` exposes its typed R
+/// storage while it remains protected; `finish` transfers the completed
+/// vector to the caller and `deinit` abandons it during error cleanup.
+pub fn ResultBuilder(comptime T: type) type {
+    comptime _ = typeToSEXPTYPE(T);
+    return struct {
+        guard: ResultGuard,
+        len: usize,
+
+        const Self = @This();
+        pub const storage_type = if (T == bool) i32 else T;
+
+        pub fn init(len: usize) Self {
+            return .{ .guard = ResultGuard.init(typeToSEXPTYPE(T), len), .len = len };
+        }
+
+        pub fn initFromInput(input: SEXP) ConvertError!Self {
+            try expectType(input, typeToSEXPTYPE(T), expectedInputError(T));
+            return init(try tryXlength(input));
+        }
+
+        pub fn get(self: Self) SEXP {
+            return self.guard.get();
+        }
+
+        pub fn mutableSlice(self: *Self) []storage_type {
+            const ptr: [*]storage_type = switch (T) {
+                f64 => @ptrCast(R.REAL(self.get())),
+                i32 => @ptrCast(R.INTEGER(self.get())),
+                bool => @ptrCast(R.LOGICAL(self.get())),
+                u8 => @ptrCast(R.RAW(self.get())),
+                Rcomplex => @ptrCast(@alignCast(R.COMPLEX(self.get()) orelse @panic("COMPLEX returned null on freshly allocated CPLXSXP"))),
+                else => unreachable,
+            };
+            return ptr[0..self.len];
+        }
+
+        pub fn finish(self: *Self) SEXP {
+            return self.guard.finish();
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.guard.deinit();
+        }
+    };
+}
+
+fn expectedInputError(comptime T: type) ConvertError {
+    return switch (T) {
+        f64 => error.ExpectedReal,
+        i32 => error.ExpectedInteger,
+        bool => error.ExpectedLogical,
+        u8 => error.ExpectedRaw,
+        Rcomplex => error.ExpectedComplex,
+        else => @compileError("unsupported result builder type: " ++ @typeName(T)),
+    };
+}
+
+/// Builds a protected STRSXP while each character constructor remains within
+/// the builder's cleanup frame.
+pub const StringResultBuilder = struct {
+    guard: ResultGuard,
+    len: usize,
+
+    pub fn init(len: usize) StringResultBuilder {
+        return .{ .guard = ResultGuard.init(R.STRSXP, len), .len = len };
+    }
+
+    pub fn get(self: StringResultBuilder) SEXP {
+        return self.guard.get();
+    }
+
+    pub fn set(self: StringResultBuilder, index: usize, bytes: []const u8) void {
+        if (index >= self.len) @panic("StringResultBuilder.set index out of bounds");
+        const ptr: [*]const u8 = if (bytes.len == 0) "" else bytes.ptr;
+        const value = R.Rf_mkCharLenCE(@ptrCast(ptr), @intCast(bytes.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
+        R.SET_STRING_ELT(self.get(), @intCast(index), value);
+    }
+
+    pub fn finish(self: *StringResultBuilder) SEXP {
+        return self.guard.finish();
+    }
+
+    pub fn deinit(self: *StringResultBuilder) void {
+        self.guard.deinit();
+    }
+};
+
+/// Builds a protected VECSXP while nested values and names are allocated.
+pub const ListResultBuilder = struct {
+    guard: ResultGuard,
+    len: usize,
+
+    pub fn init(len: usize) ListResultBuilder {
+        return .{ .guard = ResultGuard.init(R.VECSXP, len), .len = len };
+    }
+
+    pub fn get(self: ListResultBuilder) SEXP {
+        return self.guard.get();
+    }
+
+    pub fn set(self: ListResultBuilder, index: usize, value: SEXP) void {
+        if (index >= self.len) @panic("ListResultBuilder.set index out of bounds");
+        _ = R.SET_VECTOR_ELT(self.get(), @intCast(index), value);
+    }
+
+    pub fn finish(self: *ListResultBuilder) SEXP {
+        return self.guard.finish();
+    }
+
+    pub fn deinit(self: *ListResultBuilder) void {
+        self.guard.deinit();
+    }
+};
+
 pub fn fromRealSlice(slice: []const f64) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.REALSXP, len));
-    defer vec.deinit();
-    @memcpy(R.REAL(vec.get())[0..slice.len], slice);
-    return vec.get();
+    var result = ResultBuilder(f64).init(slice.len);
+    defer result.deinit();
+    @memcpy(result.mutableSlice(), slice);
+    return result.finish();
 }
 
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
@@ -607,11 +758,10 @@ fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
 }
 
 pub fn fromIntSlice(slice: []const i32) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.INTSXP, len));
-    defer vec.deinit();
-    @memcpy(R.INTEGER(vec.get())[0..slice.len], slice);
-    return vec.get();
+    var result = ResultBuilder(i32).init(slice.len);
+    defer result.deinit();
+    @memcpy(result.mutableSlice(), slice);
+    return result.finish();
 }
 
 /// The headers borrow R-owned bytes and must stay inside the source R call.
@@ -731,7 +881,9 @@ pub const StringProjectionProbe = struct {
             .missingness => operation == .missingness,
             .bytes => operation == .bytes,
             .encoding_mark => operation == .encoding_mark,
-            .translated_text => operation == .translated_text,
+            // Classification is required to preserve CE_BYTES without
+            // asking R to translate stored bytes.
+            .translated_text => operation == .encoding_mark or operation == .bytes or operation == .translated_text,
             .metadata => operation == .identity or operation == .missingness or operation == .encoding_mark,
         };
         if (!allowed) self.broader_work += 1;
@@ -795,9 +947,19 @@ fn stringProjectionValue(comptime projection: StringProjection, elt: SEXP, probe
     }
     if (comptime projection == .translated_text) {
         if (!is_na) {
-            if (probe) |p| p.recordOperation(.translated_text);
+            const encoding_mark = R.Rf_getCharCE(elt);
+            if (probe) |p| p.recordOperation(.encoding_mark);
+            if (encoding_mark == @as(R.cetype_t, @intCast(R.CE_BYTES))) {
+                if (probe) |p| p.recordOperation(.bytes);
+            } else {
+                if (probe) |p| p.recordOperation(.translated_text);
+            }
+            return .{
+                .charsxp = elt,
+                .bytes = sexp_mod.charsxpTranslatedBytesWithEncoding(elt, encoding_mark),
+            };
         }
-        return .{ .charsxp = elt, .bytes = if (is_na) "" else sexp_mod.charsxpTranslatedBytes(elt) };
+        return .{ .charsxp = elt, .bytes = "" };
     }
     if (probe) |p| {
         p.recordOperation(.identity);
@@ -816,12 +978,13 @@ pub fn StringProjectionView(comptime projection: StringProjection, comptime prob
     return struct {
         sexp: SEXP,
         len: usize,
+        is_altrep: bool,
         probe: if (probe_enabled) ?*StringProjectionProbe else void = if (probe_enabled) null else {},
 
         pub const selected_projection = projection;
 
         fn element(self: @This(), index: usize) SEXP {
-            if (R.ALTREP(self.sexp) == 0) return sexp_mod.fastVectorElt(self.sexp, index);
+            if (!self.is_altrep) return sexp_mod.fastVectorElt(self.sexp, index);
             return R.STRING_ELT(self.sexp, @intCast(index));
         }
 
@@ -864,6 +1027,7 @@ fn initStringProjectionView(comptime projection: StringProjection, comptime prob
     return .{
         .sexp = sexp,
         .len = try tryXlength(sexp),
+        .is_altrep = R.ALTREP(sexp) != 0,
         .probe = if (comptime probe_enabled) probe else {},
     };
 }
@@ -934,19 +1098,12 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
     };
 }
 
-/// R character creation can longjmp, so direct callers need an unwind boundary.
+/// R character creation is protected by the builder's unwind cleanup frame.
 pub fn fromStringSlice(slice: []const []const u8) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.STRSXP, len));
-    cleanup.pushFrame(Unprot.fire, null);
-    defer vec.deinit();
-    defer cleanup.popFrame();
-    for (0..@as(usize, @intCast(len))) |i| {
-        const s = slice[i];
-        const cs = R.Rf_mkCharLenCE(@ptrCast(s.ptr), @intCast(s.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
-        R.SET_STRING_ELT(vec.get(), @intCast(i), cs);
-    }
-    return vec.get();
+    var result = StringResultBuilder.init(slice.len);
+    defer result.deinit();
+    for (slice, 0..) |value, i| result.set(i, value);
+    return result.finish();
 }
 
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
@@ -984,11 +1141,10 @@ pub fn toLogicalSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i
 }
 
 pub fn fromLogicalSlice(slice: []const i32) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.LGLSXP, len));
-    defer vec.deinit();
-    @memcpy(R.LOGICAL(vec.get())[0..slice.len], slice);
-    return vec.get();
+    var result = ResultBuilder(bool).init(slice.len);
+    defer result.deinit();
+    @memcpy(result.mutableSlice(), slice);
+    return result.finish();
 }
 
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
@@ -1002,13 +1158,10 @@ pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
 }
 
 pub fn fromListSlice(slice: []const SEXP) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, len));
-    defer vec.deinit();
-    for (0..@as(usize, @intCast(len))) |i| {
-        _ = R.SET_VECTOR_ELT(vec.get(), @intCast(i), slice[i]);
-    }
-    return vec.get();
+    var result = ListResultBuilder.init(slice.len);
+    defer result.deinit();
+    for (slice, 0..) |value, i| result.set(i, value);
+    return result.finish();
 }
 
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
@@ -1046,11 +1199,10 @@ pub fn toRawSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RawSliceView {
 }
 
 pub fn fromRawSlice(slice: []const u8) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.RAWSXP, len));
-    defer vec.deinit();
-    @memcpy(R.RAW(vec.get())[0..slice.len], slice);
-    return vec.get();
+    var result = ResultBuilder(u8).init(slice.len);
+    defer result.deinit();
+    @memcpy(result.mutableSlice(), slice);
+    return result.finish();
 }
 
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
@@ -1088,12 +1240,10 @@ pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !ComplexSlic
 }
 
 pub fn fromComplexSlice(slice: []const Rcomplex) SEXP {
-    const len: R.R_xlen_t = @intCast(slice.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.CPLXSXP, len));
-    defer vec.deinit();
-    const dst: [*]Rcomplex = @ptrCast(@alignCast(R.COMPLEX(vec.get()) orelse @panic("COMPLEX returned null on freshly allocated CPLXSXP")));
-    @memcpy(dst[0..slice.len], slice);
-    return vec.get();
+    var result = ResultBuilder(Rcomplex).init(slice.len);
+    defer result.deinit();
+    @memcpy(result.mutableSlice(), slice);
+    return result.finish();
 }
 
 fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
@@ -1146,22 +1296,21 @@ fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
 
 fn fixedSchemaToSexp(st: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     const fields = @typeInfo(T).@"struct".fields;
-    const n: R.R_xlen_t = @intCast(fields.len);
-    var vec = protect.scoped(R.Rf_allocVector(R.VECSXP, n));
-    var names = protect.scoped(R.Rf_allocVector(R.STRSXP, n));
+    var vec = ListResultBuilder.init(fields.len);
+    var names = StringResultBuilder.init(fields.len);
     defer vec.deinit();
     defer names.deinit();
 
     inline for (fields, 0..) |field, i| {
         const val = @field(st, field.name);
         const elt = zigToSexp(val, field.type, arena);
-        _ = R.SET_VECTOR_ELT(vec.get(), @intCast(i), elt);
-        const cs = R.Rf_mkCharLenCE(@ptrCast(field.name.ptr), @intCast(field.name.len), @as(R.cetype_t, @intCast(R.CE_UTF8)));
-        R.SET_STRING_ELT(names.get(), @intCast(i), cs);
+        vec.set(i, elt);
+        names.set(i, field.name);
     }
 
     _ = R.Rf_namesgets(vec.get(), names.get());
-    return vec.get();
+    names.deinit();
+    return vec.finish();
 }
 
 fn fixedSchemaFromSexp(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
@@ -2013,6 +2162,7 @@ test "errorMessage covers all ConvertError variants" {
     try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaNames), "fixed schema names do not match");
     try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaAttributes), "fixed schema has unsupported attributes");
     try std.testing.expectEqualSlices(u8, errorMessage(error.OutOfMemory), "out of memory during SEXP conversion");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.NullPointer), "SEXP pointer is null");
 }
 
 test "errorMessage handles unknown error via @errorName" {
