@@ -90,6 +90,11 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         const view = convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
         return view.constSlice();
     }
+    if (comptime T == convert.LogicalSliceView) {
+        const view = convert.toLogicalSliceView(arena, sexp) catch |err| signalErrorMsg("toLogicalSliceView", @errorName(err));
+        return .{ .data = view.constSlice() };
+    }
+    if (comptime T == []const bool) @compileError("logical vectors require LogicalSliceView to preserve NA");
     if (comptime T == []const []const u8) {
         return convert.toStringSlice(arena, sexp) catch |err| signalErrorMsg("toStringSlice", @errorName(err));
     }
@@ -139,6 +144,8 @@ fn toSexp(value: anytype, comptime T: type) R.SEXP {
     if (comptime T == bool) return R.Rf_ScalarLogical(if (value) 1 else 0);
     if (comptime T == []const f64) return convert.fromRealSlice(value);
     if (comptime T == []const i32) return convert.fromIntSlice(value);
+    if (comptime T == convert.LogicalSlice) return convert.fromLogicalSlice(value.data);
+    if (comptime T == []const bool) @compileError("logical vectors require LogicalSlice to preserve NA");
     if (comptime T == []const []const u8) return convert.fromStringSlice(value);
     if (comptime T == []const u8) return convert.fromRawSlice(value);
     if (comptime T == []const convert.Rcomplex) return convert.fromComplexSlice(value);
@@ -672,9 +679,90 @@ fn compileExampleSum(value: f64) f64 {
 
 const CompileExampleExports = generateExports(&.{.{ .name = "my_sum", .func = compileExampleSum }}, &.{});
 
+const GeneratedCoverageState = struct { value: i32 };
+
+fn generatedCoverageInputs(
+    real: f64,
+    integer: i32,
+    logical: bool,
+    optional_real: ?f64,
+    optional_integer: ?i32,
+    optional_logical: ?bool,
+    real_vector: []const f64,
+    integer_vector: []const i32,
+    logical_vector: convert.LogicalSliceView,
+    raw_view: convert.RawSliceView,
+) convert.LogicalSlice {
+    _ = real;
+    _ = integer;
+    _ = logical;
+    _ = optional_real;
+    _ = optional_integer;
+    _ = optional_logical;
+    _ = real_vector;
+    _ = integer_vector;
+    _ = logical_vector;
+    _ = raw_view;
+    return .{ .data = &.{} };
+}
+
+fn generatedCoverageObject(value: R.SEXP) R.SEXP {
+    return value;
+}
+
+fn generatedCoverageStrings(
+    strings: []const []const u8,
+    string_view: convert.StringSliceView,
+    cached_strings: convert.CachedStringSliceView,
+    complex: []const convert.Rcomplex,
+) []const []const u8 {
+    _ = strings;
+    _ = string_view;
+    _ = cached_strings;
+    _ = complex;
+    return &.{};
+}
+
+fn generatedCoverageOptional(logical: ?convert.LogicalSliceView) ?convert.LogicalSlice {
+    _ = logical;
+    return null;
+}
+
+fn generatedCoverageExternal(logical: convert.LogicalSliceView) convert.LogicalSlice {
+    _ = logical;
+    return .{ .data = &.{} };
+}
+
+fn generatedCoverageMethod(_: *GeneratedCoverageState, logical: convert.LogicalSliceView) convert.LogicalSlice {
+    return generatedCoverageExternal(logical);
+}
+
+const GeneratedCoverageExports = generateExports(&.{
+    .{ .name = "coverage_inputs", .func = generatedCoverageInputs },
+    .{ .name = "coverage_object", .func = generatedCoverageObject },
+    .{ .name = "coverage_strings", .func = generatedCoverageStrings },
+    .{ .name = "coverage_optional", .func = generatedCoverageOptional },
+}, &.{
+    .{ .name = "coverage_external", .func = generatedCoverageExternal },
+});
+
+const GeneratedCoverageMethods = generateMethods(GeneratedCoverageState, &.{
+    .{ .name = "coverage_method", .func = generatedCoverageMethod },
+}, &.{
+    .{ .name = "coverage_method_external", .func = generatedCoverageMethod },
+});
+
 test "generateExports .Call usage example compiles" {
     const init_fn = CompileExampleExports.init;
     _ = init_fn;
+}
+
+test "generated coverage compiles logical vectors across entry forms" {
+    _ = GeneratedCoverageExports.init;
+    _ = GeneratedCoverageMethods.init;
+    try std.testing.expect(needsInputArena(convert.LogicalSliceView));
+    try std.testing.expect(needsInputArena(?convert.LogicalSliceView));
+    try std.testing.expect(needsInputArena(convert.LogicalSlice));
 }
 
 test "scalar and optional scalar wrappers do not need an arena" {

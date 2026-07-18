@@ -270,6 +270,8 @@ tests <- list(
 
   "zigr_test_export_generatemethods",
   "zigr_test_export_generatemethods_external",
+  "zigr_test_generated_logical_vector",
+  "zigr_test_generated_logical_wrong_type",
   "zigr_test_generated_method_receiver_errors",
   "zigr_test_generated_ownership_gc",
   "zigr_test_allocation_diagnostics",

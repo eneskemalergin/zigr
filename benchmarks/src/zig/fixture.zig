@@ -370,11 +370,9 @@ fn benchS4(value: R.SEXP) R.SEXP {
     return zigr.eval.callIn("slot", &.{ object.get(), slot_name.get() }, R.R_GlobalEnv);
 }
 
-fn benchLogicalCounts(value: R.SEXP) R.SEXP {
-    const length: usize = @intCast(R.XLENGTH(value));
+fn benchLogicalCounts(value: convert.LogicalSliceView) R.SEXP {
     var counts = [_]i32{ 0, 0, 0 };
-    for (0..length) |index| {
-        const element = R.LOGICAL_ELT(value, @intCast(index));
+    for (value.constSlice()) |element| {
         if (element == R.R_NaInt) counts[2] += 1 else if (element == 1) counts[1] += 1 else counts[0] += 1;
     }
     var result = zigr.protect.scoped(convert.fromIntSlice(&counts));

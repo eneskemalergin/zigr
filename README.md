@@ -69,7 +69,7 @@ Run `zig build fmt` separately for formatting. Commands that compile zigr fail w
 
 ## What you get
 
-23 public modules covering zigr's declared R extension surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
+24 public modules covering zigr's declared R extension surface. The comptime export generator (`generateExports`) produces registration tables and `init`/`unload` hooks for the package root to call from its CRAN entry points. It does not emit the package-specific `R_init_<pkg>` symbol itself. The generated init hook registers routines and disables dynamic lookup.
 
 - SEXP types and 22 `is*` classification helpers
 - PROTECT/UNPROTECT helpers and an R_UnwindProtect bridge; generated wrappers release call-scoped scratch on normal return and R errors

@@ -279,6 +279,24 @@ pub fn SliceView(comptime T: type) type {
 
 pub const RawSliceView = SliceView(u8);
 
+/// A generated-boundary logical input view. Values remain R's three-state
+/// representation: `0`, `1`, or `R_NaInt`; callers must not coerce them to
+/// `bool` when missingness is possible. The view is call-scoped; any fallback
+/// storage belongs to the generated wrapper's arena.
+pub const LogicalSliceView = struct {
+    data: []const i32,
+
+    pub fn constSlice(self: @This()) []const i32 {
+        return self.data;
+    }
+};
+
+/// A generated logical result whose values retain R's three-state encoding.
+/// The caller owns the native storage until result conversion completes.
+pub const LogicalSlice = struct {
+    data: []const i32,
+};
+
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const representation = try vectorRepresentation(sexp);
@@ -672,12 +690,8 @@ fn zigToSexp(value: anytype, comptime T: type, arena: std.mem.Allocator) SEXP {
     if (comptime T == []const i32) return fromIntSlice(value);
     if (comptime T == []const []const u8) return fromStringSlice(value);
     if (comptime T == []const u8) return fromRawSlice(value);
-    if (comptime T == []const bool) {
-        var result = protect.scoped(R.Rf_allocVector(R.LGLSXP, @intCast(value.len)));
-        defer result.deinit();
-        for (value, 0..) |b, i| R.LOGICAL(result.get())[i] = if (b) 1 else 0;
-        return result.get();
-    }
+    if (comptime T == []const bool) @compileError("logical vectors require LogicalSlice to preserve NA");
+    if (comptime T == LogicalSlice) return fromLogicalSlice(value.data);
     if (comptime T == []const Rcomplex) return fromComplexSlice(value);
     if (comptime @typeInfo(T) == .@"struct") {
         return fixedSchemaToSexp(value, T, arena);
@@ -701,12 +715,8 @@ fn sexpToZig(comptime T: type, sexp: SEXP, arena: std.mem.Allocator) !T {
     if (comptime T == []const f64) return try toRealSlice(arena, sexp);
     if (comptime T == []const i32) return try toIntSlice(arena, sexp);
     if (comptime T == []const []const u8) return try toStringSlice(arena, sexp);
-    if (comptime T == []const bool) {
-        const int_slice = try toLogicalSlice(arena, sexp);
-        const result = try arena.alloc(bool, int_slice.len);
-        for (int_slice, 0..) |v, i| result[i] = v == 1;
-        return result;
-    }
+    if (comptime T == []const bool) @compileError("logical vectors require LogicalSlice to preserve NA");
+    if (comptime T == LogicalSlice) return .{ .data = try toLogicalSlice(arena, sexp) };
     if (comptime T == []const u8) return try toRawSlice(arena, sexp);
     if (comptime T == []const Rcomplex) return try toComplexSlice(arena, sexp);
     if (comptime @typeInfo(T) == .@"struct") {

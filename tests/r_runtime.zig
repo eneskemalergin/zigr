@@ -4331,8 +4331,23 @@ fn externalSum(a: f64, b: f64) f64 {
     return a + b;
 }
 
+fn logicalCountCode(values: zigr_convert.LogicalSliceView) i32 {
+    var counts = [_]i32{ 0, 0, 0 };
+    for (values.constSlice()) |value| {
+        if (value == R.R_NaInt) counts[2] += 1 else if (value == 1) counts[1] += 1 else counts[0] += 1;
+    }
+    return counts[0] * 100 + counts[1] * 10 + counts[2];
+}
+
+const generated_logical_result_values = [_]i32{ 0, 1, std.math.minInt(i32) };
+
+fn generatedLogicalResult() zigr_convert.LogicalSlice {
+    return .{ .data = generated_logical_result_values[0..] };
+}
+
 const ExternalExports = zigr.@"export".generateExports(&.{}, &.{
     .{ .name = "zigr_test_external_sum", .func = externalSum },
+    .{ .name = "zigr_test_external_logical", .func = logicalCountCode },
 });
 
 const arena_vector_output = [_]f64{ 2.0, 4.0, 8.0 };
@@ -4445,13 +4460,20 @@ const BoundaryExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_string_header_lengths", .func = stringHeaderLengths },
     .{ .name = "zigr_raw_view_sum", .func = rawViewSum },
     .{ .name = "zigr_complex_echo", .func = complexEcho },
+    .{ .name = "zigr_logical_count_code", .func = logicalCountCode },
+    .{ .name = "zigr_logical_result", .func = generatedLogicalResult },
 }, &.{});
 
 const BoundaryCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+threadlocal var generated_logical_error_arg: SEXP = null;
 
 fn boundaryCall(index: usize, arg: SEXP) SEXP {
     const fun: BoundaryCall = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
     return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+}
+
+fn generatedLogicalErrorCall() SEXP {
+    return boundaryCall(5, generated_logical_error_arg);
 }
 
 fn initBoundaryExports() bool {
@@ -4476,7 +4498,59 @@ export fn zigr_test_export_external() SEXP {
     const result = ext_fun(pairlist);
     const val = R.REAL(result)[0];
     if (val != 7.0) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    R.LOGICAL(logical)[0] = 0;
+    R.LOGICAL(logical)[1] = 1;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+    const logical_pairlist = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_external_logical"),
+        R.Rf_cons(logical, R.R_NilValue),
+    ));
+    const logical_fun: *const fn (R.SEXP) callconv(.c) R.SEXP = @ptrCast(@alignCast(ExternalExports.ext_defs[1].fun));
+    const logical_result = R.Rf_protect(logical_fun(logical_pairlist));
+    defer R.Rf_unprotect(3);
+    if (R.INTEGER(logical_result)[0] != 111) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_generated_logical_vector() SEXP {
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(logical)[0] = 0;
+    R.LOGICAL(logical)[1] = 1;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+
+    const input_result = R.Rf_protect(boundaryCall(5, logical));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(input_result) != R.INTSXP or R.INTEGER(input_result)[0] != 111) return R.Rf_ScalarReal(0.0);
+
+    const output_result = R.Rf_protect(boundaryCall(6, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(output_result) != R.LGLSXP or R.XLENGTH(output_result) != 3) return R.Rf_ScalarReal(0.0);
+    if (R.LOGICAL(output_result)[0] != 0 or R.LOGICAL(output_result)[1] != 1 or R.LOGICAL(output_result)[2] != R.R_NaInt) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_generated_logical_wrong_type() SEXP {
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+
+    const wrong_type = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
+    defer R.Rf_unprotect(1);
+    generated_logical_error_arg = wrong_type;
+    defer generated_logical_error_arg = null;
+
+    const condition = trycatch_mod.tryCatchError(generatedLogicalErrorCall) catch return R.Rf_ScalarReal(0.0);
+    if (condition) |value| {
+        if (std.mem.eql(u8, trycatch_mod.extractMessage(value), "toLogicalSliceView: ExpectedLogical")) {
+            return R.Rf_ScalarReal(1.0);
+        }
+    }
+    return R.Rf_ScalarReal(0.0);
 }
 
 export fn zigr_test_generated_ownership_gc() SEXP {
@@ -5020,10 +5094,16 @@ fn counterAdd(self: *MethodCounter, amount: i32) i32 {
     return self.val;
 }
 
+fn counterLogical(_: *MethodCounter, values: zigr_convert.LogicalSliceView) i32 {
+    return logicalCountCode(values);
+}
+
 const CounterMethods = zigr.@"export".generateMethods(MethodCounter, &.{
     .{ .name = "add", .func = counterAdd },
+    .{ .name = "logical", .func = counterLogical },
 }, &.{
     .{ .name = "add_external", .func = counterAdd },
+    .{ .name = "logical_external", .func = counterLogical },
 });
 
 const MethodCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
@@ -5256,6 +5336,16 @@ export fn zigr_test_export_generatemethods() SEXP {
     const val = R.INTEGER(result)[0];
     if (val != 15) return R.Rf_ScalarReal(0.0);
     if (counter.val != 15) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(logical)[0] = 0;
+    R.LOGICAL(logical)[1] = 1;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+    const logical_method: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[1].fun));
+    const logical_result = R.Rf_protect(logical_method(extptr, logical, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    if (R.INTEGER(logical_result)[0] != 111) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -5278,6 +5368,21 @@ export fn zigr_test_export_generatemethods_external() SEXP {
 
     const result = method_fun(args);
     if (R.INTEGER(result)[0] != 15 or counter.val != 15) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(logical)[0] = 0;
+    R.LOGICAL(logical)[1] = 1;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+    const logical_method: ExternalMethodCall = @ptrCast(@alignCast(CounterMethods.ext_defs[1].fun));
+    const logical_args = R.Rf_protect(R.Rf_cons(
+        R.Rf_install("zigr_test_counter_logical_external"),
+        R.Rf_cons(receiver, R.Rf_cons(logical, R.R_NilValue)),
+    ));
+    defer R.Rf_unprotect(1);
+    const logical_result = R.Rf_protect(logical_method(logical_args));
+    defer R.Rf_unprotect(1);
+    if (R.INTEGER(logical_result)[0] != 111) return R.Rf_ScalarReal(0.0);
 
     external_method_error_fun = method_fun;
     const invalid_receiver = R.Rf_protect(R.Rf_ScalarInteger(0));
