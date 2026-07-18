@@ -286,6 +286,7 @@ tests <- list(
   "zigr_test_weakref_checked_errors",
   "zigr_test_weakref_gc_finalizer",
   "zigr_test_raw_views",
+  "zigr_test_generated_view_selection",
   "zigr_test_complex_boundary",
   "zigr_test_generated_string_shapes",
   "zigr_test_string_allocation_longjmp",

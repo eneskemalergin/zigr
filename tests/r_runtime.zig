@@ -1125,6 +1125,25 @@ fn shortRegionAltRaw() SEXP {
     return R.R_new_altrep(short_raw_region_class, R.R_NilValue, R.R_NilValue);
 }
 
+var failing_raw_region_class: R.R_altrep_class_t = undefined;
+var failing_raw_region_registered = false;
+
+fn failingRawRegionGetRegion(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: [*c]R.Rbyte) callconv(.c) R.R_xlen_t {
+    return 0;
+}
+
+fn failingRawRegion() SEXP {
+    if (!failing_raw_region_registered) {
+        failing_raw_region_class = R.R_make_altraw_class("failing_region_raw", "zigr", null);
+        R.R_set_altrep_Length_method(failing_raw_region_class, shortRegionLength);
+        R.R_set_altvec_Dataptr_or_null_method(failing_raw_region_class, shortRegionDataptrOrNull);
+        R.R_set_altraw_Elt_method(failing_raw_region_class, shortRawRegionElt);
+        R.R_set_altraw_Get_region_method(failing_raw_region_class, failingRawRegionGetRegion);
+        failing_raw_region_registered = true;
+    }
+    return R.R_new_altrep(failing_raw_region_class, R.R_NilValue, R.R_NilValue);
+}
+
 var short_complex_region_class: R.R_altrep_class_t = undefined;
 var short_complex_region_registered = false;
 var short_complex_region_get_calls: usize = 0;
@@ -4362,10 +4381,13 @@ fn fixedScratchRaw(values: []const u8) i32 {
     return total;
 }
 
-fn spillThenAllocate(values: []const i32) R.SEXP {
+fn spillThenAllocate(values: zigr_convert.IntegerSliceView) R.SEXP {
+    var view = values;
+    defer view.deinit();
+    const data = view.constSlice();
     const result = R.Rf_allocVector(R.REALSXP, 2);
-    R.REAL(result)[0] = @floatFromInt(values[0]);
-    R.REAL(result)[1] = @floatFromInt(values[values.len - 1]);
+    R.REAL(result)[0] = @floatFromInt(data[0]);
+    R.REAL(result)[1] = @floatFromInt(data[data.len - 1]);
     return result;
 }
 
@@ -4373,8 +4395,9 @@ fn arenaVectorOutput(_: f64) []const f64 {
     return arena_vector_output[0..];
 }
 
-fn spillThenError(values: []const i32) void {
-    _ = values;
+fn spillThenError(values: zigr_convert.IntegerSliceView) void {
+    var view = values;
+    defer view.deinit();
     R.Rf_error("zigr generated spill: expected error");
 }
 
@@ -4450,6 +4473,37 @@ fn rawViewSum(values: zigr_convert.RawSliceView) i32 {
     return total;
 }
 
+fn realViewRepresentation(values: zigr_convert.RealSliceView) i32 {
+    var view = values;
+    defer view.deinit();
+    return switch (view) {
+        .borrowed => 1,
+        .owned => 2,
+    };
+}
+
+fn integerViewRepresentation(values: zigr_convert.IntegerSliceView) i32 {
+    var view = values;
+    defer view.deinit();
+    return switch (view) {
+        .borrowed => 1,
+        .owned => 2,
+    };
+}
+
+fn complexViewRepresentation(values: zigr_convert.ComplexSliceView) i32 {
+    var view = values;
+    defer view.deinit();
+    return switch (view) {
+        .borrowed => 1,
+        .owned => 2,
+    };
+}
+
+fn rawViewEcho(values: zigr_convert.RawSliceView) []const u8 {
+    return values.constSlice();
+}
+
 fn complexEcho(values: []const zigr_convert.Rcomplex) []const zigr_convert.Rcomplex {
     return values;
 }
@@ -4462,6 +4516,10 @@ const BoundaryExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_complex_echo", .func = complexEcho },
     .{ .name = "zigr_logical_count_code", .func = logicalCountCode },
     .{ .name = "zigr_logical_result", .func = generatedLogicalResult },
+    .{ .name = "zigr_real_view_representation", .func = realViewRepresentation },
+    .{ .name = "zigr_integer_view_representation", .func = integerViewRepresentation },
+    .{ .name = "zigr_complex_view_representation", .func = complexViewRepresentation },
+    .{ .name = "zigr_raw_view_echo", .func = rawViewEcho },
 }, &.{});
 
 const BoundaryCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
@@ -4637,6 +4695,22 @@ export fn zigr_test_allocation_diagnostics() SEXP {
         .owned => return R.Rf_ScalarReal(0.0),
     }
     if (borrowed_counting.stats.allocations != 0) return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(logical)[0] = 0;
+    R.LOGICAL(logical)[1] = 1;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+    var logical_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var logical_view = zigr_convert.toLogicalSliceView(logical_counting.allocator(), logical) catch return R.Rf_ScalarReal(0.0);
+    defer logical_view.deinit();
+    switch (logical_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const logical_values = logical_view.constSlice();
+    if (logical_counting.stats.allocations != 0 or logical_counting.stats.bytes_allocated != 0 or
+        logical_values[0] != 0 or logical_values[1] != 1 or logical_values[2] != R.R_NaInt) return R.Rf_ScalarReal(0.0);
 
     const compact = compactIntSequence(1024) orelse return R.Rf_ScalarReal(0.0);
     defer R.Rf_unprotect(1);
@@ -4954,6 +5028,22 @@ export fn zigr_test_raw_views() SEXP {
     }
     if (!std.mem.eql(u8, view.constSlice(), &expected) or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
 
+    var borrowed_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var counted_view = zigr_convert.toRawSliceView(borrowed_counting.allocator(), raw) catch return R.Rf_ScalarReal(0.0);
+    defer counted_view.deinit();
+    switch (counted_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    if (borrowed_counting.stats.allocations != 0 or borrowed_counting.stats.bytes_allocated != 0 or
+        borrowed_counting.stats.peak_live_bytes != 0) return R.Rf_ScalarReal(0.0);
+
+    var copied_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    const counted_copy = zigr_convert.toRawSlice(copied_counting.allocator(), raw) catch return R.Rf_ScalarReal(0.0);
+    defer copied_counting.allocator().free(counted_copy);
+    if (copied_counting.stats.allocations != 1 or copied_counting.stats.bytes_allocated != expected.len or
+        copied_counting.stats.peak_live_bytes != expected.len) return R.Rf_ScalarReal(0.0);
+
     const rvector = zigr.rvector.RVector(u8).init(raw) catch return R.Rf_ScalarReal(0.0);
     var rvector_view = rvector.view(no_alloc.allocator()) catch return R.Rf_ScalarReal(0.0);
     defer rvector_view.deinit();
@@ -4991,10 +5081,34 @@ export fn zigr_test_raw_views() SEXP {
     }
     if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
 
+    var too_small_storage: [short_region_len - 1]u8 = undefined;
+    var too_small_fba = std.heap.FixedBufferAllocator.init(&too_small_storage);
+    if (zigr_convert.toRawSliceView(too_small_fba.allocator(), raw_altrep)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
+    }
+    const failing = R.Rf_protect(failingRawRegion());
+    defer R.Rf_unprotect(1);
+    if (zigr_convert.toRawSliceView(std.heap.page_allocator, failing)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.AltRepRegionRead) return R.Rf_ScalarReal(0.0);
+    }
+
     if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
     const generated = R.Rf_protect(boundaryCall(3, raw));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(generated) != R.INTSXP or R.INTEGER(generated)[0] != 448) return R.Rf_ScalarReal(0.0);
+    const echoed = R.Rf_protect(boundaryCall(10, raw));
+    defer R.Rf_unprotect(1);
+    if (echoed == raw or R.TYPEOF(echoed) != R.RAWSXP or R.XLENGTH(echoed) != expected.len or
+        R.RAW(echoed)[0] != 0x42 or R.RAW(echoed)[1] != 0xff or R.RAW(echoed)[2] != 0x7f) return R.Rf_ScalarReal(0.0);
+    const altrep_echo = R.Rf_protect(boundaryCall(10, raw_altrep));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(altrep_echo) != R.RAWSXP or R.XLENGTH(altrep_echo) != short_region_len or
+        R.RAW(altrep_echo)[0] != 0 or R.RAW(altrep_echo)[250] != 250 or
+        R.RAW(altrep_echo)[short_region_len - 1] != (short_region_len - 1) % 251) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -5059,6 +5173,34 @@ export fn zigr_test_complex_boundary() SEXP {
     const generated_ptr = R.COMPLEX(generated) orelse return R.Rf_ScalarReal(0.0);
     const generated_values: [*]const zigr_convert.Rcomplex = @ptrCast(@alignCast(generated_ptr));
     if (R.TYPEOF(generated) != R.CPLXSXP or R.XLENGTH(generated) != 3 or R.ISNA(generated_values[1].r) == 0 or !R.ISNAN(generated_values[2].r)) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_generated_view_selection() SEXP {
+    if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
+
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    const integer = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
+    const complex = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
+    defer R.Rf_unprotect(3);
+    R.REAL(real)[0] = 1.0;
+    R.REAL(real)[1] = R.NA_REAL();
+    R.INTEGER(integer)[0] = 7;
+    R.INTEGER(integer)[1] = R.R_NaInt;
+    const complex_ptr = R.COMPLEX(complex) orelse return R.Rf_ScalarReal(0.0);
+    const complex_values: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(complex_ptr));
+    complex_values[0] = .{ .r = 1.0, .i = -1.0 };
+    complex_values[1] = .{ .r = R.NA_REAL(), .i = R.NA_REAL() };
+
+    const real_result = R.Rf_protect(boundaryCall(7, real));
+    defer R.Rf_unprotect(1);
+    const integer_result = R.Rf_protect(boundaryCall(8, integer));
+    defer R.Rf_unprotect(1);
+    const complex_result = R.Rf_protect(boundaryCall(9, complex));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(real_result) != R.INTSXP or R.INTEGER(real_result)[0] != 1 or
+        R.TYPEOF(integer_result) != R.INTSXP or R.INTEGER(integer_result)[0] != 1 or
+        R.TYPEOF(complex_result) != R.INTSXP or R.INTEGER(complex_result)[0] != 1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

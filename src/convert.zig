@@ -279,6 +279,18 @@ pub fn SliceView(comptime T: type) type {
 
 pub const RawSliceView = SliceView(u8);
 
+/// A read-only numeric input view. Ordinary R storage is borrowed; an ALTREP
+/// fallback owns a call-scoped contiguous representation.
+pub const RealSliceView = SliceView(f64);
+
+/// A read-only integer input view. Ordinary R storage is borrowed; an ALTREP
+/// fallback owns a call-scoped contiguous representation.
+pub const IntegerSliceView = SliceView(i32);
+
+/// A read-only complex input view. Ordinary R storage is borrowed; an ALTREP
+/// fallback owns a call-scoped contiguous representation.
+pub const ComplexSliceView = SliceView(Rcomplex);
+
 /// A generated-boundary logical input view. Values remain R's three-state
 /// representation: `0`, `1`, or `R_NaInt`; callers must not coerce them to
 /// `bool` when missingness is possible. The view is call-scoped; any fallback
@@ -297,14 +309,14 @@ pub const LogicalSlice = struct {
     data: []const i32,
 };
 
-pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(f64) {
+pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RealSliceView {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const representation = try vectorRepresentation(sexp);
     if (directRealSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
     return .{ .owned = .{ .data = try toRealSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
 }
 
-pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
+pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !IntegerSliceView {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     const representation = try vectorRepresentation(sexp);
     if (directIntSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
@@ -661,7 +673,7 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
     return result;
 }
 
-pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(Rcomplex) {
+pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !ComplexSliceView {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const representation = try vectorRepresentation(sexp);
     if (directComplexSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };

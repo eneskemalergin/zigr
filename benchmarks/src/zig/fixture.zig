@@ -381,8 +381,10 @@ fn benchLogicalCounts(value: convert.LogicalSliceView) R.SEXP {
     return result.get();
 }
 
-fn benchRawCopy(value: []const u8) []const u8 {
-    return fixtureRaw(value);
+fn benchRawCopy(value: convert.RawSliceView) []const u8 {
+    // The input is borrowed when ordinary RAW storage is available. The
+    // generated []const u8 result still copies into a fresh R result.
+    return value.constSlice();
 }
 
 fn benchComplexConjugate(value: []const convert.Rcomplex) R.SEXP {

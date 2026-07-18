@@ -86,9 +86,15 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         const view = convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
         return view.constSlice();
     }
+    if (comptime T == convert.RealSliceView) {
+        return convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
+    }
     if (comptime T == []const i32) {
         const view = convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
         return view.constSlice();
+    }
+    if (comptime T == convert.IntegerSliceView) {
+        return convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
     }
     if (comptime T == convert.LogicalSliceView) {
         const view = convert.toLogicalSliceView(arena, sexp) catch |err| signalErrorMsg("toLogicalSliceView", @errorName(err));
@@ -122,6 +128,9 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime T == []const convert.Rcomplex) {
         const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
         return view.constSlice();
+    }
+    if (comptime T == convert.ComplexSliceView) {
+        return convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
     }
     @compileError("unsupported generated parameter type: " ++ @typeName(T) ++ "; accept R.SEXP and call convert.fromSEXP for a fixed schema");
 }
@@ -209,7 +218,11 @@ const TwoTierArena = struct {
 
 fn needsInputArena(comptime T: type) bool {
     if (comptime T == convert.StringSliceView) return false;
-    if (comptime T == convert.RawSliceView or T == convert.CachedStringSliceView) return true;
+    if (comptime T == convert.RealSliceView or
+        T == convert.IntegerSliceView or
+        T == convert.RawSliceView or
+        T == convert.ComplexSliceView or
+        T == convert.CachedStringSliceView) return true;
     return switch (@typeInfo(T)) {
         .optional => |info| needsInputArena(info.child),
         .pointer => |info| info.size == .slice,
@@ -706,6 +719,17 @@ fn generatedCoverageInputs(
     return .{ .data = &.{} };
 }
 
+fn generatedCoverageViews(
+    real_view: convert.RealSliceView,
+    integer_view: convert.IntegerSliceView,
+    complex_view: convert.ComplexSliceView,
+) i32 {
+    _ = real_view;
+    _ = integer_view;
+    _ = complex_view;
+    return 1;
+}
+
 fn generatedCoverageObject(value: R.SEXP) R.SEXP {
     return value;
 }
@@ -739,6 +763,7 @@ fn generatedCoverageMethod(_: *GeneratedCoverageState, logical: convert.LogicalS
 
 const GeneratedCoverageExports = generateExports(&.{
     .{ .name = "coverage_inputs", .func = generatedCoverageInputs },
+    .{ .name = "coverage_views", .func = generatedCoverageViews },
     .{ .name = "coverage_object", .func = generatedCoverageObject },
     .{ .name = "coverage_strings", .func = generatedCoverageStrings },
     .{ .name = "coverage_optional", .func = generatedCoverageOptional },
@@ -763,6 +788,10 @@ test "generated coverage compiles logical vectors across entry forms" {
     try std.testing.expect(needsInputArena(convert.LogicalSliceView));
     try std.testing.expect(needsInputArena(?convert.LogicalSliceView));
     try std.testing.expect(needsInputArena(convert.LogicalSlice));
+    try std.testing.expect(needsInputArena(convert.RealSliceView));
+    try std.testing.expect(needsInputArena(convert.IntegerSliceView));
+    try std.testing.expect(needsInputArena(convert.RawSliceView));
+    try std.testing.expect(needsInputArena(convert.ComplexSliceView));
 }
 
 test "scalar and optional scalar wrappers do not need an arena" {

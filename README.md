@@ -159,7 +159,9 @@ I keep the generated layer small. `generateExports` builds registered `.Call` an
 | --- | :---: | :---: | --- |
 | `f64`, `i32`, `bool` | yes | yes | Exactly one REAL, INTEGER, or LOGICAL value; required typed `NA` is an error |
 | `?f64`, `?i32`, `?bool` | yes | yes | `NULL` or one typed `NA` becomes `null`; a null return becomes `NULL`; real `NaN` remains a value |
-| `[]const f64`, `[]const i32` | yes | yes | Ordinary input is borrowed; ALTREP input may be copied into call-scoped storage |
+| `RealSliceView`, `IntegerSliceView`, `ComplexSliceView` | yes | no | Read-only views borrow ordinary input storage and may own an ALTREP fallback for the enclosing call |
+| `LogicalSliceView` | yes | no | Read-only logical view preserves `0`, `1`, and `R_NaInt`; ordinary storage is borrowed and ALTREP fallback is call-scoped |
+| `[]const f64`, `[]const i32` | yes | yes | Convenience forms use the same borrowed ordinary input path and may copy ALTREP input into call-scoped storage |
 | `StringSliceView`, `CachedStringSliceView`, `[]const []const u8` | yes | no, no, yes | The two view types preserve `NA` and encoding metadata; the slice-of-slices form owns call-scoped headers and discards that metadata |
 | `RawSliceView`, `[]const u8` | yes | no, yes | Raw bytes are not strings; the view borrows ordinary RAWSXP storage and may own an ALTREP fallback |
 | `[]const convert.Rcomplex` | yes | yes | Uses R's complex layout and preserves component-level NA/NaN values |
