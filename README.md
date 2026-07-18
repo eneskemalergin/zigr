@@ -295,7 +295,7 @@ src/
 ├── symbols.zig        Open-addressing symbol cache
 ├── eval.zig           rEval, findVar, findFunction, call, setVar
 ├── raw.zig            Zero-copy vector data access
-├── rvector.zig        Typed RVector wrapper with arithmetic
+├── rvector.zig        Typed RVector wrapper with arithmetic and direct copies
 ├── simd.zig           SIMD lane configuration
 └── cross_check.zig    Cross-compilation verification
 ```

@@ -77,6 +77,24 @@ pub fn RVector(comptime T: type) type {
             }.op);
         }
 
+        /// Copies the vector into one final R-owned result. The one-pass
+        /// access keeps ordinary storage borrowed and streams an ALTREP
+        /// fallback through its bounded region buffer.
+        pub fn copy(self: Self) R.SEXP {
+            var result = convert.ResultBuilder(T).init(self.len());
+            defer result.deinit();
+
+            var input = convert.toVectorAccess(T, .one_pass, std.heap.page_allocator, self.sexp) catch |err| convert.signalError(err);
+            defer input.deinit();
+            const output = result.mutableSlice();
+            var offset: usize = 0;
+            while (input.next() catch |err| convert.signalError(err)) |chunk| {
+                @memcpy(output[offset .. offset + chunk.len], chunk);
+                offset += chunk.len;
+            }
+            return result.finish();
+        }
+
         pub fn add(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
             return mapBinary(self, other, allocator, struct {
                 fn op(a: T, b: T) T {
@@ -108,14 +126,16 @@ pub fn RVector(comptime T: type) type {
             var result = convert.ResultBuilder(T).init(self.len());
             defer result.deinit();
 
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-            var input_view = self.view(arena.allocator()) catch convert.signalError(error.UnexpectedType);
-            defer input_view.deinit();
-            const data = input_view.constSlice();
-
+            var input = convert.toVectorAccess(T, .one_pass, std.heap.page_allocator, self.sexp) catch |err| convert.signalError(err);
+            defer input.deinit();
             const out = result.mutableSlice();
-            for (data, 0..) |value, index| out[index] = op(value, scalar);
+            var offset: usize = 0;
+            while (input.next() catch |err| convert.signalError(err)) |chunk| {
+                for (chunk) |value| {
+                    out[offset] = op(value, scalar);
+                    offset += 1;
+                }
+            }
             return result.finish();
         }
 

@@ -57,12 +57,8 @@ fn fixtureScalar(value: f64) f64 {
 }
 
 fn fixtureNumeric(value: R.SEXP) R.SEXP {
-    var result = convert.ResultBuilder(f64).initFromInput(value) catch |err| convert.signalError(err);
-    defer result.deinit();
-    const input = convert.dataPtr(f64, value) orelse zigr.@"error".signal("numeric input data unavailable");
-    const output = result.mutableSlice();
-    for (input[0..output.len], output) |source, *destination| destination.* = source * 2.0;
-    return result.finish();
+    const input = zigr.rvector.RVector(f64).init(value) catch |err| convert.signalError(err);
+    return input.mulScalar(2.0);
 }
 
 fn fixtureAltrepInteger(value: []const i32) f64 {
@@ -382,12 +378,8 @@ fn benchLogicalCounts(value: convert.LogicalSliceView) R.SEXP {
 }
 
 fn benchRawCopy(value: R.SEXP) R.SEXP {
-    var result = convert.ResultBuilder(u8).initFromInput(value) catch |build_err| convert.signalError(build_err);
-    defer result.deinit();
-    const input = convert.dataPtr(u8, value) orelse zigr.@"error".signal("raw input data unavailable");
-    const output = result.mutableSlice();
-    @memcpy(output, input[0..output.len]);
-    return result.finish();
+    const input = zigr.rvector.RVector(u8).init(value) catch |err| convert.signalError(err);
+    return input.copy();
 }
 
 fn benchComplexConjugate(value: []const convert.Rcomplex) R.SEXP {

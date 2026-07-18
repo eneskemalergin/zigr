@@ -1055,6 +1055,7 @@ var short_region_class: R.R_altrep_class_t = undefined;
 var short_region_registered = false;
 var short_region_get_calls: usize = 0;
 var short_region_elt_calls: usize = 0;
+var short_region_max_requested: usize = 0;
 
 fn shortRegionLength(_: SEXP) callconv(.c) R.R_xlen_t {
     return @intCast(short_region_len);
@@ -1075,6 +1076,7 @@ fn shortRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffe
     if (offset >= short_region_len) return 0;
 
     short_region_get_calls += 1;
+    short_region_max_requested = @max(short_region_max_requested, @as(usize, @intCast(requested)));
     const count = @min(@min(@as(usize, @intCast(requested)), short_region_cap), short_region_len - offset);
     const out: [*]i32 = @ptrCast(buffer);
     for (0..count) |i| out[i] = @intCast(offset + i + 1);
@@ -1097,6 +1099,7 @@ var short_raw_region_class: R.R_altrep_class_t = undefined;
 var short_raw_region_registered = false;
 var short_raw_region_get_calls: usize = 0;
 var short_raw_region_elt_calls: usize = 0;
+var short_raw_region_max_requested: usize = 0;
 
 fn shortRawRegionElt(_: SEXP, index: R.R_xlen_t) callconv(.c) R.Rbyte {
     short_raw_region_elt_calls += 1;
@@ -1109,6 +1112,7 @@ fn shortRawRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, bu
     if (offset >= short_region_len) return 0;
 
     short_raw_region_get_calls += 1;
+    short_raw_region_max_requested = @max(short_raw_region_max_requested, @as(usize, @intCast(requested)));
     const count = @min(@min(@as(usize, @intCast(requested)), short_region_cap), short_region_len - offset);
     const out: [*]u8 = @ptrCast(buffer);
     for (0..count) |i| out[i] = @intCast((offset + i) % 251);
@@ -5129,6 +5133,18 @@ export fn zigr_test_altrep_access_strategies() SEXP {
     if (automatic.strategy() != .region) return R.Rf_ScalarReal(0.0);
     automatic.deinit();
 
+    short_region_get_calls = 0;
+    short_region_elt_calls = 0;
+    short_region_max_requested = 0;
+    const streamed_rvector = zigr.rvector.RVector(i32).init(region_input) catch return R.Rf_ScalarReal(0.0);
+    const streamed_result = R.Rf_protect(streamed_rvector.mulScalar(2));
+    defer R.Rf_unprotect(1);
+    const expected_stream_regions = (short_region_len + 255) / 256;
+    if (R.TYPEOF(streamed_result) != R.INTSXP or R.XLENGTH(streamed_result) != short_region_len or
+        R.INTEGER(streamed_result)[0] != 2 or R.INTEGER(streamed_result)[short_region_len - 1] != 2 * @as(i32, @intCast(short_region_len)) or
+        short_region_get_calls != expected_stream_regions or short_region_elt_calls != 0 or
+        short_region_max_requested > 256 or R.INTEGER_OR_NULL(region_input) != null) return R.Rf_ScalarReal(0.0);
+
     const raw_input = R.Rf_protect(shortRegionAltRaw());
     defer R.Rf_unprotect(1);
     var raw_counting = mem.CountingAllocator.init(std.heap.page_allocator);
@@ -5572,6 +5588,18 @@ export fn zigr_test_raw_views() SEXP {
         if (short_raw_region_get_calls != expected_region_calls or short_raw_region_elt_calls != 0) return R.Rf_ScalarReal(0.0);
     }
     if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+
+    short_raw_region_get_calls = 0;
+    short_raw_region_elt_calls = 0;
+    short_raw_region_max_requested = 0;
+    const copied_rvector = zigr.rvector.RVector(u8).init(raw_altrep) catch return R.Rf_ScalarReal(0.0);
+    const copied_result = R.Rf_protect(copied_rvector.copy());
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(copied_result) != R.RAWSXP or R.XLENGTH(copied_result) != short_region_len or
+        R.RAW(copied_result)[0] != 0 or R.RAW(copied_result)[250] != 250 or
+        R.RAW(copied_result)[short_region_len - 1] != (short_region_len - 1) % 251 or
+        short_raw_region_get_calls != (short_region_len + 255) / 256 or short_raw_region_elt_calls != 0 or
+        short_raw_region_max_requested > 256 or R.RAW_OR_NULL(raw_altrep) != null) return R.Rf_ScalarReal(0.0);
 
     var too_small_storage: [short_region_len - 1]u8 = undefined;
     var too_small_fba = std.heap.FixedBufferAllocator.init(&too_small_storage);
