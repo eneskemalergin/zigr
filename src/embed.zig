@@ -8,8 +8,10 @@ const cleanup = @import("cleanup");
 const err = @import("error");
 
 const FreeBuf = struct {
-    fn fire(ptr: ?*anyopaque) void {
-        R.R_chk_free(ptr);
+    ptr: ?*anyopaque = null,
+
+    fn fire(self: *@This()) void {
+        if (self.ptr) |ptr| R.R_chk_free(ptr);
     }
 };
 
@@ -23,8 +25,9 @@ pub fn rCodeEval(code: []const u8, envir: ?R.SEXP) R.SEXP {
     return cleanup.protectCallData(struct {
         fn call(raw: ?*anyopaque) R.SEXP {
             const ctx: *Context = @ptrCast(@alignCast(raw.?));
+            const state = cleanup.pushFrameInline(FreeBuf, .{}, FreeBuf.fire);
             const buf = R.R_chk_calloc(ctx.code.len + 1, 1) orelse err.signal("out of memory during embedded R evaluation");
-            cleanup.pushFrame(FreeBuf.fire, buf);
+            state.ptr = buf;
             const c_buf: [*]u8 = @ptrCast(@as(*anyopaque, @ptrCast(buf)));
             @memcpy(c_buf[0..ctx.code.len], ctx.code);
             c_buf[ctx.code.len] = 0;

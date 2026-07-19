@@ -535,9 +535,13 @@ fn toVectorAccessWithRepresentation(
                 } };
             }
             const buffer_len = @min(representation.len, region_chunk_elements);
+            cleanup.requireCapacity(2);
             const buffer = try allocator.alloc(T, buffer_len);
-            errdefer allocator.free(buffer);
-            _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(T, allocator, buffer, @returnAddress()), AllocSliceCleanup.fire);
+            _ = cleanup.pushFrameInline(
+                AllocSliceCleanup,
+                AllocSliceCleanup.init(T, allocator, buffer, @returnAddress()),
+                AllocSliceCleanup.fire,
+            );
             return .{ .region = .{
                 .sexp = sexp,
                 .len = representation.len,
@@ -548,8 +552,8 @@ fn toVectorAccessWithRepresentation(
             } };
         },
         .materialized => {
+            cleanup.requireCapacity(3);
             const data = try materializedVectorSlice(T, allocator, sexp, representation);
-            errdefer allocator.free(data);
             if (data.len == 0) {
                 return .{ .materialized = .{
                     .data = data,
@@ -557,7 +561,11 @@ fn toVectorAccessWithRepresentation(
                     .cleanup_registered = false,
                 } };
             }
-            _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(T, allocator, data, @returnAddress()), AllocSliceCleanup.fire);
+            _ = cleanup.pushFrameInline(
+                AllocSliceCleanup,
+                AllocSliceCleanup.init(T, allocator, data, @returnAddress()),
+                AllocSliceCleanup.fire,
+            );
             return .{ .materialized = .{
                 .data = data,
                 .allocator = allocator,
@@ -588,13 +596,18 @@ pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
 
 fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]f64 {
     const n = representation.len;
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(f64, n);
     errdefer allocator.free(result);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(f64, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
+    defer cleanup.popFrame();
     if (directRealSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(f64, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
-        defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -738,13 +751,18 @@ pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
 
 fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
     const n = representation.len;
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
     errdefer allocator.free(result);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
+    defer cleanup.popFrame();
     if (directIntSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
-        defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -769,8 +787,13 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc([]const u8, n);
-    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init([]const u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init([]const u8, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
     defer cleanup.popFrame();
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
@@ -782,8 +805,13 @@ pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
 pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(?[]const u8, n);
-    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(?[]const u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(?[]const u8, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
     defer cleanup.popFrame();
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
@@ -1086,8 +1114,13 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
+    cleanup.requireCapacity(2);
     const items = try allocator.alloc(StringView, n);
-    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(StringView, allocator, items, @returnAddress()), AllocSliceCleanup.fire);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(StringView, allocator, items, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
     defer cleanup.popFrame();
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
@@ -1114,13 +1147,18 @@ pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
 
 fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
     const n = representation.len;
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
     errdefer allocator.free(result);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
+    defer cleanup.popFrame();
     if (directLogicalSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(i32, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
-        defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -1151,8 +1189,13 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
     const n = try tryXlength(sexp);
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(SEXP, n);
-    _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(SEXP, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(SEXP, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
     defer cleanup.popFrame();
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
     return result;
@@ -1172,13 +1215,18 @@ pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
 
 fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const u8 {
     const n = representation.len;
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(u8, n);
     errdefer allocator.free(result);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(u8, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
+    defer cleanup.popFrame();
     if (directRawSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(u8, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
-        defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
@@ -1213,13 +1261,18 @@ pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomple
 
 fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]Rcomplex {
     const n = representation.len;
+    cleanup.requireCapacity(2);
     const result = try allocator.alloc(Rcomplex, n);
     errdefer allocator.free(result);
+    _ = cleanup.pushFrameInline(
+        AllocSliceCleanup,
+        AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()),
+        AllocSliceCleanup.fire,
+    );
+    defer cleanup.popFrame();
     if (directComplexSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
-        _ = cleanup.pushFrameInline(AllocSliceCleanup, AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()), AllocSliceCleanup.fire);
-        defer cleanup.popFrame();
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {

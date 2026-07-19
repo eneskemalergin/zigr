@@ -120,6 +120,8 @@ tests <- list(
   "zigr_test_attrib_contract",
   "zigr_test_attrib_allocation_longjmp",
   "zigr_test_attrib_cleanup_capacity",
+  "zigr_test_native_cleanup_capacity",
+  "zigr_test_native_allocator_failure",
   "zigr_test_df_names_longjmp",
 
   "zigr_test_altrep_create",
@@ -222,6 +224,7 @@ tests <- list(
   "zigr_test_embed_warning",
   "zigr_test_embed_unicode",
   "zigr_test_embed_long_code",
+  "zigr_test_embed_cleanup_capacity",
   "zigr_test_struct_roundtrip",
   "zigr_test_struct_nan_inf",
   "zigr_test_struct_neg_zero",
@@ -317,6 +320,7 @@ tests <- list(
   "zigr_typeof_nil",
 
   "zigr_test_cleanup_fires_on_longjmp",
+  "zigr_test_unwind_state_restoration",
   "zigr_test_nested_unwind_state",
   "zigr_test_cleanup_capacity_recovers",
   "zigr_test_with_rng_longjmp",

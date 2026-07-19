@@ -29,6 +29,9 @@ const diagnostics_enabled = builtin.mode == .Debug or builtin.mode == .ReleaseSa
 /// High-water marks are disabled in ReleaseFast builds.
 pub const DiagnosticSnapshot = struct {
     enabled: bool,
+    cleanup_frames: usize,
+    unwind_boundaries: usize,
+    protect_depth: i32,
     max_cleanup_frames: usize,
     max_unwind_boundaries: usize,
     max_protect_depth: i32,
@@ -89,6 +92,7 @@ export fn zigr_protect_call(
     return R.R_UnwindProtect(fun, data, cleanHandler, null, cont);
 }
 
+/// Direct ABI and test hook; live R calls use cleanHandler through R_UnwindProtect.
 export fn zigr_on_unwind() void {
     while (count > 0) {
         count -= 1;
@@ -96,6 +100,7 @@ export fn zigr_on_unwind() void {
     }
 }
 
+/// Direct ABI and test hook; live R calls restore their boundary snapshot in cleanHandler.
 export fn zigr_on_return() void {
     count = 0;
 }
@@ -109,6 +114,13 @@ pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) vo
 
 pub fn popFrame() void {
     if (count > 0) count -= 1;
+}
+
+/// Reserve room before an operation that may register an internal frame before
+/// the caller registers ownership for the operation's native allocation.
+pub fn requireCapacity(frames: usize) void {
+    if (frames > MAX_NESTING) err.signal("cleanup stack overflow");
+    if (count > MAX_NESTING - frames) err.signal("cleanup stack overflow");
 }
 
 pub fn getProtectDepth() i32 {
@@ -132,12 +144,18 @@ pub fn resetDiagnostics() void {
 pub fn diagnosticSnapshot() DiagnosticSnapshot {
     if (!diagnostics_enabled) return .{
         .enabled = false,
+        .cleanup_frames = 0,
+        .unwind_boundaries = 0,
+        .protect_depth = 0,
         .max_cleanup_frames = 0,
         .max_unwind_boundaries = 0,
         .max_protect_depth = 0,
     };
     return .{
         .enabled = true,
+        .cleanup_frames = count,
+        .unwind_boundaries = boundary_count,
+        .protect_depth = protect_depth,
         .max_cleanup_frames = max_cleanup_frames,
         .max_unwind_boundaries = max_unwind_boundaries,
         .max_protect_depth = max_protect_depth,
