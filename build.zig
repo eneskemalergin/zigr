@@ -131,13 +131,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run zigr tests");
     test_step.dependOn(&run_zigr_tests.step);
 
+    const abi_sexp = b.addModule("abi_sexp", .{
+        .root_source_file = b.path("src/sexp.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "R", .module = r.r_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
+        },
+    });
     const abi_info = b.addExecutable(.{
         .name = "zigr_abi_info",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/abi_info.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "zigr", .module = zigr }},
+            .imports = &.{.{ .name = "sexp", .module = abi_sexp }},
         }),
     });
     const run_abi_info = b.addRunArtifact(abi_info);

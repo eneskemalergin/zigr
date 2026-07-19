@@ -298,11 +298,31 @@ metadata <- list(
   command = list("Rscript", "run_benchmarks.R")
 )
 validate_direct_run_manifest(metadata)
+missing_required <- clone(metadata)
+missing_required$source_tree <- NULL
+expect_error(
+  "manifest rejects missing source identity",
+  validate_direct_run_manifest(missing_required),
+  "run manifest is missing: source_tree"
+)
 incomplete <- clone(metadata)
 incomplete$status <- "incomplete"
 incomplete$finished_at <- run_manifest_timestamp()
 incomplete$status_message <- "sizing failure"
 validate_direct_run_manifest(incomplete)
+missing_output <- clone(metadata)
+missing_output$status <- "correctness_complete"
+missing_output$measurement_mode <- "correctness_only"
+missing_output$finished_at <- run_manifest_timestamp()
+missing_output$outputs <- list(correctness = list(
+  relative_path = "correctness.csv", md5 = "missing-output-digest"
+))
+validate_direct_run_manifest(missing_output)
+expect_error(
+  "output validator rejects a missing correctness artifact",
+  validate_direct_run_outputs(tempdir(), missing_output),
+  "run output is missing"
+)
 forged_seed <- clone(metadata)
 forged_seed$input_seeds[[ids[[1L]]]] <- forged_seed$input_seeds[[ids[[1L]]]] + 1L
 expect_error("manifest rejects forged input seed", validate_direct_run_manifest(forged_seed), "input seed differs")

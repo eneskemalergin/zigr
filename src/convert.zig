@@ -634,6 +634,7 @@ pub fn ResultBuilder(comptime T: type) type {
         }
 
         pub fn mutableSlice(self: *Self) []storage_type {
+            if (self.len == 0) return &[_]storage_type{};
             const ptr: [*]storage_type = switch (T) {
                 f64 => @ptrCast(R.REAL(self.get())),
                 i32 => @ptrCast(R.INTEGER(self.get())),
@@ -1697,18 +1698,28 @@ pub fn norm2(sexp: SEXP) f64 {
     return total;
 }
 
-fn chunkHasNA(data: []const f64) bool {
-    const lanes = simd.f64_lanes;
-    const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
-    var i: usize = 0;
-    while (i + lanes <= data.len) : (i += lanes) {
-        const bits: @Vector(lanes, u64) = @bitCast(data[i..][0..lanes].*);
-        if (@reduce(.Or, bits == na_bits)) return true;
-    }
-    while (i < data.len) : (i += 1) {
-        if (R.ISNA(data[i]) != 0) return true;
-    }
-    return false;
+const RealMissing = enum {
+    none,
+    nan,
+    na,
+};
+
+fn realMissing(value: f64) RealMissing {
+    if (R.ISNA(value) != 0) return .na;
+    if (R.ISNAN(value)) return .nan;
+    return .none;
+}
+
+fn combineRealMissing(current: RealMissing, next: RealMissing) RealMissing {
+    if (current == .na or next == .na) return .na;
+    if (current == .nan or next == .nan) return .nan;
+    return .none;
+}
+
+fn chunkRealMissing(data: []const f64) RealMissing {
+    var missing: RealMissing = .none;
+    for (data) |value| missing = combineRealMissing(missing, realMissing(value));
+    return missing;
 }
 
 pub fn min(sexp: SEXP) f64 {
@@ -1719,24 +1730,24 @@ pub fn min(sexp: SEXP) f64 {
     const lanes = simd.f64_lanes;
     const inf_vec: @Vector(lanes, f64) = @splat(std.math.inf(f64));
     var value = std.math.inf(f64);
+    var missing: RealMissing = .none;
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         var i: usize = 0;
         if (chunk.data.len >= lanes) {
-            const has_na = chunkHasNA(chunk.data);
+            const chunk_missing = chunkRealMissing(chunk.data);
+            missing = combineRealMissing(missing, chunk_missing);
             var vec: @Vector(lanes, f64) = inf_vec;
             const end = chunk.data.len - (chunk.data.len % lanes);
-            if (has_na) {
-                const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
+            if (chunk_missing != .none) {
                 while (i < end) : (i += lanes) {
-                    const vals = chunk.data[i..][0..lanes].*;
-                    const not_na = @as(@Vector(lanes, u64), @bitCast(vals)) != na_bits;
-                    const clean = @select(f64, not_na, vals, inf_vec);
+                    const vals: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
+                    const clean = @select(f64, vals == vals, vals, inf_vec);
                     vec = @select(f64, clean < vec, clean, vec);
                 }
             } else {
                 while (i < end) : (i += lanes) {
-                    const vals = chunk.data[i..][0..lanes].*;
+                    const vals: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
                     vec = @select(f64, vals < vec, vals, vec);
                 }
             }
@@ -1744,12 +1755,18 @@ pub fn min(sexp: SEXP) f64 {
             if (vec_min < value) value = vec_min;
         }
         while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNA(chunk.data[i]) != 0) continue;
+            const value_missing = realMissing(chunk.data[i]);
+            missing = combineRealMissing(missing, value_missing);
+            if (value_missing != .none) continue;
             if (chunk.data[i] < value) value = chunk.data[i];
         }
     }
 
-    return value;
+    return switch (missing) {
+        .none => value,
+        .nan => R.R_NaN,
+        .na => R.R_NaReal,
+    };
 }
 
 pub fn max(sexp: SEXP) f64 {
@@ -1760,24 +1777,24 @@ pub fn max(sexp: SEXP) f64 {
     const lanes = simd.f64_lanes;
     const neg_inf_vec: @Vector(lanes, f64) = @splat(-std.math.inf(f64));
     var value = -std.math.inf(f64);
+    var missing: RealMissing = .none;
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         var i: usize = 0;
         if (chunk.data.len >= lanes) {
-            const has_na = chunkHasNA(chunk.data);
+            const chunk_missing = chunkRealMissing(chunk.data);
+            missing = combineRealMissing(missing, chunk_missing);
             var vec: @Vector(lanes, f64) = neg_inf_vec;
             const end = chunk.data.len - (chunk.data.len % lanes);
-            if (has_na) {
-                const na_bits: @Vector(lanes, u64) = @splat(@bitCast(R.R_NaReal));
+            if (chunk_missing != .none) {
                 while (i < end) : (i += lanes) {
-                    const vals = chunk.data[i..][0..lanes].*;
-                    const not_na = @as(@Vector(lanes, u64), @bitCast(vals)) != na_bits;
-                    const clean = @select(f64, not_na, vals, neg_inf_vec);
+                    const vals: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
+                    const clean = @select(f64, vals == vals, vals, neg_inf_vec);
                     vec = @select(f64, clean > vec, clean, vec);
                 }
             } else {
                 while (i < end) : (i += lanes) {
-                    const vals = chunk.data[i..][0..lanes].*;
+                    const vals: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
                     vec = @select(f64, vals > vec, vals, vec);
                 }
             }
@@ -1785,12 +1802,18 @@ pub fn max(sexp: SEXP) f64 {
             if (vec_max > value) value = vec_max;
         }
         while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNA(chunk.data[i]) != 0) continue;
+            const value_missing = realMissing(chunk.data[i]);
+            missing = combineRealMissing(missing, value_missing);
+            if (value_missing != .none) continue;
             if (chunk.data[i] > value) value = chunk.data[i];
         }
     }
 
-    return value;
+    return switch (missing) {
+        .none => value,
+        .nan => R.R_NaN,
+        .na => R.R_NaReal,
+    };
 }
 
 fn argminmax(comptime find_min: bool, sexp: SEXP) i64 {
@@ -1887,7 +1910,6 @@ pub fn sum_narm(sexp: SEXP) f64 {
     if (n == 0) return 0.0;
 
     const lanes = simd.f64_lanes;
-    const na_bits: @Vector(lanes, u64) = @splat(@as(u64, @bitCast(R.R_NaReal)));
     const zero: @Vector(lanes, f64) = @splat(0.0);
     var total: f64 = 0.0;
     var iter = RealChunkIter.init(sexp);
@@ -1898,13 +1920,13 @@ pub fn sum_narm(sexp: SEXP) f64 {
             const end = chunk.data.len - (chunk.data.len % lanes);
             while (i < end) : (i += lanes) {
                 const v: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
-                const ok = @as(@Vector(lanes, u64), @bitCast(v)) != na_bits;
+                const ok = v == v;
                 vec_total += @select(f64, ok, v, zero);
             }
             total += @reduce(.Add, vec_total);
         }
         while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNA(chunk.data[i]) != 0) continue;
+            if (R.ISNAN(chunk.data[i])) continue;
             total += chunk.data[i];
         }
     }
@@ -1915,10 +1937,9 @@ pub fn sum_narm(sexp: SEXP) f64 {
 pub fn mean_narm(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
     const n = xlength(sexp);
-    if (n == 0) return R.R_NaReal;
+    if (n == 0) return R.R_NaN;
 
     const lanes = simd.f64_lanes;
-    const na_bits: @Vector(lanes, u64) = @splat(@as(u64, @bitCast(R.R_NaReal)));
     const zero: @Vector(lanes, f64) = @splat(0.0);
     const one: @Vector(lanes, f64) = @splat(1.0);
     var total: f64 = 0.0;
@@ -1932,7 +1953,7 @@ pub fn mean_narm(sexp: SEXP) f64 {
             const end = chunk.data.len - (chunk.data.len % lanes);
             while (i < end) : (i += lanes) {
                 const v: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
-                const ok = @as(@Vector(lanes, u64), @bitCast(v)) != na_bits;
+                const ok = v == v;
                 vec_total += @select(f64, ok, v, zero);
                 vec_cnt += @select(f64, ok, one, zero);
             }
@@ -1940,7 +1961,7 @@ pub fn mean_narm(sexp: SEXP) f64 {
             count += @as(i64, @intFromFloat(@reduce(.Add, vec_cnt)));
         }
         while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNA(chunk.data[i]) != 0) {
+            if (R.ISNAN(chunk.data[i])) {
                 @branchHint(.unlikely);
                 continue;
             }
@@ -1949,7 +1970,19 @@ pub fn mean_narm(sexp: SEXP) f64 {
         }
     }
 
-    return if (count == 0) R.R_NaReal else total / @as(f64, @floatFromInt(count));
+    return if (count == 0) R.R_NaN else total / @as(f64, @floatFromInt(count));
+}
+
+fn realPairMin(a: f64, b: f64) f64 {
+    if (R.ISNA(a) != 0 or R.ISNA(b) != 0) return R.R_NaReal;
+    if (R.ISNAN(a) or R.ISNAN(b)) return R.R_NaN;
+    return if (a <= b) a else b;
+}
+
+fn realPairMax(a: f64, b: f64) f64 {
+    if (R.ISNA(a) != 0 or R.ISNA(b) != 0) return R.R_NaReal;
+    if (R.ISNAN(a) or R.ISNAN(b)) return R.R_NaN;
+    return if (a >= b) a else b;
 }
 
 pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
@@ -1995,7 +2028,7 @@ pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     const rp = R.REAL(result.get());
 
     for (0..n) |i| {
-        rp[i] = @min(da[i % da.len], db[i % db.len]);
+        rp[i] = realPairMin(da[i % da.len], db[i % db.len]);
     }
 
     return result.get();
@@ -2021,7 +2054,7 @@ pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     const rp = R.REAL(result.get());
 
     for (0..n) |i| {
-        rp[i] = @max(da[i % da.len], db[i % db.len]);
+        rp[i] = realPairMax(da[i % da.len], db[i % db.len]);
     }
 
     return result.get();
@@ -2041,17 +2074,21 @@ pub fn cumsum(sexp: SEXP) SEXP {
     const rp = R.REAL(result.get());
 
     var total: f64 = 0.0;
-    var na_seen = false;
+    var missing: RealMissing = .none;
     var idx: usize = 0;
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
         for (chunk.data) |value| {
-            if (na_seen or R.ISNAN(value)) {
-                na_seen = true;
-                rp[idx] = R.R_NaReal;
-            } else {
+            missing = combineRealMissing(missing, realMissing(value));
+            if (missing == .none) {
                 total += value;
                 rp[idx] = total;
+            } else {
+                rp[idx] = switch (missing) {
+                    .none => unreachable,
+                    .nan => R.R_NaN,
+                    .na => R.R_NaReal,
+                };
             }
             idx += 1;
         }
