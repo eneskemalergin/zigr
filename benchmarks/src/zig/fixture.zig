@@ -216,10 +216,10 @@ fn benchMissingMean(value: []const f64) f64 {
 fn benchTranspose(value: R.SEXP) R.SEXP {
     const rows: usize = @intCast(R.Rf_nrows(value));
     const columns: usize = @intCast(R.Rf_ncols(value));
-    const source = raw.real(value);
+    const source = raw.real(value) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     var result = zigr.protect.scoped(R.Rf_allocMatrix(R.REALSXP, @intCast(columns), @intCast(rows)));
     defer result.deinit();
-    const output = raw.realMut(result.get());
+    const output = raw.realMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     for (0..columns) |column| {
         for (0..rows) |row| output[column + row * columns] = source[row + column * rows];
     }
@@ -229,13 +229,13 @@ fn benchTranspose(value: R.SEXP) R.SEXP {
 fn benchRowcol(value: R.SEXP) R.SEXP {
     const rows: usize = @intCast(R.Rf_nrows(value));
     const columns: usize = @intCast(R.Rf_ncols(value));
-    const source = raw.real(value);
+    const source = raw.real(value) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     var row_means = zigr.protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(rows)));
     defer row_means.deinit();
     var column_sums = zigr.protect.scoped(R.Rf_allocVector(R.REALSXP, @intCast(columns)));
     defer column_sums.deinit();
-    const row_output = raw.realMut(row_means.get());
-    const column_output = raw.realMut(column_sums.get());
+    const row_output = raw.realMut(row_means.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    const column_output = raw.realMut(column_sums.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     @memset(row_output, 0.0);
     @memset(column_output, 0.0);
     for (0..columns) |column| for (0..rows) |row| {
@@ -262,15 +262,18 @@ fn benchMatmul(x: R.SEXP, y: R.SEXP) R.SEXP {
     const alpha: f64 = 1.0;
     const beta: f64 = 0.0;
     const notrans: u8 = 'N';
-    dgemm_(&notrans, &notrans, &rows, &columns, &inner, &alpha, raw.real(x).ptr, &rows, raw.real(y).ptr, &inner, &beta, raw.realMut(result.get()).ptr, &rows, 1, 1);
+    const x_data = raw.real(x) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    const y_data = raw.real(y) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    const result_data = raw.realMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    dgemm_(&notrans, &notrans, &rows, &columns, &inner, &alpha, x_data.ptr, &rows, y_data.ptr, &inner, &beta, result_data.ptr, &rows, 1, 1);
     return result.get();
 }
 
 fn benchDataframe(value: R.SEXP) R.SEXP {
     const frame = zigr.dataframe.DataFrame.wrap(value) orelse zigr.@"error".signal("data-frame input expected");
-    const x = raw.real(frame.column("x") orelse zigr.@"error".signal("missing x"));
-    const y = raw.real(frame.column("y") orelse zigr.@"error".signal("missing y"));
-    const groups = raw.int(frame.column("grp") orelse zigr.@"error".signal("missing grp"));
+    const x = raw.real(frame.column("x") orelse zigr.@"error".signal("missing x")) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    const y = raw.real(frame.column("y") orelse zigr.@"error".signal("missing y")) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    const groups = raw.int(frame.column("grp") orelse zigr.@"error".signal("missing grp")) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     var sums = [_]f64{0.0} ** 10;
     for (x, y, groups) |x_value, y_value, group| {
         if (!R.ISNAN(x_value) and x_value > 0.0) sums[@intCast(group - 1)] += x_value / y_value;
@@ -290,7 +293,8 @@ fn benchListSum(value: R.SEXP) f64 {
     const items = convert.toListSlice(arena.allocator(), value) catch zigr.@"error".signal("list input expected");
     var total: f64 = 0.0;
     for (items) |item| {
-        for (raw.real(item)) |element| total += element;
+        const values = raw.real(item) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+        for (values) |element| total += element;
     }
     return total;
 }

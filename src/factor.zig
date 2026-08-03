@@ -7,6 +7,7 @@
 const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
+const r_error = @import("error");
 const protect = @import("protect.zig");
 
 pub const FactorError = error{
@@ -82,6 +83,14 @@ pub fn asFactorChecked(vec: R.SEXP) FactorError!R.SEXP {
     return cleanup.protectCallData(factorCall, @ptrCast(vec));
 }
 
+fn factorErrorMessage(factor_error: FactorError) []const u8 {
+    return switch (factor_error) {
+        error.WrongType => "factor input must be STRSXP",
+        error.TooLong => "factor input exceeds R integer limits",
+    };
+}
+
+/// Builds a factor or raises an R error when validation fails.
 pub fn asFactor(vec: R.SEXP) R.SEXP {
-    return asFactorChecked(vec) catch R.R_NilValue;
+    return asFactorChecked(vec) catch |factor_error| r_error.signal(factorErrorMessage(factor_error));
 }

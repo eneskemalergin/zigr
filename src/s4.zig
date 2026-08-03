@@ -8,6 +8,7 @@
 const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
+const r_error = @import("error");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 
@@ -84,8 +85,20 @@ pub fn newObjectChecked(class_name: []const u8) S4Error!R.SEXP {
     return result;
 }
 
+fn s4ErrorMessage(s4_error: S4Error) []const u8 {
+    return switch (s4_error) {
+        error.InvalidClassName => "S4 class name is invalid",
+        error.InvalidSlotName => "S4 slot name is invalid",
+        error.MissingClass => "S4 class is not registered",
+        error.MissingSlot => "S4 slot does not exist",
+        error.NotS4 => "expected an S4 object",
+        error.NullValue => "S4 slot value is null",
+    };
+}
+
+/// Builds an S4 object or raises an R error when validation fails.
 pub fn newObject(class_name: []const u8) R.SEXP {
-    return newObjectChecked(class_name) catch R.R_NilValue;
+    return newObjectChecked(class_name) catch |s4_error| r_error.signal(s4ErrorMessage(s4_error));
 }
 
 fn validName(name: []const u8) bool {

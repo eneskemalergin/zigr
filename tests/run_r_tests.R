@@ -125,6 +125,8 @@ tests <- list(
 
   list(name="zigr_test_error_signal", expect_error=TRUE),
   "zigr_test_error_warn",
+  "zigr_test_error_format_messages",
+  "zigr_test_validation_failures",
   list(name="zigr_test_error_signalif", expect_error=TRUE),
   list(name="zigr_raise_error", expect_error=TRUE),
 
@@ -243,6 +245,7 @@ tests <- list(
   "zigr_test_raw_raw",
   "zigr_test_raw_complex",
   "zigr_test_raw_dims",
+  "zigr_test_raw_checked_access",
   list(name="zigr_test_from_sexp_missing_required", expect_error=TRUE),
   list(name="zigr_test_from_sexp_invalid_names", expect_error=TRUE),
   list(name="zigr_test_from_sexp_missing_names", expect_error=TRUE),
@@ -300,6 +303,7 @@ tests <- list(
 
   "zigr_test_rvector_f64",
   "zigr_test_rvector_i32",
+  "zigr_test_rvector_complex",
   "zigr_test_rvector_wrong_type",
   "zigr_test_rvector_add_scalar",
   "zigr_test_rvector_sub_scalar",
@@ -474,6 +478,22 @@ for (t in tests) {
     cat("  SKIP:", name, "-", result, "\n")
     skipped <- skipped + 1
   }
+}
+
+warning_message <- NULL
+warning_result <- withCallingHandlers(
+  .Call("zigr_test_error_warn_format"),
+  warning = function(w) {
+    warning_message <<- conditionMessage(w)
+    invokeRestart("muffleWarning")
+  }
+)
+if (identical(warning_result, 1) && identical(warning_message, "zigr warning format %s")) {
+  cat("  PASS: zigr_test_error_warn_format\n")
+  passed <- passed + 1
+} else {
+  cat("  FAIL: zigr_test_error_warn_format\n")
+  failed <- failed + 1
 }
 
 registration_result <- tryCatch(

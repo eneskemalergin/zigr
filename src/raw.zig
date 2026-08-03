@@ -1,74 +1,88 @@
-//! Borrowed R vector views.
+//! Checked borrowed R vector views.
 //!
-//! Slices die at the next GC-triggering R call. ALTREP uses R accessors
-//! because its data can be virtual.
+//! Slices borrow R storage and die at the next GC-triggering R call. Nonempty
+//! views do not materialize ALTREP values: they fail when R has no direct pointer.
+//! Mutable views modify the supplied vector in place without copying it, so
+//! callers must ensure that mutation respects R's copy-on-write rules.
 
 const R = @import("R");
 const sexp = @import("sexp.zig");
 const Rcomplex = @import("convert.zig").Rcomplex;
 
-fn typedData(comptime T: type, sexp_: R.SEXP) ?[]const T {
-    const n = sexp.xlength(sexp_);
-    if (R.ALTREP(sexp_) != 0) return switch (T) {
-        f64 => R.REAL(sexp_)[0..n],
-        i32 => R.INTEGER(sexp_)[0..n],
-        u8 => R.RAW(sexp_)[0..n],
-        else => unreachable,
-    };
-    const ptr = sexp.fastDataPtr(sexp_) orelse return null;
+/// Failure modes returned by checked raw vector views.
+pub const RawViewError = error{
+    NullPointer,
+    ExpectedReal,
+    ExpectedInteger,
+    ExpectedLogical,
+    ExpectedRaw,
+    ExpectedComplex,
+    DirectPointerUnavailable,
+    NegativeLength,
+    MisalignedData,
+};
+
+fn typedData(comptime T: type, comptime expected: c_int, comptime type_error: RawViewError, sexp_: R.SEXP) RawViewError![]const T {
+    if (sexp_ == null) return error.NullPointer;
+    if (sexp.typeTag(sexp_) != expected) return type_error;
+
+    const raw_len = sexp.fastLength(sexp_);
+    if (raw_len < 0) return error.NegativeLength;
+    const n: usize = @intCast(raw_len);
+    if (n == 0) return &.{};
+
+    const ptr = sexp.fastDataPtr(sexp_) orelse return error.DirectPointerUnavailable;
+    if (@intFromPtr(ptr) % @alignOf(T) != 0) return error.MisalignedData;
     return @as([*]const T, @ptrCast(@alignCast(ptr)))[0..n];
 }
 
-fn typedDataMut(comptime T: type, sexp_: R.SEXP) ?[]T {
-    const n = sexp.xlength(sexp_);
-    if (R.ALTREP(sexp_) != 0) return switch (T) {
-        f64 => R.REAL(sexp_)[0..n],
-        i32 => R.INTEGER(sexp_)[0..n],
-        u8 => R.RAW(sexp_)[0..n],
-        else => unreachable,
-    };
-    const ptr = sexp.fastDataPtr(sexp_) orelse return null;
-    return @as([*]T, @ptrCast(@alignCast(ptr)))[0..n];
+fn typedDataMut(comptime T: type, comptime expected: c_int, comptime type_error: RawViewError, sexp_: R.SEXP) RawViewError![]T {
+    return @constCast(try typedData(T, expected, type_error, sexp_));
 }
 
-pub fn real(sexp_: R.SEXP) []const f64 {
-    return typedData(f64, sexp_) orelse &[0]f64{};
+/// Returns a direct REALSXP view without materializing ALTREP storage.
+pub fn real(sexp_: R.SEXP) RawViewError![]const f64 {
+    return typedData(f64, R.REALSXP, error.ExpectedReal, sexp_);
 }
 
-pub fn int(sexp_: R.SEXP) []const i32 {
-    return typedData(i32, sexp_) orelse &[0]i32{};
+/// Returns a direct INTSXP view without materializing ALTREP storage.
+pub fn int(sexp_: R.SEXP) RawViewError![]const i32 {
+    return typedData(i32, R.INTSXP, error.ExpectedInteger, sexp_);
 }
 
-pub fn logical(sexp_: R.SEXP) []const i32 {
-    return typedData(i32, sexp_) orelse &[0]i32{};
+/// Returns a direct LGLSXP view without materializing ALTREP storage.
+pub fn logical(sexp_: R.SEXP) RawViewError![]const i32 {
+    return typedData(i32, R.LGLSXP, error.ExpectedLogical, sexp_);
 }
 
-pub fn realMut(sexp_: R.SEXP) []f64 {
-    return typedDataMut(f64, sexp_) orelse &[0]f64{};
+/// Returns a mutable direct REALSXP view without materializing ALTREP storage.
+pub fn realMut(sexp_: R.SEXP) RawViewError![]f64 {
+    return typedDataMut(f64, R.REALSXP, error.ExpectedReal, sexp_);
 }
 
-pub fn intMut(sexp_: R.SEXP) []i32 {
-    return typedDataMut(i32, sexp_) orelse &[0]i32{};
+/// Returns a mutable direct INTSXP view without materializing ALTREP storage.
+pub fn intMut(sexp_: R.SEXP) RawViewError![]i32 {
+    return typedDataMut(i32, R.INTSXP, error.ExpectedInteger, sexp_);
 }
 
-pub fn raw(sexp_: R.SEXP) []const u8 {
-    return typedData(u8, sexp_) orelse &[0]u8{};
+/// Returns a direct RAWSXP view without materializing ALTREP storage.
+pub fn raw(sexp_: R.SEXP) RawViewError![]const u8 {
+    return typedData(u8, R.RAWSXP, error.ExpectedRaw, sexp_);
 }
 
-pub fn rawMut(sexp_: R.SEXP) []u8 {
-    return typedDataMut(u8, sexp_) orelse &[0]u8{};
+/// Returns a mutable direct RAWSXP view without materializing ALTREP storage.
+pub fn rawMut(sexp_: R.SEXP) RawViewError![]u8 {
+    return typedDataMut(u8, R.RAWSXP, error.ExpectedRaw, sexp_);
 }
 
-/// Some ALTREP values have no direct complex pointer.
-pub fn complex(sexp_: R.SEXP) []const Rcomplex {
-    const ptr = R.COMPLEX(sexp_) orelse return &[0]Rcomplex{};
-    return @as([*]const Rcomplex, @ptrCast(@alignCast(ptr)))[0..sexp.xlength(sexp_)];
+/// Returns a direct CPLXSXP view without materializing ALTREP storage.
+pub fn complex(sexp_: R.SEXP) RawViewError![]const Rcomplex {
+    return typedData(Rcomplex, R.CPLXSXP, error.ExpectedComplex, sexp_);
 }
 
-/// Some ALTREP values have no direct complex pointer.
-pub fn complexMut(sexp_: R.SEXP) []Rcomplex {
-    const ptr = R.COMPLEX(sexp_) orelse return &[0]Rcomplex{};
-    return @as([*]Rcomplex, @ptrCast(@alignCast(ptr)))[0..sexp.xlength(sexp_)];
+/// Returns a mutable direct CPLXSXP view without materializing ALTREP storage.
+pub fn complexMut(sexp_: R.SEXP) RawViewError![]Rcomplex {
+    return typedDataMut(Rcomplex, R.CPLXSXP, error.ExpectedComplex, sexp_);
 }
 
 pub fn dims(sexp_: R.SEXP) struct { rows: R.R_xlen_t, cols: R.R_xlen_t } {

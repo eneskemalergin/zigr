@@ -14,12 +14,12 @@ fn cstr(buf: *[4096:0]u8, s: []const u8) [*c]const u8 {
 
 pub fn signal(msg: []const u8) noreturn {
     var buf: [4096:0]u8 = undefined;
-    R.Rf_error(cstr(&buf, msg));
+    R.Rf_error("%s", cstr(&buf, msg));
 }
 
 pub fn warn(msg: []const u8) void {
     var buf: [4096:0]u8 = undefined;
-    R.Rf_warning(cstr(&buf, msg));
+    R.Rf_warning("%s", cstr(&buf, msg));
 }
 
 pub fn signalIf(condition: bool, msg: []const u8) void {

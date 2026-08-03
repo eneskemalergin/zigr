@@ -5,18 +5,28 @@ const R = @import("R");
 const convert = @import("convert.zig");
 const sexp_mod = @import("sexp.zig");
 
+fn supportsElement(comptime T: type) bool {
+    return T == f64 or T == i32 or T == u8 or T == convert.Rcomplex;
+}
+
+fn supportsArithmetic(comptime T: type) bool {
+    return T == f64 or T == i32;
+}
+
+fn requireArithmetic(comptime T: type) void {
+    if (!supportsArithmetic(T)) @compileError("RVector arithmetic supports only f64 and i32");
+}
+
 pub fn RVector(comptime T: type) type {
+    if (!supportsElement(T)) @compileError("RVector supports f64, i32, u8, and convert.Rcomplex");
+
     return struct {
         sexp: R.SEXP,
 
         const Self = @This();
 
-        fn typeName() []const u8 {
-            return @typeName(T);
-        }
-
         fn expectType(sexp: R.SEXP) !void {
-            const expected: u5 = @truncate(@as(u6, @intCast(convert.typeToSEXPTYPE(T))));
+            const expected: c_int = @intCast(convert.typeToSEXPTYPE(T));
             if (expected != sexp_mod.typeTag(sexp)) return error.UnexpectedType;
         }
 
@@ -36,16 +46,14 @@ pub fn RVector(comptime T: type) type {
 
         /// A borrowed view must not outlive its R call.
         pub fn view(self: Self, allocator: std.mem.Allocator) !convert.SliceView(T) {
-            return switch (T) {
-                f64 => try convert.toRealSliceView(allocator, self.sexp),
-                i32 => try convert.toIntSliceView(allocator, self.sexp),
-                u8 => try convert.toRawSliceView(allocator, self.sexp),
-                convert.Rcomplex => try convert.toComplexSliceView(allocator, self.sexp),
-                else => unreachable,
-            };
+            if (comptime T == f64) return try convert.toRealSliceView(allocator, self.sexp);
+            if (comptime T == i32) return try convert.toIntSliceView(allocator, self.sexp);
+            if (comptime T == u8) return try convert.toRawSliceView(allocator, self.sexp);
+            return try convert.toComplexSliceView(allocator, self.sexp);
         }
 
         pub fn addScalar(self: Self, scalar: T) R.SEXP {
+            comptime requireArithmetic(T);
             return mapScalar(self, scalar, struct {
                 fn op(a: T, b: T) T {
                     return a + b;
@@ -54,6 +62,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn subScalar(self: Self, scalar: T) R.SEXP {
+            comptime requireArithmetic(T);
             return mapScalar(self, scalar, struct {
                 fn op(a: T, b: T) T {
                     return a - b;
@@ -62,6 +71,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn mulScalar(self: Self, scalar: T) R.SEXP {
+            comptime requireArithmetic(T);
             return mapScalar(self, scalar, struct {
                 fn op(a: T, b: T) T {
                     return a * b;
@@ -70,6 +80,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn divScalar(self: Self, scalar: T) R.SEXP {
+            comptime requireArithmetic(T);
             return mapScalar(self, scalar, struct {
                 fn op(a: T, b: T) T {
                     return a / b;
@@ -96,6 +107,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn add(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
+            comptime requireArithmetic(T);
             return mapBinary(self, other, allocator, struct {
                 fn op(a: T, b: T) T {
                     return a + b;
@@ -104,6 +116,7 @@ pub fn RVector(comptime T: type) type {
         }
 
         pub fn sub(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
+            comptime requireArithmetic(T);
             return mapBinary(self, other, allocator, struct {
                 fn op(a: T, b: T) T {
                     return a - b;
@@ -111,15 +124,10 @@ pub fn RVector(comptime T: type) type {
             }.op);
         }
 
-        pub fn sum(self: Self) switch (T) {
-            i32 => i64,
-            else => T,
-        } {
-            return switch (T) {
-                i32 => convert.sumInt(self.sexp),
-                f64 => convert.sum(self.sexp),
-                else => @compileError("sum is only supported for numeric RVector types"),
-            };
+        pub fn sum(self: Self) if (T == i32) i64 else f64 {
+            comptime requireArithmetic(T);
+            if (comptime T == i32) return convert.sumInt(self.sexp);
+            return convert.sum(self.sexp);
         }
 
         fn mapScalar(self: Self, scalar: T, comptime op: fn (T, T) T) R.SEXP {
@@ -146,9 +154,9 @@ pub fn RVector(comptime T: type) type {
             var result = convert.ResultBuilder(T).init(n);
             defer result.deinit();
 
-            var lhs_view = self.view(allocator) catch convert.signalError(error.UnexpectedType);
+            var lhs_view = self.view(allocator) catch |convert_error| convert.signalError(convert_error);
             defer lhs_view.deinit();
-            var rhs_view = other.view(allocator) catch convert.signalError(error.UnexpectedType);
+            var rhs_view = other.view(allocator) catch |convert_error| convert.signalError(convert_error);
             defer rhs_view.deinit();
             const lhs = lhs_view.constSlice();
             const rhs = rhs_view.constSlice();
@@ -167,4 +175,16 @@ test "RVector type instantiation" {
     _ = RVector(i32);
     _ = RVector(u8);
     _ = RVector(convert.Rcomplex);
+}
+
+test "RVector support classification" {
+    try std.testing.expect(supportsElement(f64));
+    try std.testing.expect(supportsElement(i32));
+    try std.testing.expect(supportsElement(u8));
+    try std.testing.expect(supportsElement(convert.Rcomplex));
+    try std.testing.expect(!supportsElement(bool));
+    try std.testing.expect(supportsArithmetic(f64));
+    try std.testing.expect(supportsArithmetic(i32));
+    try std.testing.expect(!supportsArithmetic(u8));
+    try std.testing.expect(!supportsArithmetic(convert.Rcomplex));
 }

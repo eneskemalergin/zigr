@@ -168,7 +168,7 @@ pub fn signalError(err: anyerror) noreturn {
     const n = @min(msg.len, buf.len - 1);
     if (n > 0) @memcpy(buf[0..n], msg[0..n]);
     buf[n] = 0;
-    R.Rf_error(&buf);
+    R.Rf_error("%s", &buf);
 }
 
 /// R NA is distinct from IEEE NaN.

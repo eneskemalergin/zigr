@@ -59,7 +59,7 @@ fn signalErrorMsg(prefix: []const u8, detail: []const u8) noreturn {
     if (pn + 1 < buf.len) buf[pn + 1] = ' ';
     if (dn > 0) @memcpy(buf[pn + 2 .. pn + 2 + dn], detail[0..dn]);
     buf[pn + 2 + dn] = 0;
-    R.Rf_error(&buf);
+    R.Rf_error("%s", &buf);
 }
 
 fn isVectorAccess(comptime T: type) bool {

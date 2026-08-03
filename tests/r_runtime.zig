@@ -230,6 +230,58 @@ export fn zigr_test_error_warn() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+fn formattedErrorMessage() SEXP {
+    err.signal("zigr error format %s");
+}
+
+export fn zigr_test_error_format_messages() SEXP {
+    const condition = trycatch_mod.tryCatchError(formattedErrorMessage) catch return R.Rf_ScalarReal(0.0);
+    const caught = condition orelse return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, trycatch_mod.extractMessage(caught), "zigr error format %s")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_error_warn_format() SEXP {
+    err.warn("zigr warning format %s");
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn dataFrameValidationFailure() SEXP {
+    const columns = [_]SEXP{R.R_NilValue};
+    return df.build(&.{}, &columns);
+}
+
+fn factorValidationFailure() SEXP {
+    return factor.asFactor(R.R_NilValue);
+}
+
+fn s4ValidationFailure() SEXP {
+    return s4.newObject("ZigrMissingS4Class");
+}
+
+export fn zigr_test_validation_failures() SEXP {
+    const data_frame_condition = trycatch_mod.tryCatchError(dataFrameValidationFailure) catch return R.Rf_ScalarReal(0.0);
+    const data_frame_error = data_frame_condition orelse return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, trycatch_mod.extractMessage(data_frame_error), "data-frame names and columns must have the same length")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const factor_condition = trycatch_mod.tryCatchError(factorValidationFailure) catch return R.Rf_ScalarReal(0.0);
+    const factor_error = factor_condition orelse return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, trycatch_mod.extractMessage(factor_error), "factor input must be STRSXP")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const s4_condition = trycatch_mod.tryCatchError(s4ValidationFailure) catch return R.Rf_ScalarReal(0.0);
+    const s4_error = s4_condition orelse return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, trycatch_mod.extractMessage(s4_error), "S4 class is not registered")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_error_signalif() SEXP {
     err.signalIf(true, "zigr error signalIf test");
     return R.R_NilValue;
@@ -3454,7 +3506,7 @@ export fn zigr_test_raw_logical() SEXP {
     ptr[2] = R.R_NaInt;
     ptr[3] = 1;
 
-    const slice = raw_mod.logical(vec);
+    const slice = raw_mod.logical(vec) catch return R.Rf_ScalarReal(0.0);
     const ok = slice.len == 4 and slice[0] == 1 and slice[1] == 0 and slice[2] == R.R_NaInt and slice[3] == 1;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
@@ -3467,7 +3519,7 @@ export fn zigr_test_raw_real() SEXP {
     ptr[1] = 2.5;
     ptr[2] = 3.5;
 
-    const slice = raw_mod.real(vec);
+    const slice = raw_mod.real(vec) catch return R.Rf_ScalarReal(0.0);
     const ok = slice.len == 3 and slice[0] == 1.5 and slice[1] == 2.5 and slice[2] == 3.5;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
@@ -3480,7 +3532,7 @@ export fn zigr_test_raw_int() SEXP {
     ptr[1] = 20;
     ptr[2] = -5;
 
-    const slice = raw_mod.int(vec);
+    const slice = raw_mod.int(vec) catch return R.Rf_ScalarReal(0.0);
     const ok = slice.len == 3 and slice[0] == 10 and slice[1] == 20 and slice[2] == -5;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
@@ -3489,7 +3541,7 @@ export fn zigr_test_raw_real_mut() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
     defer R.Rf_unprotect(1);
 
-    const slice = raw_mod.realMut(vec);
+    const slice = raw_mod.realMut(vec) catch return R.Rf_ScalarReal(0.0);
     slice[0] = 42.0;
     slice[1] = 99.0;
 
@@ -3502,7 +3554,7 @@ export fn zigr_test_raw_int_mut() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 2));
     defer R.Rf_unprotect(1);
 
-    const slice = raw_mod.intMut(vec);
+    const slice = raw_mod.intMut(vec) catch return R.Rf_ScalarReal(0.0);
     slice[0] = 100;
     slice[1] = 200;
 
@@ -3519,7 +3571,7 @@ export fn zigr_test_raw_raw() SEXP {
     ptr[1] = 0xCD;
     ptr[2] = 0xEF;
 
-    const slice = raw_mod.raw(vec);
+    const slice = raw_mod.raw(vec) catch return R.Rf_ScalarReal(0.0);
     const ok = slice.len == 3 and slice[0] == 0xAB and slice[1] == 0xCD and slice[2] == 0xEF;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
@@ -3527,11 +3579,11 @@ export fn zigr_test_raw_raw() SEXP {
 export fn zigr_test_raw_complex() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
     defer R.Rf_unprotect(1);
-    const wslice = raw_mod.complexMut(vec);
+    const wslice = raw_mod.complexMut(vec) catch return R.Rf_ScalarReal(0.0);
     wslice[0] = .{ .r = 1.0, .i = 2.0 };
     wslice[1] = .{ .r = 3.0, .i = 4.0 };
 
-    const slice = raw_mod.complex(vec);
+    const slice = raw_mod.complex(vec) catch return R.Rf_ScalarReal(0.0);
     const ok = slice.len == 2 and slice[0].r == 1.0 and slice[0].i == 2.0 and slice[1].r == 3.0 and slice[1].i == 4.0;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
 }
@@ -3550,6 +3602,56 @@ export fn zigr_test_raw_dims() SEXP {
     const result = raw_mod.dims(vec);
     const ok = result.rows == 3 and result.cols == 4;
     return R.Rf_ScalarReal(if (ok) 1.0 else 0.0);
+}
+
+export fn zigr_test_raw_checked_access() SEXP {
+    const expected = [_]u8{ 0x00, 0xff, 0x7f };
+    const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, @intCast(expected.len)));
+    defer R.Rf_unprotect(1);
+    @memcpy(R.RAW(raw)[0..expected.len], &expected);
+
+    if (raw_mod.raw(null)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.NullPointer) return R.Rf_ScalarReal(0.0);
+    }
+    if (raw_mod.real(raw)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.ExpectedReal) return R.Rf_ScalarReal(0.0);
+    }
+    if (raw_mod.logical(raw)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.ExpectedLogical) return R.Rf_ScalarReal(0.0);
+    }
+    const direct_raw = raw_mod.raw(raw) catch return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, direct_raw, &expected)) return R.Rf_ScalarReal(0.0);
+
+    const empty = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 0));
+    defer R.Rf_unprotect(1);
+    if ((raw_mod.raw(empty) catch return R.Rf_ScalarReal(0.0)).len != 0) return R.Rf_ScalarReal(0.0);
+
+    const raw_altrep = R.Rf_protect(shortRegionAltRaw());
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(raw_altrep) == 0 or R.RAW_OR_NULL(raw_altrep) != null) return R.Rf_ScalarReal(0.0);
+    if (raw_mod.raw(raw_altrep)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.DirectPointerUnavailable) return R.Rf_ScalarReal(0.0);
+    }
+    if (R.RAW_OR_NULL(raw_altrep) != null) return R.Rf_ScalarReal(0.0);
+
+    const complex_altrep = R.Rf_protect(shortRegionAltComplex());
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(complex_altrep) == 0 or R.COMPLEX_OR_NULL(complex_altrep) != null) return R.Rf_ScalarReal(0.0);
+    if (raw_mod.complex(complex_altrep)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |view_error| {
+        if (view_error != error.DirectPointerUnavailable) return R.Rf_ScalarReal(0.0);
+    }
+    if (R.COMPLEX_OR_NULL(complex_altrep) != null) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_from_sexp_missing_required() SEXP {
@@ -4588,6 +4690,33 @@ export fn zigr_test_rvector_i32() SEXP {
     defer view.deinit();
     const v = view.constSlice();
     if (v.len != 3 or v[0] != 10 or v[1] != -5 or v[2] != 99) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_rvector_complex() SEXP {
+    const vec = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
+    defer R.Rf_unprotect(1);
+    const input: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(R.COMPLEX(vec) orelse return R.Rf_ScalarReal(0.0)));
+    input[0] = .{ .r = 1.0, .i = -2.0 };
+    input[1] = .{ .r = 3.0, .i = -4.0 };
+
+    const vector = zigr.rvector.RVector(zigr_convert.Rcomplex).init(vec) catch return R.Rf_ScalarReal(0.0);
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var view = vector.view(arena.allocator()) catch return R.Rf_ScalarReal(0.0);
+    defer view.deinit();
+    const values = view.constSlice();
+    if (values.len != 2 or values[0].r != 1.0 or values[0].i != -2.0 or values[1].r != 3.0 or values[1].i != -4.0) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const copied = R.Rf_protect(vector.copy());
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(copied) != R.CPLXSXP) return R.Rf_ScalarReal(0.0);
+    const output: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(R.COMPLEX(copied) orelse return R.Rf_ScalarReal(0.0)));
+    if (output[0].r != 1.0 or output[0].i != -2.0 or output[1].r != 3.0 or output[1].i != -4.0) {
+        return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 

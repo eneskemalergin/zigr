@@ -8,6 +8,7 @@
 const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
+const r_error = @import("error");
 const protect = @import("protect.zig");
 const xlength = @import("sexp.zig").xlength;
 const sexp_mod = @import("sexp.zig");
@@ -215,6 +216,18 @@ pub fn buildChecked(names: []const []const u8, columns: []const R.SEXP) DataFram
     return cleanup.protectCallData(buildCall, @ptrCast(&request));
 }
 
+fn buildErrorMessage(build_error: DataFrameError) []const u8 {
+    return switch (build_error) {
+        error.NameColumnCount => "data-frame names and columns must have the same length",
+        error.NullColumn => "data-frame column is null",
+        error.ColumnLength => "data-frame columns must have equal row counts",
+        error.RowCountTooLarge => "data-frame row count exceeds R integer limits",
+        error.InvalidName => "data-frame column name is invalid",
+        error.MalformedNames => "data-frame names are malformed",
+    };
+}
+
+/// Builds a data frame or raises an R error when validation fails.
 pub fn build(names: []const []const u8, columns: []const R.SEXP) R.SEXP {
-    return buildChecked(names, columns) catch R.R_NilValue;
+    return buildChecked(names, columns) catch |build_error| r_error.signal(buildErrorMessage(build_error));
 }
