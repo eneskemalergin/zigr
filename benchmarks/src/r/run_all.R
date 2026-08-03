@@ -209,7 +209,7 @@ r_bench_r_eval <- function(x) {
 r_bench_r_tryeval <- function(x) {
   count <- 0L
   for (i in 1:512) {
-    tryCatch(stop("task40"), error = function(e) count <<- count + 1L)
+    tryCatch(stop("expected evaluation error"), error = function(e) count <<- count + 1L)
   }
   count
 }
@@ -533,7 +533,7 @@ r_bench_longjmp_safety <- function(x) {
     bias <- i * 0.001
     direct_total <- direct_total + sum(x + bias)
     try_ok_total <- try_ok_total + tryCatch(sum(x + bias), error = function(e) stop(e))
-    try_err_total <- try_err_total + tryCatch({ stop("task32"); 0 }, error = function(e) 1)
+    try_err_total <- try_err_total + tryCatch({ stop("expected longjmp error"); 0 }, error = function(e) 1)
     unwind_ok_total <- unwind_ok_total + tryCatch(sum(x + bias), error = function(e) stop(e))
   }
 

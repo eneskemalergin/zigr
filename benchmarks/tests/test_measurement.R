@@ -454,14 +454,14 @@ expect_true(
   "timer-floor admission uses the batch interval rather than its divided per-event value"
 )
 
-task86_values <- c(rep(0.04, 10L), rep(0.26, 99L), 8.5, rep(0.26, 98L), 8.7)
-task86_gc <- numeric(length(task86_values))
-task86_gc[c(110L, 209L)] <- c(8.1, 8.2)
-task86_classification <- classify_direct_distribution(task86_values, task86_values, task86_gc, 0.01)
+regime_shift_values <- c(rep(0.04, 10L), rep(0.26, 99L), 8.5, rep(0.26, 98L), 8.7)
+regime_shift_gc <- numeric(length(regime_shift_values))
+regime_shift_gc[c(110L, 209L)] <- c(8.1, 8.2)
+regime_shift_classification <- classify_direct_distribution(regime_shift_values, regime_shift_values, regime_shift_gc, 0.01)
 expect_true(
-  identical(task86_classification$status, "BLOCK") &&
-    isTRUE(task86_classification$metrics$regime_change),
-  "the historical task 86 fast regime remains blocked even when periodic GC spikes are explained"
+  identical(regime_shift_classification$status, "BLOCK") &&
+    isTRUE(regime_shift_classification$metrics$regime_change),
+  "a mixed-regime distribution remains blocked when periodic GC spikes are explained"
 )
 gc_only_values <- c(rep(0.26, 20L), 8.5, rep(0.26, 20L))
 gc_only_time <- numeric(length(gc_only_values))

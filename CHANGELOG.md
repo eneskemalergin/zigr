@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Correct cross-target, build-option, public-surface, testing, and Zig 0.16 guidance.
 - Benchmark list access now uses zigr's ABI-selected vector and data accessors instead of a raw payload offset.
-- Benchmark evidence now classifies every runner/task cell as comparable product evidence, a strategy comparison, a reference or control, a diagnostic, or an explicit gap.
+- Benchmark reports now distinguish product comparisons, strategy checks, controls, diagnostics, and gaps.
 
 ### Fixed
 
@@ -60,14 +60,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Benchmark harness: validation, R baselines (07a/07b/10/11/16), extendr FFI workaround (all 6 runners at 44/44)
+- Benchmark harness: validation, expanded R baselines, and extendr FFI compatibility across the supported runners
 - Comparative metrics pipeline
-- System diagnostics (tasks 44-47)
+- System diagnostics
 - CI workflow: fmt, cross-compile (5 targets), 3-platform tests
 
 ### Fixed
 
-- **Benchmark harness**: crossprod copy-loop direction and struct_convert return type in all 5 native backends; R reference gaps in tasks 14, 15, 34, 37; CSV corruption from error-message commas; runner-name extraction in `export_comparative_metrics.R`; extendr 4 FFI rewires
+- **Benchmark harness**: cross-product copy-loop direction and struct-conversion return types across native backends; missing R reference workloads; CSV corruption from error-message commas; runner-name extraction; extendr FFI rewires
 - **Build system**: LTO gated behind `.linux`; `blas`/`dl`/`m` gated behind `!= .windows`; fmt dependency removed from check step
 - **CI workflow**: `actions/checkout` v4->v6; cross-check was a no-op (R_HOME unset); Windows R_LIB set to `$R_HOME/bin/x64`
 - **System diagnostics**: zig binary PATH fallback from hardcoded path; incremental build time no longer overwritten by post-restore rebuild
@@ -126,17 +126,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `build.zig.zon` version bumped to 0.0.8 to match README and CHANGELOG.
 - `README.md`: module count corrected from 23 to 25, bundled binary size corrected from 40 MB to 165 MB, added missing `rvector.zig` to project tree.
 
-- `benchmarks/src/zig/task_10_blas_matmul.zig`: simplified result allocation.
+- Simplified matrix-multiplication result allocation.
 - `benchmarks/run_benchmarks.R`: runs benchmark subprocesses with `OPENBLAS_NUM_THREADS=1`.
-- `benchmarks/src/zig/task_12_cholesky.zig`: factors directly in the final R matrix instead of using a scratch buffer.
-- `benchmarks/build.zig`, `benchmarks/src/zig/task_12_only_main.zig`, `benchmarks/runner_subprocess.R`, and `benchmarks/runners/zigr.json`: route `12_cholesky` through an isolated zigr benchmark library.
-- `src/convert.zig`, `benchmarks/src/zig/task_04_strings.zig`, `benchmarks/src/zig/task_21_string_nchar.zig`, and `benchmarks/src/zig/task_35_string_variants.zig`: added reusable string-view helpers with cached element metadata and ported string-heavy benchmarks onto them.
-- `benchmarks/src/zig/task_27_struct_convert.zig`: replaced the generic reflective conversion path with a handwritten fixed-slot path and cached output names, removing most of the remaining struct-conversion overhead.
+- Cholesky factorization now writes directly to the final R matrix and runs in its own zigr benchmark library.
+- Added reusable string views with cached element metadata for string-heavy benchmarks.
+- Replaced reflective struct conversion with a fixed-slot path and cached output names.
 
 ### Performance
 
-- Focused checks put `27_struct_convert` and `35_string_variants` ahead of savvy.
-- Full rebuilt benchmark refresh brings `12_cholesky` back near Rust/C parity.
+- Focused checks put fixed-schema and string-metadata workloads ahead of savvy.
+- A full benchmark refresh brings Cholesky back near Rust/C parity.
 
 ## [0.0.7] - 2026-05-23
 

@@ -350,7 +350,7 @@ writeLines(c(
   "#!/bin/sh",
   "for argument in \"$@\"; do",
   "  case \"$argument\" in",
-  "    --mode=timing) echo timing >> \"$ZIGR_P12_COUNT\"; exit 42 ;;",
+  "    --mode=timing) echo timing >> \"$ZIGR_TIMING_FAILURE_COUNT\"; exit 42 ;;",
   "  esac",
   "done",
   sprintf("exec %s \"$@\"", shQuote(real_rscript))
@@ -365,7 +365,7 @@ failure_status <- system2(
   ),
   env = c(
     paste0("PATH=", wrapper_dir, .Platform$path.sep, Sys.getenv("PATH")),
-    paste0("ZIGR_P12_COUNT=", count_file)
+    paste0("ZIGR_TIMING_FAILURE_COUNT=", count_file)
   ),
   stdout = FALSE,
   stderr = FALSE

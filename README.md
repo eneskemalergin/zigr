@@ -137,10 +137,10 @@ Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conve
 
 `sexp.active_abi_contract` selects one access policy at compile time. Little-endian x86_64 targets built with R 4.6 headers use the named `r4_6_x86_64` layout contract. Every other configuration uses `checked_r_api`, which routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API.
 
-| Contract | Selection | Evidence |
+| Contract | Selection | Checked by |
 | --- | --- | --- |
-| `r4_6_x86_64` | R 4.6 headers, little-endian x86_64 target, and no force-fallback flag | Local R 4.6 parity suite and locked boundary budgets |
-| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Full live R suite when forced; declared five-target Debug compile matrix |
+| `r4_6_x86_64` | R 4.6 headers, little-endian x86_64 target, and no force-fallback flag | Live R checks against the public accessors |
+| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Forced live R checks and five-target compile checks |
 
 The direct contract keeps its offsets in one private layout definition. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
 
@@ -218,30 +218,6 @@ Every generated wrapper runs inside `R_UnwindProtect`. Conversion scratch, arena
 | Savvy | Architectural reference | Generated registration, typed ownership distinctions, result and unwind design | A direct performance baseline for zigr; most local Savvy rows use raw FFI |
 
 The direct benchmark suite measures the same retained events across all seven runners. R and registered C remain correctness controls, and the benchmark does not turn those measurements into a product ranking.
-
-### Acceptance checks
-
-I use the existing flows for acceptance:
-
-```bash
-zig build fmt
-zig build check -Doptimize=ReleaseSafe
-zig build test -Doptimize=ReleaseSafe
-Rscript tests/run_r_tests.R
-cd benchmarks
-Rscript check_coverage.R
-Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=vector_sum
-```
-
-The command above is a focused direct-suite smoke. It validates correctness, timing, source identity, artifact identity, and output digests before marking the run complete. A selected large-output task can additionally receive a separate one-event process-memory safety check:
-
-```bash
-Rscript run_benchmarks.R --tasks=attributes --memory-task=attributes --build
-```
-
-The memory result rejects swap and excessive process high-water growth. Error, longjmp, GC, and finalizer cases stay in the runtime suite instead of timed rows. Before accepting a change I also require `git diff --check`.
-
-This bare core does not close the later work. The primary direct-layout gate, checked fallback, advanced ALTREP callback workloads, and owned ALTREP lifecycle proof are complete, while cross-target runtime ABI parity remains open. The active core-readiness program must establish the bounded comparison set, close the API inventory, prove source-wide R semantics and lifecycle safety, run package-shaped public-path comparisons, and prove portability. Reflective schemas, coercion, higher-level objects, package templates, and release polish remain blocked until that work passes.
 
 ## CI
 
