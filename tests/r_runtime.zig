@@ -1180,6 +1180,29 @@ fn failingRawRegion() SEXP {
     return R.R_new_altrep(failing_raw_region_class, R.R_NilValue, R.R_NilValue);
 }
 
+var lifetime_region_class: R.R_altrep_class_t = undefined;
+var lifetime_region_registered = false;
+var lifetime_region_mode: u2 = 0;
+threadlocal var lifetime_region_input: SEXP = null;
+
+fn lifetimeRegionGetRegion(_: SEXP, start: R.R_xlen_t, requested: R.R_xlen_t, buffer: [*c]R.Rbyte) callconv(.c) R.R_xlen_t {
+    if (lifetime_region_mode == 1) R.Rf_error("expected region callback error");
+    if (lifetime_region_mode == 2) ict.checkInterrupt();
+    return shortRawRegionGetRegion(R.R_NilValue, start, requested, buffer);
+}
+
+fn lifetimeRegionRaw() SEXP {
+    if (!lifetime_region_registered) {
+        lifetime_region_class = R.R_make_altraw_class("lifetime_region_raw", "zigr", null);
+        R.R_set_altrep_Length_method(lifetime_region_class, shortRegionLength);
+        R.R_set_altvec_Dataptr_or_null_method(lifetime_region_class, shortRegionDataptrOrNull);
+        R.R_set_altraw_Elt_method(lifetime_region_class, shortRawRegionElt);
+        R.R_set_altraw_Get_region_method(lifetime_region_class, lifetimeRegionGetRegion);
+        lifetime_region_registered = true;
+    }
+    return R.R_new_altrep(lifetime_region_class, R.R_NilValue, R.R_NilValue);
+}
+
 var short_complex_region_class: R.R_altrep_class_t = undefined;
 var short_complex_region_registered = false;
 var short_complex_region_get_calls: usize = 0;
@@ -1601,6 +1624,114 @@ export fn zigr_test_borrowed_views() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
+fn lifetimeRegionBody() SEXP {
+    var access = zigr_convert.toVectorAccessWithStrategy(
+        u8,
+        .one_pass,
+        StringCleanupAllocator.allocator(),
+        lifetime_region_input,
+        .region,
+    ) catch return R.R_NilValue;
+    _ = access.next() catch return R.R_NilValue;
+    access.deinit();
+    return R.Rf_ScalarReal(0.0);
+}
+
+fn lifetimeRegionCall() SEXP {
+    return cleanup.protectCall(lifetimeRegionBody);
+}
+
+export fn zigr_test_borrowed_lifetimes() SEXP {
+    const real = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.REAL(real)[0] = 1.0;
+    R.REAL(real)[1] = 2.0;
+    R.REAL(real)[2] = 3.0;
+    var empty_storage: [0]u8 align(16) = .{};
+    var empty_allocator = std.heap.FixedBufferAllocator.init(&empty_storage);
+    var real_view = zigr_convert.toRealSliceView(empty_allocator.allocator(), real) catch return R.Rf_ScalarReal(0.0);
+    defer real_view.deinit();
+    switch (real_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+
+    const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.RAW(raw)[0] = 1;
+    R.RAW(raw)[1] = 2;
+    R.RAW(raw)[2] = 3;
+    var raw_view = zigr_convert.toRawSliceView(empty_allocator.allocator(), raw) catch return R.Rf_ScalarReal(0.0);
+    defer raw_view.deinit();
+    switch (raw_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+
+    const strings = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(strings, 0, R.Rf_mkChar("borrowed"));
+    R.SET_STRING_ELT(strings, 1, R.R_NaString);
+    R.SET_STRING_ELT(strings, 2, R.Rf_mkChar("projection"));
+    const string_view = zigr_convert.toStringSliceView(strings) catch return R.Rf_ScalarReal(0.0);
+    const identity = zigr_convert.toStringProjectionView(.identity, strings) catch return R.Rf_ScalarReal(0.0);
+    const missingness = zigr_convert.toStringProjectionView(.missingness, strings) catch return R.Rf_ScalarReal(0.0);
+    const bytes = zigr_convert.toStringProjectionView(.bytes, strings) catch return R.Rf_ScalarReal(0.0);
+    const translated = zigr_convert.toStringProjectionView(.translated_text, strings) catch return R.Rf_ScalarReal(0.0);
+    const metadata = zigr_convert.toStringProjectionView(.metadata, strings) catch return R.Rf_ScalarReal(0.0);
+
+    var cache_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var cached = zigr_convert.toCachedStringSliceView(cache_counting.allocator(), strings) catch return R.Rf_ScalarReal(0.0);
+    var cached_active = true;
+    defer if (cached_active) cached.deinit();
+    if (cache_counting.stats.allocations != 1 or cache_counting.stats.live_bytes != 3 * @sizeOf(zigr_convert.StringView)) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const before_gc = cleanup.diagnosticSnapshot();
+    for (0..4) |_| {
+        const noise = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 131_072));
+        R.REAL(noise)[0] = 11.0;
+        R.Rf_unprotect(1);
+    }
+    R.R_gc();
+
+    if (!sameRestorationState(before_gc, cleanup.diagnosticSnapshot()) or
+        !std.mem.eql(f64, real_view.constSlice(), &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(u8, raw_view.constSlice(), &[_]u8{ 1, 2, 3 })) return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, string_view.at(0).bytes, "borrowed") or !string_view.at(1).is_na or
+        identity.at(0).charsxp != R.STRING_ELT(strings, 0) or !missingness.at(1).is_na or
+        !std.mem.eql(u8, bytes.at(0).bytes, "borrowed") or
+        !std.mem.eql(u8, translated.at(2).bytes, "projection") or
+        metadata.at(1).charsxp != R.R_NaString or !std.mem.eql(u8, cached.at(0).bytes, "borrowed"))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const region = R.Rf_protect(lifetimeRegionRaw());
+    defer R.Rf_unprotect(1);
+    lifetime_region_input = region;
+    defer lifetime_region_input = null;
+
+    for ([_]u2{ 1, 2 }) |mode| {
+        lifetime_region_mode = mode;
+        string_cleanup_state = .{};
+        const before = cleanup.diagnosticSnapshot();
+        if (mode == 2) R_interrupts_pending = 1;
+        const caught = trycatch_mod.tryCatch(lifetimeRegionCall);
+        R_interrupts_pending = 0;
+        if (caught) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+        if (string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1 or
+            !sameRestorationState(before, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+    }
+    lifetime_region_mode = 0;
+    if (cache_counting.stats.frees != 0) return R.Rf_ScalarReal(0.0);
+    cached.deinit();
+    cached_active = false;
+    if (cache_counting.stats.frees != 1 or cache_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_compact_altrep_views() SEXP {
     const integer = compactIntSequence(@intCast(short_region_len)) orelse return R.Rf_ScalarReal(0.0);
     defer R.Rf_unprotect(1);
@@ -1609,6 +1740,8 @@ export fn zigr_test_compact_altrep_views() SEXP {
     var int_storage: [short_region_len * @sizeOf(i32)]u8 align(16) = undefined;
     var int_fba = std.heap.FixedBufferAllocator.init(&int_storage);
     var int_view = zigr_convert.toIntSliceView(int_fba.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    var int_view_active = true;
+    defer if (int_view_active) int_view.deinit();
     switch (int_view) {
         .borrowed => return R.Rf_ScalarReal(0.0),
         .owned => {},
@@ -1617,6 +1750,7 @@ export fn zigr_test_compact_altrep_views() SEXP {
     if (int_slice.len != short_region_len or int_slice[0] != 1 or int_slice[64] != 65 or int_slice[512] != 513 or int_slice[4096] != 4097) return R.Rf_ScalarReal(0.0);
     if (int_fba.end_index != int_storage.len) return R.Rf_ScalarReal(0.0);
     int_view.deinit();
+    int_view_active = false;
     if (int_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
 
     const int_rvector = zigr.rvector.RVector(i32).init(integer) catch return R.Rf_ScalarReal(0.0);
@@ -1636,6 +1770,8 @@ export fn zigr_test_compact_altrep_views() SEXP {
     var real_storage: [short_region_len * @sizeOf(f64)]u8 align(16) = undefined;
     var real_fba = std.heap.FixedBufferAllocator.init(&real_storage);
     var real_view = zigr_convert.toRealSliceView(real_fba.allocator(), real) catch return R.Rf_ScalarReal(0.0);
+    var real_view_active = true;
+    defer if (real_view_active) real_view.deinit();
     switch (real_view) {
         .borrowed => return R.Rf_ScalarReal(0.0),
         .owned => {},
@@ -1644,6 +1780,7 @@ export fn zigr_test_compact_altrep_views() SEXP {
     if (real_slice.len != short_region_len or real_slice[0] != 1.0 or real_slice[64] != 65.0 or real_slice[512] != 513.0 or real_slice[4096] != 4097.0) return R.Rf_ScalarReal(0.0);
     if (real_fba.end_index != real_storage.len) return R.Rf_ScalarReal(0.0);
     real_view.deinit();
+    real_view_active = false;
     if (real_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
 
     const long_real = compactRealSequence(2_147_483_648.0) orelse return R.Rf_ScalarReal(0.0);
@@ -1668,6 +1805,8 @@ export fn zigr_test_short_region() SEXP {
     var storage: [short_region_len * @sizeOf(i32)]u8 align(16) = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&storage);
     var view = zigr_convert.toIntSliceView(fba.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    var view_active = true;
+    defer if (view_active) view.deinit();
     switch (view) {
         .borrowed => return R.Rf_ScalarReal(0.0),
         .owned => {},
@@ -1677,6 +1816,7 @@ export fn zigr_test_short_region() SEXP {
     if (slice.len != short_region_len or slice[0] != 1 or slice[512] != 513 or slice[4096] != 4097) return R.Rf_ScalarReal(0.0);
     if (short_region_get_calls != expected_regions or short_region_elt_calls != 0 or fba.end_index != storage.len) return R.Rf_ScalarReal(0.0);
     view.deinit();
+    view_active = false;
     if (fba.end_index != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
@@ -1727,6 +1867,8 @@ export fn zigr_test_string_representations() SEXP {
     var cache_storage: [5 * @sizeOf(zigr_convert.StringView)]u8 align(@alignOf(zigr_convert.StringView)) = undefined;
     var cache_fba = std.heap.FixedBufferAllocator.init(&cache_storage);
     var cached = zigr_convert.toCachedStringSliceView(cache_fba.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    var cached_active = true;
+    defer if (cached_active) cached.deinit();
     if (cached.at(2).is_na != na.is_na or cached.at(3).encoding_mark != bytes.encoding_mark or !std.mem.eql(u8, cached.at(4).bytes, latin1_utf8)) return R.Rf_ScalarReal(0.0);
     if (cache_fba.end_index != cache_storage.len) return R.Rf_ScalarReal(0.0);
 
@@ -1752,6 +1894,7 @@ export fn zigr_test_string_representations() SEXP {
     }
     if (view_total != cached_total or view_total != headers_total) return R.Rf_ScalarReal(0.0);
     cached.deinit();
+    cached_active = false;
     if (cache_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
@@ -2648,7 +2791,15 @@ fn conversionErrorReal(_: SEXP, _: R.R_xlen_t) callconv(.c) f64 {
     R.Rf_error("expected real conversion error");
 }
 
+fn conversionErrorRealRegion(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: [*c]f64) callconv(.c) R.R_xlen_t {
+    R.Rf_error("expected real conversion error");
+}
+
 fn conversionErrorInteger(_: SEXP, _: R.R_xlen_t) callconv(.c) c_int {
+    R.Rf_error("expected integer conversion error");
+}
+
+fn conversionErrorIntegerRegion(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: [*c]c_int) callconv(.c) R.R_xlen_t {
     R.Rf_error("expected integer conversion error");
 }
 
@@ -2656,7 +2807,15 @@ fn conversionErrorLogical(_: SEXP, _: R.R_xlen_t) callconv(.c) c_int {
     R.Rf_error("expected logical conversion error");
 }
 
+fn conversionErrorLogicalRegion(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: [*c]c_int) callconv(.c) R.R_xlen_t {
+    R.Rf_error("expected logical conversion error");
+}
+
 fn conversionErrorRaw(_: SEXP, _: R.R_xlen_t) callconv(.c) R.Rbyte {
+    R.Rf_error("expected raw conversion error");
+}
+
+fn conversionErrorRawRegion(_: SEXP, _: R.R_xlen_t, _: R.R_xlen_t, _: [*c]R.Rbyte) callconv(.c) R.R_xlen_t {
     R.Rf_error("expected raw conversion error");
 }
 
@@ -2677,6 +2836,11 @@ fn conversionErrorInput(mode: usize) SEXP {
         conversion_error_classes[4] = R.R_make_altcomplex_class("conversion_error_complex", "zigr", null);
         conversion_error_classes[5] = R.R_make_altlist_class("conversion_error_list", "zigr", null);
         for (conversion_error_classes) |class| R.R_set_altrep_Length_method(class, stringErrorLength);
+        for (conversion_error_classes) |class| R.R_set_altvec_Dataptr_or_null_method(class, shortRegionDataptrOrNull);
+        R.R_set_altreal_Get_region_method(conversion_error_classes[0], conversionErrorRealRegion);
+        R.R_set_altinteger_Get_region_method(conversion_error_classes[1], conversionErrorIntegerRegion);
+        R.R_set_altlogical_Get_region_method(conversion_error_classes[2], conversionErrorLogicalRegion);
+        R.R_set_altraw_Get_region_method(conversion_error_classes[3], conversionErrorRawRegion);
         R.R_set_altreal_Elt_method(conversion_error_classes[0], conversionErrorReal);
         R.R_set_altinteger_Elt_method(conversion_error_classes[1], conversionErrorInteger);
         R.R_set_altlogical_Elt_method(conversion_error_classes[2], conversionErrorLogical);
@@ -2691,15 +2855,52 @@ fn conversionErrorInput(mode: usize) SEXP {
 fn conversionAllocationThenError() SEXP {
     const allocator = StringCleanupAllocator.allocator();
     switch (conversion_cleanup_mode) {
-        0 => _ = zigr_convert.toRealSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
-        1 => _ = zigr_convert.toIntSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
-        2 => _ = zigr_convert.toLogicalSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
-        3 => _ = zigr_convert.toRawSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
-        4 => _ = zigr_convert.toComplexSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        0 => _ = zigr_convert.toRealSliceView(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        1 => _ = zigr_convert.toIntSliceView(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        2 => _ = zigr_convert.toLogicalSliceView(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        3 => _ = zigr_convert.toRawSliceView(allocator, conversion_cleanup_input) catch return R.R_NilValue,
+        4 => _ = zigr_convert.toComplexSliceView(allocator, conversion_cleanup_input) catch return R.R_NilValue,
         5 => _ = zigr_convert.toListSlice(allocator, conversion_cleanup_input) catch return R.R_NilValue,
         else => unreachable,
     }
     R.Rf_error("conversion unexpectedly returned");
+}
+
+threadlocal var conversion_view_cleanup_input: SEXP = null;
+threadlocal var conversion_view_cleanup_mode: u3 = 0;
+
+fn conversionViewAllocationThenError() SEXP {
+    const allocator = StringCleanupAllocator.allocator();
+    switch (conversion_view_cleanup_mode) {
+        0 => _ = zigr_convert.toRealSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        1 => _ = zigr_convert.toIntSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        2 => _ = zigr_convert.toLogicalSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        3 => _ = zigr_convert.toRawSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        4 => _ = zigr_convert.toComplexSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        5 => _ = zigr_convert.toCachedStringSliceView(allocator, conversion_view_cleanup_input) catch return R.R_NilValue,
+        else => unreachable,
+    }
+    R.Rf_error("view conversion unexpectedly returned");
+}
+
+export fn zigr_test_view_allocation_longjmp() SEXP {
+    for (0..6) |mode| {
+        const input = R.Rf_protect(if (mode == 5) stringErrorAltString() else conversionErrorInput(mode));
+        conversion_view_cleanup_input = input;
+        conversion_view_cleanup_mode = @intCast(mode);
+        string_cleanup_state = .{};
+
+        const caught = trycatch_mod.tryCatch(struct {
+            fn call() SEXP {
+                return cleanup.protectCall(conversionViewAllocationThenError);
+            }
+        }.call);
+        R.Rf_unprotect(1);
+        conversion_view_cleanup_input = null;
+        if (caught) |_| return R.Rf_ScalarReal(@floatFromInt(100 + mode)) else |_| {}
+        if (string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(@floatFromInt(200 + mode * 10 + string_cleanup_state.allocations * 2 + string_cleanup_state.frees));
+    }
+    return R.Rf_ScalarReal(1.0);
 }
 
 export fn zigr_test_conversion_allocation_longjmp() SEXP {
@@ -4601,7 +4802,8 @@ export fn zigr_test_export_cached_string_lengths() SEXP {
         R.SET_STRING_ELT(vec, @intCast(i), cs);
     }
 
-    const cached = zigr_convert.toCachedStringSliceView(arena.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    var cached = zigr_convert.toCachedStringSliceView(arena.allocator(), vec) catch return R.Rf_ScalarReal(0.0);
+    defer cached.deinit();
     var total: usize = 0;
     for (0..cached.len) |i| total += cached.at(i).bytes.len;
 
@@ -7414,6 +7616,7 @@ export fn zigr_test_raw_views() SEXP {
     defer copied_counting.allocator().free(counted_copy);
     if (copied_counting.stats.allocations != 1 or copied_counting.stats.bytes_allocated != expected.len or
         copied_counting.stats.peak_live_bytes != expected.len) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(101.0);
 
     const rvector = zigr.rvector.RVector(u8).init(raw) catch return R.Rf_ScalarReal(0.0);
     var rvector_view = rvector.view(no_alloc.allocator()) catch return R.Rf_ScalarReal(0.0);
@@ -7423,6 +7626,7 @@ export fn zigr_test_raw_views() SEXP {
         .owned => return R.Rf_ScalarReal(0.0),
     }
     if (!std.mem.eql(u8, rvector_view.constSlice(), &expected) or no_alloc.end_index != 0) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(102.0);
 
     var copy_storage: [expected.len]u8 align(16) = undefined;
     var copy_fba = std.heap.FixedBufferAllocator.init(&copy_storage);
@@ -7451,6 +7655,7 @@ export fn zigr_test_raw_views() SEXP {
         if (short_raw_region_get_calls != expected_region_calls or short_raw_region_elt_calls != 0) return R.Rf_ScalarReal(0.0);
     }
     if (fallback_fba.end_index != 0) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(103.0);
 
     short_raw_region_get_calls = 0;
     short_raw_region_elt_calls = 0;
@@ -7471,27 +7676,34 @@ export fn zigr_test_raw_views() SEXP {
     } else |view_error| {
         if (view_error != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
     }
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(108.0);
     const failing = R.Rf_protect(failingRawRegion());
     defer R.Rf_unprotect(1);
-    if (zigr_convert.toRawSliceView(std.heap.page_allocator, failing)) |_| {
+    if (zigr_convert.toRawSliceView(std.heap.page_allocator, failing)) |unexpected_view| {
+        var unexpected = unexpected_view;
+        unexpected.deinit();
         return R.Rf_ScalarReal(0.0);
     } else |view_error| {
         if (view_error != error.AltRepRegionRead) return R.Rf_ScalarReal(0.0);
     }
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(104.0);
 
     if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
     const generated = R.Rf_protect(boundaryCall(3, raw));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(generated) != R.INTSXP or R.INTEGER(generated)[0] != 448) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(105.0);
     const echoed = R.Rf_protect(boundaryCall(10, raw));
     defer R.Rf_unprotect(1);
     if (echoed == raw or R.TYPEOF(echoed) != R.RAWSXP or R.XLENGTH(echoed) != expected.len or
         R.RAW(echoed)[0] != 0x42 or R.RAW(echoed)[1] != 0xff or R.RAW(echoed)[2] != 0x7f) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(106.0);
     const altrep_echo = R.Rf_protect(boundaryCall(10, raw_altrep));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(altrep_echo) != R.RAWSXP or R.XLENGTH(altrep_echo) != short_region_len or
         R.RAW(altrep_echo)[0] != 0 or R.RAW(altrep_echo)[250] != 250 or
         R.RAW(altrep_echo)[short_region_len - 1] != (short_region_len - 1) % 251) return R.Rf_ScalarReal(0.0);
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(107.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -8042,6 +8254,13 @@ export fn zigr_test_cleanup_capacity_recovers() SEXP {
 
 export fn zigr_test_final_cleanup_state() SEXP {
     return zigr_test_cleanup_capacity_recovers();
+}
+
+export fn zigr_test_current_cleanup_state() SEXP {
+    const snapshot = cleanup.diagnosticSnapshot();
+    const encoded = snapshot.cleanup_frames * 1_000_000 + snapshot.unwind_boundaries * 10_000 +
+        @as(usize, @intCast(@max(snapshot.protect_depth, 0))) * 100 + snapshot.max_cleanup_frames;
+    return R.Rf_ScalarReal(@floatFromInt(encoded));
 }
 
 export fn zigr_test_str_na_nullable() SEXP {

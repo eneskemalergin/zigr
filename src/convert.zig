@@ -291,13 +291,15 @@ fn directComplexSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[
     return complex_ptr[0..n];
 }
 
-/// Borrowed data is not a GC root; owned data must use its recorded allocator.
+/// Borrowed data is not a GC root. Owned data uses its recorded allocator and
+/// releases its cleanup frame, when present, during `deinit`.
 pub fn SliceView(comptime T: type) type {
     return union(enum) {
         borrowed: []const T,
         owned: struct {
             data: []const T,
             allocator: std.mem.Allocator,
+            cleanup_registered: bool = false,
         },
 
         pub fn constSlice(self: @This()) []const T {
@@ -309,7 +311,10 @@ pub fn SliceView(comptime T: type) type {
 
         pub fn deinit(self: *@This()) void {
             switch (self.*) {
-                .owned => |s| s.allocator.free(s.data),
+                .owned => |s| {
+                    s.allocator.free(s.data);
+                    if (s.cleanup_registered) cleanup.popFrame();
+                },
                 .borrowed => {},
             }
             self.* = undefined;
@@ -470,10 +475,10 @@ fn directVectorSlice(comptime T: type, sexp: SEXP, representation: VectorReprese
 }
 
 fn materializedVectorSlice(comptime T: type, allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const T {
-    if (comptime T == f64) return toRealSliceWithRepresentation(allocator, sexp, representation);
-    if (comptime T == i32) return toIntSliceWithRepresentation(allocator, sexp, representation);
-    if (comptime T == u8) return toRawSliceWithRepresentation(allocator, sexp, representation);
-    if (comptime T == Rcomplex) return toComplexSliceWithRepresentation(allocator, sexp, representation);
+    if (comptime T == f64) return toRealSliceWithRepresentation(allocator, sexp, representation, false);
+    if (comptime T == i32) return toIntSliceWithRepresentation(allocator, sexp, representation, false);
+    if (comptime T == u8) return toRawSliceWithRepresentation(allocator, sexp, representation, false);
+    if (comptime T == Rcomplex) return toComplexSliceWithRepresentation(allocator, sexp, representation, false);
     @compileError("unsupported vector access type: " ++ @typeName(T));
 }
 
@@ -576,25 +581,53 @@ fn toVectorAccessWithRepresentation(
 }
 
 pub fn toRealSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RealSliceView {
+    return toRealSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of fallback storage. The returned
+/// view remains deinitializable and does not register a separate cleanup frame.
+pub fn toRealSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !RealSliceView {
+    return toRealSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toRealSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !RealSliceView {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const representation = try vectorRepresentation(sexp);
     if (directRealSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
-    return .{ .owned = .{ .data = try toRealSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
+    return .{ .owned = .{
+        .data = try toRealSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
+    } };
 }
 
 pub fn toIntSliceView(allocator: std.mem.Allocator, sexp: SEXP) !IntegerSliceView {
+    return toIntSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of fallback storage. The returned
+/// view remains deinitializable and does not register a separate cleanup frame.
+pub fn toIntSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !IntegerSliceView {
+    return toIntSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toIntSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !IntegerSliceView {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     const representation = try vectorRepresentation(sexp);
     if (directIntSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
-    return .{ .owned = .{ .data = try toIntSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
+    return .{ .owned = .{
+        .data = try toIntSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
+    } };
 }
 
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+    return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
 }
 
-fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]f64 {
+fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]f64 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(f64, n);
@@ -604,7 +637,12 @@ fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repre
         AllocSliceCleanup.init(f64, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     if (directRealSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
@@ -746,10 +784,10 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
 
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+    return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
 }
 
-fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
+fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]i32 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
@@ -759,7 +797,12 @@ fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
         AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     if (directIntSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
@@ -1075,6 +1118,7 @@ pub const CachedStringSliceView = struct {
     items: []const StringView,
     len: usize,
     allocator: std.mem.Allocator,
+    cleanup_registered: bool = false,
 
     pub fn at(self: CachedStringSliceView, index: usize) StringView {
         if (index >= self.len) @panic("CachedStringSliceView.at index out of bounds");
@@ -1099,6 +1143,7 @@ pub const CachedStringSliceView = struct {
 
     pub fn deinit(self: *CachedStringSliceView) void {
         self.allocator.free(self.items);
+        if (self.cleanup_registered) cleanup.popFrame();
         self.* = undefined;
     }
 };
@@ -1112,6 +1157,16 @@ pub fn toStringSliceView(sexp: SEXP) !StringSliceView {
 }
 
 pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
+    return toCachedStringSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of cached storage. The returned cache
+/// remains deinitializable and does not register a separate cleanup frame.
+pub fn toCachedStringSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !CachedStringSliceView {
+    return toCachedStringSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toCachedStringSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !CachedStringSliceView {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     cleanup.requireCapacity(2);
@@ -1121,7 +1176,12 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
         AllocSliceCleanup.init(StringView, allocator, items, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
     }
@@ -1129,6 +1189,7 @@ pub fn toCachedStringSliceView(allocator: std.mem.Allocator, sexp: SEXP) !Cached
         .items = items,
         .len = n,
         .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
     };
 }
 
@@ -1142,10 +1203,10 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+    return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
 }
 
-fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]i32 {
+fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]i32 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
@@ -1155,7 +1216,12 @@ fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
         AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     if (directLogicalSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
@@ -1173,10 +1239,24 @@ fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
 }
 
 pub fn toLogicalSliceView(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
+    return toLogicalSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of fallback storage. The returned
+/// view remains deinitializable and does not register a separate cleanup frame.
+pub fn toLogicalSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !SliceView(i32) {
+    return toLogicalSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toLogicalSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !SliceView(i32) {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     const representation = try vectorRepresentation(sexp);
     if (directLogicalSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
-    return .{ .owned = .{ .data = try toLogicalSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
+    return .{ .owned = .{
+        .data = try toLogicalSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
+    } };
 }
 
 pub fn fromLogicalSlice(slice: []const i32) SEXP {
@@ -1210,10 +1290,10 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
 
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
-    return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+    return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
 }
 
-fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const u8 {
+fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]const u8 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(u8, n);
@@ -1223,7 +1303,12 @@ fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
         AllocSliceCleanup.init(u8, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     if (directRawSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
@@ -1241,10 +1326,24 @@ fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
 }
 
 pub fn toRawSliceView(allocator: std.mem.Allocator, sexp: SEXP) !RawSliceView {
+    return toRawSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of fallback storage. The returned
+/// view remains deinitializable and does not register a separate cleanup frame.
+pub fn toRawSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !RawSliceView {
+    return toRawSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toRawSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !RawSliceView {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
     const representation = try vectorRepresentation(sexp);
     if (directRawSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
-    return .{ .owned = .{ .data = try toRawSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
+    return .{ .owned = .{
+        .data = try toRawSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
+    } };
 }
 
 pub fn fromRawSlice(slice: []const u8) SEXP {
@@ -1256,10 +1355,10 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
 
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp));
+    return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
 }
 
-fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]Rcomplex {
+fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]Rcomplex {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(Rcomplex, n);
@@ -1269,7 +1368,12 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
         AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    if (comptime retain_cleanup) {
+        errdefer cleanup.popFrame();
+    } else {
+        errdefer cleanup.popFrame();
+        defer cleanup.popFrame();
+    }
     if (directComplexSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
     } else if (representation.altrep) {
@@ -1287,10 +1391,24 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
 }
 
 pub fn toComplexSliceView(allocator: std.mem.Allocator, sexp: SEXP) !ComplexSliceView {
+    return toComplexSliceViewWithCleanup(allocator, sexp, true);
+}
+
+/// Uses the supplied arena as the owner of fallback storage. The returned
+/// view remains deinitializable and does not register a separate cleanup frame.
+pub fn toComplexSliceViewWithArenaOwner(allocator: std.mem.Allocator, sexp: SEXP) !ComplexSliceView {
+    return toComplexSliceViewWithCleanup(allocator, sexp, false);
+}
+
+fn toComplexSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !ComplexSliceView {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const representation = try vectorRepresentation(sexp);
     if (directComplexSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
-    return .{ .owned = .{ .data = try toComplexSliceWithRepresentation(allocator, sexp, representation), .allocator = allocator } };
+    return .{ .owned = .{
+        .data = try toComplexSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .allocator = allocator,
+        .cleanup_registered = retain_cleanup,
+    } };
 }
 
 pub fn fromComplexSlice(slice: []const Rcomplex) SEXP {

@@ -93,21 +93,19 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     }
     // The arena owns fallback copies until this R call returns or unwinds.
     if (comptime T == []const f64) {
-        const view = convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
-        return view.constSlice();
+        return convert.toRealSlice(arena, sexp) catch |err| signalErrorMsg("toRealSlice", @errorName(err));
     }
     if (comptime T == convert.RealSliceView) {
-        return convert.toRealSliceView(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
+        return convert.toRealSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toRealSliceView", @errorName(err));
     }
     if (comptime T == []const i32) {
-        const view = convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
-        return view.constSlice();
+        return convert.toIntSlice(arena, sexp) catch |err| signalErrorMsg("toIntSlice", @errorName(err));
     }
     if (comptime T == convert.IntegerSliceView) {
-        return convert.toIntSliceView(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
+        return convert.toIntSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toIntSliceView", @errorName(err));
     }
     if (comptime T == convert.LogicalSliceView) {
-        const view = convert.toLogicalSliceView(arena, sexp) catch |err| signalErrorMsg("toLogicalSliceView", @errorName(err));
+        const view = convert.toLogicalSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toLogicalSliceView", @errorName(err));
         return .{ .data = view.constSlice() };
     }
     if (comptime T == []const bool) @compileError("logical vectors require LogicalSliceView to preserve NA");
@@ -136,7 +134,7 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return convert.toStringProjectionView(.metadata, sexp) catch |err| signalErrorMsg("toStringMetadataView", @errorName(err));
     }
     if (comptime T == convert.CachedStringSliceView) {
-        return convert.toCachedStringSliceView(arena, sexp) catch |err| signalErrorMsg("toCachedStringSliceView", @errorName(err));
+        return convert.toCachedStringSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toCachedStringSliceView", @errorName(err));
     }
     if (comptime T == f64) {
         return convert.toRealScalar(sexp) catch |err| convert.signalError(err);
@@ -151,14 +149,13 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
         return convert.toRawSlice(arena, sexp) catch |err| signalErrorMsg("toRawSlice", @errorName(err));
     }
     if (comptime T == convert.RawSliceView) {
-        return convert.toRawSliceView(arena, sexp) catch |err| signalErrorMsg("toRawSliceView", @errorName(err));
+        return convert.toRawSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toRawSliceView", @errorName(err));
     }
     if (comptime T == []const convert.Rcomplex) {
-        const view = convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
-        return view.constSlice();
+        return convert.toComplexSlice(arena, sexp) catch |err| signalErrorMsg("toComplexSlice", @errorName(err));
     }
     if (comptime T == convert.ComplexSliceView) {
-        return convert.toComplexSliceView(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
+        return convert.toComplexSliceViewWithArenaOwner(arena, sexp) catch |err| signalErrorMsg("toComplexSliceView", @errorName(err));
     }
     @compileError("unsupported generated parameter type: " ++ @typeName(T) ++ "; accept R.SEXP and call convert.fromSEXP for a fixed schema");
 }

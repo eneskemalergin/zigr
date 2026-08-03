@@ -164,6 +164,7 @@ tests <- list(
   "zigr_test_altrep_typed_callback_contract",
   "zigr_test_altrep_complex_string_callback_contract",
   "zigr_test_borrowed_views",
+  "zigr_test_borrowed_lifetimes",
   "zigr_test_compact_altrep_views",
   "zigr_test_short_region",
 
@@ -307,6 +308,7 @@ tests <- list(
   "zigr_test_generated_string_shapes",
   "zigr_test_generated_string_projections",
   "zigr_test_string_allocation_longjmp",
+  "zigr_test_view_allocation_longjmp",
   "zigr_test_conversion_allocation_longjmp",
 
   list(name="zigr_test_export_from_sexp_wrong_type", expect_error=TRUE),
