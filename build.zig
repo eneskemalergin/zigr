@@ -36,9 +36,11 @@ fn rBuild(
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const enable_direct_sexp = b.option(bool, "direct-sexp", "Enable the private R 4.6 x86_64 SEXP layout") orelse false;
     const force_checked_sexp = b.option(bool, "checked-sexp", "Force checked R API SEXP access") orelse false;
 
     const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_direct_sexp", enable_direct_sexp);
     build_options.addOption(bool, "force_checked_sexp", force_checked_sexp);
 
     const fmt_step = b.step("fmt", "Check zig fmt compliance");

@@ -139,6 +139,7 @@ export fn zigr_test_return42() SEXP {
 }
 
 export fn zigr_test_abi_contract() SEXP {
+    if (zigr.sexp.typeTag(null) != -1) return R.Rf_ScalarReal(0.0);
     if (zigr.sexp.fastLength(null) != 0) return R.Rf_ScalarReal(0.0);
     if (zigr.sexp.fastDataPtr(null) != null) return R.Rf_ScalarReal(0.0);
     if (zigr.sexp.fastVectorElt(null, 0) != null) return R.Rf_ScalarReal(0.0);

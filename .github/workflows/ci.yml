@@ -88,10 +88,10 @@ jobs:
       - name: Run live R runtime tests
         run: Rscript tests/run_r_tests.R
 
-      - name: Run checked SEXP fallback tests
+      - name: Run explicit direct-layout tests
         run: Rscript tests/run_r_tests.R
         env:
-          ZIGR_CHECKED_SEXP: "true"
+          ZIGR_DIRECT_SEXP: "true"
 
   build-macos:
     name: build + test (macOS, R 4.6.1)

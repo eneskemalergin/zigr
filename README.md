@@ -135,18 +135,18 @@ Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conve
 
 ### SEXP ABI selection
 
-`sexp.active_abi_contract` selects one access policy at compile time. Little-endian x86_64 targets built with R 4.6 headers use the named `r4_6_x86_64` layout contract. Every other configuration uses `checked_r_api`, which routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API.
+`sexp.active_abi_contract` selects one access policy at compile time. `checked_r_api` is the default and routes type, length, data-pointer, vector-element, character-data, and character-encoding access through R's public C API. The private `r4_6_x86_64` layout is available only when explicitly requested for a matching header and target shape.
 
 | Contract | Selection | Checked by |
 | --- | --- | --- |
-| `r4_6_x86_64` | R 4.6 headers, little-endian x86_64 target, and no force-fallback flag | Live R checks against the public accessors |
-| `checked_r_api` | Forced with `-Dchecked-sexp=true`, or selected for every other header/target shape | Forced live R checks and five-target compile checks |
+| `r4_6_x86_64` | `-Ddirect-sexp=true`, R 4.6 headers, and a little-endian x86_64 target | Same-host live R checks; the opt-in does not attest to the loaded R runtime ABI |
+| `checked_r_api` | Default, `-Dchecked-sexp=true`, or every other header/target shape | Default live R checks and five-target compile checks |
 
-The direct contract keeps its offsets in one private layout definition. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
+The direct contract keeps its offsets in one private layout definition. It is an explicit compatibility risk because translated headers do not verify the R runtime that loads the binary. ALTREP length and data access still use R accessors even when the direct contract is active. `sexp.checked` exposes the fallback operations for diagnostics and explicit safe access. Its type tag returns `-1` for a null pointer, and its vector-element helper rejects null, wrong-kind, and out-of-bounds input instead of indexing it.
 
-Use `zig build abi-info` to print the selected contract and translated R header version. Pass `-Dchecked-sexp=true` to force the checked path for tests or diagnostics. The offsets cannot come from public `offsetof` probes because installed R headers keep `SEXPREC` opaque. zigr therefore keeps the two R 4.x offsets private, gates them by pointer width, byte order, and R major version, and checks them against public accessors in the live runtime suite.
+Use `zig build abi-info` to print the selected contract and translated R header version. Pass `-Ddirect-sexp=true` only when you intentionally accept the private-layout compatibility condition; `-Dchecked-sexp=true` also forces the checked path. The offsets cannot come from public `offsetof` probes because installed R headers keep `SEXPREC` opaque. zigr therefore keeps the two R 4.x offsets private, gates them by pointer width, byte order, and R major version, and checks them against public accessors in the live runtime suite.
 
-CI runs the live R suite once with the native contract and once with `checked_r_api` forced. The non-x86_64 compile targets select the fallback branch. These checks prove same-host semantic parity and fallback compilation; they are not cross-target link, load, or runtime claims.
+CI runs the live R suite with the default checked contract and with the explicit direct opt-in. The non-x86_64 compile targets select the checked branch. These checks prove same-host semantic parity and checked-branch compilation; they are not cross-target link, load, or runtime claims.
 
 ### Native-state methods
 

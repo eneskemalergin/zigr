@@ -104,11 +104,11 @@ pub const ConvertError = error{
 };
 
 fn hasType(sexp: SEXP, expected: c_uint) bool {
-    const actual = sexp_mod.typeTag(sexp);
-    return @as(c_uint, actual) == expected;
+    return sexp_mod.typeTag(sexp) == @as(c_int, @intCast(expected));
 }
 
 fn expectType(sexp: SEXP, expected: c_uint, comptime err: ConvertError) ConvertError!void {
+    if (sexp == null) return error.NullPointer;
     if (!hasType(sexp, expected)) return err;
 }
 
@@ -2376,6 +2376,10 @@ test "errorMessage covers all ConvertError variants" {
 test "errorMessage handles unknown error via @errorName" {
     const msg = errorMessage(error.ExpectedReal);
     try std.testing.expect(msg.len > 0);
+}
+
+test "expectType rejects null SEXP" {
+    try std.testing.expectError(error.NullPointer, expectType(null, R.REALSXP, error.ExpectedReal));
 }
 
 test "typeToSEXPTYPE returns correct R constants" {

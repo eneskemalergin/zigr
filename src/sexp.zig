@@ -22,8 +22,8 @@ const r4_7_version_min = 4 * 65536 + 7 * 256;
 
 pub const r_header_version = R.R_VERSION;
 
-fn selectAbiContract(force_checked: bool, pointer_bytes: usize, is_x86_64: bool, is_little: bool, r_version: c_int) AbiContract {
-    if (!force_checked and pointer_bytes == 8 and is_x86_64 and is_little and
+fn selectAbiContract(enable_direct: bool, force_checked: bool, pointer_bytes: usize, is_x86_64: bool, is_little: bool, r_version: c_int) AbiContract {
+    if (enable_direct and !force_checked and pointer_bytes == 8 and is_x86_64 and is_little and
         r_version >= r4_6_version_min and r_version < r4_7_version_min)
     {
         return .r4_6_x86_64;
@@ -32,6 +32,7 @@ fn selectAbiContract(force_checked: bool, pointer_bytes: usize, is_x86_64: bool,
 }
 
 pub const active_abi_contract = selectAbiContract(
+    build_options.enable_direct_sexp,
     build_options.force_checked_sexp,
     @sizeOf(usize),
     builtin.target.cpu.arch == .x86_64,
@@ -46,7 +47,7 @@ const R4_64 = struct {
     const data_offset = 0x30;
 };
 
-/// Explicit R API fallback for callers that cannot assume an internal layout.
+/// Public R API accessors used by the default contract.
 pub const checked = struct {
     /// Returns `-1` for a null SEXP.
     pub fn typeTag(sexp: SEXP) c_int {
@@ -90,19 +91,20 @@ pub const checked = struct {
     }
 };
 
-fn directTypeTag(sexp: SEXP) u5 {
+fn directTypeTag(sexp: SEXP) c_int {
     const byte = @as(*const u8, @ptrCast(sexp)).*;
-    return @truncate(byte & 0x1F);
+    return @intCast(byte & 0x1F);
 }
 
-/// The caller assumes `sexp` is non-null.
-pub fn typeTag(sexp: SEXP) u5 {
+/// Returns `-1` for a null SEXP.
+pub fn typeTag(sexp: SEXP) c_int {
+    if (sexp == null) return -1;
     if (comptime uses_direct_layout) return directTypeTag(sexp);
-    return @truncate(@as(c_uint, @intCast(checked.typeTag(sexp))));
+    return checked.typeTag(sexp);
 }
 
 pub fn typeOf(sexp: SEXP) SEXPTYPE {
-    return @enumFromInt(@as(c_int, typeTag(sexp)));
+    return @enumFromInt(typeTag(sexp));
 }
 
 fn directLength(sexp: SEXP) R.R_xlen_t {
@@ -341,18 +343,23 @@ test "fastDataPtr has correct type" {
 }
 
 test "typeTag has correct type" {
-    try std.testing.expectEqual(@TypeOf(typeTag), fn (SEXP) u5);
+    try std.testing.expectEqual(@TypeOf(typeTag), fn (SEXP) c_int);
 }
 
 test "ABI contract gates direct layout" {
-    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(false, 8, true, true, r4_6_version_min));
-    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(false, 8, true, true, r4_7_version_min - 1));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, 8, true, true, r4_6_version_min));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 4, true, true, r4_6_version_min));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, false, true, r4_6_version_min));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, false, r4_6_version_min));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, true, r4_6_version_min - 1));
-    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, 8, true, true, r4_7_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(false, false, 8, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(true, false, 8, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.r4_6_x86_64, selectAbiContract(true, false, 8, true, true, r4_7_version_min - 1));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, true, 8, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, false, 4, true, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, false, 8, false, true, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, false, 8, true, false, r4_6_version_min));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, false, 8, true, true, r4_6_version_min - 1));
+    try std.testing.expectEqual(.checked_r_api, selectAbiContract(true, false, 8, true, true, r4_7_version_min));
+}
+
+test "typeTag rejects null" {
+    try std.testing.expectEqual(@as(c_int, -1), typeTag(null));
 }
 
 test "checked fallback surface compiles" {
