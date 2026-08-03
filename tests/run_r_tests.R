@@ -54,7 +54,64 @@ build_so <- function() {
 so_path <- build_so()
 
 cat("Loading .so:", so_path, "\n")
-dyn.load(so_path)
+test_dll <- dyn.load(so_path)
+
+run_generated_registration_arity_test <- function() {
+  load_registration_dll <- function(name) {
+    path <- file.path(tempdir(), paste0(name, .Platform$dynlib.ext))
+    if (!file.copy(so_path, path, overwrite = TRUE)) stop("failed to copy generated registration fixture")
+    dyn.load(path)
+  }
+  call_dll <- load_registration_dll("zigr_arity_calls")
+  method_dll <- load_registration_dll("zigr_arity_methods")
+  call_routines <- getDLLRegisteredRoutines(call_dll)[[".Call"]]
+  method_routines <- getDLLRegisteredRoutines(method_dll)[[".Call"]]
+  if (is.null(call_routines) || is.null(method_routines)) stop("missing generated .Call routine table")
+  rejects_call <- function(entry, arguments) {
+    tryCatch(
+      {
+        do.call(.Call, c(list(entry), arguments))
+        FALSE
+      },
+      error = function(e) TRUE
+    )
+  }
+
+  for (arity in 0:8) {
+    name <- paste0("zigr_arity_probe_", arity)
+    entry <- call_routines[[name]]
+    if (is.null(entry) || entry$numParameters != arity) stop("missing or wrong ordinary registration: ", name)
+    actual <- do.call(.Call, c(list(entry), as.list(seq_len(arity))))
+    expected <- as.integer(arity * (arity + 1L) / 2L)
+    if (!identical(actual, expected)) stop("ordinary invocation failed: ", name)
+
+    wrong_arguments <- if (arity == 0L) list(1L) else as.list(seq_len(arity - 1L))
+    if (!rejects_call(entry, wrong_arguments)) stop("ordinary wrapper accepted wrong arity: ", name)
+  }
+
+  state_entry <- call_routines[["zigr_arity_probe_state"]]
+  if (is.null(state_entry) || state_entry$numParameters != 0L) stop("missing state constructor registration")
+  state <- .Call(state_entry)
+
+  for (extra_arity in 0:4) {
+    name <- paste0("r_runtime_ArityProbeState__arity_", extra_arity)
+    entry <- method_routines[[name]]
+    registered_arity <- extra_arity + 1L
+    if (is.null(entry) || entry$numParameters != registered_arity) stop("missing or wrong method registration: ", name)
+    actual <- do.call(.Call, c(list(entry, state), as.list(seq_len(extra_arity))))
+    expected <- as.integer(extra_arity * (extra_arity + 1L) / 2L)
+    if (!identical(actual, expected)) stop("method invocation failed: ", name)
+
+    wrong_arguments <- if (extra_arity == 0L) {
+      list(state, 1L)
+    } else {
+      c(list(state), as.list(seq_len(extra_arity - 1L)))
+    }
+    if (!rejects_call(entry, wrong_arguments)) stop("method wrapper accepted wrong arity: ", name)
+  }
+
+  TRUE
+}
 
 tests <- list(
   "zigr_test_protect",
@@ -415,6 +472,19 @@ for (t in tests) {
     cat("  SKIP:", name, "-", result, "\n")
     skipped <- skipped + 1
   }
+}
+
+registration_result <- tryCatch(
+  run_generated_registration_arity_test(),
+  error = function(e) e
+)
+if (identical(registration_result, TRUE)) {
+  cat("  PASS: generated_registration_every_supported_arity\n")
+  passed <- passed + 1
+} else {
+  cat("  FAIL: generated_registration_every_supported_arity\n")
+  cat("    ", conditionMessage(registration_result), "\n", sep = "")
+  failed <- failed + 1
 }
 
 run_altrep_persistence_test <- function() {

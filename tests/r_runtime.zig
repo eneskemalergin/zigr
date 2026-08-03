@@ -25,6 +25,8 @@ const protect = zigr.protect;
 extern var R_interrupts_pending: c_int;
 
 const SEXP = R.SEXP;
+const NoArgumentEntry = *const fn () callconv(.c) R.SEXP;
+const OneArgumentEntry = *const fn (R.SEXP) callconv(.c) R.SEXP;
 
 var test_dll: ?*R.DllInfo = null;
 
@@ -52,6 +54,14 @@ export fn R_init_zigr_r_test(info: *R.DllInfo) callconv(.c) void {
 
 export fn R_init_libzigr_r_test(info: *R.DllInfo) callconv(.c) void {
     initTestDll(info);
+}
+
+export fn R_init_zigr_arity_calls(info: *R.DllInfo) callconv(.c) void {
+    ArityProbeExports.init(info);
+}
+
+export fn R_init_zigr_arity_methods(info: *R.DllInfo) callconv(.c) void {
+    ArityProbeMethods.init(info);
 }
 
 export fn zigr_alloc_real() SEXP {
@@ -5101,12 +5111,15 @@ const ArenaExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_direct_result_interrupt", .func = directResultThenInterrupt },
 }, &.{});
 
-const ArenaCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 var generated_failure_input: SEXP = undefined;
 
 fn arenaCall(index: usize, arg: SEXP) SEXP {
-    const fun: ArenaCall = @ptrCast(@alignCast(ArenaExports.call_defs[index].fun));
-    return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    if (index == 5 or index == 13) {
+        const fun: NoArgumentEntry = @ptrCast(@alignCast(ArenaExports.call_defs[index].fun));
+        return fun();
+    }
+    const fun: OneArgumentEntry = @ptrCast(@alignCast(ArenaExports.call_defs[index].fun));
+    return fun(arg);
 }
 
 fn generatedFailureCall() SEXP {
@@ -5196,12 +5209,11 @@ const ObjectExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_object_s4", .func = generatedObjectS4 },
 }, &.{});
 
-const ObjectCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 threadlocal var object_error_input: SEXP = null;
 
 fn objectCall(index: usize, arg: SEXP) SEXP {
-    const fun: ObjectCall = @ptrCast(@alignCast(ObjectExports.call_defs[index].fun));
-    return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    const fun: OneArgumentEntry = @ptrCast(@alignCast(ObjectExports.call_defs[index].fun));
+    return fun(arg);
 }
 
 fn objectListWrongTypeCall() SEXP {
@@ -5383,8 +5395,6 @@ const BoundaryExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_string_projection_metadata", .func = generatedStringMetadata },
 }, &.{});
 
-const RuntimeCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
-
 threadlocal var runtime_rng_mode: i32 = 0;
 threadlocal var runtime_rng_count: i32 = 0;
 
@@ -5524,8 +5534,13 @@ const RuntimeExports = zigr.@"export".generateExports(&.{
 }, &.{});
 
 fn runtimeCall(index: usize, a0: SEXP, a1: SEXP) SEXP {
-    const fun: RuntimeCall = @ptrCast(@alignCast(RuntimeExports.call_defs[index].fun));
-    return fun(a0, a1, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    _ = a1;
+    if (index == 0 or index == 5 or index == 8) {
+        const fun: OneArgumentEntry = @ptrCast(@alignCast(RuntimeExports.call_defs[index].fun));
+        return fun(a0);
+    }
+    const fun: NoArgumentEntry = @ptrCast(@alignCast(RuntimeExports.call_defs[index].fun));
+    return fun();
 }
 
 fn initRuntimeExports() bool {
@@ -5590,13 +5605,16 @@ fn runtimeEmbedDirectCall() SEXP {
 threadlocal var runtime_language_input: SEXP = null;
 threadlocal var runtime_embed_mode: i32 = 0;
 
-const BoundaryCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 threadlocal var generated_logical_error_arg: SEXP = null;
 threadlocal var generated_string_projection_error_arg: SEXP = null;
 
 fn boundaryCall(index: usize, arg: SEXP) SEXP {
-    const fun: BoundaryCall = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
-    return fun(arg, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    if (index == 6) {
+        const fun: NoArgumentEntry = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
+        return fun();
+    }
+    const fun: OneArgumentEntry = @ptrCast(@alignCast(BoundaryExports.call_defs[index].fun));
+    return fun(arg);
 }
 
 fn generatedLogicalErrorCall() SEXP {
@@ -7399,7 +7417,7 @@ export fn zigr_test_externalptr_typed_protected() SEXP {
     const amount = R.Rf_protect(R.Rf_ScalarInteger(1));
     defer R.Rf_unprotect(1);
     const method_fun: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[0].fun));
-    if (R.INTEGER(method_fun(ext, amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue))[0] != 1 or counter.val != 1) return R.Rf_ScalarReal(0.0);
+    if (R.INTEGER(method_fun(ext, amount))[0] != 1 or counter.val != 1) return R.Rf_ScalarReal(0.0);
     if (zigr.externalptr.makeTypedRawChecked(MethodCounter, @ptrCast(&counter), null)) |_| {
         return R.Rf_ScalarReal(0.0);
     } else |pointer_error| {
@@ -7891,7 +7909,92 @@ const CounterMethods = zigr.@"export".generateMethods(MethodCounter, &.{
     .{ .name = "logical_external", .func = counterLogical },
 });
 
-const MethodCall = *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP;
+const ArityProbeState = struct {};
+
+fn arityProbeStateDeinit(_: *ArityProbeState) void {}
+
+fn newArityProbeState() R.SEXP {
+    return zigr.externalptr.createTyped(ArityProbeState, .{}, arityProbeStateDeinit);
+}
+
+fn aritySum0() i32 {
+    return 0;
+}
+
+fn aritySum1(a0: i32) i32 {
+    return a0;
+}
+
+fn aritySum2(a0: i32, a1: i32) i32 {
+    return a0 + a1;
+}
+
+fn aritySum3(a0: i32, a1: i32, a2: i32) i32 {
+    return a0 + a1 + a2;
+}
+
+fn aritySum4(a0: i32, a1: i32, a2: i32, a3: i32) i32 {
+    return a0 + a1 + a2 + a3;
+}
+
+fn aritySum5(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32) i32 {
+    return a0 + a1 + a2 + a3 + a4;
+}
+
+fn aritySum6(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32) i32 {
+    return a0 + a1 + a2 + a3 + a4 + a5;
+}
+
+fn aritySum7(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32) i32 {
+    return a0 + a1 + a2 + a3 + a4 + a5 + a6;
+}
+
+fn aritySum8(a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32) i32 {
+    return a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}
+
+fn arityMethodSum0(_: *ArityProbeState) i32 {
+    return 0;
+}
+
+fn arityMethodSum1(_: *ArityProbeState, a0: i32) i32 {
+    return a0;
+}
+
+fn arityMethodSum2(_: *ArityProbeState, a0: i32, a1: i32) i32 {
+    return a0 + a1;
+}
+
+fn arityMethodSum3(_: *ArityProbeState, a0: i32, a1: i32, a2: i32) i32 {
+    return a0 + a1 + a2;
+}
+
+fn arityMethodSum4(_: *ArityProbeState, a0: i32, a1: i32, a2: i32, a3: i32) i32 {
+    return a0 + a1 + a2 + a3;
+}
+
+const ArityProbeExports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_arity_probe_state", .func = newArityProbeState },
+    .{ .name = "zigr_arity_probe_0", .func = aritySum0 },
+    .{ .name = "zigr_arity_probe_1", .func = aritySum1 },
+    .{ .name = "zigr_arity_probe_2", .func = aritySum2 },
+    .{ .name = "zigr_arity_probe_3", .func = aritySum3 },
+    .{ .name = "zigr_arity_probe_4", .func = aritySum4 },
+    .{ .name = "zigr_arity_probe_5", .func = aritySum5 },
+    .{ .name = "zigr_arity_probe_6", .func = aritySum6 },
+    .{ .name = "zigr_arity_probe_7", .func = aritySum7 },
+    .{ .name = "zigr_arity_probe_8", .func = aritySum8 },
+}, &.{});
+
+const ArityProbeMethods = zigr.@"export".generateMethods(ArityProbeState, &.{
+    .{ .name = "arity_0", .func = arityMethodSum0 },
+    .{ .name = "arity_1", .func = arityMethodSum1 },
+    .{ .name = "arity_2", .func = arityMethodSum2 },
+    .{ .name = "arity_3", .func = arityMethodSum3 },
+    .{ .name = "arity_4", .func = arityMethodSum4 },
+}, &.{});
+
+const MethodCall = *const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP;
 const ExternalMethodCall = *const fn (R.SEXP) callconv(.c) R.SEXP;
 
 // R_tryCatch needs no-argument trampolines for these generated entry points.
@@ -7902,7 +8005,7 @@ var external_method_error_fun: ?ExternalMethodCall = null;
 var external_method_error_args: R.SEXP = null;
 
 fn callMethodForError() R.SEXP {
-    return method_error_fun.?(method_error_receiver, method_error_amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    return method_error_fun.?(method_error_receiver, method_error_amount);
 }
 
 fn expectMethodError(receiver: R.SEXP, amount: R.SEXP, expected: []const u8) bool {
@@ -8354,7 +8457,7 @@ export fn zigr_test_export_generatemethods() SEXP {
     const amount = R.Rf_protect(R.Rf_ScalarInteger(5));
     defer R.Rf_unprotect(1);
 
-    const result = method_fun(extptr, amount, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue);
+    const result = method_fun(extptr, amount);
     const val = R.INTEGER(result)[0];
     if (val != 15) return R.Rf_ScalarReal(0.0);
     if (counter.val != 15) return R.Rf_ScalarReal(0.0);
@@ -8365,7 +8468,7 @@ export fn zigr_test_export_generatemethods() SEXP {
     R.LOGICAL(logical)[1] = 1;
     R.LOGICAL(logical)[2] = R.R_NaInt;
     const logical_method: MethodCall = @ptrCast(@alignCast(CounterMethods.call_defs[1].fun));
-    const logical_result = R.Rf_protect(logical_method(extptr, logical, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue, R.R_NilValue));
+    const logical_result = R.Rf_protect(logical_method(extptr, logical));
     defer R.Rf_unprotect(1);
     if (R.INTEGER(logical_result)[0] != 111) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
@@ -8508,16 +8611,7 @@ export fn zigr_test_dispatch_semantics() SEXP {
     const receiver_tag = zigr.externalptr.tag(receiver);
     const receiver_metadata = zigr.externalptr.protected(receiver);
 
-    const call_result = R.Rf_protect(call_fun(
-        receiver,
-        amount,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-    ));
+    const call_result = R.Rf_protect(call_fun(receiver, amount));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(call_result) != R.INTSXP or R.INTEGER(call_result)[0] != 15 or counter.val != 15) {
         return R.Rf_ScalarReal(0.0);
@@ -8601,18 +8695,9 @@ export fn zigr_test_dispatch_semantics() SEXP {
     }
     if (counter.val != 20) return R.Rf_ScalarReal(0.0);
 
-    const weak_reference_fun: *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP =
+    const weak_reference_fun: *const fn () callconv(.c) R.SEXP =
         @ptrCast(@alignCast(ReferenceExports.call_defs[0].fun));
-    const weak_reference_result = R.Rf_protect(weak_reference_fun(
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-        R.R_NilValue,
-    ));
+    const weak_reference_result = R.Rf_protect(weak_reference_fun());
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(weak_reference_result) != R.INTSXP or R.XLENGTH(weak_reference_result) != 1 or
         R.INTEGER(weak_reference_result)[0] != 1)

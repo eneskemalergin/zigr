@@ -263,9 +263,106 @@ fn needsInputArena(comptime T: type) bool {
     };
 }
 
-fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
+fn callArity(comptime func: anytype) usize {
+    return @typeInfo(@TypeOf(func)).@"fn".params.len;
+}
+
+fn callWrapperType(comptime arity: usize) type {
+    return switch (arity) {
+        0 => *const fn () callconv(.c) R.SEXP,
+        1 => *const fn (R.SEXP) callconv(.c) R.SEXP,
+        2 => *const fn (R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        3 => *const fn (R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        4 => *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        5 => *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        6 => *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        7 => *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        8 => *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP,
+        else => @compileError("unsupported generated .Call arity, max 8"),
+    };
+}
+
+const CallArguments = struct {
+    a0: R.SEXP = undefined,
+    a1: R.SEXP = undefined,
+    a2: R.SEXP = undefined,
+    a3: R.SEXP = undefined,
+    a4: R.SEXP = undefined,
+    a5: R.SEXP = undefined,
+    a6: R.SEXP = undefined,
+    a7: R.SEXP = undefined,
+};
+
+fn makeCallTrampoline(
+    comptime do_call: *const fn (?*anyopaque) R.SEXP,
+    comptime arity: usize,
+) callWrapperType(arity) {
+    const W = struct {
+        fn invoke(args: *CallArguments) R.SEXP {
+            return cleanup.protectCallData(do_call, @as(?*anyopaque, @ptrCast(args)));
+        }
+
+        fn zeroArguments() callconv(.c) R.SEXP {
+            var args: CallArguments = .{};
+            return invoke(&args);
+        }
+
+        fn oneArgument(a0: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0 };
+            return invoke(&args);
+        }
+
+        fn twoArguments(a0: R.SEXP, a1: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1 };
+            return invoke(&args);
+        }
+
+        fn threeArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2 };
+            return invoke(&args);
+        }
+
+        fn fourArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3 };
+            return invoke(&args);
+        }
+
+        fn fiveArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4 };
+            return invoke(&args);
+        }
+
+        fn sixArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5 };
+            return invoke(&args);
+        }
+
+        fn sevenArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6 };
+            return invoke(&args);
+        }
+
+        fn eightArguments(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
+            var args: CallArguments = .{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
+            return invoke(&args);
+        }
+    };
+
+    if (comptime arity == 0) return W.zeroArguments;
+    if (comptime arity == 1) return W.oneArgument;
+    if (comptime arity == 2) return W.twoArguments;
+    if (comptime arity == 3) return W.threeArguments;
+    if (comptime arity == 4) return W.fourArguments;
+    if (comptime arity == 5) return W.fiveArguments;
+    if (comptime arity == 6) return W.sixArguments;
+    if (comptime arity == 7) return W.sevenArguments;
+    if (comptime arity == 8) return W.eightArguments;
+    unreachable;
+}
+
+fn makeWrapper(comptime func: anytype) callWrapperType(callArity(func)) {
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
-    const n = func_info.params.len;
+    const n = comptime callArity(func);
     const ret_type = func_info.return_type orelse void;
 
     const arena_needed = comptime blk: {
@@ -275,20 +372,8 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
     };
 
     const W = struct {
-        const CallArgs = struct {
-            a0: R.SEXP,
-            a1: R.SEXP,
-            a2: R.SEXP,
-            a3: R.SEXP,
-            a4: R.SEXP,
-            a5: R.SEXP,
-            a6: R.SEXP,
-            a7: R.SEXP,
-        };
-
         fn doCall(data: ?*anyopaque) R.SEXP {
-            const args: *CallArgs = @ptrCast(@alignCast(data.?));
-            // Scalar wrappers should not pay for unused scratch storage.
+            const args: *CallArguments = @ptrCast(@alignCast(data.?));
             const Arena = if (arena_needed) TwoTierArena else struct {};
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
@@ -358,13 +443,8 @@ fn makeWrapper(comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP
             }
             @compileError("unsupported param count, max 8");
         }
-
-        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
-            var call_args = CallArgs{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
-            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(&call_args)));
-        }
     };
-    return W.wrap;
+    return makeCallTrampoline(W.doCall, n);
 }
 
 fn externalArg(args: R.SEXP, comptime index: usize) R.SEXP {
@@ -466,15 +546,15 @@ fn makeExternalWrapper(comptime func: anytype) *const fn (R.SEXP) callconv(.c) R
     return W.wrap;
 }
 
-fn makeMethodDef(name: []const u8, wrapper: *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_CallMethodDef {
+fn makeMethodDef(comptime arity: usize, name: [:0]const u8, wrapper: callWrapperType(arity)) R.R_CallMethodDef {
     return R.R_CallMethodDef{
         .name = @ptrCast(name.ptr),
         .fun = @ptrCast(wrapper),
-        .numArgs = arity,
+        .numArgs = @intCast(arity),
     };
 }
 
-fn makeExternalMethodDef(name: []const u8, wrapper: *const fn (R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_ExternalMethodDef {
+fn makeExternalMethodDef(name: [:0]const u8, wrapper: *const fn (R.SEXP) callconv(.c) R.SEXP, arity: c_int) R.R_ExternalMethodDef {
     return R.R_ExternalMethodDef{
         .name = @ptrCast(name.ptr),
         .fun = @ptrCast(wrapper),
@@ -503,28 +583,17 @@ fn methodNeedsInputArena(comptime func: anytype) bool {
     return needed;
 }
 
-fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP, R.SEXP) callconv(.c) R.SEXP {
+fn makeMethodWrapper(comptime T: type, comptime func: anytype) callWrapperType(callArity(func)) {
     comptime validateMethodSignature(T, func);
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
-    const n = func_info.params.len;
+    const n = comptime callArity(func);
     const ret_type = func_info.return_type orelse void;
 
     const arena_needed = comptime methodNeedsInputArena(func);
 
     const W = struct {
-        const MethodCallArgs = struct {
-            a0: R.SEXP,
-            a1: R.SEXP,
-            a2: R.SEXP,
-            a3: R.SEXP,
-            a4: R.SEXP,
-            a5: R.SEXP,
-            a6: R.SEXP,
-            a7: R.SEXP,
-        };
-
         fn doCall(data: ?*anyopaque) R.SEXP {
-            const args: *MethodCallArgs = @ptrCast(@alignCast(data.?));
+            const args: *CallArguments = @ptrCast(@alignCast(data.?));
             const Arena = if (arena_needed) TwoTierArena else struct {};
             var arena: Arena = undefined;
             if (comptime arena_needed) arena.init();
@@ -558,13 +627,8 @@ fn makeMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP
             }
             @compileError("method with >4 extra params not supported");
         }
-
-        fn wrap(a0: R.SEXP, a1: R.SEXP, a2: R.SEXP, a3: R.SEXP, a4: R.SEXP, a5: R.SEXP, a6: R.SEXP, a7: R.SEXP) callconv(.c) R.SEXP {
-            var call_args = MethodCallArgs{ .a0 = a0, .a1 = a1, .a2 = a2, .a3 = a3, .a4 = a4, .a5 = a5, .a6 = a6, .a7 = a7 };
-            return cleanup.protectCallData(doCall, @as(?*anyopaque, @ptrCast(&call_args)));
-        }
     };
-    return W.wrap;
+    return makeCallTrampoline(W.doCall, n);
 }
 
 fn makeExternalMethodWrapper(comptime T: type, comptime func: anytype) *const fn (R.SEXP) callconv(.c) R.SEXP {
@@ -633,14 +697,14 @@ pub fn generateExports(comptime call_exports: anytype, comptime external_exports
             inline for (0..call_count) |i| {
                 const exp = call_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                call_defs[i] = makeMethodDef(exp.name, makeWrapper(exp.func), @intCast(fi.params.len));
+                call_defs[i] = makeMethodDef(fi.params.len, staticName(exp.name), makeWrapper(exp.func));
             }
             call_defs[call_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
             inline for (0..ext_count) |i| {
                 const exp = external_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
-                ext_defs[i] = makeExternalMethodDef(exp.name, makeExternalWrapper(exp.func), @intCast(fi.params.len));
+                ext_defs[i] = makeExternalMethodDef(staticName(exp.name), makeExternalWrapper(exp.func), @intCast(fi.params.len));
             }
             ext_defs[ext_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
@@ -669,6 +733,15 @@ fn safeName(comptime T: type) []const u8 {
     };
 }
 
+fn staticName(comptime name: []const u8) [:0]const u8 {
+    const c_name = comptime if (name.len > 0 and name[name.len - 1] == 0) name[0 .. name.len - 1] else name;
+    if (comptime std.mem.indexOfScalar(u8, c_name, 0) != null) {
+        @compileError("generated R routine name must not contain a NUL byte");
+    }
+    const bytes = comptime c_name ++ [_]u8{0};
+    return bytes[0..c_name.len :0];
+}
+
 /// Generated methods accept only typed pointers created for their receiver type.
 pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptime external_exports: anytype) type {
     comptime {
@@ -692,7 +765,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
                 const exp = call_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 const full_name = comptime safeName(T) ++ "__" ++ exp.name;
-                call_defs[i] = makeMethodDef(full_name, makeMethodWrapper(T, exp.func), @intCast(fi.params.len));
+                call_defs[i] = makeMethodDef(fi.params.len, staticName(full_name), makeMethodWrapper(T, exp.func));
             }
             call_defs[call_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
@@ -700,7 +773,7 @@ pub fn generateMethods(comptime T: type, comptime call_exports: anytype, comptim
                 const exp = external_exports[i];
                 const fi = @typeInfo(@TypeOf(exp.func)).@"fn";
                 const full_name = comptime safeName(T) ++ "__" ++ exp.name;
-                ext_defs[i] = makeExternalMethodDef(full_name, makeExternalMethodWrapper(T, exp.func), @intCast(fi.params.len));
+                ext_defs[i] = makeExternalMethodDef(staticName(full_name), makeExternalMethodWrapper(T, exp.func), @intCast(fi.params.len));
             }
             ext_defs[ext_count] = .{ .name = null, .fun = null, .numArgs = 0 };
 
@@ -890,4 +963,90 @@ test "TwoTierArena honors alignment and spills beyond fixed capacity" {
     const spill_start = @intFromPtr(spilled.fixed_buf[0..].ptr);
     const spill_end = spill_start + spilled.fixed_buf.len;
     try std.testing.expect(@intFromPtr(overflow) < spill_start or @intFromPtr(overflow) >= spill_end);
+}
+
+test "generated .Call wrappers have exact C types and sentinel names" {
+    const Call = struct {
+        fn a0() R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a1(_: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a2(_: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a3(_: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a4(_: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a5(_: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a6(_: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a7(_: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a8(_: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+    };
+    const MethodState = struct {};
+    const Method = struct {
+        fn a1(_: *MethodState) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a2(_: *MethodState, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a3(_: *MethodState, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a4(_: *MethodState, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+
+        fn a5(_: *MethodState, _: R.SEXP, _: R.SEXP, _: R.SEXP, _: R.SEXP) R.SEXP {
+            return R.R_NilValue;
+        }
+    };
+
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a0)) == callWrapperType(0));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a1)) == callWrapperType(1));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a2)) == callWrapperType(2));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a3)) == callWrapperType(3));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a4)) == callWrapperType(4));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a5)) == callWrapperType(5));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a6)) == callWrapperType(6));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a7)) == callWrapperType(7));
+    try std.testing.expect(@TypeOf(makeWrapper(Call.a8)) == callWrapperType(8));
+
+    try std.testing.expect(@TypeOf(makeMethodWrapper(MethodState, Method.a1)) == callWrapperType(1));
+    try std.testing.expect(@TypeOf(makeMethodWrapper(MethodState, Method.a2)) == callWrapperType(2));
+    try std.testing.expect(@TypeOf(makeMethodWrapper(MethodState, Method.a3)) == callWrapperType(3));
+    try std.testing.expect(@TypeOf(makeMethodWrapper(MethodState, Method.a4)) == callWrapperType(4));
+    try std.testing.expect(@TypeOf(makeMethodWrapper(MethodState, Method.a5)) == callWrapperType(5));
+
+    const name = staticName("zigr_exact_arity");
+    try std.testing.expectEqualStrings("zigr_exact_arity", name);
+    try std.testing.expectEqual(@as(u8, 0), name[name.len]);
+
+    const normalized_name = staticName("zigr_exact_arity\x00");
+    try std.testing.expectEqualStrings("zigr_exact_arity", normalized_name);
+    try std.testing.expectEqual(@as(u8, 0), normalized_name[normalized_name.len]);
 }
