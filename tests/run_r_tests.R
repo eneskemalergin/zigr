@@ -385,6 +385,7 @@ tests <- list(
   "zigr_typeof_nil",
 
   "zigr_test_cleanup_fires_on_longjmp",
+  "zigr_test_recovered_cleanup",
   "zigr_test_unwind_state_restoration",
   "zigr_test_nested_unwind_state",
   "zigr_test_cleanup_capacity_recovers",

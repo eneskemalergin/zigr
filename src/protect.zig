@@ -57,7 +57,7 @@ pub fn unprotect() void {
             std.log.warn("protect depth went negative ({})", .{cleanup.getProtectDepth()});
         }
     }
-    R.Rf_unprotect(1);
+    if (!cleanup.isRecoveringCondition()) R.Rf_unprotect(1);
 }
 
 pub fn protectWithIndex(value: SEXP, index: *R.PROTECT_INDEX) void {
@@ -83,7 +83,7 @@ pub fn unprotectN(count: usize) void {
         }
         cleanup.adjustProtectDepth(new_depth - cleanup.getProtectDepth());
     }
-    R.Rf_unprotect(@intCast(count));
+    if (!cleanup.isRecoveringCondition()) R.Rf_unprotect(@intCast(count));
 }
 
 pub fn getDepth() i32 {

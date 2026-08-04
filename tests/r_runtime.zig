@@ -5818,6 +5818,7 @@ export fn zigr_test_generated_logical_vector() SEXP {
 export fn zigr_test_generated_logical_wrong_type() SEXP {
     if (!initBoundaryExports()) return R.Rf_ScalarReal(0.0);
 
+    const entry = cleanup.diagnosticSnapshot();
     const wrong_type = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 1));
     defer R.Rf_unprotect(1);
     generated_logical_error_arg = wrong_type;
@@ -5825,7 +5826,9 @@ export fn zigr_test_generated_logical_wrong_type() SEXP {
 
     const condition = trycatch_mod.tryCatchError(generatedLogicalErrorCall) catch return R.Rf_ScalarReal(0.0);
     if (condition) |value| {
-        if (std.mem.eql(u8, trycatch_mod.extractMessage(value), "toLogicalSliceView: ExpectedLogical")) {
+        if (std.mem.eql(u8, trycatch_mod.extractMessage(value), "toLogicalSliceView: ExpectedLogical") and
+            sameRestorationState(entry, cleanup.diagnosticSnapshot()))
+        {
             return R.Rf_ScalarReal(1.0);
         }
     }
@@ -8182,6 +8185,96 @@ fn sameRestorationState(entry: cleanup.DiagnosticSnapshot, current: cleanup.Diag
         entry.protect_depth == current.protect_depth;
 }
 
+var recovery_cleanup_calls: usize = 0;
+
+fn releaseRecoveryProtect(_: ?*anyopaque) void {
+    recovery_cleanup_calls += 1;
+    protect.unprotect();
+}
+
+fn releaseRecoveryProtectN(_: ?*anyopaque) void {
+    recovery_cleanup_calls += 1;
+    protect.unprotectN(1);
+}
+
+export fn zigr_test_recovery_error() SEXP {
+    cleanup.pushFrame(releaseRecoveryProtect, null);
+    _ = protect.protect(R.Rf_ScalarInteger(1));
+    cleanup.pushFrame(releaseRecoveryProtectN, null);
+    _ = protect.protect(R.Rf_ScalarInteger(2));
+    R.Rf_error("zigr recovery: expected error");
+    return R.R_NilValue;
+}
+
+fn recoveryErrorCall() SEXP {
+    return zigr_test_recovery_error();
+}
+
+fn recoveryWarningCall() SEXP {
+    cleanup.pushFrame(releaseRecoveryProtect, null);
+    _ = protect.protect(R.Rf_ScalarInteger(1));
+    defer {
+        protect.unprotect();
+        cleanup.popFrame();
+    }
+    cleanup.pushFrame(releaseRecoveryProtectN, null);
+    _ = protect.protect(R.Rf_ScalarInteger(2));
+    defer {
+        protect.unprotectN(1);
+        cleanup.popFrame();
+    }
+    err.warn("zigr recovery: expected warning");
+    return R.Rf_ScalarReal(1.0);
+}
+
+fn recoveryTopLevelError(_: ?*anyopaque) callconv(.c) void {
+    _ = recoveryErrorCall();
+}
+
+fn recoveryEval(comptime evaluate: anytype) bool {
+    var name = protect.scoped(R.Rf_mkString("zigr_test_recovery_error"));
+    defer name.deinit();
+    var expression = protect.scoped(test_lang.call1(test_lang.symbol(".Call"), name.get()));
+    defer expression.deinit();
+    return evaluate(expression.get(), R.R_GlobalEnv) == null;
+}
+
+fn recoveryRestored(entry: cleanup.DiagnosticSnapshot) bool {
+    return recovery_cleanup_calls == 2 and sameRestorationState(entry, cleanup.diagnosticSnapshot());
+}
+
+export fn zigr_test_recovered_cleanup() SEXP {
+    const entry = cleanup.diagnosticSnapshot();
+
+    recovery_cleanup_calls = 0;
+    if (!recoveryEval(test_eval.tryEval) or !recoveryRestored(entry)) return R.Rf_ScalarReal(0.0);
+
+    recovery_cleanup_calls = 0;
+    if (!recoveryEval(test_eval.tryEvalSilent) or !recoveryRestored(entry)) return R.Rf_ScalarReal(0.0);
+
+    recovery_cleanup_calls = 0;
+    if (trycatch_mod.tryCatch(recoveryErrorCall)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (!recoveryRestored(entry)) return R.Rf_ScalarReal(0.0);
+
+    recovery_cleanup_calls = 0;
+    const condition = trycatch_mod.tryCatchError(recoveryErrorCall) catch return R.Rf_ScalarReal(0.0);
+    if (condition == null or !recoveryRestored(entry)) return R.Rf_ScalarReal(0.0);
+
+    recovery_cleanup_calls = 0;
+    if (trycatch_mod.tryCatch(recoveryWarningCall)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    if (!recoveryRestored(entry)) return R.Rf_ScalarReal(0.0);
+
+    recovery_cleanup_calls = 0;
+    if (test_eval.topLevelExec(recoveryTopLevelError, null) or !recoveryRestored(entry)) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
 fn restorationNormalBody() SEXP {
     var held = protect.scoped(R.Rf_allocVector(R.REALSXP, 1));
     defer held.deinit();
@@ -8262,7 +8355,7 @@ fn restorationRerrorBody() SEXP {
     defer held.deinit();
     cleanup.pushFrame(countRestorationCleanup, null);
     R.R_gc();
-    R.Rf_error("zigr state restoration error");
+    err.signal("zigr state restoration error %s");
 }
 
 fn restorationRerrorCall() SEXP {
@@ -8374,9 +8467,11 @@ export fn zigr_test_unwind_state_restoration() SEXP {
     }
 
     restoration_cleanup_calls = 0;
-    if (trycatch_mod.tryCatch(restorationRerrorCall)) |_| {
+    const rerror_condition = trycatch_mod.tryCatchError(restorationRerrorCall) catch return R.Rf_ScalarReal(0.0);
+    const rerror = rerror_condition orelse return R.Rf_ScalarReal(0.0);
+    if (!std.mem.eql(u8, trycatch_mod.extractMessage(rerror), "zigr state restoration error %s")) {
         return R.Rf_ScalarReal(0.0);
-    } else |_| {}
+    }
     if (restoration_cleanup_calls != 1 or !sameRestorationState(entry, cleanup.diagnosticSnapshot())) {
         return R.Rf_ScalarReal(0.0);
     }

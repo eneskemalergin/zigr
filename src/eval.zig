@@ -5,6 +5,7 @@
 //! ALTREP arguments, but evaluated R code may inspect or materialize them.
 
 const R = @import("R");
+const cleanup = @import("cleanup");
 const lang = @import("lang.zig");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
@@ -64,7 +65,10 @@ pub fn defineVarIn(name: []const u8, value: R.SEXP, envir: R.SEXP) void {
 }
 
 pub fn topLevelExec(func: *const fn (?*anyopaque) callconv(.c) void, data: ?*anyopaque) bool {
-    return R.R_ToplevelExec(func, data) != 0;
+    const checkpoint = cleanup.recoveryCheckpoint();
+    const succeeded = R.R_ToplevelExec(func, data) != 0;
+    if (!succeeded) cleanup.rollbackRecovery(checkpoint);
+    return succeeded;
 }
 
 pub const baseEnv: R.SEXP = R.R_BaseEnv;
@@ -98,8 +102,13 @@ pub fn callTaggedIn(fun: R.SEXP, args: []const lang.Argument, envir: R.SEXP) lan
 
 pub fn tryEval(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
     var err: c_int = 0;
+    const checkpoint = cleanup.recoveryCheckpoint();
     const result = R.R_tryEval(expr, envir, &err);
-    return if (err != 0) null else result;
+    if (err != 0) {
+        cleanup.rollbackRecovery(checkpoint);
+        return null;
+    }
+    return result;
 }
 
 pub fn tryFindVar(sym: R.SEXP, envir: ?R.SEXP) ?R.SEXP {
@@ -113,6 +122,11 @@ pub fn tryFindVarName(name: []const u8) ?R.SEXP {
 /// Keeps expected lookup failures out of R's error output.
 pub fn tryEvalSilent(expr: R.SEXP, envir: R.SEXP) ?R.SEXP {
     var err: c_int = 0;
+    const checkpoint = cleanup.recoveryCheckpoint();
     const result = R.R_tryEvalSilent(expr, envir, &err);
-    return if (err != 0) null else result;
+    if (err != 0) {
+        cleanup.rollbackRecovery(checkpoint);
+        return null;
+    }
+    return result;
 }

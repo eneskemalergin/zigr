@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const R = @import("R");
+const cleanup = @import("cleanup");
 const protect = @import("protect.zig");
 const symbols = @import("symbols.zig");
 const sexp_mod = @import("sexp.zig");
@@ -34,6 +35,7 @@ pub fn tryCatch(comptime func: *const fn () R.SEXP) RCondition!R.SEXP {
         }
     };
 
+    const checkpoint = cleanup.recoveryCheckpoint();
     const result = R.R_tryCatch(
         W.trampoline,
         null,
@@ -44,7 +46,10 @@ pub fn tryCatch(comptime func: *const fn () R.SEXP) RCondition!R.SEXP {
         null,
     );
 
-    if (state.happened) return error.RCondition;
+    if (state.happened) {
+        cleanup.rollbackRecovery(checkpoint);
+        return error.RCondition;
+    }
     return result;
 }
 
@@ -60,6 +65,7 @@ pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
         }
     };
 
+    const checkpoint = cleanup.recoveryCheckpoint();
     const result = R.R_tryCatch(
         W.trampoline,
         null,
@@ -70,7 +76,10 @@ pub fn tryCatchError(comptime func: *const fn () R.SEXP) RCondition!?R.SEXP {
         null,
     );
 
-    if (state.happened) return state.condition;
+    if (state.happened) {
+        cleanup.rollbackRecovery(checkpoint);
+        return state.condition;
+    }
     return result;
 }
 

@@ -19,12 +19,27 @@ const Frame = struct {
     /// Inline state cannot point at a frame that a longjmp destroys.
     inline_buf: [INLINE_DATA_SIZE]u8 align(INLINE_DATA_ALIGN) = [_]u8{0} ** INLINE_DATA_SIZE,
     owns_inline: bool = false,
+    armed: bool = false,
+    generation: usize = 0,
 };
 
 threadlocal var stack: [MAX_NESTING]Frame = undefined;
 threadlocal var count: usize = 0;
+threadlocal var next_generation: usize = 0;
 threadlocal var protect_depth: i32 = 0;
+threadlocal var recovering_condition = false;
 const diagnostics_enabled = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
+
+/// Identifies one armed cleanup frame until it is released or unwound.
+pub const FrameHandle = struct {
+    slot: usize,
+    generation: usize,
+};
+
+const FrameReservation = struct {
+    frame: *Frame,
+    handle: FrameHandle,
+};
 
 /// High-water marks are disabled in ReleaseFast builds.
 pub const DiagnosticSnapshot = struct {
@@ -35,6 +50,12 @@ pub const DiagnosticSnapshot = struct {
     max_cleanup_frames: usize,
     max_unwind_boundaries: usize,
     max_protect_depth: i32,
+};
+
+/// Captures the state that an R recovery API must restore after a condition.
+pub const RecoveryCheckpoint = struct {
+    cleanup_frames: usize,
+    protect_depth: i32,
 };
 
 threadlocal var max_cleanup_frames: usize = 0;
@@ -59,6 +80,27 @@ fn beginBoundary() void {
     if (diagnostics_enabled) max_unwind_boundaries = @max(max_unwind_boundaries, boundary_count);
 }
 
+fn reserveFrame() FrameReservation {
+    if (count >= MAX_NESTING) err.signal("cleanup stack overflow");
+
+    const slot = count;
+    count += 1;
+    const generation = next_generation;
+    next_generation +%= 1;
+    const frame = &stack[slot];
+    frame.armed = true;
+    frame.generation = generation;
+    if (diagnostics_enabled) max_cleanup_frames = @max(max_cleanup_frames, count);
+    return .{
+        .frame = frame,
+        .handle = .{ .slot = slot, .generation = generation },
+    };
+}
+
+fn discardInactiveFrames() void {
+    while (count > 0 and !stack[count - 1].armed) count -= 1;
+}
+
 fn finishBoundary(jump: bool) void {
     if (boundary_count == 0) return;
     boundary_count -= 1;
@@ -66,7 +108,7 @@ fn finishBoundary(jump: bool) void {
     if (jump) {
         while (count > boundary.frame_count) {
             count -= 1;
-            stack[count].func(stack[count].data);
+            if (stack[count].armed) stack[count].func(stack[count].data);
         }
     } else {
         count = boundary.frame_count;
@@ -96,7 +138,7 @@ export fn zigr_protect_call(
 export fn zigr_on_unwind() void {
     while (count > 0) {
         count -= 1;
-        stack[count].func(stack[count].data);
+        if (stack[count].armed) stack[count].func(stack[count].data);
     }
 }
 
@@ -106,14 +148,52 @@ export fn zigr_on_return() void {
 }
 
 pub fn pushFrame(func: *const fn (data: ?*anyopaque) void, data: ?*anyopaque) void {
-    if (count >= MAX_NESTING) err.signal("cleanup stack overflow");
-    stack[count] = .{ .func = func, .data = data };
-    count += 1;
-    if (diagnostics_enabled) max_cleanup_frames = @max(max_cleanup_frames, count);
+    const reservation = reserveFrame();
+    reservation.frame.* = .{
+        .func = func,
+        .data = data,
+        .armed = true,
+        .generation = reservation.handle.generation,
+    };
 }
 
 pub fn popFrame() void {
-    if (count > 0) count -= 1;
+    if (count == 0) return;
+    count -= 1;
+    discardInactiveFrames();
+}
+
+/// Disarms one exact cleanup frame without disturbing newer live frames.
+pub fn releaseFrame(handle: FrameHandle) bool {
+    if (handle.slot >= count) return false;
+    const frame = &stack[handle.slot];
+    if (!frame.armed or frame.generation != handle.generation) return false;
+    frame.armed = false;
+    discardInactiveFrames();
+    return true;
+}
+
+pub fn recoveryCheckpoint() RecoveryCheckpoint {
+    return .{
+        .cleanup_frames = count,
+        .protect_depth = protect_depth,
+    };
+}
+
+/// Fires cleanup registered after `checkpoint` and restores tracked protection depth.
+pub fn rollbackRecovery(checkpoint: RecoveryCheckpoint) void {
+    recovering_condition = true;
+    defer recovering_condition = false;
+    while (count > checkpoint.cleanup_frames) {
+        count -= 1;
+        if (stack[count].armed) stack[count].func(stack[count].data);
+    }
+    protect_depth = checkpoint.protect_depth;
+}
+
+/// R has already restored its protection stack while recovery cleanup is running.
+pub fn isRecoveringCondition() bool {
+    return recovering_condition;
 }
 
 /// Reserve room before an operation that may register an internal frame before
@@ -168,6 +248,15 @@ pub fn pushFrameInline(
     value: T,
     comptime fireFn: *const fn (data: *T) void,
 ) *T {
+    return pushFrameInlineWithHandle(T, value, fireFn).state;
+}
+
+/// Registers inline cleanup state and returns the handle that releases it.
+pub fn pushFrameInlineWithHandle(
+    comptime T: type,
+    value: T,
+    comptime fireFn: *const fn (data: *T) void,
+) struct { state: *T, handle: FrameHandle } {
     comptime {
         if (@sizeOf(T) > INLINE_DATA_SIZE) {
             @compileError(std.fmt.comptimePrint(
@@ -183,9 +272,8 @@ pub fn pushFrameInline(
         }
     }
 
-    if (count >= MAX_NESTING) err.signal("cleanup stack overflow");
-
-    const frame = &stack[count];
+    const reservation = reserveFrame();
+    const frame = reservation.frame;
     const slot: *T = @ptrCast(@alignCast(&frame.inline_buf));
     slot.* = value;
     frame.owns_inline = true;
@@ -199,9 +287,7 @@ pub fn pushFrameInline(
 
     frame.func = W.wrapper;
     frame.data = @ptrCast(slot);
-    count += 1;
-    if (diagnostics_enabled) max_cleanup_frames = @max(max_cleanup_frames, count);
-    return slot;
+    return .{ .state = slot, .handle = reservation.handle };
 }
 
 /// Establishes R's unwind boundary before invoking Zig code.
@@ -458,4 +544,34 @@ test "pushFrameInline fires on zigr_on_unwind with LIFO order" {
     zigr_on_unwind();
     try std.testing.expectEqual(b_result, 20);
     try std.testing.expectEqual(a_result, 10);
+}
+
+test "releaseFrame disarms an exact frame" {
+    const saved = count;
+    defer count = saved;
+    count = 0;
+
+    const Guard = struct {
+        fired: *usize,
+
+        fn fire(self: *@This()) void {
+            self.fired.* += 1;
+        }
+    };
+
+    var first_fired: usize = 0;
+    var second_fired: usize = 0;
+    const first = pushFrameInlineWithHandle(Guard, .{ .fired = &first_fired }, Guard.fire);
+    _ = pushFrameInlineWithHandle(Guard, .{ .fired = &second_fired }, Guard.fire);
+
+    try std.testing.expect(releaseFrame(first.handle));
+    zigr_on_unwind();
+
+    try std.testing.expectEqual(0, first_fired);
+    try std.testing.expectEqual(1, second_fired);
+    try std.testing.expectEqual(0, count);
+
+    const replacement = pushFrameInlineWithHandle(Guard, .{ .fired = &first_fired }, Guard.fire);
+    try std.testing.expect(!releaseFrame(first.handle));
+    try std.testing.expect(releaseFrame(replacement.handle));
 }
