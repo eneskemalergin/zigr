@@ -379,6 +379,11 @@ export fn zigr_test_symbol_contract() SEXP {
 
     if (trycatch_mod.tryCatch(installLongSymbol)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
     if (trycatch_mod.tryCatch(installNulSymbol)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (first != zigr.symbols.install("zigr_service_symbol") or
+        zigr.symbols.install("zigr_service_symbol_79") != installed[79])
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -6286,6 +6291,9 @@ fn runtimeLanguage(value: SEXP) SEXP {
     {
         err.signal("runtime named call structure changed");
     }
+    // The environment, closure, arguments, and call remain rooted while an
+    // allocating runtime operation runs.
+    R.R_gc();
     return test_eval.rEval(call.get(), envir.get());
 }
 
@@ -6378,6 +6386,24 @@ fn runtimeEmbed(mode: i32) SEXP {
     };
 }
 
+const RuntimeInjectedError = error{Injected};
+
+fn runtimeZigErrorBody() RuntimeInjectedError!SEXP {
+    var held = protect.scoped(R.Rf_allocVector(R.REALSXP, 1));
+    defer held.deinit();
+    R.REAL(held.get())[0] = 11.0;
+    return error.Injected;
+}
+
+fn runtimeZigErrorCall() SEXP {
+    return cleanup.protectCall(struct {
+        fn call() SEXP {
+            _ = runtimeZigErrorBody() catch return R.Rf_ScalarInteger(1);
+            return R.Rf_ScalarInteger(0);
+        }
+    }.call);
+}
+
 const RuntimeExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_runtime_language", .func = runtimeLanguage },
     .{ .name = "zigr_runtime_silent", .func = runtimeSilentEvaluation },
@@ -6411,10 +6437,30 @@ const RuntimeConditionCapture = struct {
     condition: SEXP = undefined,
 };
 
+const RuntimeReentrantCapture = struct {
+    happened: bool = false,
+    nested_failed: bool = false,
+    nested_value: i32 = 0,
+    call: SEXP,
+};
+
 fn captureRuntimeCondition(condition: SEXP, data: ?*anyopaque) callconv(.c) SEXP {
     const state: *RuntimeConditionCapture = @ptrCast(@alignCast(data.?));
     state.happened = true;
     state.condition = condition;
+    return R.R_NilValue;
+}
+
+fn captureReentrantCondition(_: SEXP, data: ?*anyopaque) callconv(.c) SEXP {
+    const state: *RuntimeReentrantCapture = @ptrCast(@alignCast(data.?));
+    state.happened = true;
+    var failed: c_int = 0;
+    const nested = R.R_tryEval(state.call, R.R_GlobalEnv, &failed);
+    if (failed != 0 or R.TYPEOF(nested) != R.INTSXP or R.XLENGTH(nested) != 1) {
+        state.nested_failed = true;
+    } else {
+        state.nested_value = R.INTEGER(nested)[0];
+    }
     return R.R_NilValue;
 }
 
@@ -7236,6 +7282,12 @@ fn conditionMatchesReference(expected: SEXP, actual: SEXP, class_name: [*:0]cons
 
 export fn zigr_test_runtime_semantics() SEXP {
     if (!initRuntimeExports()) return R.Rf_ScalarReal(0.0);
+    const entry = cleanup.diagnosticSnapshot();
+    defer {
+        runtime_rng_mode = 0;
+        runtime_rng_count = 0;
+        runtime_embed_mode = 0;
+    }
 
     const input = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
     R.REAL(input)[0] = 1.0;
@@ -7248,10 +7300,10 @@ export fn zigr_test_runtime_semantics() SEXP {
     runtime_language_input = input;
     defer runtime_language_input = null;
     const language_attempt = trycatch_mod.tryCatchError(runtimeLanguageCall) catch return R.Rf_ScalarReal(0.0);
-    if (language_attempt == null) return R.Rf_ScalarReal(0.0);
-    if (R.Rf_inherits(language_attempt.?, "error") != 0) return R.Rf_ScalarReal(0.0);
-    var actual_language = protect.scoped(language_attempt.?);
+    var actual_language = protect.scoped(language_attempt orelse return R.Rf_ScalarReal(0.0));
     defer actual_language.deinit();
+    R.R_gc();
+    if (R.Rf_inherits(actual_language.get(), "error") != 0) return R.Rf_ScalarReal(0.0);
     if (!sameRealVector(actual_language.get(), expected_language.get())) return R.Rf_ScalarReal(0.0);
 
     var silent = protect.scoped(runtimeCall(1, R.R_NilValue, R.R_NilValue));
@@ -7262,10 +7314,47 @@ export fn zigr_test_runtime_semantics() SEXP {
     defer nested.deinit();
     if (R.TYPEOF(nested.get()) != R.INTSXP or R.INTEGER(nested.get())[0] != 42) return R.Rf_ScalarReal(0.0);
 
+    const zig_entry = cleanup.diagnosticSnapshot();
+    var zig_error = protect.scoped(runtimeZigErrorCall());
+    const zig_ok = R.TYPEOF(zig_error.get()) == R.INTSXP and R.INTEGER(zig_error.get())[0] == 1;
+    zig_error.deinit();
+    if (!zig_ok or !sameRestorationState(zig_entry, cleanup.diagnosticSnapshot())) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    var one = protect.scoped(R.Rf_ScalarInteger(1));
+    defer one.deinit();
+    var nested_call = protect.scoped(test_lang.call2(test_lang.symbol("+"), one.get(), one.get()));
+    defer nested_call.deinit();
+    var warning_classes_reentrant = protect.scoped(R.Rf_allocVector(R.STRSXP, 1));
+    defer warning_classes_reentrant.deinit();
+    R.SET_STRING_ELT(warning_classes_reentrant.get(), 0, R.Rf_mkChar("warning"));
+    var reentrant_capture = RuntimeReentrantCapture{ .call = nested_call.get() };
+    const ReentrantWarning = struct {
+        fn call(_: ?*anyopaque) callconv(.c) R.SEXP {
+            return runtimeWarningCall();
+        }
+    };
+    _ = R.R_tryCatch(
+        ReentrantWarning.call,
+        null,
+        warning_classes_reentrant.get(),
+        captureReentrantCondition,
+        @as(?*anyopaque, @ptrCast(&reentrant_capture)),
+        null,
+        null,
+    );
+    if (!reentrant_capture.happened or reentrant_capture.nested_failed or reentrant_capture.nested_value != 2) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
     var expected_error = reference("tryCatch(stop('runtime generated error'), error=identity)");
     defer expected_error.deinit();
     const actual_error = trycatch_mod.tryCatchError(runtimeErrorCall) catch return R.Rf_ScalarReal(0.0);
-    if (actual_error == null or !conditionMatchesReference(expected_error.get(), actual_error.?, "error")) {
+    var actual_error_value = protect.scoped(actual_error orelse return R.Rf_ScalarReal(0.0));
+    defer actual_error_value.deinit();
+    R.R_gc();
+    if (!conditionMatchesReference(expected_error.get(), actual_error_value.get(), "error")) {
         return R.Rf_ScalarReal(0.0);
     }
 
@@ -7277,6 +7366,7 @@ export fn zigr_test_runtime_semantics() SEXP {
     if (!warning_capture.happened) return R.Rf_ScalarReal(0.0);
     var warning_condition = protect.scoped(warning_capture.condition);
     defer warning_condition.deinit();
+    R.R_gc();
     var expected_warning = reference("tryCatch({ warning('runtime generated warning'); 7L }, warning=identity)");
     defer expected_warning.deinit();
     if (!conditionMatchesReference(expected_warning.get(), warning_condition.get(), "warning")) return R.Rf_ScalarReal(0.0);
@@ -7383,6 +7473,7 @@ export fn zigr_test_runtime_semantics() SEXP {
     }
     var interrupt_condition = protect.scoped(interrupt_capture.condition);
     defer interrupt_condition.deinit();
+    R.R_gc();
     if (R.Rf_inherits(interrupt_condition.get(), "interrupt") == 0 or
         R.Rf_inherits(interrupt_condition.get(), "error") != 0)
     {
@@ -7395,10 +7486,10 @@ export fn zigr_test_runtime_semantics() SEXP {
 
     runtime_embed_mode = 1;
     const braced_attempt = trycatch_mod.tryCatchError(runtimeEmbedCall) catch return R.Rf_ScalarReal(0.0);
-    if (braced_attempt == null) return R.Rf_ScalarReal(0.0);
-    if (R.Rf_inherits(braced_attempt.?, "error") != 0) return R.Rf_ScalarReal(0.0);
-    var braced = protect.scoped(braced_attempt.?);
+    var braced = protect.scoped(braced_attempt orelse return R.Rf_ScalarReal(0.0));
     defer braced.deinit();
+    R.R_gc();
+    if (R.Rf_inherits(braced.get(), "error") != 0) return R.Rf_ScalarReal(0.0);
     var expected_braced = reference("local({ x <- 1; x + 1 })");
     defer expected_braced.deinit();
     if (!sameRealVector(braced.get(), expected_braced.get())) return R.Rf_ScalarReal(0.0);
@@ -7419,7 +7510,10 @@ export fn zigr_test_runtime_semantics() SEXP {
     defer expected_syntax.deinit();
     runtime_embed_mode = 3;
     const actual_syntax = trycatch_mod.tryCatchError(runtimeEmbedDirectCall) catch return R.Rf_ScalarReal(0.0);
-    if (actual_syntax == null or !conditionMatchesReference(expected_syntax.get(), actual_syntax.?, "error")) {
+    var actual_syntax_value = protect.scoped(actual_syntax orelse return R.Rf_ScalarReal(0.0));
+    defer actual_syntax_value.deinit();
+    R.R_gc();
+    if (!conditionMatchesReference(expected_syntax.get(), actual_syntax_value.get(), "error")) {
         return R.Rf_ScalarReal(0.0);
     }
 
@@ -7427,7 +7521,10 @@ export fn zigr_test_runtime_semantics() SEXP {
     defer expected_stop.deinit();
     runtime_embed_mode = 4;
     const actual_stop = trycatch_mod.tryCatchError(runtimeEmbedDirectCall) catch return R.Rf_ScalarReal(0.0);
-    if (actual_stop == null or !conditionMatchesReference(expected_stop.get(), actual_stop.?, "error")) {
+    var actual_stop_value = protect.scoped(actual_stop orelse return R.Rf_ScalarReal(0.0));
+    defer actual_stop_value.deinit();
+    R.R_gc();
+    if (!conditionMatchesReference(expected_stop.get(), actual_stop_value.get(), "error")) {
         return R.Rf_ScalarReal(0.0);
     }
 
@@ -7435,13 +7532,18 @@ export fn zigr_test_runtime_semantics() SEXP {
     var expected_empty = reference("tryCatch(stop('parse error'), error=identity)");
     defer expected_empty.deinit();
     const empty = trycatch_mod.tryCatchError(runtimeEmbedDirectCall) catch return R.Rf_ScalarReal(0.0);
-    if (empty == null or !conditionMatchesReference(expected_empty.get(), empty.?, "error")) {
+    var empty_value = protect.scoped(empty orelse return R.Rf_ScalarReal(0.0));
+    defer empty_value.deinit();
+    R.R_gc();
+    if (!conditionMatchesReference(expected_empty.get(), empty_value.get(), "error")) {
         return R.Rf_ScalarReal(0.0);
     }
 
     var recovered_language = protect.scoped(runtimeLanguageCall());
     defer recovered_language.deinit();
-    if (!sameRealVector(recovered_language.get(), expected_language.get())) return R.Rf_ScalarReal(0.0);
+    R.R_gc();
+    if (!sameRealVector(recovered_language.get(), expected_language.get()) or
+        !sameRuntimeControlState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -9162,6 +9264,11 @@ fn sameRestorationState(entry: cleanup.DiagnosticSnapshot, current: cleanup.Diag
     return entry.cleanup_frames == current.cleanup_frames and
         entry.unwind_boundaries == current.unwind_boundaries and
         entry.protect_depth == current.protect_depth;
+}
+
+fn sameRuntimeControlState(entry: cleanup.DiagnosticSnapshot, current: cleanup.DiagnosticSnapshot) bool {
+    return entry.enabled == current.enabled and entry.cleanup_frames == current.cleanup_frames and
+        entry.unwind_boundaries == current.unwind_boundaries;
 }
 
 var recovery_cleanup_calls: usize = 0;
