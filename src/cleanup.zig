@@ -588,16 +588,56 @@ test "releaseFrame disarms an exact frame" {
 }
 
 test "cleanup state is thread-local" {
-    const before = .{ count, boundary_count, protect_depth };
+    const Noop = struct {
+        fn fire(_: ?*anyopaque) void {}
+    };
+
+    try std.testing.expectEqual(@as(usize, 0), count);
+    try std.testing.expectEqual(@as(usize, 0), boundary_count);
+
+    stack[0] = .{ .func = Noop.fire, .data = null, .armed = false, .generation = 99 };
+    boundaries[0] = .{ .frame_count = 9, .protect_depth = 11 };
+
+    const before = .{
+        count,
+        next_generation,
+        protect_depth,
+        recovering_condition,
+        boundary_count,
+        max_cleanup_frames,
+        max_unwind_boundaries,
+        max_protect_depth,
+    };
+
     const worker = try std.Thread.spawn(.{}, struct {
         fn mutate() void {
+            beginBoundary();
+            pushFrame(Noop.fire, null);
+
             count = 1;
-            boundary_count = 1;
+            next_generation = 2;
             protect_depth = 7;
+            recovering_condition = true;
+            boundary_count = 1;
+            max_cleanup_frames = 3;
+            max_unwind_boundaries = 4;
+            max_protect_depth = 5;
+
+            finishBoundary(false);
         }
     }.mutate, .{});
     worker.join();
+
     try std.testing.expectEqual(before[0], count);
-    try std.testing.expectEqual(before[1], boundary_count);
+    try std.testing.expectEqual(before[1], next_generation);
     try std.testing.expectEqual(before[2], protect_depth);
+    try std.testing.expectEqual(before[3], recovering_condition);
+    try std.testing.expectEqual(before[4], boundary_count);
+    try std.testing.expectEqual(before[5], max_cleanup_frames);
+    try std.testing.expectEqual(before[6], max_unwind_boundaries);
+    try std.testing.expectEqual(before[7], max_protect_depth);
+    try std.testing.expectEqual(@as(usize, 9), boundaries[0].frame_count);
+    try std.testing.expectEqual(@as(i32, 11), boundaries[0].protect_depth);
+    try std.testing.expectEqual(@as(usize, 99), stack[0].generation);
+    try std.testing.expect(!stack[0].armed);
 }
