@@ -32,38 +32,44 @@ const OptionalHeaderCleanup = struct {
 };
 
 /// The returned headers are caller-owned. R owns the bytes; `NA` becomes empty.
+/// Translated bytes are valid only for the current R call. The allocator must
+/// remain valid if R unwinds while an ALTSTRING attribute is read.
 pub fn getString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
     const value = R.Rf_getAttrib(sexp, symbol);
     if (value == R.R_NilValue) return allocator.alloc([]const u8, 0);
     if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
     const n: usize = @intCast(R.XLENGTH(value));
-    const state = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
-    errdefer cleanup.popFrame();
+    const registration = cleanup.pushFrameInlineWithHandle(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
+    const state = registration.state;
+    errdefer _ = cleanup.releaseFrame(registration.handle);
     const result = try allocator.alloc([]const u8, n);
     state.values = result;
     for (0..n) |i| {
         const elt = R.STRING_ELT(value, @intCast(i));
         result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
     }
-    cleanup.popFrame();
+    _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
 /// The returned headers are caller-owned. R owns present bytes; `NA` stays null.
+/// Translated bytes are valid only for the current R call. The allocator must
+/// remain valid if R unwinds while an ALTSTRING attribute is read.
 pub fn getOptionalString(allocator: std.mem.Allocator, sexp: R.SEXP, symbol: R.SEXP) (AttributeError || std.mem.Allocator.Error)![]?[]const u8 {
     const value = R.Rf_getAttrib(sexp, symbol);
     if (value == R.R_NilValue) return allocator.alloc(?[]const u8, 0);
     if (R.TYPEOF(value) != R.STRSXP) return error.ExpectedStringAttribute;
     const n: usize = @intCast(R.XLENGTH(value));
-    const state = cleanup.pushFrameInline(OptionalHeaderCleanup, .{ .allocator = allocator }, OptionalHeaderCleanup.fire);
-    errdefer cleanup.popFrame();
+    const registration = cleanup.pushFrameInlineWithHandle(OptionalHeaderCleanup, .{ .allocator = allocator }, OptionalHeaderCleanup.fire);
+    const state = registration.state;
+    errdefer _ = cleanup.releaseFrame(registration.handle);
     const result = try allocator.alloc(?[]const u8, n);
     state.values = result;
     for (0..n) |i| {
         const elt = R.STRING_ELT(value, @intCast(i));
         result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
     }
-    cleanup.popFrame();
+    _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -77,12 +83,14 @@ pub fn setNames(sexp: R.SEXP, names: []const []const u8) void {
     _ = R.Rf_namesgets(sexp, ns.get());
 }
 
-/// The returned headers are caller-owned and their bytes remain R-owned.
+/// The returned headers are caller-owned and their bytes remain R-owned for the
+/// current R call. The allocator must remain valid during an R unwind.
 pub fn getClass(allocator: std.mem.Allocator, sexp: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
     return getString(allocator, sexp, R.R_ClassSymbol);
 }
 
-/// The returned headers are caller-owned and their bytes remain R-owned.
+/// The returned headers are caller-owned and their bytes remain R-owned for the
+/// current R call. The allocator must remain valid during an R unwind.
 pub fn getNames(allocator: std.mem.Allocator, sexp: R.SEXP) (AttributeError || std.mem.Allocator.Error)![][]const u8 {
     return getString(allocator, sexp, R.R_NamesSymbol);
 }

@@ -363,8 +363,9 @@ fn checkedRegionCount(got: R.R_xlen_t, requested: R.R_xlen_t) ConvertError!usize
 /// Direct storage borrows the R vector. Region storage owns one bounded buffer,
 /// and materialized storage owns one contiguous native representation. The
 /// caller keeps the source SEXP rooted and deinitializes the value before leaving
-/// its allocation scope. When multiple access values share a cleanup stack, each
-/// deinitialization releases only its own cleanup frame.
+/// its allocation scope. The allocator must remain valid during an R unwind.
+/// When multiple access values share a cleanup stack, each deinitialization
+/// releases only its own cleanup frame.
 pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
     return union(enum) {
         direct: struct {
@@ -874,39 +875,44 @@ pub fn fromIntSlice(slice: []const i32) SEXP {
 }
 
 /// The headers borrow R-owned bytes and must stay inside the source R call.
+/// The allocator must remain valid if R unwinds while elements are read.
 pub fn toStringSlice(allocator: std.mem.Allocator, sexp: SEXP) ![][]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     cleanup.requireCapacity(2);
     const result = try allocator.alloc([]const u8, n);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init([]const u8, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    errdefer _ = cleanup.releaseFrame(registration.handle);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
         result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
     }
+    _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
+/// The headers borrow R-owned bytes and must stay inside the source R call.
+/// The allocator must remain valid if R unwinds while elements are read.
 pub fn toStringSliceNullable(allocator: std.mem.Allocator, sexp: SEXP) ![]?[]const u8 {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
     const n = try tryXlength(sexp);
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(?[]const u8, n);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(?[]const u8, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    errdefer _ = cleanup.releaseFrame(registration.handle);
     for (0..n) |i| {
         const elt = R.STRING_ELT(sexp, @intCast(i));
         result[i] = if (elt == R.R_NaString) null else sexp_mod.charsxpBytes(elt);
     }
+    _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -1164,7 +1170,9 @@ pub fn toStringProjectionViewWithProbe(comptime projection: StringProjection, se
 }
 
 /// Caches native headers while borrowing each R character value and its bytes.
-/// The caller keeps the source string vector rooted and limits use to its R call.
+/// The caller keeps the source string vector rooted and limits use to its R
+/// call. The allocator must remain valid during an R unwind while the cache is
+/// live.
 pub const CachedStringSliceView = struct {
     items: []const StringView,
     len: usize,
@@ -1333,18 +1341,21 @@ pub fn fromLogicalSlice(slice: []const i32) SEXP {
     return result.finish();
 }
 
+/// The returned element handles borrow R-owned storage and stay valid only
+/// while the source list remains rooted in the current R call.
 pub fn toListSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]SEXP {
     try expectType(sexp, R.VECSXP, error.ExpectedList);
     const n = try tryXlength(sexp);
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(SEXP, n);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(SEXP, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    defer cleanup.popFrame();
+    errdefer _ = cleanup.releaseFrame(registration.handle);
     for (0..n) |i| result[i] = R.VECTOR_ELT(sexp, @intCast(i));
+    _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -2299,6 +2310,7 @@ fn pminWithAllocator(a: SEXP, b: SEXP, allocator: std.mem.Allocator, comptime re
     return result.get();
 }
 
+/// The allocator must remain valid if an ALTREP input causes R to unwind.
 pub fn pminAlloc(a: SEXP, b: SEXP, allocator: std.mem.Allocator) SEXP {
     return pminWithAllocator(a, b, allocator, true);
 }
@@ -2329,6 +2341,7 @@ fn pmaxWithAllocator(a: SEXP, b: SEXP, allocator: std.mem.Allocator, comptime re
     return result.get();
 }
 
+/// The allocator must remain valid if an ALTREP input causes R to unwind.
 pub fn pmaxAlloc(a: SEXP, b: SEXP, allocator: std.mem.Allocator) SEXP {
     return pmaxWithAllocator(a, b, allocator, true);
 }

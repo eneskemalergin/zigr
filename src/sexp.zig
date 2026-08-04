@@ -182,7 +182,8 @@ pub fn fitsVectorLength(len: usize) bool {
     return len <= @as(usize, @intCast(R.R_XLEN_T_MAX));
 }
 
-/// R rejects translating `CE_BYTES`, so those bytes stay untouched.
+/// Returns UTF-8 bytes for a CHARSXP, except that CE_BYTES stays in its stored
+/// encoding. Translated bytes are valid only for the current R call.
 pub fn charsxpBytes(charsxp: SEXP) []const u8 {
     if (charsxp == R.R_NaString) return "";
     if (R.Rf_getCharCE(charsxp) == @as(R.cetype_t, @intCast(R.CE_BYTES))) {

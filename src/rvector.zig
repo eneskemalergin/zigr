@@ -107,6 +107,7 @@ pub fn RVector(comptime T: type) type {
             return result.finish();
         }
 
+        /// The allocator must remain valid if an ALTREP input causes R to unwind.
         pub fn add(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
             comptime requireArithmetic(T);
             return mapBinary(self, other, allocator, struct {
@@ -116,6 +117,7 @@ pub fn RVector(comptime T: type) type {
             }.op);
         }
 
+        /// The allocator must remain valid if an ALTREP input causes R to unwind.
         pub fn sub(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
             comptime requireArithmetic(T);
             return mapBinary(self, other, allocator, struct {

@@ -59,21 +59,24 @@ pub const DataFrame = struct {
         return R.Rf_nrows(col0);
     }
 
-    /// Headers are caller-owned; bytes borrow from the data frame.
+    /// Headers are caller-owned; bytes borrow from the data frame for the
+    /// current R call. The allocator must remain valid if R unwinds while
+    /// ALTSTRING names are read.
     pub fn columnNames(self: DataFrame, allocator: std.mem.Allocator) (DataFrameError || std.mem.Allocator.Error)![][]const u8 {
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
         if (ns == R.R_NilValue) return allocator.alloc([]const u8, 0);
         if (R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != self.columnCount()) return error.MalformedNames;
         const n = @as(usize, @intCast(R.XLENGTH(ns)));
-        const state = cleanup.pushFrameInline(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
-        errdefer cleanup.popFrame();
+        const registration = cleanup.pushFrameInlineWithHandle(HeaderCleanup, .{ .allocator = allocator }, HeaderCleanup.fire);
+        const state = registration.state;
+        errdefer _ = cleanup.releaseFrame(registration.handle);
         const result = try allocator.alloc([]const u8, n);
         state.values = result;
         for (0..n) |i| {
             const elt = R.STRING_ELT(ns, @intCast(i));
             result[i] = if (elt == R.R_NaString) "" else sexp_mod.charsxpBytes(elt);
         }
-        cleanup.popFrame();
+        _ = cleanup.releaseFrame(registration.handle);
         return result;
     }
 
@@ -105,17 +108,20 @@ pub const DataFrame = struct {
         return self.columnByIndex(idx);
     }
 
-    /// Map keys borrow R string storage and cannot outlive the data frame.
+    /// Map keys borrow R string storage and cannot outlive the current R call.
+    /// The allocator must remain valid if R unwinds while ALTSTRING names are
+    /// read.
     pub fn columnMap(self: DataFrame, allocator: std.mem.Allocator) !std.StringHashMap(i64) {
         const ncols = self.columnCount();
         const ns = R.Rf_getAttrib(self.sexp, R.R_NamesSymbol);
         if (ns == R.R_NilValue or R.TYPEOF(ns) != R.STRSXP or R.XLENGTH(ns) != ncols) {
             return std.StringHashMap(i64).init(allocator);
         }
-        const state = cleanup.pushFrameInline(MapCleanup, .{ .map = std.StringHashMap(i64).init(allocator) }, MapCleanup.fire);
+        const registration = cleanup.pushFrameInlineWithHandle(MapCleanup, .{ .map = std.StringHashMap(i64).init(allocator) }, MapCleanup.fire);
+        const state = registration.state;
         errdefer {
             state.map.deinit();
-            cleanup.popFrame();
+            _ = cleanup.releaseFrame(registration.handle);
         }
         try state.map.ensureTotalCapacity(@intCast(ncols));
         for (0..@as(usize, @intCast(ncols))) |i| {
@@ -125,7 +131,7 @@ pub const DataFrame = struct {
             state.map.putAssumeCapacity(cn, @intCast(i));
         }
         const result = state.map;
-        cleanup.popFrame();
+        _ = cleanup.releaseFrame(registration.handle);
         return result;
     }
 };
