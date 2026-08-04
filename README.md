@@ -101,7 +101,7 @@ Run `zig build fmt` separately for formatting. Commands that compile zigr fail w
 
 ### Weak references
 
-`weakref.makeChecked` accepts `R_NilValue`, environment, external-pointer, and bytecode keys. A null finalizer creates an R weak reference without a callable C finalizer. A live key keeps the value reachable; collection clears both borrowed fields to `R_NilValue`. C finalizers receive the original key after the fields are cleared, run at most once, and must not signal an R error, longjmp, or retain the key. Constructors return an unprotected value and can allocate and longjmp.
+`weakref.makeChecked` accepts `R_NilValue`, environment, external-pointer, and bytecode keys. A null finalizer creates an R weak reference without a callable C finalizer. A live key keeps the value reachable; collection clears both borrowed fields to `R_NilValue`. C finalizers receive the original key after the fields are cleared and must not allocate, signal an R error, longjmp, or retain the key. Automatic collection schedules a finalizer once; `weakref.runFinalizer` invokes R's explicit finalizer operation and should not be repeated for the same reference. Constructors return an unprotected value and can allocate and longjmp.
 
 Use `tryFromSEXP` when Zig code needs a conversion error. Use `fromSEXP` inside an R entry point when that error should become an R error. Generated exports deliberately keep a struct boundary explicit: accept or return `R.SEXP`, then call the conversion helper in the package adapter. Protect an `asSEXP` result before any later R allocation.
 
@@ -131,7 +131,7 @@ ALTREP behavior is explicit across these integrations:
 - Data-frame columns, raw attributes, language arguments, S4 slot values, and external-pointer backing are retained without requesting payload storage.
 - Data-frame row validation reads length and at most the first dimension element without requesting contiguous dimension storage.
 - Factor construction copies ALTSTRING elements into an ordinary vector. Attribute string readers likewise iterate `STRING_ELT` because their result is a native header array.
-- Evaluation follows the called R function. Serialization may invoke class callbacks, while unserialization reads ALTREP raw streams through `RAW_GET_REGION`. Weak-reference creation may use R's duplication semantics.
+- Evaluation follows the called R function. Serialization may invoke class callbacks, while unserialization reads ALTREP raw streams through `RAW_GET_REGION`. Weak-reference creation follows R's key/value reachability rules.
 
 Raw `R.SEXP` parameters and returns remain the escape hatch when the typed conversion layer does not cover an R object. They add no ownership or type guarantee.
 
@@ -154,7 +154,7 @@ CI runs the live R suite with the default checked contract and with the explicit
 
 I keep native state explicit. `generateMethods(T, ...)` accepts a method only when its first parameter is exactly `*T`; both `.Call` and `.External` take that receiver first and validate its R type, per-type tag, typed protected metadata, address, and alignment before casting it.
 
-Use `externalptr.makeTyped(T, ptr, backing)` for a borrowed `*T`. `backing` remains reachable through the pointer's typed metadata and keeps R-owned state alive. `makeTypedRaw` is the explicit interop escape hatch for an erased address. The caller still owns the native lifetime: these checks do not prove that arbitrary foreign C memory remains valid. Use `externalptr.createTyped` when R should own a `c_allocator` value; its finalizer clears the address before running `deinit` and freeing it.
+Use `externalptr.makeTyped(T, ptr, backing)` for a borrowed `*T`; `makeTypedRaw` is the explicit interop escape hatch for an erased address. Keep `backing` reachable until construction returns; it then remains reachable through the pointer's typed metadata and keeps R-owned state alive. Direct calls with live native cleanup state require an enclosing unwind boundary. The caller still owns the native lifetime: these checks do not prove that arbitrary foreign C memory remains valid. Use `externalptr.createTyped` when R should own a `c_allocator` value; its finalizer clears the address before running `deinit` and freeing it.
 
 ### Generated exports
 
