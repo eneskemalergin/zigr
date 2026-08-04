@@ -66,6 +66,7 @@ pub const SerializedStateError = error{
     NestedAltrepPayload,
     InvalidLogicalValue,
     WrongClass,
+    ClassNotRegistered,
 };
 
 const OWNED_ALTREP_STATE_MAGIC = "zigr-owned-altrep";
@@ -109,6 +110,7 @@ fn serializedStateError(error_value: SerializedStateError) noreturn {
         error.NestedAltrepPayload => err.signal("owned ALTREP serialized payload must be an ordinary vector"),
         error.InvalidLogicalValue => err.signal("owned ALTREP serialized logical payload contains an invalid value"),
         error.WrongClass => err.signal("serialization input is not an instance of this owned ALTREP class"),
+        error.ClassNotRegistered => err.signal("owned ALTREP class is not registered"),
     }
 }
 
@@ -758,7 +760,8 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         /// Returns an unprotected version-1 state record with an ordinary vector snapshot.
         /// Wrong-class input is a Zig error; R allocation failures still signal through R.
         pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
-            if (!registered or x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
+            if (!registered) return error.ClassNotRegistered;
+            if (x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
                 return error.WrongClass;
             }
             return serializedStateWithBoundary(kind, x);
@@ -776,6 +779,7 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         /// the ALTREP callback ABI cannot propagate a Zig error union.
         pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
             if (state == null) return error.NullState;
+            if (!registered) return error.ClassNotRegistered;
             const payload = try validateSerializedState(state, kindCode(kind), sexpType(kind));
             const Request = struct {
                 state: R.SEXP,
@@ -798,8 +802,10 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                 serializedStateError(error_value);
         }
 
-        /// Copies `slice`; the returned SEXP is unprotected and owns the copy through its finalizer.
+        /// Copies `slice`; `register` must run first. The returned SEXP is unprotected and owns
+        /// the copy through its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
+            if (!registered) err.signal("owned ALTREP class is not registered");
             if (!sexp_mod.fitsVectorLength(slice.len)) err.signal("ALTREP input exceeds R_XLEN_T_MAX");
             if (kind == .logical) {
                 for (slice) |value| {
@@ -813,11 +819,6 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             return cleanup.protectCallData(struct {
                 fn call(data: ?*anyopaque) R.SEXP {
                     const req: *Request = @ptrCast(@alignCast(data.?));
-                    if (!registered) {
-                        class = makeClass(null);
-                        registered = true;
-                    }
-
                     const Pending = PendingWrap(kind);
                     const pending = cleanup.pushFrameInline(Pending, .{}, Pending.fire);
                     const w = makeWrap(kind, req.values, pending);
@@ -982,7 +983,8 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
         /// Returns an unprotected version-1 state record with an ordinary STRSXP snapshot.
         /// Wrong-class input is a Zig error; R allocation failures still signal through R.
         pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
-            if (!registered or x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
+            if (!registered) return error.ClassNotRegistered;
+            if (x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
                 return error.WrongClass;
             }
             return serializedStringStateWithBoundary(x);
@@ -997,11 +999,9 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
         /// Validates `state`, then returns an unprotected ALTSTRING with an independent R copy.
         /// Structural failures are Zig errors; R allocation failures still signal through R.
         pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
+            if (state == null) return error.NullState;
+            if (!registered) return error.ClassNotRegistered;
             const source = try validateSerializedState(state, STRING_KIND_CODE, R.STRSXP);
-            if (!registered) {
-                class = buildStringClass(null);
-                registered = true;
-            }
             return restoreStringWithBoundary(source, class);
         }
 
@@ -1011,8 +1011,10 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
                 serializedStateError(error_value);
         }
 
-        /// Copies UTF-8 bytes into R strings; the returned SEXP is unprotected.
+        /// Copies UTF-8 bytes into R strings; `register` must run first.
+        /// The returned SEXP is unprotected.
         pub fn init(slice: []const []const u8) R.SEXP {
+            if (!registered) err.signal("owned ALTSTRING class is not registered");
             if (!sexp_mod.fitsVectorLength(slice.len)) err.signal("ALTSTRING input exceeds R_XLEN_T_MAX");
             for (slice) |item| {
                 if (item.len > std.math.maxInt(c_int)) err.signal("ALTSTRING element exceeds C int length");
@@ -1022,11 +1024,6 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             return cleanup.protectCallData(struct {
                 fn call(data: ?*anyopaque) R.SEXP {
                     const req: *Request = @ptrCast(@alignCast(data.?));
-                    if (!registered) {
-                        class = buildStringClass(null);
-                        registered = true;
-                    }
-
                     var values = protect.scoped(R.Rf_allocVector(R.STRSXP, @intCast(req.values.len)));
                     defer values.deinit();
                     for (req.values, 0..) |item, index| {
