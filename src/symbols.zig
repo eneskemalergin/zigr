@@ -51,3 +51,14 @@ pub fn install(name: []const u8) R.SEXP {
 
     return sxp;
 }
+
+test "symbol cache state is thread-local" {
+    const before = count;
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn mutate() void {
+            count = cap;
+        }
+    }.mutate, .{});
+    worker.join();
+    try std.testing.expectEqual(before, count);
+}

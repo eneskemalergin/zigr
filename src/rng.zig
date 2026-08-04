@@ -54,3 +54,14 @@ test "acquire and release types" {
     try std.testing.expectEqual(@TypeOf(acquire), fn () void);
     try std.testing.expectEqual(@TypeOf(release), fn () void);
 }
+
+test "withRng reentrancy state is thread-local" {
+    active = false;
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn mark() void {
+            active = true;
+        }
+    }.mark, .{});
+    worker.join();
+    try std.testing.expect(!active);
+}

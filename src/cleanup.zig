@@ -586,3 +586,18 @@ test "releaseFrame disarms an exact frame" {
     try std.testing.expect(releaseFrame(replacement.handle));
     try std.testing.expect(!frameIsActive(replacement.handle));
 }
+
+test "cleanup state is thread-local" {
+    const before = .{ count, boundary_count, protect_depth };
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn mutate() void {
+            count = 1;
+            boundary_count = 1;
+            protect_depth = 7;
+        }
+    }.mutate, .{});
+    worker.join();
+    try std.testing.expectEqual(before[0], count);
+    try std.testing.expectEqual(before[1], boundary_count);
+    try std.testing.expectEqual(before[2], protect_depth);
+}
