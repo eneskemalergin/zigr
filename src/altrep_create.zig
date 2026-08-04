@@ -757,8 +757,9 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
             finalizer_destructions = 0;
         }
 
-        /// Returns an unprotected version-1 state record with an ordinary vector snapshot.
-        /// Wrong-class input is a Zig error; R allocation failures still signal through R.
+        /// Requires `register` first and returns an unprotected version-1 state record with an
+        /// ordinary vector snapshot. Wrong-class input is a Zig error; R allocation failures
+        /// still signal through R.
         pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
             if (!registered) return error.ClassNotRegistered;
             if (x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
@@ -773,7 +774,8 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
                 serializedStateError(error_value);
         }
 
-        /// Validates `state`, then returns an unprotected ALTREP with an independent native copy.
+        /// Requires `register` first, validates `state`, then returns an unprotected ALTREP with
+        /// an independent native copy.
         ///
         /// Structural failures are Zig errors. Allocation failures still signal through R because
         /// the ALTREP callback ABI cannot propagate a Zig error union.
@@ -980,8 +982,9 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
             registered = true;
         }
 
-        /// Returns an unprotected version-1 state record with an ordinary STRSXP snapshot.
-        /// Wrong-class input is a Zig error; R allocation failures still signal through R.
+        /// Requires `register` first and returns an unprotected version-1 state record with an
+        /// ordinary STRSXP snapshot. Wrong-class input is a Zig error; R allocation failures
+        /// still signal through R.
         pub fn serializedStateChecked(x: R.SEXP) SerializedStateError!R.SEXP {
             if (!registered) return error.ClassNotRegistered;
             if (x == null or R.ALTREP(x) == 0 or R.R_altrep_inherits(x, class) == 0) {
@@ -996,7 +999,8 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
                 serializedStateError(error_value);
         }
 
-        /// Validates `state`, then returns an unprotected ALTSTRING with an independent R copy.
+        /// Requires `register` first, validates `state`, then returns an unprotected ALTSTRING
+        /// with an independent R copy.
         /// Structural failures are Zig errors; R allocation failures still signal through R.
         pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
             if (state == null) return error.NullState;
