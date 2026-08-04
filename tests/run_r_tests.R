@@ -352,6 +352,7 @@ tests <- list(
   "zigr_test_altrep_access_strategies",
   "zigr_test_generated_result_longjmp",
   "zigr_test_direct_result_builder",
+  "zigr_test_result_builder_lifetimes",
   "zigr_test_scalar_reference",
   "zigr_test_kernel_reference",
   "zigr_test_raw_complex_reference",

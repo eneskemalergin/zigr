@@ -5803,6 +5803,41 @@ fn directResultThenInterrupt(value: R.SEXP) R.SEXP {
     return result.finish();
 }
 
+fn stringResultThenError() R.SEXP {
+    var result = zigr_convert.StringResultBuilder.init(3);
+    defer result.deinit();
+    result.set(0, "before");
+    R.R_gc();
+    result.set(1, "error");
+    R.R_gc();
+    R.Rf_error("zigr string result: expected error after partial fill");
+}
+
+fn listResultThenError() R.SEXP {
+    var result = zigr_convert.ListResultBuilder.init(2);
+    defer result.deinit();
+    result.set(0, R.Rf_ScalarInteger(7));
+    R.R_gc();
+    result.set(1, R.Rf_ScalarReal(2.5));
+    R.R_gc();
+    R.Rf_error("zigr list result: expected error after partial fill");
+}
+
+fn schemaResultThenError() R.SEXP {
+    var result = zigr_convert.ListResultBuilder.init(4);
+    var names = zigr_convert.StringResultBuilder.init(4);
+    defer result.deinit();
+    defer names.deinit();
+    inline for (.{ "id", "count", "ratio", "enabled" }, 0..) |name, i| names.set(i, name);
+    result.set(0, R.Rf_ScalarInteger(9));
+    result.set(1, R.Rf_ScalarInteger(4));
+    result.set(2, R.Rf_ScalarReal(2.5));
+    result.set(3, R.Rf_ScalarLogical(1));
+    _ = R.Rf_namesgets(result.get(), names.get());
+    R.R_gc();
+    R.Rf_error("zigr schema result: expected error after attribute assignment");
+}
+
 fn spillThenError(values: zigr_convert.IntegerSliceView) void {
     var view = values;
     defer view.deinit();
@@ -6892,6 +6927,176 @@ export fn zigr_test_direct_result_builder() SEXP {
     if (R.TYPEOF(recovered) != R.REALSXP or R.XLENGTH(recovered) != 3 or R.REAL(recovered)[0] != 3.0 or
         R.ISNA(R.REAL(recovered)[1]) == 0 or R.REAL(recovered)[2] != -8.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
+}
+
+fn resultBuilderFailureCall(comptime builder: *const fn () SEXP) SEXP {
+    return cleanup.protectCall(builder);
+}
+
+fn resultBuilderLifetimeProbe() bool {
+    const entry = cleanup.diagnosticSnapshot();
+
+    var numeric = zigr_convert.ResultBuilder(f64).init(3);
+    defer numeric.deinit();
+    if (entry.enabled and cleanup.diagnosticSnapshot().cleanup_frames != entry.cleanup_frames + 1) return false;
+    const numeric_output = numeric.mutableSlice();
+    numeric_output[0] = 1.25;
+    R.R_gc();
+    numeric_output[1] = R.R_NaReal;
+    R.R_gc();
+    numeric_output[2] = -4.5;
+    R.R_gc();
+    const numeric_value = numeric.finish();
+    var numeric_root = protect.scoped(numeric_value);
+    defer numeric_root.deinit();
+
+    var strings = zigr_convert.StringResultBuilder.init(3);
+    defer strings.deinit();
+    strings.set(0, "first");
+    R.R_gc();
+    strings.set(1, "second");
+    R.R_gc();
+    strings.set(2, "third");
+    R.R_gc();
+    const string_value = strings.finish();
+    var string_root = protect.scoped(string_value);
+    defer string_root.deinit();
+
+    var list = zigr_convert.ListResultBuilder.init(2);
+    defer list.deinit();
+    list.set(0, R.Rf_ScalarInteger(7));
+    R.R_gc();
+    list.set(1, R.Rf_ScalarReal(2.5));
+    R.R_gc();
+    const list_value = list.finish();
+    var list_root = protect.scoped(list_value);
+    defer list_root.deinit();
+
+    var schema_root = protect.scoped(zigr_convert.asSEXP(SemanticSchema{ .id = 9, .count = 4, .ratio = 2.5, .enabled = true }));
+    defer schema_root.deinit();
+    R.R_gc();
+
+    if (R.TYPEOF(numeric_root.get()) != R.REALSXP or R.XLENGTH(numeric_root.get()) != 3 or
+        R.REAL(numeric_root.get())[0] != 1.25 or R.ISNA(R.REAL(numeric_root.get())[1]) == 0 or
+        R.REAL(numeric_root.get())[2] != -4.5) return false;
+    if (R.TYPEOF(string_root.get()) != R.STRSXP or R.XLENGTH(string_root.get()) != 3 or
+        !charsxpEqualsBytes(R.STRING_ELT(string_root.get(), 0), "first") or
+        !charsxpEqualsBytes(R.STRING_ELT(string_root.get(), 2), "third")) return false;
+    if (R.TYPEOF(list_root.get()) != R.VECSXP or R.XLENGTH(list_root.get()) != 2 or
+        R.INTEGER(R.VECTOR_ELT(list_root.get(), 0))[0] != 7 or
+        R.REAL(R.VECTOR_ELT(list_root.get(), 1))[0] != 2.5) return false;
+    const schema_names = R.Rf_getAttrib(schema_root.get(), R.R_NamesSymbol);
+    if (R.TYPEOF(schema_root.get()) != R.VECSXP or R.XLENGTH(schema_root.get()) != 4 or
+        R.R_getAttribCount(schema_root.get()) != 1 or R.TYPEOF(schema_names) != R.STRSXP or
+        !charsxpEqualsBytes(R.STRING_ELT(schema_names, 0), "id") or
+        !charsxpEqualsBytes(R.STRING_ELT(schema_names, 2), "ratio") or
+        !charsxpEqualsBytes(R.STRING_ELT(schema_names, 3), "enabled")) return false;
+
+    var generated_schema = protect.scoped(objectCall(1, schema_root.get()));
+    defer generated_schema.deinit();
+    R.R_gc();
+    const generated_schema_names = R.Rf_getAttrib(generated_schema.get(), R.R_NamesSymbol);
+    if (generated_schema.get() == schema_root.get() or R.TYPEOF(generated_schema.get()) != R.VECSXP or
+        R.XLENGTH(generated_schema.get()) != 4 or R.TYPEOF(generated_schema_names) != R.STRSXP or
+        !charsxpEqualsBytes(R.STRING_ELT(generated_schema_names, 1), "count") or
+        !charsxpEqualsBytes(R.STRING_ELT(generated_schema_names, 3), "enabled")) return false;
+
+    const before_string_error = cleanup.diagnosticSnapshot();
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return resultBuilderFailureCall(stringResultThenError);
+        }
+    }.call)) |_| return false else |_| {}
+    if (!sameRestorationState(before_string_error, cleanup.diagnosticSnapshot())) return false;
+
+    const before_list_error = cleanup.diagnosticSnapshot();
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return resultBuilderFailureCall(listResultThenError);
+        }
+    }.call)) |_| return false else |_| {}
+    if (!sameRestorationState(before_list_error, cleanup.diagnosticSnapshot())) return false;
+
+    const before_attribute_error = cleanup.diagnosticSnapshot();
+    if (trycatch_mod.tryCatch(struct {
+        fn call() SEXP {
+            return resultBuilderFailureCall(schemaResultThenError);
+        }
+    }.call)) |_| return false else |_| {}
+    if (!sameRestorationState(before_attribute_error, cleanup.diagnosticSnapshot())) return false;
+
+    var input_root = protect.scoped(R.Rf_allocVector(R.REALSXP, 3));
+    defer input_root.deinit();
+    R.REAL(input_root.get())[0] = 1.5;
+    R.REAL(input_root.get())[1] = R.R_NaReal;
+    R.REAL(input_root.get())[2] = -4.0;
+
+    const vector = zigr.rvector.RVector(f64).init(input_root.get()) catch return false;
+    var copied = protect.scoped(vector.copy());
+    defer copied.deinit();
+    R.R_gc();
+    if (copied.get() == input_root.get() or R.TYPEOF(copied.get()) != R.REALSXP or
+        R.REAL(copied.get())[0] != 1.5 or R.ISNA(R.REAL(copied.get())[1]) == 0 or
+        R.REAL(copied.get())[2] != -4.0) return false;
+
+    const before_direct = cleanup.diagnosticSnapshot();
+    cleanup.resetDiagnostics();
+    var generated_real = protect.scoped(arenaCall(10, input_root.get()));
+    defer generated_real.deinit();
+    if (R.TYPEOF(generated_real.get()) != R.REALSXP or R.XLENGTH(generated_real.get()) != 3 or
+        R.REAL(generated_real.get())[0] != 3.0 or R.ISNA(R.REAL(generated_real.get())[1]) == 0 or
+        R.REAL(generated_real.get())[2] != -8.0) return false;
+    if (cleanup.diagnosticSnapshot().enabled and cleanup.diagnosticSnapshot().max_cleanup_frames != 1) return false;
+    const after_generated_real = cleanup.diagnosticSnapshot();
+    if (after_generated_real.enabled and (after_generated_real.cleanup_frames != before_direct.cleanup_frames or
+        after_generated_real.unwind_boundaries != before_direct.unwind_boundaries or
+        after_generated_real.protect_depth != before_direct.protect_depth + 1)) return false;
+
+    var generated_logical = protect.scoped(boundaryCall(6, R.R_NilValue));
+    defer generated_logical.deinit();
+    R.R_gc();
+    if (R.TYPEOF(generated_logical.get()) != R.LGLSXP or R.XLENGTH(generated_logical.get()) != 3 or
+        R.LOGICAL(generated_logical.get())[0] != 0 or R.LOGICAL(generated_logical.get())[1] != 1 or
+        R.LOGICAL(generated_logical.get())[2] != R.R_NaInt) return false;
+
+    direct_result_failure_input = input_root.get();
+    const before_partial = cleanup.diagnosticSnapshot();
+    if (trycatch_mod.tryCatch(directResultFailureCall)) |_| {
+        direct_result_failure_input = R.R_NilValue;
+        return false;
+    } else |_| {}
+    direct_result_failure_input = R.R_NilValue;
+    if (!sameRestorationState(before_partial, cleanup.diagnosticSnapshot())) return false;
+
+    const before_interrupt = cleanup.diagnosticSnapshot();
+    direct_result_failure_input = input_root.get();
+    R_interrupts_pending = 1;
+    if (trycatch_mod.tryCatch(directResultInterruptCall)) |_| {
+        R_interrupts_pending = 0;
+        direct_result_failure_input = R.R_NilValue;
+        return false;
+    } else |_| {}
+    R_interrupts_pending = 0;
+    direct_result_failure_input = R.R_NilValue;
+    if (!sameRestorationState(before_interrupt, cleanup.diagnosticSnapshot())) return false;
+
+    R.R_gc();
+    if (R.REAL(generated_real.get())[0] != 3.0) return false;
+    generated_logical.deinit();
+    generated_real.deinit();
+    copied.deinit();
+    input_root.deinit();
+    generated_schema.deinit();
+    schema_root.deinit();
+    list_root.deinit();
+    string_root.deinit();
+    numeric_root.deinit();
+    return sameRestorationState(entry, cleanup.diagnosticSnapshot());
+}
+
+export fn zigr_test_result_builder_lifetimes() SEXP {
+    if (!initArenaExports() or !initObjectExports()) return R.Rf_ScalarReal(0.0);
+    return R.Rf_ScalarReal(if (resultBuilderLifetimeProbe()) 1.0 else 0.0);
 }
 
 fn reference(code: []const u8) protect.ScopedProtect {
