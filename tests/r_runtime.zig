@@ -2678,6 +2678,45 @@ fn serializeInvalidOwnedAltrepInput() SEXP {
     return MyAlt.serializedState(invalid_owned_altrep_input);
 }
 
+fn invalidLogicalOwnedInput() SEXP {
+    const values = [_]i32{ 0, 2, 1 };
+    return MyAltLogical.init(values[0..]);
+}
+
+export fn zigr_test_altrep_registration_contract() SEXP {
+    if (test_dll == null) return R.Rf_ScalarReal(0.0);
+
+    const values = [_]f64{ 1.0, 2.0 };
+    var real = protect.scoped(MyAlt.init(values[0..]));
+    defer real.deinit();
+    MyAlt.register(test_dll.?);
+    var real_state = protect.scoped(MyAlt.serializedStateChecked(real.get()) catch return R.Rf_ScalarReal(0.0));
+    defer real_state.deinit();
+
+    const strings = [_][]const u8{ "alpha", "beta" };
+    var string = protect.scoped(MyAltString.init(strings[0..]));
+    defer string.deinit();
+    MyAltString.register(test_dll.?);
+    var string_state = protect.scoped(MyAltString.serializedStateChecked(string.get()) catch return R.Rf_ScalarReal(0.0));
+    defer string_state.deinit();
+
+    return R.Rf_ScalarReal(1.0);
+}
+
+export fn zigr_test_altrep_logical_input_contract() SEXP {
+    const values = [_]i32{ 0, 1, R.R_NaInt };
+    var valid = protect.scoped(MyAltLogical.init(values[0..]));
+    defer valid.deinit();
+    const entry = cleanup.diagnosticSnapshot();
+    if (trycatch_mod.tryCatch(invalidLogicalOwnedInput)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    if (!sameRestorationState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+    R.R_gc();
+    if (R.LOGICAL_ELT(valid.get(), 0) != 0 or R.LOGICAL_ELT(valid.get(), 1) != 1 or R.LOGICAL_ELT(valid.get(), 2) != R.R_NaInt) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    return R.Rf_ScalarReal(1.0);
+}
+
 export fn zigr_test_altrep_serialized_state_validation() SEXP {
     const values = [_]f64{ 1.0, 2.0, 3.0 };
     var original = protect.scoped(MyAlt.init(values[0..]));

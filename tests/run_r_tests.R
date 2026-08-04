@@ -215,6 +215,8 @@ tests <- list(
   "zigr_test_string_representations",
   "zigr_test_string_projections",
   "zigr_test_altstring_inputs",
+  "zigr_test_altrep_registration_contract",
+  "zigr_test_altrep_logical_input_contract",
   "zigr_test_altrep_owned_storage",
   "zigr_test_altrep_finalizer_lifecycle",
   "zigr_test_altrep_serialization_contract",
