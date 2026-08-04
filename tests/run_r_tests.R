@@ -452,22 +452,38 @@ cat("\n=== zigr R runtime tests ===\n")
 passed <- 0
 failed <- 0
 skipped <- 0
+gctorture_setting <- Sys.getenv("ZIGR_GCTORTURE", "")
+gctorture_mode <- nzchar(gctorture_setting) && !tolower(gctorture_setting) %in% c("0", "false", "no")
+gctorture_step <- suppressWarnings(as.integer(gctorture_setting))
+if (is.na(gctorture_step) || gctorture_step < 1L) gctorture_step <- 10L
+
+run_with_gctorture <- function(expr) {
+  if (!gctorture_mode) return(force(expr))
+
+  gctorture2(gctorture_step)
+  on.exit(gctorture(FALSE), add = TRUE)
+  force(expr)
+}
+
+if (gctorture_mode) cat("  GC diagnostic mode: gctorture2 step", gctorture_step, "around each registered call\n")
 
 for (t in tests) {
   name <- if (is.list(t)) t$name else t
   expect_error <- if (is.list(t) && !is.null(t$expect_error)) t$expect_error else FALSE
 
   result <- tryCatch({
-    val <- .Call(name)
-    if (expect_error) {
-      "FAIL"
-    } else {
-      if (is.numeric(val) && length(val) == 1 && !is.na(val) && val == 1.0) {
-        "PASS"
-      } else {
+    run_with_gctorture({
+      val <- .Call(name)
+      if (expect_error) {
         "FAIL"
+      } else {
+        if (is.numeric(val) && length(val) == 1 && !is.na(val) && val == 1.0) {
+          "PASS"
+        } else {
+          "FAIL"
+        }
       }
-    }
+    })
   }, error = function(e) {
     if (expect_error) {
       "PASS"
@@ -490,7 +506,7 @@ for (t in tests) {
 
 warning_message <- NULL
 warning_result <- withCallingHandlers(
-  .Call("zigr_test_error_warn_format"),
+  run_with_gctorture(.Call("zigr_test_error_warn_format")),
   warning = function(w) {
     warning_message <<- conditionMessage(w)
     invokeRestart("muffleWarning")
@@ -505,7 +521,7 @@ if (identical(warning_result, 1) && identical(warning_message, "zigr warning for
 }
 
 registration_result <- tryCatch(
-  run_generated_registration_arity_test(),
+  run_with_gctorture(run_generated_registration_arity_test()),
   error = function(e) e
 )
 if (identical(registration_result, TRUE)) {
