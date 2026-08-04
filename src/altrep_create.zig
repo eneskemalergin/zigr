@@ -733,7 +733,9 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         /// Registers the class from its installed package initializer.
         ///
         /// Cross-session restoration requires R to load that package by `pkg` and run this call.
+        /// Repeated calls are no-ops so existing instances retain their class identity.
         pub fn register(info: anytype) void {
+            if (registered) return;
             class = makeClass(info);
             registered = true;
         }
@@ -773,8 +775,21 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         /// Structural failures are Zig errors. Allocation failures still signal through R because
         /// the ALTREP callback ABI cannot propagate a Zig error union.
         pub fn restoreSerializedStateChecked(state: R.SEXP) SerializedStateError!R.SEXP {
+            if (state == null) return error.NullState;
             const payload = try validateSerializedState(state, kindCode(kind), sexpType(kind));
-            return init(payloadSlice(kind, payload));
+            const Request = struct {
+                state: R.SEXP,
+                payload: R.SEXP,
+            };
+            var request = Request{ .state = state, .payload = payload };
+            return cleanup.protectCallData(struct {
+                fn call(data: ?*anyopaque) R.SEXP {
+                    const req: *Request = @ptrCast(@alignCast(data.?));
+                    var state_root = protect.scoped(req.state);
+                    defer state_root.deinit();
+                    return init(payloadSlice(kind, req.payload));
+                }
+            }.call, @ptrCast(&request));
         }
 
         /// Callback-compatible restoration. Invalid state signals an R error before ownership moves.
@@ -786,6 +801,13 @@ fn OwnedAltVector(comptime kind: AltKind, comptime pkg: []const u8, comptime nam
         /// Copies `slice`; the returned SEXP is unprotected and owns the copy through its finalizer.
         pub fn init(slice: []const ElemType(kind)) R.SEXP {
             if (!sexp_mod.fitsVectorLength(slice.len)) err.signal("ALTREP input exceeds R_XLEN_T_MAX");
+            if (kind == .logical) {
+                for (slice) |value| {
+                    if (value != 0 and value != 1 and value != R.R_NaInt) {
+                        err.signal("owned logical ALTREP values must be 0, 1, or NA");
+                    }
+                }
+            }
             const Request = struct { values: []const ElemType(kind) };
             var request = Request{ .values = slice };
             return cleanup.protectCallData(struct {
@@ -950,7 +972,9 @@ pub fn AltString(comptime pkg: []const u8, comptime name: []const u8) type {
         /// Registers the class from its installed package initializer.
         ///
         /// Cross-session restoration requires R to load that package by `pkg` and run this call.
+        /// Repeated calls are no-ops so existing instances retain their class identity.
         pub fn register(info: anytype) void {
+            if (registered) return;
             class = buildStringClass(info);
             registered = true;
         }
