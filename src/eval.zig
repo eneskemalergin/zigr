@@ -1,8 +1,10 @@
 //! R evaluation and lookup.
 //!
-//! R can longjmp through these calls. Callers holding native state must
-//! establish their own cleanup boundary first. Call construction retains
-//! ALTREP arguments, but evaluated R code may inspect or materialize them.
+//! These helpers are main-thread-only R API calls. R can longjmp through them,
+//! so callers holding native state must establish their own cleanup boundary
+//! first. Call construction retains ALTREP arguments, but evaluated R code may
+//! inspect or materialize them. Returned SEXPs are unprotected; callers must
+//! root them before any later allocating call.
 
 const R = @import("R");
 const cleanup = @import("cleanup");

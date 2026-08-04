@@ -1,6 +1,9 @@
 //! R condition handling.
 //!
-//! Conditions can longjmp past Zig defers.
+//! Conditions can longjmp past Zig defers. The R handler runs on R's main
+//! thread; callbacks may reenter only through a still-live cleanup boundary and
+//! must root every R value before allocating again. Captured conditions are
+//! returned borrowed and must be rooted by the caller immediately.
 
 const std = @import("std");
 const R = @import("R");

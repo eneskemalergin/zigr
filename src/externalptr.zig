@@ -4,6 +4,8 @@
 //! methods verify both before they cast the receiver. Constructors return
 //! unprotected SEXPs; callers keep R inputs reachable across allocating calls.
 //! Typed backing is retained as an R object without inspecting ALTREP payload data.
+//! Finalizers and pointer access are main-thread-only; finalizer state is
+//! cleared before native destruction and is not reentrant.
 
 const std = @import("std");
 const R = @import("R");

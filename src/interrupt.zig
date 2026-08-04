@@ -1,6 +1,7 @@
 //! R interrupt and stack checks.
 //!
-//! Interrupt checks can longjmp, so native cleanup must already be armed.
+//! These checks are main-thread-only R API calls. Interrupt checks can longjmp,
+//! so native cleanup must already be armed.
 
 const builtin = @import("builtin");
 const R = @import("R");

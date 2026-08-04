@@ -3,7 +3,9 @@
 //! `car` and related helpers are unchecked C API access. Constructors may
 //! allocate and longjmp. Inputs remain caller-rooted during construction and
 //! built calls are returned unprotected. Construction stores ALTREP arguments
-//! without inspecting payload data; later evaluation follows the callee's R semantics.
+//! without inspecting payload data; later evaluation follows the callee's R
+//! semantics. All R API calls here are main-thread-only, and a caller must
+//! root a built call before another allocating operation.
 
 const std = @import("std");
 const R = @import("R");

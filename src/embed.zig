@@ -1,6 +1,8 @@
 //! Evaluate R code from Zig strings.
 //!
-//! The parser can longjmp, so its buffer uses the cleanup stack.
+//! This is a main-thread-only R API entry. The parser can longjmp, so its
+//! buffer uses the cleanup stack. The environment is borrowed for the call and
+//! returned results are unprotected; callers must root them before allocating.
 
 const std = @import("std");
 const R = @import("R");

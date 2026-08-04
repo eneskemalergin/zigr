@@ -1,7 +1,8 @@
 //! Cleanup across R non-local exits.
 //!
 //! R longjmps bypass Zig defers, so cleanup state lives in this thread-local
-//! stack and unwinds in LIFO order.
+//! stack and unwinds in LIFO order. The stack belongs to the R calling thread;
+//! it is not a synchronization mechanism for worker-thread R calls.
 
 const std = @import("std");
 const builtin = @import("builtin");

@@ -1,7 +1,8 @@
 //! Cache interned R symbols.
 //!
 //! R owns symbols for the session. The fixed thread-local cache avoids native
-//! allocation and stops accepting entries when full.
+//! allocation and stops accepting entries when full. Installation is a
+//! main-thread-only R API call; the cache has no reset or unload operation.
 
 const std = @import("std");
 const R = @import("R");

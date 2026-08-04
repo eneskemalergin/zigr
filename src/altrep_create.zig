@@ -2,6 +2,8 @@
 //!
 //! R declares `R_ext/Altrep.h` experimental. Keep class registration and
 //! callback signatures pinned to the installed headers used for each build.
+//! Callbacks run on R's main thread and must keep borrowed R and native state
+//! within the callback or owning SEXP lifetime.
 //!
 //! Callback contract for owned vectors:
 //! - `Elt` accepts every valid `R_xlen_t` index. Empty vectors have no valid

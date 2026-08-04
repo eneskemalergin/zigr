@@ -1,6 +1,7 @@
 //! R RNG state.
 //!
-//! `withRng` releases R's state even when R longjmps.
+//! R's RNG API is main-thread-only. `withRng` releases R's state even when R
+//! longjmps, and its active scope is deliberately non-reentrant.
 
 const std = @import("std");
 const R = @import("R");
