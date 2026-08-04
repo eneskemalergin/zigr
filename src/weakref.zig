@@ -3,8 +3,8 @@
 //! Keys may be `R_NilValue`, environments, external pointers, or bytecode. A
 //! live key keeps the value reachable through the weak reference. Before a
 //! finalizer runs, R clears both fields and passes the original key to it.
-//! Returned SEXPs are unprotected. R may duplicate the value during creation,
-//! so an ALTREP value follows its class's duplicate and materialization semantics.
+//! Returned SEXPs are unprotected. R owns the weak-reference object; callers
+//! keep the key, value, and returned reference reachable across construction.
 
 const std = @import("std");
 const R = @import("R");
@@ -42,7 +42,7 @@ fn validateWeakRef(weak_ref: R.SEXP) WeakRefError!void {
 
 /// Creates an unprotected weak reference after validating its key and value.
 /// The caller must keep both inputs reachable across this allocating call. R
-/// may duplicate a referenced value before storing it.
+/// may allocate or longjmp before storing the references.
 pub fn makeChecked(
     key_sxp: R.SEXP,
     value_sxp: R.SEXP,
@@ -70,6 +70,7 @@ pub fn make(
 }
 
 /// Returns the borrowed key, or `R_NilValue` after R clears the weak reference.
+/// Keep `weak_ref` protected while using the returned SEXP.
 pub fn keyChecked(weak_ref: R.SEXP) WeakRefError!R.SEXP {
     try validateWeakRef(weak_ref);
     return R.R_WeakRefKey(weak_ref);
@@ -81,6 +82,7 @@ pub fn key(weak_ref: R.SEXP) R.SEXP {
 }
 
 /// Returns the borrowed value, or `R_NilValue` after R clears the weak reference.
+/// Keep `weak_ref` protected while using the returned SEXP.
 pub fn valueChecked(weak_ref: R.SEXP) WeakRefError!R.SEXP {
     try validateWeakRef(weak_ref);
     return R.R_WeakRefValue(weak_ref);
@@ -91,9 +93,10 @@ pub fn value(weak_ref: R.SEXP) R.SEXP {
         err.signal(errorMessage(error_value));
 }
 
-/// Runs the registered finalizer at most once. R clears the weak-reference
-/// fields first and passes the original key. The finalizer must not longjmp,
-/// signal an R error, or retain the borrowed key after it returns.
+/// Invokes R's registered finalizer immediately. R clears the weak-reference
+/// fields first and passes the original key. Do not repeat an explicit call;
+/// automatic collection schedules the finalizer separately. The finalizer must
+/// not allocate, longjmp, signal an R error, or retain the borrowed key.
 pub fn runFinalizerChecked(weak_ref: R.SEXP) WeakRefError!void {
     try validateWeakRef(weak_ref);
     R.R_RunWeakRefFinalizer(weak_ref);

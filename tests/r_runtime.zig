@@ -8401,7 +8401,9 @@ fn externalValueDeinit(value: *ExternalValue) void {
 
 export fn zigr_test_externalptr_finalizer() SEXP {
     externalptr_finalizer_count = 0;
+    _ = embed.rCodeEval("gctorture(TRUE)", R.R_BaseEnv);
     var ext = R.Rf_protect(zigr.externalptr.createTyped(ExternalValue, .{ .value = 17 }, externalValueDeinit));
+    _ = embed.rCodeEval("gctorture(FALSE)", R.R_BaseEnv);
     const raw = zigr.externalptr.addr(ext) orelse {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
@@ -8415,8 +8417,13 @@ export fn zigr_test_externalptr_finalizer() SEXP {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
     }
+    const duplicate = R.Rf_protect(R.Rf_duplicate(ext));
+    if (duplicate != ext) {
+        R.Rf_unprotect(2);
+        return R.Rf_ScalarReal(0.0);
+    }
 
-    R.Rf_unprotect(1);
+    R.Rf_unprotect(2);
     ext = R.R_NilValue;
     R.R_gc();
     R.R_gc();
@@ -8432,6 +8439,24 @@ export fn zigr_test_externalptr_finalizer_idempotent() SEXP {
     if (zigr.externalptr.addr(ext) != null or externalptr_finalizer_count != 1) {
         R.Rf_unprotect(1);
         return R.Rf_ScalarReal(0.0);
+    }
+    if (zigr.externalptr.checkedPointer(ExternalValue, ext)) |_| {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    } else |pointer_error| {
+        if (pointer_error != error.ClearedExternalPointer) {
+            R.Rf_unprotect(1);
+            return R.Rf_ScalarReal(0.0);
+        }
+    }
+    if (zigr.externalptr.typedBacking(ExternalValue, ext)) |_| {
+        R.Rf_unprotect(1);
+        return R.Rf_ScalarReal(0.0);
+    } else |pointer_error| {
+        if (pointer_error != error.ClearedExternalPointer) {
+            R.Rf_unprotect(1);
+            return R.Rf_ScalarReal(0.0);
+        }
     }
     R.Rf_unprotect(1);
     ext = R.R_NilValue;
@@ -8464,6 +8489,18 @@ export fn zigr_test_externalptr_typed_protected() SEXP {
         return R.Rf_ScalarReal(0.0);
     } else |pointer_error| {
         if (pointer_error != error.NullBacking) return R.Rf_ScalarReal(0.0);
+    }
+    const metadata = zigr.externalptr.protected(ext);
+    R.R_ClearExternalPtr(ext);
+    R.R_gc();
+    R.R_gc();
+    if (zigr.externalptr.protected(ext) != metadata or R.INTEGER(backing)[0] != 42) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    if (zigr.externalptr.typedBacking(MethodCounter, ext)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |pointer_error| {
+        if (pointer_error != error.ClearedExternalPointer) return R.Rf_ScalarReal(0.0);
     }
     return R.Rf_ScalarReal(1.0);
 }
@@ -8514,6 +8551,19 @@ export fn zigr_test_weakref_reachable_contract() SEXP {
         return R.Rf_ScalarReal(0.0));
     defer R.Rf_unprotect(1);
     if (weakref_mod.key(external_ref) != external_key or weakref_mod.value(external_ref) != R.R_NilValue) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
+    const compiled = R.Rf_protect(embed.rCodeEval("compiler::cmpfun(function(x) x + 1)", R.R_BaseEnv));
+    defer R.Rf_unprotect(1);
+    if (compiled == null or R.TYPEOF(compiled) != R.CLOSXP) return R.Rf_ScalarReal(0.0);
+    const bytecode_key = R.Rf_protect(R.R_ClosureBody(compiled));
+    defer R.Rf_unprotect(1);
+    if (bytecode_key == null or R.TYPEOF(bytecode_key) != R.BCODESXP) return R.Rf_ScalarReal(0.0);
+    const bytecode_ref = R.Rf_protect(weakref_mod.makeChecked(bytecode_key, R.R_NilValue, null, false) catch
+        return R.Rf_ScalarReal(0.0));
+    defer R.Rf_unprotect(1);
+    if (weakref_mod.key(bytecode_ref) != bytecode_key or weakref_mod.value(bytecode_ref) != R.R_NilValue) {
         return R.Rf_ScalarReal(0.0);
     }
     return R.Rf_ScalarReal(1.0);
@@ -8637,7 +8687,9 @@ export fn zigr_test_weakref_gc_finalizer() SEXP {
 
     const explicit_key = R.Rf_protect(R.R_NewEnv(R.R_EmptyEnv, 0, 29));
     defer R.Rf_unprotect(1);
-    const explicit_ref = R.Rf_protect(weakref_mod.make(explicit_key, R.R_NilValue, weakRefFinalizer, false));
+    const explicit_value = R.Rf_protect(R.Rf_ScalarInteger(23));
+    defer R.Rf_unprotect(1);
+    const explicit_ref = R.Rf_protect(weakref_mod.make(explicit_key, explicit_value, weakRefFinalizer, false));
     defer R.Rf_unprotect(1);
     weakref_mod.runFinalizer(explicit_ref);
     weakref_mod.runFinalizer(explicit_ref);
@@ -9707,6 +9759,18 @@ export fn zigr_test_generated_method_receiver_errors() SEXP {
     defer R.Rf_unprotect(1);
     _ = R.SET_VECTOR_ELT(zigr.externalptr.protected(tampered), 0, R.R_NilValue);
     if (!expectMethodError(tampered, amount, "external pointer is missing typed metadata")) return R.Rf_ScalarReal(0.0);
+
+    const missing_backing = R.Rf_protect(zigr.externalptr.makeTyped(MethodCounter, &counter, R.R_NilValue));
+    defer R.Rf_unprotect(1);
+    _ = R.SET_VECTOR_ELT(zigr.externalptr.protected(missing_backing), 1, null);
+    if (!expectMethodError(missing_backing, amount, "external pointer is missing typed metadata")) {
+        return R.Rf_ScalarReal(0.0);
+    }
+    if (zigr.externalptr.typedBacking(MethodCounter, missing_backing)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |pointer_error| {
+        if (pointer_error != error.MissingExternalPointerMetadata) return R.Rf_ScalarReal(0.0);
+    }
 
     const ForeignCounter = @TypeOf(foreign);
     const foreign_pointer = R.Rf_protect(zigr.externalptr.makeTyped(ForeignCounter, &foreign, R.R_NilValue));
