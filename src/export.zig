@@ -4,7 +4,8 @@
 //! inside R's unwind boundary so temporary native storage is released on both
 //! return and error. Conversion failures become R errors.
 //!
-//! Generated entries are called on R's main thread. Nested entries are safe
+//! Generated entries are called on R's main thread. This is a caller
+//! precondition, not a runtime rejection guarantee. Nested entries are safe
 //! only while the enclosing cleanup stack remains valid; callbacks that are
 //! documented non-reentrant must not call back into an entry.
 

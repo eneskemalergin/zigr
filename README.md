@@ -111,7 +111,7 @@ Generated wrappers run inside `R_UnwindProtect`. Conversion errors become R erro
 
 The core service layer stays close to the R C API:
 
-Call these services only from R's main thread. R's C API, ALTREP callbacks, protection stack, and runtime state are not safe for general worker-thread use.
+Call these services only from R's main thread. R's C API, ALTREP callbacks, protection stack, and runtime state are not safe for general worker-thread use. This is a caller precondition, not a runtime rejection guarantee: zigr does not turn an off-thread R call into an R error. Worker threads are limited to pure Zig or native work over owned or copied data; they must not hold `SEXP` values, call the R API, or retain R-managed pointers across the handoff back to an R entry point.
 
 - `attrib` provides checked string attributes and allocating setters over `Rf_getAttrib`, `Rf_setAttrib`, `Rf_namesgets`, `Rf_classgets`, and `Rf_dimgets`. Returned header arrays are caller-freed; their string bytes remain R-owned. `getString` maps `NA` to empty, while `getOptionalString` preserves it as `null`. R allocation and ALTREP access can longjmp, so native cleanup needs an outer unwind boundary.
 - `dataframe.buildChecked` validates column counts, equal row counts, non-empty names, C string-length limits, and compact row-name limits before allocating. Matrix and array columns use their first dimension rather than total element length. It shares the supplied columns instead of copying them, so callers keep those columns reachable during construction and follow R copy-on-write rules afterward. `build` raises an R error on the same validation failures. The result is unprotected.
