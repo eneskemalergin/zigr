@@ -324,9 +324,11 @@ export fn zigr_test_check_stack_longjmp() SEXP {
 
 export fn zigr_test_rev_eval() SEXP {
     const plus = test_lang.symbol("+");
-    const one = R.Rf_ScalarReal(1.0);
-    const call = test_lang.call2(plus, one, one);
-    const result = test_eval.rEval(call, null);
+    var one = protect.scoped(R.Rf_ScalarReal(1.0));
+    defer one.deinit();
+    var call = protect.scoped(test_lang.call2(plus, one.get(), one.get()));
+    defer call.deinit();
+    const result = test_eval.rEval(call.get(), null);
     const val = R.REAL(result)[0];
     if (val != 2.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
@@ -342,10 +344,13 @@ export fn zigr_test_rev_define_find() SEXP {
 
 export fn zigr_test_rev_lang3() SEXP {
     const fsum = test_lang.symbol("sum");
-    const a = R.Rf_ScalarReal(10.0);
-    const b = R.Rf_ScalarReal(20.0);
-    const call = test_lang.call2(fsum, a, b);
-    const result = test_eval.rEval(call, null);
+    var a = protect.scoped(R.Rf_ScalarReal(10.0));
+    defer a.deinit();
+    var b = protect.scoped(R.Rf_ScalarReal(20.0));
+    defer b.deinit();
+    var call = protect.scoped(test_lang.call2(fsum, a.get(), b.get()));
+    defer call.deinit();
+    const result = test_eval.rEval(call.get(), null);
     const val = R.REAL(result)[0];
     if (val != 30.0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
@@ -1306,24 +1311,21 @@ fn shortRegionAltComplex() SEXP {
 
 fn compactIntSequence(n: i32) ?SEXP {
     const length = R.Rf_protect(R.Rf_ScalarInteger(n));
-    defer R.Rf_unprotect(1);
     const call = R.Rf_protect(R.Rf_lang2(R.Rf_install("seq_len"), length));
-    defer R.Rf_unprotect(1);
     var failed: c_int = 0;
     const result = R.R_tryEvalSilent(call, R.R_GlobalEnv, &failed);
+    R.Rf_unprotect(2);
     if (failed != 0) return null;
     return R.Rf_protect(result);
 }
 
 fn compactRealSequence(n: f64) ?SEXP {
     const length = R.Rf_protect(R.Rf_ScalarReal(n));
-    defer R.Rf_unprotect(1);
     const integer_call = R.Rf_protect(R.Rf_lang2(R.Rf_install("seq_len"), length));
-    defer R.Rf_unprotect(1);
     const real_call = R.Rf_protect(R.Rf_lang2(R.Rf_install("as.double"), integer_call));
-    defer R.Rf_unprotect(1);
     var failed: c_int = 0;
     const result = R.R_tryEvalSilent(real_call, R.R_GlobalEnv, &failed);
+    R.Rf_unprotect(3);
     if (failed != 0) return null;
     return R.Rf_protect(result);
 }
@@ -6545,7 +6547,7 @@ export fn zigr_test_export_external() SEXP {
         R.Rf_install("zigr_test_external_sum"),
         R.Rf_cons(arg1, R.Rf_cons(arg2, R.R_NilValue)),
     ));
-    R.Rf_unprotect(3);
+    defer R.Rf_unprotect(3);
 
     const result = ext_fun(pairlist);
     const val = R.REAL(result)[0];
@@ -7283,10 +7285,13 @@ fn conditionMatchesReference(expected: SEXP, actual: SEXP, class_name: [*:0]cons
 export fn zigr_test_runtime_semantics() SEXP {
     if (!initRuntimeExports()) return R.Rf_ScalarReal(0.0);
     const entry = cleanup.diagnosticSnapshot();
+    var restore_runtime_state = true;
     defer {
-        runtime_rng_mode = 0;
-        runtime_rng_count = 0;
-        runtime_embed_mode = 0;
+        if (restore_runtime_state) {
+            runtime_rng_mode = 0;
+            runtime_rng_count = 0;
+            runtime_embed_mode = 0;
+        }
     }
 
     const input = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 3));
@@ -7374,10 +7379,12 @@ export fn zigr_test_runtime_semantics() SEXP {
     var saved_rng = reference("if (exists('.Random.seed', envir=.GlobalEnv, inherits=FALSE)) .Random.seed else NULL");
     defer saved_rng.deinit();
     const had_rng_state = saved_rng.get() != R.R_NilValue;
-    defer if (had_rng_state) {
-        test_eval.defineVarIn(".Random.seed", saved_rng.get(), R.R_GlobalEnv);
-    } else {
-        _ = embed.rCodeEval("rm('.Random.seed', envir=.GlobalEnv)", R.R_GlobalEnv);
+    defer if (restore_runtime_state) {
+        if (had_rng_state) {
+            test_eval.defineVarIn(".Random.seed", saved_rng.get(), R.R_GlobalEnv);
+        } else {
+            _ = embed.rCodeEval("rm('.Random.seed', envir=.GlobalEnv)", R.R_GlobalEnv);
+        }
     };
 
     _ = embed.rCodeEval("set.seed(1729)", R.R_GlobalEnv);
@@ -7544,6 +7551,15 @@ export fn zigr_test_runtime_semantics() SEXP {
     R.R_gc();
     if (!sameRealVector(recovered_language.get(), expected_language.get()) or
         !sameRuntimeControlState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+    runtime_rng_mode = 0;
+    runtime_rng_count = 0;
+    runtime_embed_mode = 0;
+    if (had_rng_state) {
+        test_eval.defineVarIn(".Random.seed", saved_rng.get(), R.R_GlobalEnv);
+    } else {
+        _ = embed.rCodeEval("rm('.Random.seed', envir=.GlobalEnv)", R.R_GlobalEnv);
+    }
+    restore_runtime_state = false;
     return R.Rf_ScalarReal(1.0);
 }
 
