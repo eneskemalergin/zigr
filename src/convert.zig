@@ -47,6 +47,7 @@ const ResultGuard = struct {
     }
 
     fn get(self: ResultGuard) SEXP {
+        if (!self.active) @panic("result builder is inactive");
         return self.protected.get();
     }
 
@@ -702,7 +703,8 @@ fn toRealSliceWithRepresentation(
 
 /// Owns one protected, final R vector. `mutableSlice` exposes its typed R
 /// storage while it remains protected; `finish` transfers the completed
-/// vector to the caller and `deinit` abandons it during error cleanup.
+/// vector to the caller and `deinit` abandons it during error cleanup. Access
+/// after `finish` or `deinit` is rejected before an unrooted SEXP is exposed.
 pub fn ResultBuilder(comptime T: type) type {
     comptime _ = typeToSEXPTYPE(T);
     return struct {
