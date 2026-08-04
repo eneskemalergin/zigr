@@ -1114,6 +1114,8 @@ const MyAltLogical = altrep_create.AltLogical("zigr", "test_logical");
 const MyAltRaw = altrep_create.AltRaw("zigr", "test_raw");
 const MyAltComplex = altrep_create.AltComplex("zigr", "test_complex");
 const MyAltString = altrep_create.AltString("zigr", "test_string");
+const UnregisteredAlt = altrep_create.AltReal("zigr", "unregistered_real");
+const UnregisteredAltString = altrep_create.AltString("zigr", "unregistered_string");
 
 const long_string_len: R.R_xlen_t = @as(R.R_xlen_t, @intCast(std.math.maxInt(i32))) + 17;
 var long_string_class: R.R_altrep_class_t = undefined;
@@ -2683,8 +2685,38 @@ fn invalidLogicalOwnedInput() SEXP {
     return MyAltLogical.init(values[0..]);
 }
 
+fn initUnregisteredAlt() SEXP {
+    const values = [_]f64{1.0};
+    return UnregisteredAlt.init(values[0..]);
+}
+
+fn initUnregisteredAltString() SEXP {
+    const values = [_][]const u8{"value"};
+    return UnregisteredAltString.init(values[0..]);
+}
+
 export fn zigr_test_altrep_registration_contract() SEXP {
     if (test_dll == null) return R.Rf_ScalarReal(0.0);
+
+    if (UnregisteredAlt.serializedStateChecked(null)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.ClassNotRegistered) return R.Rf_ScalarReal(0.0);
+    }
+    if (trycatch_mod.tryCatch(initUnregisteredAlt)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    UnregisteredAlt.register(test_dll.?);
+    var unregistered = protect.scoped(UnregisteredAlt.init(&[_]f64{1.0}));
+    defer unregistered.deinit();
+    if (R.REAL_ELT(unregistered.get(), 0) != 1.0) return R.Rf_ScalarReal(0.0);
+
+    if (UnregisteredAltString.restoreSerializedStateChecked(R.R_NilValue)) |_| return R.Rf_ScalarReal(0.0) else |e| {
+        if (e != error.ClassNotRegistered) return R.Rf_ScalarReal(0.0);
+    }
+    if (trycatch_mod.tryCatch(initUnregisteredAltString)) |_| return R.Rf_ScalarReal(0.0) else |_| {}
+    UnregisteredAltString.register(test_dll.?);
+    var unregistered_string = protect.scoped(UnregisteredAltString.init(&[_][]const u8{"value"}));
+    defer unregistered_string.deinit();
+    if (!std.mem.eql(u8, std.mem.sliceTo(R.R_CHAR(R.STRING_ELT(unregistered_string.get(), 0)), 0), "value")) {
+        return R.Rf_ScalarReal(0.0);
+    }
 
     const values = [_]f64{ 1.0, 2.0 };
     var real = protect.scoped(MyAlt.init(values[0..]));
