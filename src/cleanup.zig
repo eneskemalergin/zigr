@@ -173,6 +173,12 @@ pub fn releaseFrame(handle: FrameHandle) bool {
     return true;
 }
 
+pub fn frameIsActive(handle: FrameHandle) bool {
+    if (handle.slot >= count) return false;
+    const frame = &stack[handle.slot];
+    return frame.armed and frame.generation == handle.generation;
+}
+
 pub fn recoveryCheckpoint() RecoveryCheckpoint {
     return .{
         .cleanup_frames = count,
@@ -564,7 +570,9 @@ test "releaseFrame disarms an exact frame" {
     const first = pushFrameInlineWithHandle(Guard, .{ .fired = &first_fired }, Guard.fire);
     _ = pushFrameInlineWithHandle(Guard, .{ .fired = &second_fired }, Guard.fire);
 
+    try std.testing.expect(frameIsActive(first.handle));
     try std.testing.expect(releaseFrame(first.handle));
+    try std.testing.expect(!frameIsActive(first.handle));
     zigr_on_unwind();
 
     try std.testing.expectEqual(0, first_fired);
@@ -573,5 +581,7 @@ test "releaseFrame disarms an exact frame" {
 
     const replacement = pushFrameInlineWithHandle(Guard, .{ .fired = &first_fired }, Guard.fire);
     try std.testing.expect(!releaseFrame(first.handle));
+    try std.testing.expect(frameIsActive(replacement.handle));
     try std.testing.expect(releaseFrame(replacement.handle));
+    try std.testing.expect(!frameIsActive(replacement.handle));
 }

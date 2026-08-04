@@ -47,13 +47,14 @@ const ResultGuard = struct {
     }
 
     fn get(self: ResultGuard) SEXP {
-        if (!self.active) @panic("result builder is inactive");
+        if (!self.active or !cleanup.frameIsActive(self.unwind_frame)) @panic("result builder is inactive");
         return self.protected.get();
     }
 
     fn deinit(self: *ResultGuard) void {
         if (!self.active) return;
         self.active = false;
+        if (!cleanup.frameIsActive(self.unwind_frame)) return;
         self.protected.deinit();
         self.cleanup_state.protected = false;
         _ = cleanup.releaseFrame(self.unwind_frame);

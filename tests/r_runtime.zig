@@ -6950,6 +6950,17 @@ fn resultBuilderLifetimeProbe() bool {
     var numeric_root = protect.scoped(numeric_value);
     defer numeric_root.deinit();
 
+    var builder_original = zigr_convert.ResultBuilder(f64).init(1);
+    builder_original.mutableSlice()[0] = 8.0;
+    var builder_copy = builder_original;
+    const builder_value = builder_original.finish();
+    var builder_root = protect.scoped(builder_value);
+    defer builder_root.deinit();
+    const after_builder_transfer = cleanup.diagnosticSnapshot();
+    builder_copy.deinit();
+    if (!sameRestorationState(after_builder_transfer, cleanup.diagnosticSnapshot()) or
+        builder_root.get() == R.R_NilValue or R.REAL(builder_root.get())[0] != 8.0) return false;
+
     var strings = zigr_convert.StringResultBuilder.init(3);
     defer strings.deinit();
     strings.set(0, "first");
@@ -7090,6 +7101,7 @@ fn resultBuilderLifetimeProbe() bool {
     schema_root.deinit();
     list_root.deinit();
     string_root.deinit();
+    builder_root.deinit();
     numeric_root.deinit();
     return sameRestorationState(entry, cleanup.diagnosticSnapshot());
 }
