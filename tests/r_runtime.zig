@@ -1720,6 +1720,18 @@ export fn zigr_test_borrowed_lifetimes() SEXP {
         .borrowed => {},
         .owned => return R.Rf_ScalarReal(0.0),
     }
+    const raw_real_view = raw_mod.real(real) catch return R.Rf_ScalarReal(0.0);
+
+    var lifetime_arena = mem.UnwindArena.init();
+    defer lifetime_arena.deinit();
+    const lifetime_arena_allocator = lifetime_arena.allocator();
+    const lifetime_rvector = zigr.rvector.RVector(f64).init(real) catch return R.Rf_ScalarReal(0.0);
+    var lifetime_rvector_view = lifetime_rvector.view(empty_allocator.allocator()) catch return R.Rf_ScalarReal(0.0);
+    defer lifetime_rvector_view.deinit();
+    switch (lifetime_rvector_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
 
     const raw = R.Rf_protect(R.Rf_allocVector(R.RAWSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1732,6 +1744,47 @@ export fn zigr_test_borrowed_lifetimes() SEXP {
         .borrowed => {},
         .owned => return R.Rf_ScalarReal(0.0),
     }
+    const raw_raw_view = raw_mod.raw(raw) catch return R.Rf_ScalarReal(0.0);
+
+    const integer = R.Rf_protect(R.Rf_allocVector(R.INTSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.INTEGER(integer)[0] = 5;
+    R.INTEGER(integer)[1] = R.R_NaInt;
+    R.INTEGER(integer)[2] = -7;
+    var integer_view = zigr_convert.toIntSliceView(empty_allocator.allocator(), integer) catch return R.Rf_ScalarReal(0.0);
+    defer integer_view.deinit();
+    switch (integer_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const raw_integer_view = raw_mod.int(integer) catch return R.Rf_ScalarReal(0.0);
+
+    const logical = R.Rf_protect(R.Rf_allocVector(R.LGLSXP, 3));
+    defer R.Rf_unprotect(1);
+    R.LOGICAL(logical)[0] = 1;
+    R.LOGICAL(logical)[1] = 0;
+    R.LOGICAL(logical)[2] = R.R_NaInt;
+    var logical_view = zigr_convert.toLogicalSliceView(empty_allocator.allocator(), logical) catch return R.Rf_ScalarReal(0.0);
+    defer logical_view.deinit();
+    switch (logical_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const raw_logical_view = raw_mod.logical(logical) catch return R.Rf_ScalarReal(0.0);
+
+    const complex = R.Rf_protect(R.Rf_allocVector(R.CPLXSXP, 2));
+    defer R.Rf_unprotect(1);
+    const complex_raw = R.COMPLEX(complex) orelse return R.Rf_ScalarReal(0.0);
+    const complex_ptr: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(complex_raw));
+    complex_ptr[0] = .{ .r = 2.0, .i = -3.0 };
+    complex_ptr[1] = .{ .r = R.NA_REAL(), .i = 4.0 };
+    var complex_view = zigr_convert.toComplexSliceView(empty_allocator.allocator(), complex) catch return R.Rf_ScalarReal(0.0);
+    defer complex_view.deinit();
+    switch (complex_view) {
+        .borrowed => {},
+        .owned => return R.Rf_ScalarReal(0.0),
+    }
+    const raw_complex_view = raw_mod.complex(complex) catch return R.Rf_ScalarReal(0.0);
 
     const strings = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 3));
     defer R.Rf_unprotect(1);
@@ -1753,6 +1806,109 @@ export fn zigr_test_borrowed_lifetimes() SEXP {
         return R.Rf_ScalarReal(0.0);
     }
 
+    const unicode_strings = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 2));
+    defer R.Rf_unprotect(1);
+    const latin1 = [_]u8{ 'c', 'a', 'f', 0xe9 };
+    const utf8 = [_]u8{ 'c', 'a', 'f', 0xc3, 0xa9 };
+    R.SET_STRING_ELT(unicode_strings, 0, R.Rf_mkCharLenCE(@ptrCast(&latin1), @intCast(latin1.len), @as(R.cetype_t, @intCast(R.CE_LATIN1))));
+    R.SET_STRING_ELT(unicode_strings, 1, R.Rf_mkCharLenCE(@ptrCast(&utf8), @intCast(utf8.len), @as(R.cetype_t, @intCast(R.CE_UTF8))));
+    const unicode_projection = zigr_convert.toStringProjectionView(.translated_text, unicode_strings) catch return R.Rf_ScalarReal(0.0);
+    const unicode_projection_value = unicode_projection.at(0);
+    const expected_unicode = [_]u8{ 'c', 'a', 'f', 0xc3, 0xa9 };
+    const direct_translated_bytes = zigr.sexp.charsxpBytes(R.STRING_ELT(unicode_strings, 0));
+    var unicode_cache_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var unicode_cached = zigr_convert.toCachedStringSliceView(unicode_cache_counting.allocator(), unicode_strings) catch return R.Rf_ScalarReal(0.0);
+    var unicode_cached_active = true;
+    defer if (unicode_cached_active) unicode_cached.deinit();
+    if (unicode_cache_counting.stats.allocations != 1 or
+        unicode_cache_counting.stats.live_bytes != 2 * @sizeOf(zigr_convert.StringView)) return R.Rf_ScalarReal(0.0);
+
+    const attribute_source = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 2));
+    defer R.Rf_unprotect(1);
+    const attribute_names = R.Rf_protect(R.Rf_allocVector(R.STRSXP, 2));
+    defer R.Rf_unprotect(1);
+    R.SET_STRING_ELT(attribute_names, 0, R.Rf_mkChar("left"));
+    R.SET_STRING_ELT(attribute_names, 1, R.R_NaString);
+    const attribute_class_values = [_][]const u8{"lifetime_metadata"};
+    const attribute_class = R.Rf_protect(MyAltString.init(attribute_class_values[0..]));
+    defer R.Rf_unprotect(1);
+    attrib.setAttrib(attribute_source, R.R_NamesSymbol, attribute_names);
+    attrib.setAttrib(attribute_source, R.R_ClassSymbol, attribute_class);
+    const attribute_headers = attrib.getNames(lifetime_arena_allocator, attribute_source) catch return R.Rf_ScalarReal(0.0);
+    const attribute_optional = attrib.getOptionalString(lifetime_arena_allocator, attribute_source, R.R_NamesSymbol) catch return R.Rf_ScalarReal(0.0);
+    const attribute_class_headers = attrib.getClass(lifetime_arena_allocator, attribute_source) catch return R.Rf_ScalarReal(0.0);
+    if (attribute_headers.len != 2 or !std.mem.eql(u8, attribute_headers[0], "left") or attribute_headers[1].len != 0 or
+        attribute_optional.len != 2 or attribute_optional[0] == null or !std.mem.eql(u8, attribute_optional[0].?, "left") or
+        attribute_optional[1] != null or attribute_class_headers.len != 1 or
+        !std.mem.eql(u8, attribute_class_headers[0], "lifetime_metadata")) return R.Rf_ScalarReal(0.0);
+
+    const owned_string_headers = zigr_convert.toStringSlice(lifetime_arena_allocator, strings) catch return R.Rf_ScalarReal(0.0);
+    const nullable_string_headers = zigr_convert.toStringSliceNullable(lifetime_arena_allocator, strings) catch return R.Rf_ScalarReal(0.0);
+    if (owned_string_headers.len != 3 or !std.mem.eql(u8, owned_string_headers[0], "borrowed") or owned_string_headers[1].len != 0 or
+        nullable_string_headers.len != 3 or nullable_string_headers[1] != null) return R.Rf_ScalarReal(0.0);
+
+    const frame_names = [_][]const u8{ "left", "right" };
+    const frame_columns = [_]SEXP{ real, integer };
+    var lifetime_frame = protect.scoped(df.buildChecked(frame_names[0..], frame_columns[0..]) catch return R.Rf_ScalarReal(0.0));
+    defer lifetime_frame.deinit();
+    const frame_alt_names_values = [_][]const u8{ "left", "right" };
+    const frame_alt_names = R.Rf_protect(MyAltString.init(frame_alt_names_values[0..]));
+    defer R.Rf_unprotect(1);
+    attrib.setAttrib(lifetime_frame.get(), R.R_NamesSymbol, frame_alt_names);
+    const lifetime_frame_view = df.DataFrame.wrap(lifetime_frame.get()) orelse return R.Rf_ScalarReal(0.0);
+    const frame_headers = lifetime_frame_view.columnNames(lifetime_arena_allocator) catch return R.Rf_ScalarReal(0.0);
+    var frame_map = lifetime_frame_view.columnMap(lifetime_arena_allocator) catch return R.Rf_ScalarReal(0.0);
+    var frame_map_active = true;
+    defer if (frame_map_active) frame_map.deinit();
+    if (frame_headers.len != 2 or !std.mem.eql(u8, frame_headers[0], "left") or !std.mem.eql(u8, frame_headers[1], "right") or
+        frame_map.get("left") != 0 or frame_map.get("right") != 1) return R.Rf_ScalarReal(0.0);
+
+    const region_input = R.Rf_protect(shortRegionAltInteger());
+    defer R.Rf_unprotect(1);
+    var region_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var region_access = zigr_convert.toVectorAccessWithStrategy(
+        i32,
+        .one_pass,
+        region_counting.allocator(),
+        region_input,
+        .region,
+    ) catch return R.Rf_ScalarReal(0.0);
+    var region_access_active = true;
+    defer if (region_access_active) region_access.deinit();
+    const first_region = (region_access.next() catch return R.Rf_ScalarReal(0.0)) orelse return R.Rf_ScalarReal(0.0);
+    if (first_region.len != 256 or first_region[0] != 1 or first_region[255] != 256) return R.Rf_ScalarReal(0.0);
+
+    const region_rvector = zigr.rvector.RVector(i32).init(region_input) catch return R.Rf_ScalarReal(0.0);
+    var region_rvector_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var region_rvector_view = region_rvector.view(region_rvector_counting.allocator()) catch return R.Rf_ScalarReal(0.0);
+    var region_rvector_view_active = true;
+    defer if (region_rvector_view_active) region_rvector_view.deinit();
+    switch (region_rvector_view) {
+        .owned => {},
+        .borrowed => return R.Rf_ScalarReal(0.0),
+    }
+    if (region_rvector_view.constSlice().len != short_region_len or region_rvector_view.constSlice()[0] != 1 or
+        region_rvector_view.constSlice()[short_region_len - 1] != short_region_len) return R.Rf_ScalarReal(0.0);
+    const region_class_name = altrep_mod.className(region_input);
+    const region_class_package = altrep_mod.classPackage(region_input);
+
+    const materialized_input = compactIntSequence(1024) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    var materialized_counting = mem.CountingAllocator.init(std.heap.page_allocator);
+    var materialized_access = zigr_convert.toVectorAccessWithStrategy(
+        i32,
+        .random_access,
+        materialized_counting.allocator(),
+        materialized_input,
+        .materialized,
+    ) catch return R.Rf_ScalarReal(0.0);
+    var materialized_access_active = true;
+    defer if (materialized_access_active) materialized_access.deinit();
+    const materialized_slice = materialized_access.contiguousSlice() orelse return R.Rf_ScalarReal(0.0);
+    if (materialized_slice.len != 1024 or materialized_slice[0] != 1 or materialized_slice[1023] != 1024) {
+        return R.Rf_ScalarReal(0.0);
+    }
+
     const before_gc = cleanup.diagnosticSnapshot();
     for (0..4) |_| {
         const noise = R.Rf_protect(R.Rf_allocVector(R.REALSXP, 131_072));
@@ -1761,9 +1917,34 @@ export fn zigr_test_borrowed_lifetimes() SEXP {
     }
     R.R_gc();
 
+    const second_region = (region_access.next() catch return R.Rf_ScalarReal(0.0)) orelse return R.Rf_ScalarReal(0.0);
+    if (second_region.len != 256 or second_region[0] != 257 or second_region[255] != 512) return R.Rf_ScalarReal(0.0);
     if (!sameRestorationState(before_gc, cleanup.diagnosticSnapshot()) or
         !std.mem.eql(f64, real_view.constSlice(), &[_]f64{ 1.0, 2.0, 3.0 }) or
-        !std.mem.eql(u8, raw_view.constSlice(), &[_]u8{ 1, 2, 3 })) return R.Rf_ScalarReal(0.0);
+        !std.mem.eql(u8, raw_view.constSlice(), &[_]u8{ 1, 2, 3 }) or
+        !std.mem.eql(f64, raw_real_view, &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(u8, raw_raw_view, &[_]u8{ 1, 2, 3 }) or
+        !std.mem.eql(i32, raw_integer_view, &[_]i32{ 5, R.R_NaInt, -7 }) or
+        !std.mem.eql(i32, raw_logical_view, &[_]i32{ 1, 0, R.R_NaInt }) or
+        raw_complex_view[0].r != 2.0 or raw_complex_view[0].i != -3.0 or
+        R.ISNA(raw_complex_view[1].r) == 0 or
+        !std.mem.eql(i32, integer_view.constSlice(), &[_]i32{ 5, R.R_NaInt, -7 }) or
+        !std.mem.eql(i32, logical_view.constSlice(), &[_]i32{ 1, 0, R.R_NaInt }) or
+        complex_view.constSlice()[0].r != 2.0 or complex_view.constSlice()[0].i != -3.0 or
+        R.ISNA(complex_view.constSlice()[1].r) == 0 or
+        materialized_slice[0] != 1 or materialized_slice[1023] != 1024 or
+        !std.mem.eql(f64, lifetime_rvector_view.constSlice(), &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(i32, region_rvector_view.constSlice()[0..3], &[_]i32{ 1, 2, 3 }) or
+        !std.mem.eql(u8, unicode_projection_value.bytes, &expected_unicode) or
+        !std.mem.eql(u8, direct_translated_bytes, &expected_unicode) or
+        !std.mem.eql(u8, unicode_cached.at(0).bytes, &expected_unicode) or
+        !std.mem.eql(u8, unicode_cached.at(1).bytes, &expected_unicode) or
+        !std.mem.eql(u8, attribute_headers[0], "left") or attribute_headers[1].len != 0 or
+        attribute_optional[1] != null or !std.mem.eql(u8, attribute_class_headers[0], "lifetime_metadata") or
+        !std.mem.eql(u8, owned_string_headers[0], "borrowed") or owned_string_headers[1].len != 0 or
+        nullable_string_headers[1] != null or !std.mem.eql(u8, frame_headers[0], "left") or
+        !std.mem.eql(u8, frame_headers[1], "right") or frame_map.get("left") != 0 or frame_map.get("right") != 1 or
+        !std.mem.eql(u8, region_class_name, "short_region_integer") or !std.mem.eql(u8, region_class_package, "zigr")) return R.Rf_ScalarReal(0.0);
     if (!std.mem.eql(u8, string_view.at(0).bytes, "borrowed") or !string_view.at(1).is_na or
         identity.at(0).charsxp != R.STRING_ELT(strings, 0) or !missingness.at(1).is_na or
         !std.mem.eql(u8, bytes.at(0).bytes, "borrowed") or
@@ -1790,10 +1971,47 @@ export fn zigr_test_borrowed_lifetimes() SEXP {
             !sameRestorationState(before, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
     }
     lifetime_region_mode = 0;
+    if (!std.mem.eql(f64, real_view.constSlice(), &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(u8, raw_view.constSlice(), &[_]u8{ 1, 2, 3 }) or
+        !std.mem.eql(f64, raw_real_view, &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(u8, raw_raw_view, &[_]u8{ 1, 2, 3 }) or
+        !std.mem.eql(i32, raw_integer_view, &[_]i32{ 5, R.R_NaInt, -7 }) or
+        !std.mem.eql(i32, raw_logical_view, &[_]i32{ 1, 0, R.R_NaInt }) or
+        raw_complex_view[0].r != 2.0 or raw_complex_view[0].i != -3.0 or
+        R.ISNA(raw_complex_view[1].r) == 0 or
+        !std.mem.eql(u8, unicode_projection_value.bytes, &expected_unicode) or
+        !std.mem.eql(u8, unicode_cached.at(0).bytes, &expected_unicode) or
+        materialized_slice[0] != 1 or materialized_slice[1023] != 1024 or
+        !std.mem.eql(u8, direct_translated_bytes, &expected_unicode) or
+        !std.mem.eql(u8, attribute_headers[0], "left") or attribute_headers[1].len != 0 or
+        attribute_optional[1] != null or !std.mem.eql(u8, attribute_class_headers[0], "lifetime_metadata") or
+        !std.mem.eql(u8, owned_string_headers[0], "borrowed") or owned_string_headers[1].len != 0 or
+        nullable_string_headers[1] != null or !std.mem.eql(u8, frame_headers[0], "left") or
+        !std.mem.eql(u8, frame_headers[1], "right") or frame_map.get("left") != 0 or frame_map.get("right") != 1 or
+        !std.mem.eql(f64, lifetime_rvector_view.constSlice(), &[_]f64{ 1.0, 2.0, 3.0 }) or
+        !std.mem.eql(i32, region_rvector_view.constSlice()[0..3], &[_]i32{ 1, 2, 3 }) or
+        !std.mem.eql(u8, region_class_name, "short_region_integer") or !std.mem.eql(u8, region_class_package, "zigr")) return R.Rf_ScalarReal(0.0);
     if (cache_counting.stats.frees != 0) return R.Rf_ScalarReal(0.0);
     cached.deinit();
     cached_active = false;
-    if (cache_counting.stats.frees != 1 or cache_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+    if (cache_counting.stats.frees != 1 or cache_counting.stats.live_bytes != 0 or unicode_cache_counting.stats.frees != 0) return R.Rf_ScalarReal(0.0);
+    unicode_cached.deinit();
+    unicode_cached_active = false;
+    if (unicode_cache_counting.stats.frees != 1 or unicode_cache_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+    region_access.deinit();
+    region_access_active = false;
+    region_rvector_view.deinit();
+    region_rvector_view_active = false;
+    materialized_access.deinit();
+    materialized_access_active = false;
+    if (region_counting.stats.frees != 1 or region_counting.stats.live_bytes != 0 or
+        region_rvector_counting.stats.frees != 1 or region_rvector_counting.stats.live_bytes != 0 or
+        materialized_counting.stats.frees != 1 or materialized_counting.stats.live_bytes != 0 or
+        (cleanup.diagnosticSnapshot().enabled and cleanup.diagnosticSnapshot().cleanup_frames < 1)) return R.Rf_ScalarReal(0.0);
+    frame_map.deinit();
+    frame_map_active = false;
+    lifetime_arena.deinit();
+    if (cleanup.diagnosticSnapshot().cleanup_frames != 0) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -3550,6 +3768,12 @@ export fn zigr_test_native_allocator_failure() SEXP {
     var frame = protect.scoped(df.buildChecked(names[0..], columns[0..]) catch return R.Rf_ScalarReal(0.0));
     defer frame.deinit();
     const wrapped = df.DataFrame.wrap(frame.get()) orelse return R.Rf_ScalarReal(0.0);
+    var strings = protect.scoped(R.Rf_allocVector(R.STRSXP, 2));
+    defer strings.deinit();
+    R.SET_STRING_ELT(strings.get(), 0, R.Rf_mkChar("left"));
+    R.SET_STRING_ELT(strings.get(), 1, R.Rf_mkChar("right"));
+    var region = protect.scoped(shortRegionAltInteger());
+    defer region.deinit();
     const entry = cleanup.diagnosticSnapshot();
 
     var conversion_storage: [1]u8 = undefined;
@@ -3570,6 +3794,38 @@ export fn zigr_test_native_allocator_failure() SEXP {
     }
     if (!sameRestorationState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
 
+    var optional_header_storage: [1]u8 = undefined;
+    var optional_header_fixed = std.heap.FixedBufferAllocator.init(&optional_header_storage);
+    if (attrib.getOptionalString(optional_header_fixed.allocator(), frame.get(), R.R_NamesSymbol)) |headers| {
+        optional_header_fixed.allocator().free(headers);
+        return R.Rf_ScalarReal(0.0);
+    } else |optional_header_error| {
+        if (optional_header_error != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
+    }
+    if (!sameRestorationState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+
+    var cache_storage: [1]u8 = undefined;
+    var cache_fixed = std.heap.FixedBufferAllocator.init(&cache_storage);
+    if (zigr_convert.toCachedStringSliceView(cache_fixed.allocator(), strings.get())) |cache| {
+        var owned_cache = cache;
+        owned_cache.deinit();
+        return R.Rf_ScalarReal(0.0);
+    } else |cache_error| {
+        if (cache_error != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
+    }
+    if (!sameRestorationState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+
+    var region_storage: [1]u8 = undefined;
+    var region_fixed = std.heap.FixedBufferAllocator.init(&region_storage);
+    if (zigr_convert.toVectorAccessWithStrategy(i32, .one_pass, region_fixed.allocator(), region.get(), .region)) |access| {
+        var owned_access = access;
+        owned_access.deinit();
+        return R.Rf_ScalarReal(0.0);
+    } else |region_error| {
+        if (region_error != error.OutOfMemory) return R.Rf_ScalarReal(0.0);
+    }
+    if (!sameRestorationState(entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+
     var map_storage: [1]u8 = undefined;
     var map_fixed = std.heap.FixedBufferAllocator.init(&map_storage);
     if (wrapped.columnMap(map_fixed.allocator())) |map| {
@@ -3585,9 +3841,14 @@ export fn zigr_test_native_allocator_failure() SEXP {
 
 threadlocal var attribute_cleanup_object: SEXP = null;
 threadlocal var attribute_cleanup_symbol: SEXP = null;
+threadlocal var attribute_cleanup_mode: u1 = 0;
 
 fn attributeReadThenError() SEXP {
-    _ = attrib.getString(StringCleanupAllocator.allocator(), attribute_cleanup_object, attribute_cleanup_symbol) catch return R.R_NilValue;
+    if (attribute_cleanup_mode == 0) {
+        _ = attrib.getString(StringCleanupAllocator.allocator(), attribute_cleanup_object, attribute_cleanup_symbol) catch return R.R_NilValue;
+    } else {
+        _ = attrib.getOptionalString(StringCleanupAllocator.allocator(), attribute_cleanup_object, attribute_cleanup_symbol) catch return R.R_NilValue;
+    }
     R.Rf_error("attribute read unexpectedly returned");
 }
 
@@ -3600,20 +3861,29 @@ export fn zigr_test_attrib_allocation_longjmp() SEXP {
     attrib.setAttrib(object, marker, value);
     attribute_cleanup_object = object;
     attribute_cleanup_symbol = marker;
-    string_cleanup_state = .{};
-    string_cleanup_elt_calls = 0;
+    defer {
+        attribute_cleanup_object = null;
+        attribute_cleanup_symbol = null;
+    }
 
-    if (trycatch_mod.tryCatch(struct {
-        fn call() SEXP {
-            return cleanup.protectCall(attributeReadThenError);
+    for (0..2) |mode| {
+        attribute_cleanup_mode = @intCast(mode);
+        string_cleanup_state = .{};
+        string_cleanup_elt_calls = 0;
+
+        if (trycatch_mod.tryCatch(struct {
+            fn call() SEXP {
+                return cleanup.protectCall(attributeReadThenError);
+            }
+        }.call)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |_| {}
+
+        if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) {
+            return R.Rf_ScalarReal(0.0);
         }
-    }.call)) |_| {
-        return R.Rf_ScalarReal(0.0);
-    } else |_| {}
+    }
 
-    attribute_cleanup_object = null;
-    attribute_cleanup_symbol = null;
-    if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 
@@ -3651,10 +3921,16 @@ export fn zigr_test_attrib_cleanup_capacity() SEXP {
 }
 
 threadlocal var dataframe_cleanup_object: SEXP = null;
+threadlocal var dataframe_cleanup_mode: u1 = 0;
 
 fn dataframeNamesThenError() SEXP {
     const wrapped = df.DataFrame.wrap(dataframe_cleanup_object) orelse return R.R_NilValue;
-    _ = wrapped.columnNames(StringCleanupAllocator.allocator()) catch return R.R_NilValue;
+    if (dataframe_cleanup_mode == 0) {
+        _ = wrapped.columnNames(StringCleanupAllocator.allocator()) catch return R.R_NilValue;
+    } else {
+        var map = wrapped.columnMap(StringCleanupAllocator.allocator()) catch return R.R_NilValue;
+        map.deinit();
+    }
     R.Rf_error("data-frame names unexpectedly returned");
 }
 
@@ -3671,18 +3947,25 @@ export fn zigr_test_df_names_longjmp() SEXP {
     _ = R.Rf_setAttrib(frame.get(), R.R_NamesSymbol, error_names.get());
 
     dataframe_cleanup_object = frame.get();
-    string_cleanup_state = .{};
-    string_cleanup_elt_calls = 0;
-    if (trycatch_mod.tryCatch(struct {
-        fn call() SEXP {
-            return cleanup.protectCall(dataframeNamesThenError);
-        }
-    }.call)) |_| {
-        return R.Rf_ScalarReal(0.0);
-    } else |_| {}
+    defer dataframe_cleanup_object = null;
 
-    dataframe_cleanup_object = null;
-    if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) return R.Rf_ScalarReal(0.0);
+    for (0..2) |mode| {
+        dataframe_cleanup_mode = @intCast(mode);
+        string_cleanup_state = .{};
+        string_cleanup_elt_calls = 0;
+        if (trycatch_mod.tryCatch(struct {
+            fn call() SEXP {
+                return cleanup.protectCall(dataframeNamesThenError);
+            }
+        }.call)) |_| {
+            return R.Rf_ScalarReal(0.0);
+        } else |_| {}
+
+        if (string_cleanup_elt_calls != 1 or string_cleanup_state.allocations != 1 or string_cleanup_state.frees != 1) {
+            return R.Rf_ScalarReal(0.0);
+        }
+    }
+
     return R.Rf_ScalarReal(1.0);
 }
 
