@@ -44,7 +44,8 @@ pub fn RVector(comptime T: type) type {
             return self.sexp;
         }
 
-        /// A borrowed view must not outlive its R call.
+        /// A borrowed view must not outlive its R call. For owned fallback
+        /// storage, the allocator must remain valid during R unwinding.
         pub fn view(self: Self, allocator: std.mem.Allocator) !convert.SliceView(T) {
             if (comptime T == f64) return try convert.toRealSliceView(allocator, self.sexp);
             if (comptime T == i32) return try convert.toIntSliceView(allocator, self.sexp);

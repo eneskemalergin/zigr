@@ -136,6 +136,7 @@ pub const UnwindArena = struct {
     };
 
     state: ?*State = null,
+    unwind_frame: ?cleanup.FrameHandle = null,
 
     pub fn init() UnwindArena {
         return .{};
@@ -155,20 +156,24 @@ pub const UnwindArena = struct {
 
     pub fn deinit(self: *UnwindArena) void {
         const state = self.state orelse return;
-        cleanup.popFrame();
-        state.arena.deinit();
         self.state = null;
+        if (self.unwind_frame) |frame| {
+            self.unwind_frame = null;
+            if (!cleanup.releaseFrame(frame)) return;
+        }
+        state.arena.deinit();
     }
 
     fn ensureState(self: *UnwindArena) *State {
         if (self.state) |state| return state;
-        const state = cleanup.pushFrameInline(
+        const registration = cleanup.pushFrameInlineWithHandle(
             State,
             .{ .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) },
             State.fire,
         );
-        self.state = state;
-        return state;
+        self.state = registration.state;
+        self.unwind_frame = registration.handle;
+        return registration.state;
     }
 
     fn allocFn(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
@@ -197,6 +202,21 @@ test "UnwindArena allocates lazily and releases on normal return" {
     const bytes = try arena.allocator().alloc(u8, 32);
     bytes[0] = 1;
     try std.testing.expect(arena.state != null);
+}
+
+test "UnwindArena deinit preserves a newer cleanup frame" {
+    const Guard = struct {
+        fn fire(_: *@This()) void {}
+    };
+
+    var arena = UnwindArena.init();
+    _ = try arena.allocator().alloc(u8, 1);
+
+    const newer = cleanup.pushFrameInlineWithHandle(Guard, .{}, Guard.fire);
+    arena.deinit();
+    const preserved = cleanup.releaseFrame(newer.handle);
+    if (!preserved) cleanup.popFrame();
+    try std.testing.expect(preserved);
 }
 
 test "CountingAllocator records successful allocation lifetime" {

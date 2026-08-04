@@ -12,6 +12,7 @@ const sexp_mod = @import("sexp.zig");
 const R = @import("R");
 const simd = @import("simd");
 const cleanup = @import("cleanup");
+const memory = @import("memory.zig");
 const protect = @import("protect.zig");
 
 pub const Rcomplex = extern struct { r: f64, i: f64 };
@@ -30,14 +31,19 @@ const ResultCleanup = struct {
 const ResultGuard = struct {
     protected: protect.ScopedProtect,
     cleanup_state: *ResultCleanup,
+    unwind_frame: cleanup.FrameHandle,
     active: bool = true,
 
     fn init(sexptype: R.SEXPTYPE, len: usize) ResultGuard {
-        const cleanup_state = cleanup.pushFrameInline(ResultCleanup, .{}, ResultCleanup.fire);
+        const registration = cleanup.pushFrameInlineWithHandle(ResultCleanup, .{}, ResultCleanup.fire);
         const result = R.Rf_allocVector(sexptype, @intCast(len));
         const protected = protect.scoped(result);
-        cleanup_state.protected = true;
-        return .{ .protected = protected, .cleanup_state = cleanup_state };
+        registration.state.protected = true;
+        return .{
+            .protected = protected,
+            .cleanup_state = registration.state,
+            .unwind_frame = registration.handle,
+        };
     }
 
     fn get(self: ResultGuard) SEXP {
@@ -49,7 +55,7 @@ const ResultGuard = struct {
         self.active = false;
         self.protected.deinit();
         self.cleanup_state.protected = false;
-        cleanup.popFrame();
+        _ = cleanup.releaseFrame(self.unwind_frame);
     }
 
     fn finish(self: *ResultGuard) SEXP {
@@ -291,15 +297,18 @@ fn directComplexSliceOrNull(sexp: SEXP, representation: VectorRepresentation) ?[
     return complex_ptr[0..n];
 }
 
-/// Borrowed data is not a GC root. Owned data uses its recorded allocator and
-/// releases its cleanup frame, when present, during `deinit`.
+/// Borrowed data is not a GC root: the caller keeps the source SEXP rooted and
+/// does not let the view escape its source R call. Owned data uses its recorded
+/// allocator and releases its cleanup frame, when present, during `deinit`.
+/// That allocator must remain valid during an R unwind; `UnwindArena` provides
+/// call-scoped ownership for storage that may cross an R call.
 pub fn SliceView(comptime T: type) type {
     return union(enum) {
         borrowed: []const T,
         owned: struct {
             data: []const T,
             allocator: std.mem.Allocator,
-            cleanup_registered: bool = false,
+            unwind_frame: ?cleanup.FrameHandle = null,
         },
 
         pub fn constSlice(self: @This()) []const T {
@@ -312,8 +321,13 @@ pub fn SliceView(comptime T: type) type {
         pub fn deinit(self: *@This()) void {
             switch (self.*) {
                 .owned => |s| {
+                    if (s.unwind_frame) |frame| {
+                        if (!cleanup.releaseFrame(frame)) {
+                            self.* = undefined;
+                            return;
+                        }
+                    }
                     s.allocator.free(s.data);
-                    if (s.cleanup_registered) cleanup.popFrame();
                 },
                 .borrowed => {},
             }
@@ -340,12 +354,17 @@ pub const AccessStrategy = enum {
 
 const region_chunk_elements = 256;
 
+fn checkedRegionCount(got: R.R_xlen_t, requested: R.R_xlen_t) ConvertError!usize {
+    if (got <= 0 or got > requested) return error.AltRepRegionRead;
+    return @intCast(got);
+}
+
 /// A call-scoped vector input selected for one-pass, repeated, or random access.
 /// Direct storage borrows the R vector. Region storage owns one bounded buffer,
 /// and materialized storage owns one contiguous native representation. The
-/// caller must deinitialize the value before leaving its allocation scope. When
-/// multiple access values share a cleanup stack, deinitialize them in reverse
-/// construction order, as with the other zigr cleanup-frame contracts.
+/// caller keeps the source SEXP rooted and deinitializes the value before leaving
+/// its allocation scope. When multiple access values share a cleanup stack, each
+/// deinitialization releases only its own cleanup frame.
 pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
     return union(enum) {
         direct: struct {
@@ -358,13 +377,13 @@ pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
             offset: usize,
             buffer: []T,
             allocator: std.mem.Allocator,
-            cleanup_registered: bool,
+            unwind_frame: ?cleanup.FrameHandle,
         },
         materialized: struct {
             data: []const T,
             allocator: std.mem.Allocator,
             emitted: bool = false,
-            cleanup_registered: bool,
+            unwind_frame: ?cleanup.FrameHandle,
         },
 
         pub const zigr_vector_access = true;
@@ -403,10 +422,12 @@ pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
                     if (state.offset >= state.len) return null;
                     const remaining = state.len - state.offset;
                     const requested = @min(remaining, state.buffer.len);
-                    const got = readRegion(T, state.sexp, state.offset, requested, state.buffer);
-                    if (got <= 0 or got > requested) return error.AltRepRegionRead;
-                    state.offset += @intCast(got);
-                    return state.buffer[0..@as(usize, @intCast(got))];
+                    const got = try checkedRegionCount(
+                        readRegion(T, state.sexp, state.offset, requested, state.buffer),
+                        @intCast(requested),
+                    );
+                    state.offset += got;
+                    return state.buffer[0..got];
                 },
             }
         }
@@ -415,12 +436,22 @@ pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
             switch (self.*) {
                 .direct => {},
                 .region => |state| {
+                    if (state.unwind_frame) |frame| {
+                        if (!cleanup.releaseFrame(frame)) {
+                            self.* = undefined;
+                            return;
+                        }
+                    }
                     state.allocator.free(state.buffer);
-                    if (state.cleanup_registered) cleanup.popFrame();
                 },
                 .materialized => |state| {
+                    if (state.unwind_frame) |frame| {
+                        if (!cleanup.releaseFrame(frame)) {
+                            self.* = undefined;
+                            return;
+                        }
+                    }
                     state.allocator.free(state.data);
-                    if (state.cleanup_registered) cleanup.popFrame();
                 },
             }
             self.* = undefined;
@@ -475,10 +506,10 @@ fn directVectorSlice(comptime T: type, sexp: SEXP, representation: VectorReprese
 }
 
 fn materializedVectorSlice(comptime T: type, allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation) ![]const T {
-    if (comptime T == f64) return toRealSliceWithRepresentation(allocator, sexp, representation, false);
-    if (comptime T == i32) return toIntSliceWithRepresentation(allocator, sexp, representation, false);
-    if (comptime T == u8) return toRawSliceWithRepresentation(allocator, sexp, representation, false);
-    if (comptime T == Rcomplex) return toComplexSliceWithRepresentation(allocator, sexp, representation, false);
+    if (comptime T == f64) return toRealSliceWithRepresentation(allocator, sexp, representation, false, null);
+    if (comptime T == i32) return toIntSliceWithRepresentation(allocator, sexp, representation, false, null);
+    if (comptime T == u8) return toRawSliceWithRepresentation(allocator, sexp, representation, false, null);
+    if (comptime T == Rcomplex) return toComplexSliceWithRepresentation(allocator, sexp, representation, false, null);
     @compileError("unsupported vector access type: " ++ @typeName(T));
 }
 
@@ -536,13 +567,13 @@ fn toVectorAccessWithRepresentation(
                     .offset = 0,
                     .buffer = &.{},
                     .allocator = allocator,
-                    .cleanup_registered = false,
+                    .unwind_frame = null,
                 } };
             }
             const buffer_len = @min(representation.len, region_chunk_elements);
             cleanup.requireCapacity(2);
             const buffer = try allocator.alloc(T, buffer_len);
-            _ = cleanup.pushFrameInline(
+            const registration = cleanup.pushFrameInlineWithHandle(
                 AllocSliceCleanup,
                 AllocSliceCleanup.init(T, allocator, buffer, @returnAddress()),
                 AllocSliceCleanup.fire,
@@ -553,7 +584,7 @@ fn toVectorAccessWithRepresentation(
                 .offset = 0,
                 .buffer = buffer,
                 .allocator = allocator,
-                .cleanup_registered = true,
+                .unwind_frame = registration.handle,
             } };
         },
         .materialized => {
@@ -563,10 +594,10 @@ fn toVectorAccessWithRepresentation(
                 return .{ .materialized = .{
                     .data = data,
                     .allocator = allocator,
-                    .cleanup_registered = false,
+                    .unwind_frame = null,
                 } };
             }
-            _ = cleanup.pushFrameInline(
+            const registration = cleanup.pushFrameInlineWithHandle(
                 AllocSliceCleanup,
                 AllocSliceCleanup.init(T, allocator, data, @returnAddress()),
                 AllocSliceCleanup.fire,
@@ -574,7 +605,7 @@ fn toVectorAccessWithRepresentation(
             return .{ .materialized = .{
                 .data = data,
                 .allocator = allocator,
-                .cleanup_registered = true,
+                .unwind_frame = registration.handle,
             } };
         },
     }
@@ -594,10 +625,11 @@ fn toRealSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
     const representation = try vectorRepresentation(sexp);
     if (directRealSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    var unwind_frame: ?cleanup.FrameHandle = null;
     return .{ .owned = .{
-        .data = try toRealSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .data = try toRealSliceWithRepresentation(allocator, sexp, representation, retain_cleanup, &unwind_frame),
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     } };
 }
 
@@ -615,33 +647,37 @@ fn toIntSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime 
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
     const representation = try vectorRepresentation(sexp);
     if (directIntSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    var unwind_frame: ?cleanup.FrameHandle = null;
     return .{ .owned = .{
-        .data = try toIntSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .data = try toIntSliceWithRepresentation(allocator, sexp, representation, retain_cleanup, &unwind_frame),
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     } };
 }
 
 pub fn toRealSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]f64 {
     try expectType(sexp, R.REALSXP, error.ExpectedReal);
-    return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
+    return toRealSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false, null);
 }
 
-fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]f64 {
+fn toRealSliceWithRepresentation(
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    comptime retain_cleanup: bool,
+    unwind_frame: ?*?cleanup.FrameHandle,
+) ![]f64 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(f64, n);
     errdefer allocator.free(result);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(f64, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     if (directRealSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
@@ -649,13 +685,17 @@ fn toRealSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repre
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
-            const got = R.REAL_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
-            if (got == 0) return error.AltRepRegionRead;
-            offset += got;
+            const remaining = ncast - offset;
+            const got = try checkedRegionCount(
+                R.REAL_GET_REGION(sexp, offset, remaining, result.ptr + @as(usize, @intCast(offset))),
+                remaining,
+            );
+            offset += @intCast(got);
         }
     } else {
         unreachable;
     }
+    if (comptime retain_cleanup) unwind_frame.?.* = registration.handle else _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -784,24 +824,27 @@ pub fn fromRealSlice(slice: []const f64) SEXP {
 
 pub fn toIntSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.INTSXP, error.ExpectedInteger);
-    return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
+    return toIntSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false, null);
 }
 
-fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]i32 {
+fn toIntSliceWithRepresentation(
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    comptime retain_cleanup: bool,
+    unwind_frame: ?*?cleanup.FrameHandle,
+) ![]i32 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
     errdefer allocator.free(result);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     if (directIntSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
@@ -809,13 +852,17 @@ fn toIntSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
-            const got = R.INTEGER_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
-            if (got == 0) return error.AltRepRegionRead;
-            offset += got;
+            const remaining = ncast - offset;
+            const got = try checkedRegionCount(
+                R.INTEGER_GET_REGION(sexp, offset, remaining, result.ptr + @as(usize, @intCast(offset))),
+                remaining,
+            );
+            offset += @intCast(got);
         }
     } else {
         unreachable;
     }
+    if (comptime retain_cleanup) unwind_frame.?.* = registration.handle else _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -883,7 +930,8 @@ fn makeStringView(elt: SEXP) StringView {
     };
 }
 
-/// Translation storage remains R-owned for the current R call.
+/// The caller keeps the source SEXP rooted. Returned character data remains
+/// R-owned and may not escape the source R call.
 pub const StringSliceView = struct {
     sexp: SEXP,
     len: usize,
@@ -915,9 +963,10 @@ pub const StringSliceView = struct {
 };
 
 /// The fields a string kernel may request from each R character element.
-/// Projection values borrow R-owned state and are valid only for the current
-/// R call. `bytes` is the stored CHARSXP byte sequence; `translated_text` is
-/// R-managed UTF-8 text produced by `Rf_translateCharUTF8`.
+/// Projection values borrow R-owned state and are valid only for the current R
+/// call while the caller roots the source SEXP. `bytes` is the stored CHARSXP
+/// byte sequence; `translated_text` is R-managed UTF-8 text produced by
+/// `Rf_translateCharUTF8`.
 pub const StringProjection = enum {
     identity,
     missingness,
@@ -1114,11 +1163,13 @@ pub fn toStringProjectionViewWithProbe(comptime projection: StringProjection, se
     return initStringProjectionView(projection, true, sexp, probe);
 }
 
+/// Caches native headers while borrowing each R character value and its bytes.
+/// The caller keeps the source string vector rooted and limits use to its R call.
 pub const CachedStringSliceView = struct {
     items: []const StringView,
     len: usize,
     allocator: std.mem.Allocator,
-    cleanup_registered: bool = false,
+    unwind_frame: ?cleanup.FrameHandle = null,
 
     pub fn at(self: CachedStringSliceView, index: usize) StringView {
         if (index >= self.len) @panic("CachedStringSliceView.at index out of bounds");
@@ -1142,8 +1193,13 @@ pub const CachedStringSliceView = struct {
     }
 
     pub fn deinit(self: *CachedStringSliceView) void {
+        if (self.unwind_frame) |frame| {
+            if (!cleanup.releaseFrame(frame)) {
+                self.* = undefined;
+                return;
+            }
+        }
         self.allocator.free(self.items);
-        if (self.cleanup_registered) cleanup.popFrame();
         self.* = undefined;
     }
 };
@@ -1171,25 +1227,28 @@ fn toCachedStringSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, 
     const n = try tryXlength(sexp);
     cleanup.requireCapacity(2);
     const items = try allocator.alloc(StringView, n);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(StringView, allocator, items, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     for (0..n) |i| {
         items[i] = makeStringView(R.STRING_ELT(sexp, @intCast(i)));
     }
+    const unwind_frame: ?cleanup.FrameHandle = if (comptime retain_cleanup)
+        registration.handle
+    else blk: {
+        _ = cleanup.releaseFrame(registration.handle);
+        break :blk null;
+    };
     return .{
         .items = items,
         .len = n,
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     };
 }
 
@@ -1203,24 +1262,27 @@ pub fn fromStringSlice(slice: []const []const u8) SEXP {
 
 pub fn toLogicalSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]i32 {
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
-    return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
+    return toLogicalSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false, null);
 }
 
-fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]i32 {
+fn toLogicalSliceWithRepresentation(
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    comptime retain_cleanup: bool,
+    unwind_frame: ?*?cleanup.FrameHandle,
+) ![]i32 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(i32, n);
     errdefer allocator.free(result);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(i32, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     if (directLogicalSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
@@ -1228,13 +1290,17 @@ fn toLogicalSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
-            const got = R.LOGICAL_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
-            if (got == 0) return error.AltRepRegionRead;
-            offset += got;
+            const remaining = ncast - offset;
+            const got = try checkedRegionCount(
+                R.LOGICAL_GET_REGION(sexp, offset, remaining, result.ptr + @as(usize, @intCast(offset))),
+                remaining,
+            );
+            offset += @intCast(got);
         }
     } else {
         unreachable;
     }
+    if (comptime retain_cleanup) unwind_frame.?.* = registration.handle else _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -1252,10 +1318,11 @@ fn toLogicalSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, compt
     try expectType(sexp, R.LGLSXP, error.ExpectedLogical);
     const representation = try vectorRepresentation(sexp);
     if (directLogicalSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    var unwind_frame: ?cleanup.FrameHandle = null;
     return .{ .owned = .{
-        .data = try toLogicalSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .data = try toLogicalSliceWithRepresentation(allocator, sexp, representation, retain_cleanup, &unwind_frame),
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     } };
 }
 
@@ -1290,24 +1357,27 @@ pub fn fromListSlice(slice: []const SEXP) SEXP {
 
 pub fn toRawSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const u8 {
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
-    return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
+    return toRawSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false, null);
 }
 
-fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]const u8 {
+fn toRawSliceWithRepresentation(
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    comptime retain_cleanup: bool,
+    unwind_frame: ?*?cleanup.FrameHandle,
+) ![]const u8 {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(u8, n);
     errdefer allocator.free(result);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(u8, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     if (directRawSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
@@ -1315,13 +1385,17 @@ fn toRawSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, repres
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
-            const got = R.RAW_GET_REGION(sexp, offset, ncast - offset, result.ptr + @as(usize, @intCast(offset)));
-            if (got == 0) return error.AltRepRegionRead;
-            offset += got;
+            const remaining = ncast - offset;
+            const got = try checkedRegionCount(
+                R.RAW_GET_REGION(sexp, offset, remaining, result.ptr + @as(usize, @intCast(offset))),
+                remaining,
+            );
+            offset += @intCast(got);
         }
     } else {
         unreachable;
     }
+    if (comptime retain_cleanup) unwind_frame.?.* = registration.handle else _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -1339,10 +1413,11 @@ fn toRawSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, comptime 
     try expectType(sexp, R.RAWSXP, error.ExpectedRaw);
     const representation = try vectorRepresentation(sexp);
     if (directRawSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    var unwind_frame: ?cleanup.FrameHandle = null;
     return .{ .owned = .{
-        .data = try toRawSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .data = try toRawSliceWithRepresentation(allocator, sexp, representation, retain_cleanup, &unwind_frame),
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     } };
 }
 
@@ -1355,24 +1430,27 @@ pub fn fromRawSlice(slice: []const u8) SEXP {
 
 pub fn toComplexSlice(allocator: std.mem.Allocator, sexp: SEXP) ![]const Rcomplex {
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
-    return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false);
+    return toComplexSliceWithRepresentation(allocator, sexp, try vectorRepresentation(sexp), false, null);
 }
 
-fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, representation: VectorRepresentation, comptime retain_cleanup: bool) ![]Rcomplex {
+fn toComplexSliceWithRepresentation(
+    allocator: std.mem.Allocator,
+    sexp: SEXP,
+    representation: VectorRepresentation,
+    comptime retain_cleanup: bool,
+    unwind_frame: ?*?cleanup.FrameHandle,
+) ![]Rcomplex {
     const n = representation.len;
     cleanup.requireCapacity(2);
     const result = try allocator.alloc(Rcomplex, n);
     errdefer allocator.free(result);
-    _ = cleanup.pushFrameInline(
+    const registration = cleanup.pushFrameInlineWithHandle(
         AllocSliceCleanup,
         AllocSliceCleanup.init(Rcomplex, allocator, result, @returnAddress()),
         AllocSliceCleanup.fire,
     );
-    if (comptime retain_cleanup) {
-        errdefer cleanup.popFrame();
-    } else {
-        errdefer cleanup.popFrame();
-        defer cleanup.popFrame();
+    errdefer {
+        _ = cleanup.releaseFrame(registration.handle);
     }
     if (directComplexSliceOrNull(sexp, representation)) |data| {
         @memcpy(result, data);
@@ -1380,13 +1458,17 @@ fn toComplexSliceWithRepresentation(allocator: std.mem.Allocator, sexp: SEXP, re
         var offset: R.R_xlen_t = 0;
         const ncast = @as(R.R_xlen_t, @intCast(n));
         while (offset < ncast) {
-            const got = R.COMPLEX_GET_REGION(sexp, offset, ncast - offset, @ptrCast(result.ptr + @as(usize, @intCast(offset))));
-            if (got == 0) return error.AltRepRegionRead;
-            offset += got;
+            const remaining = ncast - offset;
+            const got = try checkedRegionCount(
+                R.COMPLEX_GET_REGION(sexp, offset, remaining, @ptrCast(result.ptr + @as(usize, @intCast(offset)))),
+                remaining,
+            );
+            offset += @intCast(got);
         }
     } else {
         return error.AltRepRegionRead;
     }
+    if (comptime retain_cleanup) unwind_frame.?.* = registration.handle else _ = cleanup.releaseFrame(registration.handle);
     return result;
 }
 
@@ -1404,10 +1486,11 @@ fn toComplexSliceViewWithCleanup(allocator: std.mem.Allocator, sexp: SEXP, compt
     try expectType(sexp, R.CPLXSXP, error.ExpectedComplex);
     const representation = try vectorRepresentation(sexp);
     if (directComplexSliceOrNull(sexp, representation)) |data| return .{ .borrowed = data };
+    var unwind_frame: ?cleanup.FrameHandle = null;
     return .{ .owned = .{
-        .data = try toComplexSliceWithRepresentation(allocator, sexp, representation, retain_cleanup),
+        .data = try toComplexSliceWithRepresentation(allocator, sexp, representation, retain_cleanup, &unwind_frame),
         .allocator = allocator,
-        .cleanup_registered = retain_cleanup,
+        .unwind_frame = unwind_frame,
     } };
 }
 
@@ -1546,8 +1629,10 @@ const RealChunkIter = struct {
 
         const chunk_offset = self.offset;
         const want = @min(self.buf.len, self.n - self.offset);
-        const got = @as(usize, @intCast(R.REAL_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr)));
-        if (got == 0) signalError(error.AltRepRegionRead);
+        const got = checkedRegionCount(
+            R.REAL_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr),
+            @intCast(want),
+        ) catch |err| signalError(err);
         self.offset += got;
         return .{ .offset = chunk_offset, .data = self.buf[0..got] };
     }
@@ -1579,8 +1664,10 @@ const IntChunkIter = struct {
 
         const chunk_offset = self.offset;
         const want = @min(self.buf.len, self.n - self.offset);
-        const got = @as(usize, @intCast(R.INTEGER_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr)));
-        if (got == 0) signalError(error.AltRepRegionRead);
+        const got = checkedRegionCount(
+            R.INTEGER_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr),
+            @intCast(want),
+        ) catch |err| signalError(err);
         self.offset += got;
         return .{ .offset = chunk_offset, .data = self.buf[0..got] };
     }
@@ -1612,8 +1699,10 @@ const LogicalChunkIter = struct {
 
         const chunk_offset = self.offset;
         const want = @min(self.buf.len, self.n - self.offset);
-        const got = @as(usize, @intCast(R.LOGICAL_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr)));
-        if (got == 0) signalError(error.AltRepRegionRead);
+        const got = checkedRegionCount(
+            R.LOGICAL_GET_REGION(self.sexp, @intCast(self.offset), @intCast(want), self.buf[0..].ptr),
+            @intCast(want),
+        ) catch |err| signalError(err);
         self.offset += got;
         return .{ .offset = chunk_offset, .data = self.buf[0..got] };
     }
@@ -2185,10 +2274,15 @@ pub fn scaleAdd(sexp: SEXP, alpha: f64, beta: f64) f64 {
     return total;
 }
 
-pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
-    var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
+fn pairwiseRealView(allocator: std.mem.Allocator, sexp: SEXP, comptime retain_cleanup: bool) !RealSliceView {
+    if (retain_cleanup) return toRealSliceView(allocator, sexp);
+    return toRealSliceViewWithArenaOwner(allocator, sexp);
+}
+
+fn pminWithAllocator(a: SEXP, b: SEXP, allocator: std.mem.Allocator, comptime retain_cleanup: bool) SEXP {
+    var da_view = pairwiseRealView(allocator, a, retain_cleanup) catch |err| signalError(err);
     defer da_view.deinit();
-    var db_view = toRealSliceView(arena, b) catch |err| signalError(err);
+    var db_view = pairwiseRealView(allocator, b, retain_cleanup) catch |err| signalError(err);
     defer db_view.deinit();
     const da = da_view.constSlice();
     const db = db_view.constSlice();
@@ -2205,16 +2299,20 @@ pub fn pminAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     return result.get();
 }
 
-pub fn pmin(a: SEXP, b: SEXP) SEXP {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    return pminAlloc(a, b, arena.allocator());
+pub fn pminAlloc(a: SEXP, b: SEXP, allocator: std.mem.Allocator) SEXP {
+    return pminWithAllocator(a, b, allocator, true);
 }
 
-pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
-    var da_view = toRealSliceView(arena, a) catch |err| signalError(err);
+pub fn pmin(a: SEXP, b: SEXP) SEXP {
+    var arena = memory.UnwindArena.init();
+    defer arena.deinit();
+    return pminWithAllocator(a, b, arena.allocator(), false);
+}
+
+fn pmaxWithAllocator(a: SEXP, b: SEXP, allocator: std.mem.Allocator, comptime retain_cleanup: bool) SEXP {
+    var da_view = pairwiseRealView(allocator, a, retain_cleanup) catch |err| signalError(err);
     defer da_view.deinit();
-    var db_view = toRealSliceView(arena, b) catch |err| signalError(err);
+    var db_view = pairwiseRealView(allocator, b, retain_cleanup) catch |err| signalError(err);
     defer db_view.deinit();
     const da = da_view.constSlice();
     const db = db_view.constSlice();
@@ -2231,10 +2329,14 @@ pub fn pmaxAlloc(a: SEXP, b: SEXP, arena: std.mem.Allocator) SEXP {
     return result.get();
 }
 
+pub fn pmaxAlloc(a: SEXP, b: SEXP, allocator: std.mem.Allocator) SEXP {
+    return pmaxWithAllocator(a, b, allocator, true);
+}
+
 pub fn pmax(a: SEXP, b: SEXP) SEXP {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = memory.UnwindArena.init();
     defer arena.deinit();
-    return pmaxAlloc(a, b, arena.allocator());
+    return pmaxWithAllocator(a, b, arena.allocator(), false);
 }
 
 pub fn cumsum(sexp: SEXP) SEXP {
@@ -2300,7 +2402,9 @@ pub fn typeToSEXPTYPE(comptime T: type) R.SEXPTYPE {
     };
 }
 
-/// Some ALTREP values have no direct complex pointer.
+/// Borrows typed contiguous R storage. The caller supplies the matching vector
+/// type, keeps `sexp` rooted, and does not retain the pointer past the source R
+/// call. This may materialize ALTREP storage.
 pub fn dataPtr(comptime T: type, sexp: SEXP) ?[*]T {
     return switch (T) {
         f64 => @ptrCast(R.REAL(sexp)),
@@ -2314,6 +2418,13 @@ pub fn dataPtr(comptime T: type, sexp: SEXP) ?[*]T {
 test "Rcomplex is the expected layout" {
     try std.testing.expectEqual(@sizeOf(Rcomplex), @sizeOf(extern struct { r: f64, i: f64 }));
     try std.testing.expectEqual(@alignOf(Rcomplex), @alignOf(f64));
+}
+
+test "checkedRegionCount rejects invalid callback counts" {
+    try std.testing.expectEqual(@as(usize, 4), try checkedRegionCount(4, 4));
+    try std.testing.expectError(error.AltRepRegionRead, checkedRegionCount(0, 4));
+    try std.testing.expectError(error.AltRepRegionRead, checkedRegionCount(-1, 4));
+    try std.testing.expectError(error.AltRepRegionRead, checkedRegionCount(5, 4));
 }
 
 test "SliceView borrowed constSlice returns borrowed data" {

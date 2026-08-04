@@ -1,7 +1,8 @@
 //! Checked borrowed R vector views.
 //!
-//! Slices borrow R storage and die at the next GC-triggering R call. Nonempty
-//! views do not materialize ALTREP values: they fail when R has no direct pointer.
+//! Slices borrow caller-rooted R storage and must not escape the source R call.
+//! Nonempty views do not materialize ALTREP values: they fail when R has no
+//! direct pointer.
 //! Mutable views modify the supplied vector in place without copying it, so
 //! callers must ensure that mutation respects R's copy-on-write rules.
 
