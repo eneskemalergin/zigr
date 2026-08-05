@@ -118,7 +118,7 @@ Call these services only from R's main thread. R's C API, ALTREP callbacks, prot
 - `factor.asFactorChecked` uses R's string matching and locale collation, preserves `NA`, and returns an independent integer factor. Inputs longer than the integer-code limit are rejected. ALTREP strings are copied once to an ordinary working vector because R's order and match routines require direct string storage. `asFactor` raises an R error on validation failure. The result is unprotected.
 - `s4.newObjectChecked` resolves a registered class through R's methods registry and creates an object from its prototype. It does not run `initialize` or validity methods. `newObject` raises an R error for an invalid or unregistered class. Checked slot access distinguishes non-S4 objects and missing slots; slot assignment returns the possibly replaced object. Results are unprotected, and class lookup or raw slot operations can longjmp.
 - `raw.real`, `raw.int`, `raw.logical`, `raw.raw`, and `raw.complex`, together with their mutable forms, return `RawViewError` error unions containing checked direct views. They reject null or wrong-kind SEXPs and do not materialize ALTREP data when no direct pointer exists. The returned slices borrow R storage and cannot outlive the next GC-triggering R call. Mutable views change the supplied vector in place without copying it, so callers must follow R copy-on-write rules.
-- `rvector.RVector` supports `f64`, `i32`, `u8`, and `convert.Rcomplex` views and copies. Arithmetic and `sum` are limited to `f64` and `i32`.
+- `rvector.RVector` supports `f64`, `i32`, `u8`, and `convert.Rcomplex` views, copies, and unary transforms. Result-producing methods return unprotected R-owned vectors; arithmetic and `sum` are limited to `f64` and `i32`.
 - `symbols.install` wraps `Rf_install` with a fixed 64-entry thread-local cache. R owns and roots each symbol for the session, so callers do not protect it. Installation can longjmp. Names containing NUL or longer than 255 bytes become R errors instead of being truncated.
 - `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. `Argument` adds explicit R argument tags, while checked builders reject null pointers and invalid tag names before allocating. Inputs stay caller-rooted during construction. Constructed calls are returned unprotected.
 - `eval` wraps lookup, positional and tagged calls, `R_tryEval`, and `R_tryEvalSilent`. `callIn`, `callFunctionIn`, and `callTaggedIn` make the evaluation environment explicit; the shorter `call` helper uses `R_GlobalEnv`. Results are borrowed, unprotected `SEXP` values. Function lookup and evaluation can longjmp, so use a generated entry point or another unwind boundary when native cleanup is live.
@@ -273,7 +273,7 @@ src/
 ├── symbols.zig        Open-addressing symbol cache
 ├── eval.zig           rEval, findVar, findFunction, call, setVar
 ├── raw.zig            Checked direct vector views
-├── rvector.zig        Typed RVector views, copies, and numeric arithmetic
+├── rvector.zig        Typed RVector views, copies, unary transforms, and arithmetic
 ├── simd.zig           SIMD lane configuration
 └── cross_check.zig    Cross-compilation verification
 ```
