@@ -16,7 +16,9 @@ build_so <- function() {
   }
   r_lib <- Sys.getenv("R_LIB", file.path(R.home(), "lib"))
   if (!dir.exists(r_include) || !dir.exists(r_lib)) stop("invalid R include/lib directories")
+  cache_dir <- Sys.getenv("ZIG_CACHE_DIR", ".zig-cache")
   global_cache <- Sys.getenv("ZIG_GLOBAL_CACHE_DIR", file.path("benchmarks", ".zig-global-cache"))
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   dir.create(global_cache, recursive = TRUE, showWarnings = FALSE)
   optimize <- Sys.getenv("ZIGR_OPTIMIZE", "ReleaseFast")
   build_args <- c(
@@ -24,7 +26,7 @@ build_so <- function() {
     paste0("-Doptimize=", optimize),
     paste0("-Dr-include=", r_include),
     paste0("-Dr-lib=", r_lib),
-    "--cache-dir", ".zig-cache",
+    "--cache-dir", cache_dir,
     "--global-cache-dir", global_cache
   )
   target <- Sys.getenv("ZIGR_TARGET", "")
