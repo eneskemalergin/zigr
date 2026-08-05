@@ -5,6 +5,7 @@
 #include <R_ext/Rdynload.h>
 #include <R_ext/Utils.h>
 #include <R_ext/Altrep.h>
+#include <R_ext/Random.h>
 
 /* Zig 0.16 translate-c keeps Rcomplex opaque because it is a C union. */
 void zigr_set_altcomplex_elt_method(R_altrep_class_t cls);

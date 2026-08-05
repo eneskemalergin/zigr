@@ -496,10 +496,19 @@ fn benchSerialize(value: R.SEXP) R.SEXP {
     defer bytes.deinit();
     return zigr.serialize.fromVector(bytes.get());
 }
+threadlocal var rng_count: i32 = 0;
+
+fn drawRng() R.SEXP {
+    if (rng_count < 0) zigr.@"error".signal("RNG count must be non-negative");
+    const result = R.Rf_allocVector(R.REALSXP, @intCast(rng_count));
+    const values = R.REAL(result);
+    for (0..@as(usize, @intCast(rng_count))) |index| values[index] = zigr.rng.normal();
+    return result;
+}
+
 fn benchRng(n: i32) R.SEXP {
-    var count = zigr.protect.scoped(R.Rf_ScalarInteger(n));
-    defer count.deinit();
-    return zigr.eval.callIn("rnorm", &.{count.get()}, R.R_GlobalEnv);
+    rng_count = n;
+    return zigr.rng.withRng(drawRng);
 }
 fn benchOutputs() R.SEXP {
     return fixtureOutputs();

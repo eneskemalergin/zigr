@@ -123,7 +123,7 @@ Call these services only from R's main thread. R's C API, ALTREP callbacks, prot
 - `lang` exposes unchecked pairlist access for raw interop and allocating call constructors over `Rf_cons` and `Rf_lang*`. `Argument` adds explicit R argument tags, while checked builders reject null pointers and invalid tag names before allocating. Inputs stay caller-rooted during construction. Constructed calls are returned unprotected.
 - `eval` wraps lookup, positional and tagged calls, `R_tryEval`, and `R_tryEvalSilent`. `callIn`, `callFunctionIn`, and `callTaggedIn` make the evaluation environment explicit; the shorter `call` helper uses `R_GlobalEnv`. Results are borrowed, unprotected `SEXP` values. Function lookup and evaluation can longjmp, so use a generated entry point or another unwind boundary when native cleanup is live.
 - `interrupt` is a thin wrapper over `R_CheckUserInterrupt`, `R_CheckStack`, and `R_CheckStack2`. These checks can longjmp and do not create their own unwind boundary.
-- `rng.withRng` balances `GetRNGstate` and `PutRNGstate` on normal return and R longjmp. Nested scopes are rejected because R's RNG state API is not a reentrant stack.
+- `rng.withRng` balances `GetRNGstate` and `PutRNGstate` on normal return and R longjmp; `rng.normal` draws from the active R state. Nested scopes are rejected because R's RNG state API is not a reentrant stack.
 - `memory.CountingAllocator` wraps an allocator when you need allocation diagnostics. Its counts include only successful operations made through that wrapper; they do not include R heap objects or unrelated libc allocation. Keep it out of the allocator passed to timed code unless allocator overhead is the workload.
 
 ALTREP behavior is explicit across these integrations:

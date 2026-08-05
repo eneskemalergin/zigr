@@ -27,6 +27,12 @@ pub fn release() void {
     R.PutRNGstate();
 }
 
+/// Draws one normal variate from the active R RNG state.
+/// The caller must hold an active `withRng` scope.
+pub fn normal() f64 {
+    return R.norm_rand();
+}
+
 /// The cleanup frame releases R's state after a non-local exit.
 pub fn withRng(comptime func: *const fn () R.SEXP) R.SEXP {
     return cleanup.protectCall(struct {
@@ -53,6 +59,10 @@ test "withRng type" {
 test "acquire and release types" {
     try std.testing.expectEqual(@TypeOf(acquire), fn () void);
     try std.testing.expectEqual(@TypeOf(release), fn () void);
+}
+
+test "normal draw type" {
+    try std.testing.expectEqual(@TypeOf(normal), fn () f64);
 }
 
 test "withRng reentrancy state is thread-local" {
