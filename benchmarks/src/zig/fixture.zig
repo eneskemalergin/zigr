@@ -211,29 +211,65 @@ fn benchNumericTransform(value: R.SEXP) R.SEXP {
 
 fn benchBroadcast(value: R.SEXP, scalar: f64) f64 {
     if (directReal(value)) |data| {
-        var total: f64 = 0.0;
-        var correction: f64 = 0.0;
-        for (data) |element| {
-            const adjusted = element + scalar - correction;
-            const next = total + adjusted;
-            correction = (next - total) - adjusted;
-            total = next;
-        }
-        return total;
+        var total: f80 = 0.0;
+        for (data) |element| total += @floatCast(element + scalar);
+        return @floatCast(total);
     }
     var input = realOnePass(value);
     defer input.deinit();
-    var total: f64 = 0.0;
-    var correction: f64 = 0.0;
+    var total: f80 = 0.0;
     while (input.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk) |element| {
-            const adjusted = element + scalar - correction;
-            const next = total + adjusted;
-            correction = (next - total) - adjusted;
-            total = next;
-        }
+        for (chunk) |element| total += @floatCast(element + scalar);
     }
-    return total;
+    return @floatCast(total);
+}
+
+fn radixSortReal(values: []f64) void {
+    if (values.len < 2) return;
+    const scratch = std.heap.page_allocator.alloc(u64, values.len) catch |err| convert.signalError(err);
+    defer std.heap.page_allocator.free(scratch);
+    const counts = std.heap.page_allocator.alloc(usize, 1 << 16) catch |err| {
+        std.heap.page_allocator.free(scratch);
+        convert.signalError(err);
+    };
+    defer std.heap.page_allocator.free(counts);
+
+    const output_bits = @as([*]u64, @ptrCast(values.ptr))[0..values.len];
+    const sign_bit = @as(u64, 1) << 63;
+    for (output_bits) |*value| value.* = if (value.* & sign_bit != 0) ~value.* else value.* ^ sign_bit;
+
+    var source = output_bits;
+    var destination = scratch;
+    var shift: usize = 0;
+    while (shift < 64) : (shift += 16) {
+        @memset(counts, 0);
+        const bit_shift: u6 = @intCast(shift);
+        for (source) |value| counts[@intCast((value >> bit_shift) & 0xffff)] += 1;
+        var offset: usize = 0;
+        for (counts) |*count| {
+            const length = count.*;
+            count.* = offset;
+            offset += length;
+        }
+        for (source) |value| {
+            const digit: usize = @intCast((value >> bit_shift) & 0xffff);
+            destination[@intCast(counts[digit])] = value;
+            counts[digit] += 1;
+        }
+        const previous = source;
+        source = destination;
+        destination = previous;
+    }
+
+    for (output_bits) |*value| value.* = if (value.* & sign_bit != 0) value.* ^ sign_bit else ~value.*;
+}
+
+fn realAscending(_: void, left: f64, right: f64) bool {
+    const left_nan = std.math.isNan(left);
+    const right_nan = std.math.isNan(right);
+    if (left_nan) return false;
+    if (right_nan) return true;
+    return left < right;
 }
 
 fn benchSort(value: R.SEXP) R.SEXP {
@@ -248,7 +284,13 @@ fn benchSort(value: R.SEXP) R.SEXP {
         @memcpy(output[offset .. offset + chunk.len], chunk);
         offset += chunk.len;
     }
-    std.mem.sort(f64, output, {}, std.sort.asc(f64));
+    var has_nan = false;
+    for (output) |element| has_nan = has_nan or std.math.isNan(element);
+    if (has_nan) {
+        std.mem.sort(f64, output, {}, realAscending);
+    } else {
+        radixSortReal(output);
+    }
     return result.finish();
 }
 
@@ -256,7 +298,7 @@ fn benchMissingMean(value: R.SEXP) f64 {
     if (directReal(value)) |data| {
         var total: f64 = 0.0;
         var count: usize = 0;
-        for (data) |element| if (!R.ISNAN(element)) {
+        for (data) |element| if (element == element) {
             total += element;
             count += 1;
         };
@@ -267,7 +309,7 @@ fn benchMissingMean(value: R.SEXP) f64 {
     var total: f64 = 0.0;
     var count: usize = 0;
     while (input.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk) |element| if (!R.ISNAN(element)) {
+        for (chunk) |element| if (element == element) {
             total += element;
             count += 1;
         };
@@ -275,23 +317,14 @@ fn benchMissingMean(value: R.SEXP) f64 {
     return total / @as(f64, @floatFromInt(count));
 }
 
-fn benchTranspose(value: R.SEXP) R.SEXP {
-    const rows: usize = @intCast(R.Rf_nrows(value));
-    const columns: usize = @intCast(R.Rf_ncols(value));
-    var source_access = convert.toVectorAccess(f64, .random_access, std.heap.page_allocator, value) catch |err|
-        convert.signalError(err);
-    defer source_access.deinit();
-    const source = source_access.contiguousSlice() orelse convert.signalError(error.DirectPointerUnavailable);
-    var result = zigr.protect.scoped(R.Rf_allocMatrix(R.REALSXP, @intCast(columns), @intCast(rows)));
-    defer result.deinit();
-    const output = raw.realMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+fn transposeInto(output: []f64, source: []const f64, rows: usize, columns: usize) void {
     const block_size: usize = 32;
-    var row_block: usize = 0;
-    while (row_block < rows) : (row_block += block_size) {
-        const row_end = @min(row_block + block_size, rows);
-        var column_block: usize = 0;
-        while (column_block < columns) : (column_block += block_size) {
-            const column_end = @min(column_block + block_size, columns);
+    var column_block: usize = 0;
+    while (column_block < columns) : (column_block += block_size) {
+        const column_end = @min(column_block + block_size, columns);
+        var row_block: usize = 0;
+        while (row_block < rows) : (row_block += block_size) {
+            const row_end = @min(row_block + block_size, rows);
             for (row_block..row_end) |row| {
                 for (column_block..column_end) |column| {
                     output[column + row * columns] = source[row + column * rows];
@@ -299,6 +332,23 @@ fn benchTranspose(value: R.SEXP) R.SEXP {
             }
         }
     }
+}
+
+fn benchTranspose(value: R.SEXP) R.SEXP {
+    const rows: usize = @intCast(R.Rf_nrows(value));
+    const columns: usize = @intCast(R.Rf_ncols(value));
+    var result = zigr.protect.scoped(R.Rf_allocMatrix(R.REALSXP, @intCast(columns), @intCast(rows)));
+    defer result.deinit();
+    const output = raw.realMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    if (directReal(value)) |source| {
+        transposeInto(output, source, rows, columns);
+        return result.get();
+    }
+    var source_access = convert.toVectorAccess(f64, .random_access, std.heap.page_allocator, value) catch |err|
+        convert.signalError(err);
+    defer source_access.deinit();
+    const source = source_access.contiguousSlice() orelse convert.signalError(error.DirectPointerUnavailable);
+    transposeInto(output, source, rows, columns);
     return result.get();
 }
 
@@ -471,18 +521,27 @@ fn benchRawCopy(value: R.SEXP) R.SEXP {
 }
 
 fn benchComplexConjugate(value: R.SEXP) R.SEXP {
-    var source = complexOnePass(value);
-    defer source.deinit();
+    if (value == null) zigr.@"error".signal("complex input is null");
     const source_length = R.XLENGTH(value);
     if (source_length < 0) zigr.@"error".signal("complex length is negative");
     var result = zigr.protect.scoped(R.Rf_allocVector(R.CPLXSXP, @intCast(source_length)));
     defer result.deinit();
     const output = raw.complexMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
     var offset: usize = 0;
-    while (source.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk) |input_value| {
+    if (value != null and R.TYPEOF(value) == R.CPLXSXP and R.ALTREP(value) == 0) {
+        const source = raw.complex(value) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+        for (source) |input_value| {
             output[offset] = .{ .r = input_value.r, .i = -input_value.i };
             offset += 1;
+        }
+    } else {
+        var source = complexOnePass(value);
+        defer source.deinit();
+        while (source.next() catch |err| convert.signalError(err)) |chunk| {
+            for (chunk) |input_value| {
+                output[offset] = .{ .r = input_value.r, .i = -input_value.i };
+                offset += 1;
+            }
         }
     }
     return result.get();
