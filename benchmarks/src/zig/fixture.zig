@@ -183,7 +183,19 @@ fn complexOnePass(value: R.SEXP) convert.VectorAccess(convert.Rcomplex, .one_pas
         convert.signalError(err);
 }
 
+fn directReal(value: R.SEXP) ?[]const f64 {
+    if (value == null or R.TYPEOF(value) != R.REALSXP or R.ALTREP(value) != 0) return null;
+    const length = R.XLENGTH(value);
+    if (length < 0) zigr.@"error".signal("real length is negative");
+    return R.REAL(value)[0..@as(usize, @intCast(length))];
+}
+
 fn benchVectorSum(value: R.SEXP) f64 {
+    if (directReal(value)) |data| {
+        var total: f64 = 0.0;
+        for (data) |element| total += element;
+        return total;
+    }
     var input = realOnePass(value);
     defer input.deinit();
     var total: f64 = 0.0;
@@ -198,6 +210,17 @@ fn benchNumericTransform(value: R.SEXP) R.SEXP {
 }
 
 fn benchBroadcast(value: R.SEXP, scalar: f64) f64 {
+    if (directReal(value)) |data| {
+        var total: f64 = 0.0;
+        var correction: f64 = 0.0;
+        for (data) |element| {
+            const adjusted = element + scalar - correction;
+            const next = total + adjusted;
+            correction = (next - total) - adjusted;
+            total = next;
+        }
+        return total;
+    }
     var input = realOnePass(value);
     defer input.deinit();
     var total: f64 = 0.0;
@@ -230,6 +253,15 @@ fn benchSort(value: R.SEXP) R.SEXP {
 }
 
 fn benchMissingMean(value: R.SEXP) f64 {
+    if (directReal(value)) |data| {
+        var total: f64 = 0.0;
+        var count: usize = 0;
+        for (data) |element| if (!R.ISNAN(element)) {
+            total += element;
+            count += 1;
+        };
+        return total / @as(f64, @floatFromInt(count));
+    }
     var input = realOnePass(value);
     defer input.deinit();
     var total: f64 = 0.0;
@@ -338,6 +370,10 @@ fn benchListSum(value: R.SEXP) f64 {
     var total: f64 = 0.0;
     for (0..@as(usize, @intCast(length))) |index| {
         const item = R.VECTOR_ELT(value, @intCast(index));
+        if (item != null and R.TYPEOF(item) == R.REALSXP and R.ALTREP(item) == 0) {
+            for (R.REAL(item)[0..@as(usize, @intCast(R.XLENGTH(item)))]) |element| total += element;
+            continue;
+        }
         var input = realOnePass(item);
         while (input.next() catch |err| convert.signalError(err)) |chunk| {
             for (chunk) |element| total += element;
