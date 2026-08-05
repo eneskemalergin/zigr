@@ -41,17 +41,40 @@ const OutputContext = struct {
     bytes: std.ArrayList(u8) = .empty,
 };
 
+fn initialOutputCapacity(value: R.SEXP) usize {
+    const length = R.XLENGTH(value);
+    if (length <= 0) return 0;
+    const element_size: usize = switch (R.TYPEOF(value)) {
+        R.RAWSXP => @sizeOf(u8),
+        R.INTSXP, R.LGLSXP => @sizeOf(i32),
+        R.REALSXP => @sizeOf(f64),
+        R.CPLXSXP => @sizeOf(f64) * 2,
+        else => 0,
+    };
+    if (element_size == 0) return 0;
+    const payload = std.math.mul(usize, @intCast(length), element_size) catch return 0;
+    return std.math.add(usize, payload, 64) catch 0;
+}
+
 fn outputContext(stream: R.R_outpstream_t) *OutputContext {
     if (stream == null) err.signal("serialization output stream is null");
     const data = stream[0].data orelse err.signal("serialization output state is null");
     return @ptrCast(@alignCast(data));
 }
 
+fn appendByte(context: *OutputContext, value: u8) void {
+    if (context.bytes.items.len < context.bytes.capacity) {
+        context.bytes.appendAssumeCapacity(value);
+    } else {
+        context.bytes.append(context.allocator, value) catch
+            err.signal("out of memory during serialization");
+    }
+}
+
 fn outChar(stream: R.R_outpstream_t, value: c_int) callconv(.c) void {
     if (value < 0 or value > std.math.maxInt(u8)) err.signal("serialization produced an invalid byte");
     const context = outputContext(stream);
-    context.bytes.append(context.allocator, @intCast(value)) catch
-        err.signal("out of memory during serialization");
+    appendByte(context, @intCast(value));
 }
 
 fn outBytes(stream: R.R_outpstream_t, data: ?*anyopaque, len: c_int) callconv(.c) void {
@@ -79,6 +102,11 @@ fn serializeCall(data: ?*anyopaque) R.SEXP {
     var arena = memory.UnwindArena.init();
     defer arena.deinit();
     var context = OutputContext{ .allocator = arena.allocator() };
+    const initial_capacity = initialOutputCapacity(input.get());
+    if (initial_capacity != 0) {
+        context.bytes.ensureTotalCapacityPrecise(context.allocator, initial_capacity) catch
+            err.signal("out of memory during serialization");
+    }
     var stream: R.struct_R_outpstream_st = .{};
     R.R_InitOutPStream(
         &stream,
@@ -136,6 +164,12 @@ fn readBytes(stream: R.R_inpstream_t, destination: ?*anyopaque, len: c_int) void
         err.signal("unexpected end of serialized input");
     }
     const bytes: [*]u8 = @ptrCast(output);
+    if (R.ALTREP(context.serialized) == 0) {
+        const source = R.RAW(context.serialized);
+        @memcpy(bytes[0..count], source[@as(usize, @intCast(context.offset))..][0..count]);
+        context.offset += requested;
+        return;
+    }
     var copied: R.R_xlen_t = 0;
     while (copied < requested) {
         const got = R.RAW_GET_REGION(
