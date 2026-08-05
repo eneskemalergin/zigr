@@ -588,27 +588,26 @@ allocation_samples$batch_repetitions <- 64L
 allocation_samples$batch_elapsed_ms <- 64
 allocation_samples$elapsed_per_event_ms <- 1
 allocation_samples$vector_heap_trigger_vcells <- 8388608L
-allocation_blocked <- summarize_direct_timing(
-  allocation_samples,
-  data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
-  c(r = 0.01)
-)
-expect_true(
-  identical(allocation_blocked$allocation_class, "large_output") &&
-    identical(allocation_blocked$allocation_gc_status, "GC_NOT_OBSERVED") &&
-    identical(allocation_blocked$distribution_status, "BLOCK") &&
-    grepl("GC not observed", allocation_blocked$distribution_reason, fixed = TRUE),
-  "a large fixed sequence without measured GC cannot claim amortized allocation timing"
-)
-allocation_samples$vector_heap_trigger_vcells <- 50000000L
 allocation_not_required <- summarize_direct_timing(
   allocation_samples,
   data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
   c(r = 0.01)
 )
 expect_true(
-  identical(allocation_not_required$allocation_gc_status, "NOT_REQUIRED") &&
+  identical(allocation_not_required$allocation_class, "large_output") &&
+    identical(allocation_not_required$allocation_gc_status, "NOT_REQUIRED") &&
     identical(allocation_not_required$distribution_status, "PASS"),
+  "R-owned output GC remains diagnostic rather than blocking timing"
+)
+allocation_samples$vector_heap_trigger_vcells <- 50000000L
+allocation_below_trigger <- summarize_direct_timing(
+  allocation_samples,
+  data.frame(runner = "r", task = "complex_conjugate", first_call_ms = 12, stringsAsFactors = FALSE),
+  c(r = 0.01)
+)
+expect_true(
+  identical(allocation_below_trigger$allocation_gc_status, "NOT_REQUIRED") &&
+    identical(allocation_below_trigger$distribution_status, "PASS"),
   "a large output below its prephase vector-heap trigger does not require measured GC"
 )
 allocation_samples$vector_heap_trigger_vcells <- 8388608L

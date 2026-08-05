@@ -173,9 +173,23 @@ fn fixtureOutputs() R.SEXP {
     return result.get();
 }
 
-fn benchVectorSum(value: []const f64) f64 {
+fn realOnePass(value: R.SEXP) convert.VectorAccess(f64, .one_pass) {
+    return convert.toVectorAccess(f64, .one_pass, std.heap.page_allocator, value) catch |err|
+        convert.signalError(err);
+}
+
+fn complexOnePass(value: R.SEXP) convert.VectorAccess(convert.Rcomplex, .one_pass) {
+    return convert.toVectorAccess(convert.Rcomplex, .one_pass, std.heap.page_allocator, value) catch |err|
+        convert.signalError(err);
+}
+
+fn benchVectorSum(value: R.SEXP) f64 {
+    var input = realOnePass(value);
+    defer input.deinit();
     var total: f64 = 0.0;
-    for (value) |element| total += element;
+    while (input.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk) |element| total += element;
+    }
     return total;
 }
 
@@ -183,45 +197,75 @@ fn benchNumericTransform(value: R.SEXP) R.SEXP {
     return fixtureNumeric(value);
 }
 
-fn benchBroadcast(value: []const f64, scalar: f64) f64 {
+fn benchBroadcast(value: R.SEXP, scalar: f64) f64 {
+    var input = realOnePass(value);
+    defer input.deinit();
     var total: f64 = 0.0;
     var correction: f64 = 0.0;
-    for (value) |element| {
-        const adjusted = element + scalar - correction;
-        const next = total + adjusted;
-        correction = (next - total) - adjusted;
-        total = next;
+    while (input.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk) |element| {
+            const adjusted = element + scalar - correction;
+            const next = total + adjusted;
+            correction = (next - total) - adjusted;
+            total = next;
+        }
     }
     return total;
 }
 
-fn benchSort(value: []const f64) R.SEXP {
-    var arena = zigr.memory.UnwindArena.init();
-    defer arena.deinit();
-    const result = arena.allocator().dupe(f64, value) catch zigr.@"error".signal("sort result allocation failed");
-    std.mem.sort(f64, result, {}, std.sort.asc(f64));
-    return convert.fromRealSlice(result);
+fn benchSort(value: R.SEXP) R.SEXP {
+    const input = zigr.rvector.RVector(f64).init(value) catch |err| convert.signalError(err);
+    var result = convert.ResultBuilder(f64).init(input.len());
+    defer result.deinit();
+    var access = convert.toVectorAccess(f64, .one_pass, std.heap.page_allocator, value) catch |err| convert.signalError(err);
+    defer access.deinit();
+    const output = result.mutableSlice();
+    var offset: usize = 0;
+    while (access.next() catch |err| convert.signalError(err)) |chunk| {
+        @memcpy(output[offset .. offset + chunk.len], chunk);
+        offset += chunk.len;
+    }
+    std.mem.sort(f64, output, {}, std.sort.asc(f64));
+    return result.finish();
 }
 
-fn benchMissingMean(value: []const f64) f64 {
+fn benchMissingMean(value: R.SEXP) f64 {
+    var input = realOnePass(value);
+    defer input.deinit();
     var total: f64 = 0.0;
     var count: usize = 0;
-    for (value) |element| if (!R.ISNAN(element)) {
-        total += element;
-        count += 1;
-    };
+    while (input.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk) |element| if (!R.ISNAN(element)) {
+            total += element;
+            count += 1;
+        };
+    }
     return total / @as(f64, @floatFromInt(count));
 }
 
 fn benchTranspose(value: R.SEXP) R.SEXP {
     const rows: usize = @intCast(R.Rf_nrows(value));
     const columns: usize = @intCast(R.Rf_ncols(value));
-    const source = raw.real(value) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    var source_access = convert.toVectorAccess(f64, .random_access, std.heap.page_allocator, value) catch |err|
+        convert.signalError(err);
+    defer source_access.deinit();
+    const source = source_access.contiguousSlice() orelse convert.signalError(error.DirectPointerUnavailable);
     var result = zigr.protect.scoped(R.Rf_allocMatrix(R.REALSXP, @intCast(columns), @intCast(rows)));
     defer result.deinit();
     const output = raw.realMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
-    for (0..columns) |column| {
-        for (0..rows) |row| output[column + row * columns] = source[row + column * rows];
+    const block_size: usize = 32;
+    var row_block: usize = 0;
+    while (row_block < rows) : (row_block += block_size) {
+        const row_end = @min(row_block + block_size, rows);
+        var column_block: usize = 0;
+        while (column_block < columns) : (column_block += block_size) {
+            const column_end = @min(column_block + block_size, columns);
+            for (row_block..row_end) |row| {
+                for (column_block..column_end) |column| {
+                    output[column + row * columns] = source[row + column * rows];
+                }
+            }
+        }
     }
     return result.get();
 }
@@ -288,13 +332,17 @@ fn benchDataframe(value: R.SEXP) R.SEXP {
 }
 
 fn benchListSum(value: R.SEXP) f64 {
-    var arena = zigr.memory.UnwindArena.init();
-    defer arena.deinit();
-    const items = convert.toListSlice(arena.allocator(), value) catch zigr.@"error".signal("list input expected");
+    if (value == null or R.TYPEOF(value) != R.VECSXP) convert.signalError(error.ExpectedList);
+    const length = R.XLENGTH(value);
+    if (length < 0) zigr.@"error".signal("list length is negative");
     var total: f64 = 0.0;
-    for (items) |item| {
-        const values = raw.real(item) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
-        for (values) |element| total += element;
+    for (0..@as(usize, @intCast(length))) |index| {
+        const item = R.VECTOR_ELT(value, @intCast(index));
+        var input = realOnePass(item);
+        while (input.next() catch |err| convert.signalError(err)) |chunk| {
+            for (chunk) |element| total += element;
+        }
+        input.deinit();
     }
     return total;
 }
@@ -386,12 +434,22 @@ fn benchRawCopy(value: R.SEXP) R.SEXP {
     return input.copy();
 }
 
-fn benchComplexConjugate(value: []const convert.Rcomplex) R.SEXP {
-    var arena = zigr.memory.UnwindArena.init();
-    defer arena.deinit();
-    const result = arena.allocator().alloc(convert.Rcomplex, value.len) catch zigr.@"error".signal("complex result allocation failed");
-    for (value, result) |source, *destination| destination.* = .{ .r = source.r, .i = -source.i };
-    return convert.fromComplexSlice(result);
+fn benchComplexConjugate(value: R.SEXP) R.SEXP {
+    var source = complexOnePass(value);
+    defer source.deinit();
+    const source_length = R.XLENGTH(value);
+    if (source_length < 0) zigr.@"error".signal("complex length is negative");
+    var result = zigr.protect.scoped(R.Rf_allocVector(R.CPLXSXP, @intCast(source_length)));
+    defer result.deinit();
+    const output = raw.complexMut(result.get()) catch |raw_error| zigr.@"error".signal(@errorName(raw_error));
+    var offset: usize = 0;
+    while (source.next() catch |err| convert.signalError(err)) |chunk| {
+        for (chunk) |input_value| {
+            output[offset] = .{ .r = input_value.r, .i = -input_value.i };
+            offset += 1;
+        }
+    }
+    return result.get();
 }
 
 fn benchSchema(value: R.SEXP) R.SEXP {
@@ -426,8 +484,9 @@ fn benchAltrepIndex(value: convert.VectorAccess(i32, .one_pass)) f64 {
     }
     return total;
 }
-fn benchAltrepMaterialize(value: convert.VectorAccess(i32, .random_access)) []const i32 {
-    return value.contiguousSlice() orelse unreachable;
+fn benchAltrepMaterialize(value: R.SEXP) R.SEXP {
+    const input = zigr.rvector.RVector(i32).init(value) catch |err| convert.signalError(err);
+    return input.copy();
 }
 fn benchEval(value: R.SEXP) R.SEXP {
     return callR("function(x) eval(quote(sum(x)+mean(x)),list2env(list(x=x),parent=baseenv()))", &.{value});
@@ -440,11 +499,7 @@ fn benchSerialize(value: R.SEXP) R.SEXP {
 fn benchRng(n: i32) R.SEXP {
     var count = zigr.protect.scoped(R.Rf_ScalarInteger(n));
     defer count.deinit();
-    var package_name = zigr.protect.scoped(R.Rf_mkString("stats"));
-    defer package_name.deinit();
-    var namespace = zigr.protect.scoped(zigr.eval.callIn("getNamespace", &.{package_name.get()}, R.R_BaseEnv));
-    defer namespace.deinit();
-    return zigr.eval.callIn("rnorm", &.{count.get()}, namespace.get());
+    return zigr.eval.callIn("rnorm", &.{count.get()}, R.R_GlobalEnv);
 }
 fn benchOutputs() R.SEXP {
     return fixtureOutputs();

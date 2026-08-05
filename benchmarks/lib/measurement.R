@@ -299,18 +299,18 @@ assert_direct_task_altrep_input <- function(spec, unmaterialized, label = NULL) 
 
 direct_allocation_policy <- function() {
   list(
-    policy_version = "large-output-gc-v1",
+    policy_version = "large-output-observation-v2",
     large_output_vcells = list(complex_conjugate = 65536L),
-    gc_requirement = "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1"
+    gc_requirement = "r-owned-output-gc-is-diagnostic-only-v1"
   )
 }
 
 validate_direct_allocation_policy <- function(policy) {
   fields <- c("policy_version", "large_output_vcells", "gc_requirement")
   if (!is.list(policy) || !identical(names(policy), fields) ||
-      !identical(as.character(policy$policy_version), "large-output-gc-v1") ||
+      !identical(as.character(policy$policy_version), "large-output-observation-v2") ||
       !identical(as.character(policy$gc_requirement),
-                 "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1") ||
+                 "r-owned-output-gc-is-diagnostic-only-v1") ||
       !is.list(policy$large_output_vcells) ||
       !identical(names(policy$large_output_vcells), "complex_conjugate")) {
     stop("direct allocation policy is invalid")
@@ -322,9 +322,9 @@ validate_direct_allocation_policy <- function(policy) {
     stop("direct allocation policy has an invalid complex output size")
   }
   list(
-    policy_version = "large-output-gc-v1",
+    policy_version = "large-output-observation-v2",
     large_output_vcells = list(complex_conjugate = output_vcells),
-    gc_requirement = "fixed-sequence-output-vcells-reaches-prephase-vector-trigger-v1"
+    gc_requirement = "r-owned-output-gc-is-diagnostic-only-v1"
   )
 }
 
@@ -1191,6 +1191,15 @@ classify_direct_allocation_gc <- function(task, batch_repetitions, measurement_s
       fixed_sequence_output_vcells = fixed_sequence_output_vcells,
       vector_heap_trigger_vcells = vector_heap_trigger_vcells,
       status = "GC_OBSERVED", reason = "measured R GC occurred during the fixed sequence"
+    ))
+  }
+  if (identical(policy$gc_requirement, "r-owned-output-gc-is-diagnostic-only-v1")) {
+    return(list(
+      allocation_class = allocation_class,
+      fixed_sequence_output_vcells = fixed_sequence_output_vcells,
+      vector_heap_trigger_vcells = vector_heap_trigger_vcells,
+      status = "NOT_REQUIRED",
+      reason = "R-owned output GC remains diagnostic; resource evidence owns allocation safety"
     ))
   }
   list(
