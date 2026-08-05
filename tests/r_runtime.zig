@@ -5416,6 +5416,17 @@ export fn zigr_test_rvector_complex() SEXP {
     if (output[0].r != 1.0 or output[0].i != -2.0 or output[1].r != 3.0 or output[1].i != -4.0) {
         return R.Rf_ScalarReal(0.0);
     }
+    const conjugated = R.Rf_protect(vector.mapUnary(struct {
+        fn op(value: zigr_convert.Rcomplex) zigr_convert.Rcomplex {
+            return .{ .r = value.r, .i = -value.i };
+        }
+    }.op));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(conjugated) != R.CPLXSXP) return R.Rf_ScalarReal(0.0);
+    const conjugated_output: [*]zigr_convert.Rcomplex = @ptrCast(@alignCast(R.COMPLEX(conjugated) orelse return R.Rf_ScalarReal(0.0)));
+    if (conjugated_output[0].r != 1.0 or conjugated_output[0].i != 2.0 or conjugated_output[1].r != 3.0 or conjugated_output[1].i != 4.0) {
+        return R.Rf_ScalarReal(0.0);
+    }
     return R.Rf_ScalarReal(1.0);
 }
 

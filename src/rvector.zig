@@ -107,6 +107,25 @@ pub fn RVector(comptime T: type) type {
             return result.finish();
         }
 
+        /// Applies a comptime-specialized transform into one R-owned result.
+        /// The result is unprotected after the fill completes.
+        pub fn mapUnary(self: Self, comptime op: fn (T) T) R.SEXP {
+            var result = convert.ResultBuilder(T).init(self.len());
+            defer result.deinit();
+
+            var input = convert.toVectorAccess(T, .one_pass, std.heap.page_allocator, self.sexp) catch |err| convert.signalError(err);
+            defer input.deinit();
+            const out = result.mutableSlice();
+            var offset: usize = 0;
+            while (input.next() catch |err| convert.signalError(err)) |chunk| {
+                for (chunk) |value| {
+                    out[offset] = op(value);
+                    offset += 1;
+                }
+            }
+            return result.finish();
+        }
+
         /// The allocator must remain valid if an ALTREP input causes R to unwind.
         pub fn add(self: Self, other: Self, allocator: std.mem.Allocator) R.SEXP {
             comptime requireArithmetic(T);
