@@ -65,6 +65,15 @@ expect_true(
   "the task suitability map records the declared input, state, representation, output, matrix, and ALTREP contracts"
 )
 
+expect_true(
+  identical(
+    unname(vapply(c("attributes", "altrep_materialize", "sort"),
+                  direct_task_requires_measurement_gc, logical(1))),
+    c(TRUE, TRUE, TRUE)
+  ),
+  "GC-relevant output tasks request collection between timing samples"
+)
+
 invalid_altrep_spec <- specs[[which(vapply(specs, `[[`, character(1), "id") == "altrep_sum")]]
 invalid_altrep_spec$altrep_input_postcondition <- "invalid"
 expect_error(
@@ -348,6 +357,48 @@ expect_true(
     identical(direct_task_output_vcells("complex_conjugate"), 65536L) &&
     identical(direct_task_output_vcells("schema"), 0L),
   "only the declared large complex output has a GC-observation requirement"
+)
+cost_accounts <- direct_task_cost_accounts()
+expect_true(
+  identical(as.character(cost_accounts$task), direct_cost_account_task_ids()) &&
+    identical(cost_accounts$input_elements[cost_accounts$task == "rng"], 1L) &&
+    identical(cost_accounts$borrowed_bytes[cost_accounts$task == "attributes"], 0) &&
+    identical(cost_accounts$native_requested_bytes[cost_accounts$task == "sort"], 1324288) &&
+    identical(cost_accounts$native_requested_bytes[cost_accounts$task == "serialize"], 800064) &&
+    identical(cost_accounts$r_payload_bytes[cost_accounts$task == "serialize"], 1600031) &&
+    identical(cost_accounts$list_slot_reads[cost_accounts$task == "list_sum"], 1000L) &&
+    identical(cost_accounts$materialized_bytes[cost_accounts$task == "altrep_materialize"], 1024),
+  "fixed-input cost accounts record attributable native, R-payload, list, and materialization bytes"
+)
+expect_true(
+  identical(validate_direct_task_cost_accounts(cost_accounts), cost_accounts),
+  "fixed-input cost accounts validate against their declared schema"
+)
+expect_error(
+  "cost accounts reject an unlisted task",
+  direct_task_cost_accounts("schema"),
+  "cost account tasks are invalid"
+)
+invalid_cost_accounts <- cost_accounts
+invalid_cost_accounts$native_requested_bytes[[1L]] <- NA_real_
+expect_error(
+  "cost accounts reject missing numeric attribution",
+  validate_direct_task_cost_accounts(invalid_cost_accounts),
+  "direct task cost accounts are invalid"
+)
+invalid_cost_accounts <- cost_accounts
+invalid_cost_accounts$account_scope[[1L]] <- NA_character_
+expect_error(
+  "cost accounts reject missing scope attribution",
+  validate_direct_task_cost_accounts(invalid_cost_accounts),
+  "direct task cost accounts are invalid"
+)
+invalid_cost_accounts <- cost_accounts
+invalid_cost_accounts$native_requested_bytes[[which(invalid_cost_accounts$task == "sort")]] <- 1
+expect_error(
+  "cost accounts reject altered native allocation attribution",
+  validate_direct_task_cost_accounts(invalid_cost_accounts),
+  "direct task cost accounts are invalid"
 )
 expect_true(
   identical(remaining_direct_run_seconds(10, 609.9, 600L), 0) &&

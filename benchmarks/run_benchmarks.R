@@ -370,6 +370,10 @@ run_direct_benchmark <- function() {
     samples, first_calls, timer_floors, timing_policy$distribution_policy,
     timing_policy$allocation_policy
   )
+  cost_account_tasks <- intersect(selected_tasks, direct_cost_account_task_ids())
+  cost_account <- direct_task_cost_accounts(cost_account_tasks)
+  validate_direct_task_cost_accounts(cost_account, cost_account_tasks)
+  write_csv_once(cost_account, file.path(run_dir, "cost_account.csv"), "direct cost account")
   if (any(summary$distribution_status == "BLOCK")) {
     blocked <- summary[summary$distribution_status == "BLOCK", c(
       "runner", "task", "distribution_reason"
@@ -428,7 +432,7 @@ run_direct_benchmark <- function() {
   metadata$finished_at <- run_manifest_timestamp()
   metadata$outputs <- lapply(
     c(
-      "correctness.csv", "timing_samples.csv", "timing_summary.csv",
+      "correctness.csv", "timing_samples.csv", "timing_summary.csv", "cost_account.csv",
       if (!is.null(memory_task)) "memory_summary.csv"
     ),
     function(name) {
@@ -438,7 +442,7 @@ run_direct_benchmark <- function() {
     }
   )
   names(metadata$outputs) <- c(
-    "correctness", "timing_samples", "timing_summary",
+    "correctness", "timing_samples", "timing_summary", "cost_account",
     if (!is.null(memory_task)) "memory_summary"
   )
   write_run_manifest(run_dir, metadata)

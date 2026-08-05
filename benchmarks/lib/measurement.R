@@ -270,6 +270,10 @@ direct_task_is_altrep <- function(task_id) {
   isTRUE(direct_task_suitability_row(task_id)$representation_changing)
 }
 
+direct_task_requires_measurement_gc <- function(task_id) {
+  isTRUE(direct_task_suitability_row(task_id)$gc_relevant)
+}
+
 direct_task_altrep_input_postcondition <- function(spec) {
   if (!is.list(spec) || length(spec$id) != 1L || is.na(spec$id) || !nzchar(spec$id)) {
     stop("ALTREP input postcondition requires one task specification")
@@ -339,6 +343,86 @@ direct_task_output_vcells <- function(task_id, policy = direct_allocation_policy
     return(as.integer(policy$large_output_vcells[[task_id]]))
   }
   0L
+}
+
+# These are the fixed revision inputs whose public paths are retained in the
+# performance ledger.  The account describes only work attributable to the
+# generated fixture source; R headers, allocator rounding, and opaque work
+# inside R's serialization and attribute APIs are kept explicit below.
+direct_cost_account_task_ids <- function() {
+  c(
+    "vector_sum", "broadcast", "missing_mean", "list_sum", "sort", "serialize",
+    "transpose", "complex_conjugate", "rng", "attributes", "altrep_materialize"
+  )
+}
+
+direct_task_cost_accounts <- function(tasks = direct_cost_account_task_ids()) {
+  tasks <- as.character(tasks)
+  expected <- direct_cost_account_task_ids()
+  if (!identical(as.character(R.version$arch), "x86_64") ||
+      !identical(as.integer(.Machine$sizeof.pointer), 8L)) {
+    stop("cost accounts require the x86_64 64-bit fixture ABI")
+  }
+  if (anyNA(tasks) || any(!nzchar(tasks)) || anyDuplicated(tasks) ||
+      any(!tasks %in% expected)) {
+    stop("cost account tasks are invalid")
+  }
+  rows <- data.frame(
+    task = expected,
+    input_elements = c(1000000L, 1000000L, 1000000L, 100000L, 100000L,
+                       100000L, 262144L, 32768L, 1L, 100000L, 5000000L),
+    borrowed_bytes = c(8000000, 8000000, 8000000, 800000, 800000,
+                       800000, 2097152, 524288, 0, 0, 0),
+    materialized_bytes = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1024),
+    native_allocation_events = c(0L, 0L, 0L, 0L, 2L, 1L, 0L, 0L, 0L, 0L, 1L),
+    native_requested_bytes = c(0, 0, 0, 0, 1324288, 800064, 0, 0, 0, 0, 1024),
+    r_payload_allocations = c(1L, 1L, 1L, 1L, 1L, 2L, 1L, 1L, 1L, 1L, 1L),
+    r_payload_bytes = c(8, 8, 8, 8, 800000, 1600031, 2097152,
+                        524288, 800000, 800000, 20000000),
+    copied_bytes = c(0, 0, 0, 0, 800000, 800031, 0, 0, 0, 800000, 20000000),
+    written_bytes = c(8, 8, 8, 8, 800000, 800031, 2097152,
+                      524288, 800000, 800000, 20000000),
+    opaque_r_operations = c(FALSE, FALSE, FALSE, FALSE, FALSE, TRUE,
+                            FALSE, FALSE, FALSE, TRUE, TRUE),
+    stringsAsFactors = FALSE
+  )
+  rows$list_slot_reads <- 0L
+  rows$list_slot_reads[rows$task == "list_sum"] <- 1000L
+  rows$account_scope <- "exact-attributable-fixed-input-x86_64-v1"
+  rows <- rows[match(tasks, rows$task), , drop = FALSE]
+  rownames(rows) <- NULL
+  rows
+}
+
+validate_direct_task_cost_accounts <- function(accounts, tasks = direct_cost_account_task_ids()) {
+  tasks <- as.character(tasks)
+  required <- c(
+    "task", "input_elements", "borrowed_bytes", "materialized_bytes",
+    "native_allocation_events", "native_requested_bytes", "r_payload_allocations",
+    "r_payload_bytes", "copied_bytes", "written_bytes", "opaque_r_operations",
+    "list_slot_reads", "account_scope"
+  )
+  if (!is.data.frame(accounts) || !identical(names(accounts), required) ||
+      !identical(as.character(accounts$task), tasks) || anyDuplicated(accounts$task)) {
+    stop("direct task cost accounts are invalid")
+  }
+  if (nrow(accounts) == 0L) return(accounts)
+  numeric_fields <- setdiff(required, c("task", "opaque_r_operations", "account_scope"))
+  numeric_values <- unlist(accounts[numeric_fields], use.names = FALSE)
+  if (
+      any(!vapply(accounts[numeric_fields], is.numeric, logical(1))) ||
+      any(!vapply(accounts["opaque_r_operations"], is.logical, logical(1))) ||
+      any(!vapply(accounts["account_scope"], is.character, logical(1))) ||
+      anyNA(numeric_values) || any(!is.finite(numeric_values)) || any(numeric_values < 0) ||
+      anyNA(accounts$opaque_r_operations) || anyNA(accounts$account_scope) ||
+      any(accounts$account_scope != "exact-attributable-fixed-input-x86_64-v1")) {
+    stop("direct task cost accounts are invalid")
+  }
+  expected <- direct_task_cost_accounts(tasks)
+  if (!isTRUE(all.equal(accounts, expected, check.attributes = FALSE))) {
+    stop("direct task cost accounts are invalid")
+  }
+  accounts
 }
 
 direct_batch_repetition_map <- function(tasks, repetitions = 1L) {

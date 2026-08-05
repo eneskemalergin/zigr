@@ -330,7 +330,7 @@ validate_direct_run_manifest <- function(metadata) {
   }
   if (status %in% c("correctness_complete", "complete")) {
     expected <- if (identical(status, "complete")) {
-      c("correctness", "timing_samples", "timing_summary",
+      c("correctness", "timing_samples", "timing_summary", "cost_account",
         if (has_memory_task) "memory_summary")
     } else "correctness"
     if (!is.list(metadata$outputs) || !setequal(names(metadata$outputs), expected)) {
@@ -345,6 +345,7 @@ validate_direct_run_manifest <- function(metadata) {
         correctness = "correctness.csv",
         timing_samples = "timing_samples.csv",
         timing_summary = "timing_summary.csv",
+        cost_account = "cost_account.csv",
         memory_summary = "memory_summary.csv"
       )[[name]]
       if (!identical(manifest_scalar(record$relative_path, "output path"), expected_path)) {
@@ -406,6 +407,9 @@ validate_direct_run_outputs <- function(run_dir, metadata) {
     }
     summary <- read.csv(file.path(run_dir, "timing_summary.csv"), stringsAsFactors = FALSE)
     validate_direct_timing_summary(summary, samples, metadata)
+    cost_account <- read.csv(file.path(run_dir, "cost_account.csv"), stringsAsFactors = FALSE)
+    cost_tasks <- intersect(tasks, direct_cost_account_task_ids())
+    validate_direct_task_cost_accounts(cost_account, cost_tasks)
     if ("memory_task" %in% names(metadata)) {
       memory <- read.csv(file.path(run_dir, "memory_summary.csv"), stringsAsFactors = FALSE)
       validate_direct_memory_summary(memory, runners, as.character(metadata$memory_task))

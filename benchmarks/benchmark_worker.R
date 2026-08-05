@@ -280,6 +280,7 @@ for (spec in specs) {
 
   vector_heap_trigger_vcells <- direct_vector_heap_trigger_vcells(gc(full = TRUE))
   repetitions <- batch_repetitions[[spec$id]]
+  requires_measurement_gc <- direct_task_requires_measurement_gc(spec$id)
   calibration_result <- run_prepared_phase(spec, "local calibration", repetitions, truth)
   rm(calibration_result)
   if (identical(direct_task_allocation_class(spec$id), "large_output")) {
@@ -291,7 +292,7 @@ for (spec in specs) {
   last_result <- NULL
   last_rng <- NULL
   for (sample in seq_len(measurement_samples)) {
-    if (identical(direct_task_allocation_class(spec$id), "large_output")) {
+    if (requires_measurement_gc) {
       if (!is.null(last_result)) {
         rm(last_result)
         last_result <- NULL
