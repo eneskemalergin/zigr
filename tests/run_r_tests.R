@@ -188,7 +188,7 @@ tests <- list(
   "zigr_test_df_names_longjmp",
 
   "zigr_test_altrep_create",
-  "zigr_test_altrep_sum_simd",
+  "zigr_test_altrep_sum",
   "zigr_test_altrep_direct_ptr",
   "zigr_test_altint_direct_slice",
   "zigr_test_altint_sum_direct",
@@ -202,15 +202,15 @@ tests <- list(
   "zigr_test_altlogical_max_direct",
   "zigr_test_altlogical_argmin_direct",
   "zigr_test_altlogical_argmax_direct",
-  "zigr_test_altrep_mean_simd",
+  "zigr_test_altrep_mean",
   "zigr_test_altrep_norm2_simd",
   "zigr_test_altrep_min_simd",
   "zigr_test_altrep_max_simd",
   "zigr_test_altrep_argmin_simd",
   "zigr_test_altrep_argmax_simd",
   "zigr_test_argminmax_missing_contract",
-  "zigr_test_altrep_sum_narm_simd",
-  "zigr_test_altrep_mean_narm_simd",
+  "zigr_test_altrep_sum_narm",
+  "zigr_test_altrep_mean_narm",
   "zigr_test_altraw_create",
   "zigr_test_altcomplex_create",
   "zigr_test_altstring_create",
@@ -467,6 +467,210 @@ run_with_gctorture <- function(expr) {
   force(expr)
 }
 
+reduction_symbols <- local({
+  path <- file.path(tempdir(), paste0("zigr_reductions", .Platform$dynlib.ext))
+  if (!file.copy(so_path, path, overwrite = TRUE)) stop("failed to copy reduction oracle fixture")
+  reduction_dll <- dyn.load(path)
+  names <- c(
+    sum = "zigr_reduction_sum",
+    mean = "zigr_reduction_mean",
+    sum_narm = "zigr_reduction_sum_narm",
+    mean_narm = "zigr_reduction_mean_narm",
+    list = "zigr_reduction_list",
+    direct = "zigr_reduction_direct",
+    region = "zigr_reduction_region",
+    uses_direct = "zigr_reduction_uses_direct",
+    uses_regions = "zigr_reduction_uses_regions"
+  )
+  lapply(names, function(name) getNativeSymbolInfo(name, reduction_dll)$address)
+})
+
+reduction_call <- function(name, value) {
+  .Call(reduction_symbols[[name]], value)
+}
+
+reduction_direct <- function(values) {
+  result <- reduction_call("direct", values)
+  if (!identical(reduction_call("uses_direct", result), TRUE)) {
+    stop("reduction direct fixture lacks direct storage")
+  }
+  result
+}
+
+reduction_region <- function(values) {
+  result <- reduction_call("region", values)
+  if (!identical(reduction_call("uses_regions", result), TRUE)) {
+    stop("reduction region fixture exposes direct storage")
+  }
+  result
+}
+
+reduction_ordinary <- function(values) {
+  if (!identical(reduction_call("uses_direct", values), FALSE) ||
+      !identical(reduction_call("uses_regions", values), FALSE)) {
+    stop("reduction ordinary fixture is ALTREP")
+  }
+  values
+}
+
+exact_scalar_equal <- function(actual, expected) {
+  if (!identical(actual, expected)) return(FALSE)
+  if (isTRUE(expected == 0)) return(identical(1 / actual, 1 / expected))
+  TRUE
+}
+
+exact_scalar_label <- function(value) {
+  if (isTRUE(value == 0)) return(if (1 / value < 0) "-0" else "0")
+  paste(format(value, digits = 17L, scientific = TRUE), collapse = ",")
+}
+
+check_reduction_error <- function(expression, expected) {
+  condition <- tryCatch(
+    {
+      force(expression)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (is.null(condition)) stop(sprintf("expected error: %s", expected))
+  actual <- conditionMessage(condition)
+  if (!identical(actual, expected)) {
+    stop(sprintf("expected error %s, got %s", expected, actual))
+  }
+  TRUE
+}
+
+check_vector_reduction_oracle <- function(symbol, oracle, cases) {
+  failures <- character()
+  for (case_name in names(cases)) {
+    ordinary <- reduction_ordinary(cases[[case_name]])
+    expected <- oracle(ordinary)
+    inputs <- list(
+      ordinary = ordinary,
+      direct = reduction_direct(ordinary),
+      region = reduction_region(ordinary)
+    )
+    for (representation in names(inputs)) {
+      input <- inputs[[representation]]
+      actual <- reduction_call(symbol, input)
+      if (!exact_scalar_equal(actual, expected)) {
+        failures <- c(
+          failures,
+          sprintf(
+            "%s/%s expected %s, got %s",
+            case_name, representation, exact_scalar_label(expected), exact_scalar_label(actual)
+          )
+        )
+      }
+    }
+  }
+  if (length(failures)) stop(paste(failures, collapse = "; "))
+  check_reduction_error(reduction_call(symbol, 1L), "expected REALSXP")
+  TRUE
+}
+
+check_list_reduction_oracle <- function(cases) {
+  oracle <- function(value) sum(vapply(value, sum, numeric(1)))
+  failures <- character()
+  for (case_name in names(cases)) {
+    ordinary <- lapply(cases[[case_name]], reduction_ordinary)
+    expected <- oracle(ordinary)
+    inputs <- list(
+      ordinary = ordinary,
+      direct = lapply(ordinary, reduction_direct),
+      region = lapply(ordinary, reduction_region)
+    )
+    for (representation in names(inputs)) {
+      input <- inputs[[representation]]
+      actual <- reduction_call("list", input)
+      if (!exact_scalar_equal(actual, expected)) {
+        failures <- c(
+          failures,
+          sprintf(
+            "%s/%s expected %s, got %s",
+            case_name, representation, exact_scalar_label(expected), exact_scalar_label(actual)
+          )
+        )
+      }
+    }
+  }
+  if (length(failures)) stop(paste(failures, collapse = "; "))
+  check_reduction_error(reduction_call("list", numeric()), "expected VECSXP")
+  check_reduction_error(reduction_call("list", list(1L)), "expected REALSXP")
+  TRUE
+}
+
+cancellation <- c(1e16, 1, -1e16)
+chunk_cancellation <- numeric(4099L)
+chunk_cancellation[4096:4098] <- cancellation
+missing_cancellation <- c(1e16, NA_real_, 1, NaN, -1e16)
+chunk_missing_cancellation <- numeric(4101L)
+chunk_missing_cancellation[4096:4100] <- missing_cancellation
+
+reduction_cases <- list(
+  finite = c(-4, 1, 2, 8),
+  cancellation = cancellation,
+  chunk_boundary = chunk_cancellation,
+  missing_precedence = c(NaN, NA_real_, 1),
+  opposing_infinities = c(Inf, -Inf),
+  double_overflow = rep(.Machine$double.xmax, 2L),
+  scaled_rounding_overflow = rep(.Machine$double.xmax, 3L),
+  signed_zero = -0,
+  empty = numeric()
+)
+
+narm_reduction_cases <- list(
+  finite_missing = c(1, NA_real_, 2, NaN, 3),
+  cancellation = missing_cancellation,
+  chunk_boundary = chunk_missing_cancellation,
+  all_missing = c(NA_real_, NaN),
+  opposing_infinities = c(Inf, NA_real_, -Inf),
+  double_overflow = c(.Machine$double.xmax, NA_real_, .Machine$double.xmax),
+  scaled_rounding_overflow = c(rep(.Machine$double.xmax, 3L), NA_real_),
+  signed_zero = -0,
+  empty = numeric()
+)
+
+list_reduction_cases <- list(
+  finite = list(c(-4, 1), c(2, 8)),
+  cancellation = list(cancellation, cancellation),
+  chunk_boundary = list(chunk_cancellation, cancellation),
+  missing_precedence = list(c(NaN, NA_real_, 1), c(2, 3)),
+  opposing_infinities = list(c(Inf, 1), c(-Inf)),
+  double_overflow = list(.Machine$double.xmax, .Machine$double.xmax),
+  signed_zero = list(-0),
+  empty = list()
+)
+
+reduction_oracle_tests <- list(
+  list(
+    name = "sum_exact_r_oracle",
+    run = function() check_vector_reduction_oracle("sum", sum, reduction_cases)
+  ),
+  list(
+    name = "mean_exact_r_oracle",
+    run = function() check_vector_reduction_oracle("mean", mean, reduction_cases)
+  ),
+  list(
+    name = "sum_narm_exact_r_oracle",
+    run = function() check_vector_reduction_oracle(
+      "sum_narm", function(value) sum(value, na.rm = TRUE),
+      narm_reduction_cases
+    )
+  ),
+  list(
+    name = "mean_narm_exact_r_oracle",
+    run = function() check_vector_reduction_oracle(
+      "mean_narm", function(value) mean(value, na.rm = TRUE),
+      narm_reduction_cases
+    )
+  ),
+  list(
+    name = "list_reduction_exact_r_oracle",
+    run = function() check_list_reduction_oracle(list_reduction_cases)
+  )
+)
+
 if (gctorture_mode) cat("  GC diagnostic mode: gctorture2 step", gctorture_step, "around each registered call\n")
 
 for (t in tests) {
@@ -503,6 +707,21 @@ for (t in tests) {
   } else {
     cat("  SKIP:", name, "-", result, "\n")
     skipped <- skipped + 1
+  }
+}
+
+for (test in reduction_oracle_tests) {
+  result <- tryCatch(
+    run_with_gctorture(test$run()),
+    error = function(error) error
+  )
+  if (identical(result, TRUE)) {
+    cat("  PASS:", test$name, "\n")
+    passed <- passed + 1
+  } else {
+    cat("  FAIL:", test$name, "\n")
+    cat("    ", conditionMessage(result), "\n", sep = "")
+    failed <- failed + 1
   }
 }
 

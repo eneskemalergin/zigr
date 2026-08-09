@@ -64,6 +64,12 @@ export fn R_init_zigr_arity_methods(info: *R.DllInfo) callconv(.c) void {
     ArityProbeMethods.init(info);
 }
 
+export fn R_init_zigr_reductions(info: *R.DllInfo) callconv(.c) void {
+    MyAlt.register(info);
+    registerReductionRegion(info);
+    ReductionExports.init(info);
+}
+
 export fn zigr_alloc_real() SEXP {
     const vec = R.Rf_protect(R.Rf_allocVector(R.REALSXP, @as(R.R_xlen_t, 100)));
     const ptr: [*]f64 = @ptrCast(R.REAL(vec));
@@ -1354,7 +1360,7 @@ export fn zigr_test_altrep_create() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-export fn zigr_test_altrep_sum_simd() SEXP {
+export fn zigr_test_altrep_sum() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
     const total = zigr_convert.sum(vec);
@@ -1491,7 +1497,7 @@ export fn zigr_test_altlogical_argmax_direct() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-export fn zigr_test_altrep_mean_simd() SEXP {
+export fn zigr_test_altrep_mean() SEXP {
     const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
     const vec = MyAlt.init(data[0..]);
     if (zigr_convert.mean(vec) != 3.0) return R.Rf_ScalarReal(0.0);
@@ -1576,7 +1582,7 @@ export fn zigr_test_argminmax_missing_contract() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-export fn zigr_test_altrep_sum_narm_simd() SEXP {
+export fn zigr_test_altrep_sum_narm() SEXP {
     var data = [_]f64{ 1.0, 0.0, 4.0, 5.0 };
     data[1] = R.NA_REAL();
     const vec = MyAlt.init(data[0..]);
@@ -1584,7 +1590,7 @@ export fn zigr_test_altrep_sum_narm_simd() SEXP {
     return R.Rf_ScalarReal(1.0);
 }
 
-export fn zigr_test_altrep_mean_narm_simd() SEXP {
+export fn zigr_test_altrep_mean_narm() SEXP {
     var data = [_]f64{ 1.0, 0.0, 5.0 };
     data[1] = R.NA_REAL();
     const vec = MyAlt.init(data[0..]);
@@ -7251,6 +7257,127 @@ fn sameReal(a: f64, b: f64) bool {
     if (a == 0.0 and b == 0.0) return std.math.signbit(a) == std.math.signbit(b);
     return a == b;
 }
+
+fn generatedReductionSum(value: SEXP) f64 {
+    return zigr_convert.sum(value);
+}
+
+fn generatedReductionMean(value: SEXP) f64 {
+    return zigr_convert.mean(value);
+}
+
+fn generatedReductionSumNarm(value: SEXP) f64 {
+    return zigr_convert.sum_narm(value);
+}
+
+fn generatedReductionMeanNarm(value: SEXP) f64 {
+    return zigr_convert.mean_narm(value);
+}
+
+var reduction_region_class: R.R_altrep_class_t = undefined;
+var reduction_region_registered = false;
+
+fn reductionRegionLength(value: SEXP) callconv(.c) R.R_xlen_t {
+    return R.XLENGTH(R.R_altrep_data1(value));
+}
+
+fn reductionRegionDataptrOrNull(_: SEXP) callconv(.c) ?*const anyopaque {
+    return null;
+}
+
+fn reductionRegionElt(value: SEXP, index: R.R_xlen_t) callconv(.c) f64 {
+    return R.REAL(R.R_altrep_data1(value))[@intCast(index)];
+}
+
+fn reductionRegionGetRegion(
+    value: SEXP,
+    start: R.R_xlen_t,
+    requested: R.R_xlen_t,
+    buffer: [*c]f64,
+) callconv(.c) R.R_xlen_t {
+    if (buffer == null or start < 0 or requested <= 0) return 0;
+    const source = R.R_altrep_data1(value);
+    const length = R.XLENGTH(source);
+    if (start >= length) return 0;
+
+    const count = @min(requested, length - start);
+    @memcpy(
+        @as([*]f64, @ptrCast(buffer))[0..@intCast(count)],
+        R.REAL(source)[@intCast(start)..][0..@intCast(count)],
+    );
+    return count;
+}
+
+fn registerReductionRegion(info: *R.DllInfo) void {
+    if (reduction_region_registered) return;
+    reduction_region_class = R.R_make_altreal_class("reduction_region_real", "zigr", info);
+    R.R_set_altrep_Length_method(reduction_region_class, reductionRegionLength);
+    R.R_set_altvec_Dataptr_or_null_method(reduction_region_class, reductionRegionDataptrOrNull);
+    R.R_set_altreal_Elt_method(reduction_region_class, reductionRegionElt);
+    R.R_set_altreal_Get_region_method(reduction_region_class, reductionRegionGetRegion);
+    reduction_region_registered = true;
+}
+
+fn generatedListReduction(value: SEXP) f64 {
+    if (value == null or R.TYPEOF(value) != R.VECSXP) zigr_convert.signalError(error.ExpectedList);
+    const length = R.XLENGTH(value);
+    if (length < 0) err.signal("list length is negative");
+
+    var total: c_longdouble = 0.0;
+    var na_seen = false;
+    var nan_seen = false;
+    for (0..@as(usize, @intCast(length))) |index| {
+        const item = R.VECTOR_ELT(value, @intCast(index));
+        const item_total = zigr_convert.sum(item);
+        if (R.ISNA(item_total) != 0) {
+            na_seen = true;
+            continue;
+        }
+        if (R.ISNAN(item_total)) {
+            nan_seen = true;
+            continue;
+        }
+        total += @as(c_longdouble, @floatCast(item_total));
+    }
+    if (na_seen) return R.R_NaReal;
+    if (nan_seen) return R.R_NaN;
+
+    const largest_f64: c_longdouble = std.math.floatMax(f64);
+    if (total > largest_f64) return std.math.inf(f64);
+    if (total < -largest_f64) return -std.math.inf(f64);
+    return @floatCast(total);
+}
+
+fn generatedReductionRegion(values: SEXP) SEXP {
+    if (values == null or R.TYPEOF(values) != R.REALSXP) zigr_convert.signalError(error.ExpectedReal);
+    return R.R_new_altrep(reduction_region_class, values, R.R_NilValue);
+}
+
+fn generatedReductionDirect(values: []const f64) SEXP {
+    return MyAlt.init(values);
+}
+
+fn generatedReductionUsesDirect(value: SEXP) bool {
+    return value != null and R.ALTREP(value) != 0 and
+        (R.XLENGTH(value) == 0 or R.REAL_OR_NULL(value) != null);
+}
+
+fn generatedReductionUsesRegions(value: SEXP) bool {
+    return value != null and R.ALTREP(value) != 0 and
+        (R.XLENGTH(value) == 0 or R.REAL_OR_NULL(value) == null);
+}
+
+const ReductionExports = zigr.@"export".generateExports(&.{
+    .{ .name = "zigr_reduction_sum", .func = generatedReductionSum },
+    .{ .name = "zigr_reduction_mean", .func = generatedReductionMean },
+    .{ .name = "zigr_reduction_sum_narm", .func = generatedReductionSumNarm },
+    .{ .name = "zigr_reduction_mean_narm", .func = generatedReductionMeanNarm },
+    .{ .name = "zigr_reduction_list", .func = generatedListReduction },
+    .{ .name = "zigr_reduction_direct", .func = generatedReductionDirect },
+    .{ .name = "zigr_reduction_region", .func = generatedReductionRegion },
+    .{ .name = "zigr_reduction_uses_direct", .func = generatedReductionUsesDirect },
+    .{ .name = "zigr_reduction_uses_regions", .func = generatedReductionUsesRegions },
+}, &.{});
 
 fn sameRealVector(a: SEXP, b: SEXP) bool {
     if (R.TYPEOF(a) != R.REALSXP or R.TYPEOF(b) != R.REALSXP or R.XLENGTH(a) != R.XLENGTH(b)) return false;
