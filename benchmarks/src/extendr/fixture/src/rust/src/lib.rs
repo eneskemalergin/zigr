@@ -175,8 +175,8 @@ fn fixture_outputs() -> List {
 }
 
 #[extendr]
-fn bench_vector_sum(x: Doubles) -> f64 {
-    x.iter().map(|v| v.0).sum()
+fn bench_vector_sum(x: Doubles) -> std::result::Result<Robj, Error> {
+    call!("sum", x)
 }
 
 #[extendr]
@@ -205,16 +205,8 @@ fn bench_sort(x: Doubles) -> Doubles {
 }
 
 #[extendr]
-fn bench_missing_mean(x: Doubles) -> f64 {
-    let mut total = 0.0;
-    let mut count = 0usize;
-    for value in x.iter().map(|v| v.0) {
-        if !value.is_nan() {
-            total += value;
-            count += 1;
-        }
-    }
-    total / count as f64
+fn bench_missing_mean(x: Doubles) -> std::result::Result<Robj, Error> {
+    call!("mean", x, 0.0, true)
 }
 
 #[extendr]
@@ -259,12 +251,10 @@ fn bench_dataframe(data: List) -> std::result::Result<Robj, Error> {
 }
 
 #[extendr]
-fn bench_list_sum(x: List) -> std::result::Result<f64, Error> {
-    let mut total = 0.0;
-    for value in x.values() {
-        total += Doubles::try_from(value)?.iter().map(|v| v.0).sum::<f64>();
-    }
-    Ok(total)
+fn bench_list_sum(x: List) -> std::result::Result<Robj, Error> {
+    let sum_function = call!("get", "sum", envir = call!("baseenv")?)?;
+    let totals = call!("vapply", x, sum_function, Doubles::from_values([0.0]))?;
+    call!("sum", totals)
 }
 
 #[extendr]

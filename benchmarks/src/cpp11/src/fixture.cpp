@@ -1,6 +1,7 @@
 #include <cpp11.hpp>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -19,6 +20,61 @@ struct FixtureLifecycleCounts {
 };
 
 FixtureLifecycleCounts lifecycle_counts;
+
+double exact_real_sum(const cpp11::doubles& values) {
+  long double total = 0.0;
+  bool na_seen = false, nan_seen = false;
+  for (double value : values) {
+    if (ISNAN(value)) {
+      if (ISNA(value)) na_seen = true;
+      else nan_seen = true;
+    } else {
+      total += static_cast<long double>(value);
+    }
+  }
+  if (na_seen) return NA_REAL;
+  if (nan_seen) return R_NaN;
+  if (total > DBL_MAX) return R_PosInf;
+  if (total < -DBL_MAX) return R_NegInf;
+  return static_cast<double>(total);
+}
+
+double exact_real_mean_narm(const cpp11::doubles& values) {
+  long double total = 0.0;
+  R_xlen_t count = 0;
+  for (double value : values) {
+    if (!ISNAN(value)) {
+      total += static_cast<long double>(value);
+      ++count;
+    }
+  }
+  if (count == 0) return R_NaN;
+
+  long double divisor = static_cast<long double>(count);
+  bool finite_total = R_FINITE(static_cast<double>(total));
+  long double result;
+  if (finite_total) {
+    result = total / divisor;
+  } else {
+    long double scaled_total = 0.0;
+    double scaled_divisor = static_cast<double>(count);
+    for (double value : values) {
+      if (!ISNAN(value)) scaled_total += static_cast<long double>(value / scaled_divisor);
+    }
+    result = scaled_total;
+  }
+  if (R_FINITE(static_cast<double>(result))) {
+    long double correction = 0.0;
+    for (double value : values) {
+      if (ISNAN(value)) continue;
+      correction += finite_total
+        ? static_cast<long double>(value) - result
+        : (static_cast<long double>(value) - result) / divisor;
+    }
+    result += finite_total ? correction / divisor : correction;
+  }
+  return static_cast<double>(result);
+}
 
 void require_length(R_xlen_t actual, R_xlen_t expected, const char* label) {
   if (actual != expected) {
@@ -240,7 +296,7 @@ bench_external_ptr(cpp11::integers value) {
 }
 
 [[cpp11::register]] double bench_vector_sum(cpp11::doubles x) {
-  return numeric_sum(x);
+  return exact_real_sum(x);
 }
 
 [[cpp11::register]] cpp11::doubles bench_numeric_transform(cpp11::doubles x) {
@@ -262,10 +318,7 @@ bench_external_ptr(cpp11::integers value) {
 }
 
 [[cpp11::register]] double bench_missing_mean(cpp11::doubles x) {
-  double total = 0.0;
-  R_xlen_t count = 0;
-  for (double value : x) if (!R_IsNA(value) && !R_IsNaN(value)) { total += value; ++count; }
-  return total / static_cast<double>(count);
+  return exact_real_mean_narm(x);
 }
 
 [[cpp11::register]] cpp11::sexp bench_transpose(cpp11::sexp x) {
@@ -297,9 +350,19 @@ bench_external_ptr(cpp11::integers value) {
 }
 
 [[cpp11::register]] double bench_list_sum(cpp11::list x) {
-  double total = 0.0;
-  for (SEXP item : x) total += numeric_sum(cpp11::doubles(item));
-  return total;
+  long double total = 0.0;
+  bool na_seen = false, nan_seen = false;
+  for (SEXP item : x) {
+    double item_total = exact_real_sum(cpp11::doubles(item));
+    if (ISNA(item_total)) na_seen = true;
+    else if (ISNAN(item_total)) nan_seen = true;
+    else total += static_cast<long double>(item_total);
+  }
+  if (na_seen) return NA_REAL;
+  if (nan_seen) return R_NaN;
+  if (total > DBL_MAX) return R_PosInf;
+  if (total < -DBL_MAX) return R_NegInf;
+  return static_cast<double>(total);
 }
 
 [[cpp11::register]] cpp11::sexp bench_string_concat(cpp11::strings x) {

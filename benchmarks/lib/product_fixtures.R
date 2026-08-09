@@ -75,6 +75,57 @@ direct_assert_runner_parity <- function(spec, r_result, c_result, runner_result,
   invisible(runner_result)
 }
 
+exact_reduction_arguments <- function(task_id) {
+  switch(task_id,
+    vector_sum = list(
+      list(c(1e16, 1, -1e16)),
+      list(c(NaN, NA_real_, 1)),
+      list(c(Inf, -Inf)),
+      list(rep(.Machine$double.xmax, 2L)),
+      list(-0),
+      list(numeric())
+    ),
+    missing_mean = list(
+      list(c(1e16, NA_real_, 1, NaN, -1e16)),
+      list(c(NA_real_, NaN)),
+      list(c(Inf, NA_real_, -Inf)),
+      list(c(rep(.Machine$double.xmax, 3L), NA_real_)),
+      list(-0),
+      list(numeric())
+    ),
+    list_sum = list(
+      list(list(c(1e16, 1, -1e16), c(1e16, 1, -1e16))),
+      list(list(c(NaN, NA_real_, 1), c(2, 3))),
+      list(list(c(Inf, 1), -Inf)),
+      list(list(.Machine$double.xmax, .Machine$double.xmax)),
+      list(list(-0)),
+      list(list())
+    ),
+    list()
+  )
+}
+
+direct_assert_exact_reduction_oracles <- function(spec, runner, runner_invoke, c_dll) {
+  cases <- exact_reduction_arguments(spec$id)
+  if (length(cases) == 0L) return(invisible(TRUE))
+  r_function <- get(spec$function_name, envir = .GlobalEnv, inherits = FALSE)
+  for (index in seq_along(cases)) {
+    arguments <- cases[[index]]
+    expected <- do.call(r_function, arguments)
+    c_result <- revision_native_call(c_dll, paste0("c_revision_", spec$id), arguments)
+    runner_result <- runner_invoke(arguments)
+    label <- sprintf("%s exact case %d", spec$id, index)
+    revision_assert_same(expected, c_result, paste0(label, " R/C"))
+    revision_assert_same(expected, runner_result, paste0(label, " R/", runner))
+    revision_assert_same(c_result, runner_result, paste0(label, " C/", runner))
+    encodings <- c(sprintf("%a", expected), sprintf("%a", c_result), sprintf("%a", runner_result))
+    if (length(unique(encodings)) != 1L) {
+      stop(sprintf("%s scalar encodings differ", label))
+    }
+  }
+  invisible(TRUE)
+}
+
 direct_assert_fresh_result <- function(spec, runner, input, result, repeat_result,
                                        same_sexp) {
   allocating <- validate_direct_task_suitability()
@@ -252,6 +303,7 @@ run_benchmark_revision_gate <- function(
     direct_assert_runner_parity(
       spec, r_result, c_result, runner_result, runner, r_rng, c_rng, runner_rng
     )
+    direct_assert_exact_reduction_oracles(spec, runner, runner_invoke, c_dll)
 
     runner_repeat_result <- NULL
     if (identical(direct_task_batchability(spec$id), "repeat")) {

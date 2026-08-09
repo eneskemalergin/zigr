@@ -181,7 +181,7 @@ fn fixture_outputs() -> savvy::Result<Sexp> {
 
 #[savvy]
 fn bench_vector_sum(x: RealSexp) -> savvy::Result<Sexp> {
-    OwnedRealSexp::try_from_scalar(x.as_slice().iter().sum::<f64>())?.into()
+    call_r1("base::sum", Sexp(x.inner()))
 }
 
 #[savvy]
@@ -211,15 +211,7 @@ fn bench_sort(x: RealSexp) -> savvy::Result<Sexp> {
 
 #[savvy]
 fn bench_missing_mean(x: RealSexp) -> savvy::Result<Sexp> {
-    let mut total = 0.0;
-    let mut count = 0usize;
-    for value in x.as_slice() {
-        if !value.is_nan() {
-            total += value;
-            count += 1;
-        }
-    }
-    OwnedRealSexp::try_from_scalar(total / count as f64)?.into()
+    call_r1("function(x) mean(x,na.rm=TRUE)", Sexp(x.inner()))
 }
 
 #[savvy]
@@ -305,11 +297,7 @@ fn bench_dataframe(data: ListSexp) -> savvy::Result<Sexp> {
 
 #[savvy]
 fn bench_list_sum(x: ListSexp) -> savvy::Result<Sexp> {
-    let mut total = 0.0;
-    for value in x.values_iter() {
-        total += RealSexp::try_from(value)?.as_slice().iter().sum::<f64>();
-    }
-    OwnedRealSexp::try_from_scalar(total)?.into()
+    call_r1("function(x) sum(vapply(x,sum,numeric(1)))", Sexp(x.inner()))
 }
 
 #[savvy]

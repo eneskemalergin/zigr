@@ -8,6 +8,8 @@ The product comparison set is zigr, Rcpp, cpp11, extendr, and Savvy. Pure R and 
 
 `c_call` is the registered handwritten C control. It is included only for tasks with a matching registered `c_revision_<task>` entry and never counts as a product win. A task without an applicable control remains in the suite with an explicit non-applicability disposition.
 
+Reduction fixtures must match R's ordered extended-precision result. The C and C++ fixtures implement that algorithm directly. The fixture Rust toolchains do not expose a matching extended-precision scalar, so Extendr and Savvy use their public R-call interfaces; those rows include the delegated base-R kernel.
+
 The timed event excludes input construction, correctness comparison, timers, and result retention. Each timing sample is one timer interval around the declared fixed-count event batch. The batch count is selected once per task across all runners from the declared 1, 8, 64 ladder. Tasks with state, RNG, or ALTREP representation changes remain at one event per batch.
 
 ## Commands

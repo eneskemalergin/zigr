@@ -1,6 +1,7 @@
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
+#include <float.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,65 @@ static c_benchmark_lifecycle_counts c_benchmark_lifecycle = {0, 0, 0, 0};
 static c_benchmark_altrep_counts c_benchmark_altrep = {0, 0, 0, 0};
 static R_altrep_class_t c_benchmark_altrep_integer_class;
 static volatile double c_measurement_probe_sink = 0.0;
+
+static double c_exact_real_sum(const double *values, R_xlen_t length) {
+    long double total = 0.0;
+    int na_seen = 0, nan_seen = 0;
+    for (R_xlen_t index = 0; index < length; ++index) {
+        double value = values[index];
+        if (ISNAN(value)) {
+            if (ISNA(value)) na_seen = 1;
+            else nan_seen = 1;
+        } else {
+            total += (long double) value;
+        }
+    }
+    if (na_seen) return NA_REAL;
+    if (nan_seen) return R_NaN;
+    if (total > DBL_MAX) return R_PosInf;
+    if (total < -DBL_MAX) return R_NegInf;
+    return (double) total;
+}
+
+static double c_exact_real_mean_narm(const double *values, R_xlen_t length) {
+    long double total = 0.0;
+    R_xlen_t count = 0;
+    for (R_xlen_t index = 0; index < length; ++index) {
+        double value = values[index];
+        if (!ISNAN(value)) {
+            total += (long double) value;
+            ++count;
+        }
+    }
+    if (count == 0) return R_NaN;
+
+    long double divisor = (long double) count;
+    int finite_total = R_FINITE((double) total);
+    long double result;
+    if (finite_total) {
+        result = total / divisor;
+    } else {
+        long double scaled_total = 0.0;
+        double scaled_divisor = (double) count;
+        for (R_xlen_t index = 0; index < length; ++index) {
+            double value = values[index];
+            if (!ISNAN(value)) scaled_total += (long double) (value / scaled_divisor);
+        }
+        result = scaled_total;
+    }
+    if (R_FINITE((double) result)) {
+        long double correction = 0.0;
+        for (R_xlen_t index = 0; index < length; ++index) {
+            double value = values[index];
+            if (ISNAN(value)) continue;
+            correction += finite_total
+                ? (long double) value - result
+                : ((long double) value - result) / divisor;
+        }
+        result += finite_total ? correction / divisor : correction;
+    }
+    return (double) result;
+}
 
 static SEXP c_measurement_probe_noop(void) {
     return R_NilValue;
@@ -643,10 +703,7 @@ static SEXP c_benchmark_fixture_outputs(void) {
 }
 
 static SEXP c_revision_vector_sum(SEXP x) {
-    R_xlen_t n = XLENGTH(x);
-    double total = 0.0;
-    for (R_xlen_t i = 0; i < n; ++i) total += REAL(x)[i];
-    return Rf_ScalarReal(total);
+    return Rf_ScalarReal(c_exact_real_sum(REAL(x), XLENGTH(x)));
 }
 
 static SEXP c_revision_numeric_transform(SEXP x) { return c_benchmark_fixture_numeric(x); }
@@ -662,10 +719,7 @@ static SEXP c_revision_broadcast(SEXP x, SEXP scalar) {
 static SEXP c_revision_sort(SEXP x) { return c_call_bench_sort(x); }
 
 static SEXP c_revision_missing_mean(SEXP x) {
-    R_xlen_t n = XLENGTH(x), count = 0;
-    double total = 0.0;
-    for (R_xlen_t i = 0; i < n; ++i) if (!ISNAN(REAL(x)[i])) { total += REAL(x)[i]; ++count; }
-    return Rf_ScalarReal(total / (double) count);
+    return Rf_ScalarReal(c_exact_real_mean_narm(REAL(x), XLENGTH(x)));
 }
 
 static SEXP c_revision_transpose(SEXP x) { return c_call_bench_matrix_transpose(x); }
@@ -721,12 +775,20 @@ static SEXP c_revision_dataframe(SEXP data) {
 }
 
 static SEXP c_revision_list_sum(SEXP x) {
-    double total = 0.0;
+    long double total = 0.0;
+    int na_seen = 0, nan_seen = 0;
     for (R_xlen_t i = 0; i < XLENGTH(x); ++i) {
         SEXP values = VECTOR_ELT(x, i);
-        for (R_xlen_t j = 0; j < XLENGTH(values); ++j) total += REAL(values)[j];
+        double item_total = c_exact_real_sum(REAL(values), XLENGTH(values));
+        if (ISNA(item_total)) na_seen = 1;
+        else if (ISNAN(item_total)) nan_seen = 1;
+        else total += (long double) item_total;
     }
-    return Rf_ScalarReal(total);
+    if (na_seen) return Rf_ScalarReal(NA_REAL);
+    if (nan_seen) return Rf_ScalarReal(R_NaN);
+    if (total > DBL_MAX) return Rf_ScalarReal(R_PosInf);
+    if (total < -DBL_MAX) return Rf_ScalarReal(R_NegInf);
+    return Rf_ScalarReal((double) total);
 }
 
 static SEXP c_revision_string_concat(SEXP x) {
