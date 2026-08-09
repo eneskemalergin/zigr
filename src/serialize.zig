@@ -1,24 +1,23 @@
-//! R serialization through the public persistent-stream API.
+//! R serialization through public R APIs.
 //!
 //! `toVector` writes portable XDR bytes with format version 3. The returned
 //! RAWSXP and values returned by `fromVector` are unprotected. Both operations
-//! can allocate in R and longjmp; their native stream state is unwind-safe.
-//! Callers keep input SEXPs reachable across each operation. Serialization may
-//! invoke an input ALTREP class's serialization or element callbacks. Decoding
-//! an ALTREP RAWSXP reads regions without requesting a contiguous data pointer.
+//! can allocate in R and longjmp. Callers keep input SEXPs reachable across
+//! each operation. Serialization may invoke an input ALTREP class's
+//! serialization or element callbacks. Ordinary raw inputs use R's public
+//! `unserialize` operation; ALTREP raw inputs use the persistent-stream API so
+//! decoding can read regions without requesting a contiguous data pointer.
 //!
 //! R describes the custom persistent-stream API as highly experimental. The
-//! implementation is pinned to the installed `Rinternals.h` declarations.
+//! ALTREP input path is pinned to the installed `Rinternals.h` declarations.
 
 const std = @import("std");
 const R = @import("R");
 const cleanup = @import("cleanup");
 const err = @import("error");
-const memory = @import("memory.zig");
 const protect = @import("protect.zig");
-const sexp_mod = @import("sexp.zig");
 
-/// R serialization versions supported by the public stream API.
+/// Supported R serialization format versions.
 pub const Version = enum(c_int) {
     v2 = 2,
     v3 = 3,
@@ -36,58 +35,6 @@ pub fn errorMessage(error_value: SerializeError) []const u8 {
     };
 }
 
-const OutputContext = struct {
-    allocator: std.mem.Allocator,
-    bytes: std.ArrayList(u8) = .empty,
-};
-
-fn initialOutputCapacity(value: R.SEXP) usize {
-    const length = R.XLENGTH(value);
-    if (length <= 0) return 0;
-    const element_size: usize = switch (R.TYPEOF(value)) {
-        R.RAWSXP => @sizeOf(u8),
-        R.INTSXP, R.LGLSXP => @sizeOf(i32),
-        R.REALSXP => @sizeOf(f64),
-        R.CPLXSXP => @sizeOf(f64) * 2,
-        else => 0,
-    };
-    if (element_size == 0) return 0;
-    const payload = std.math.mul(usize, @intCast(length), element_size) catch return 0;
-    return std.math.add(usize, payload, 64) catch 0;
-}
-
-fn outputContext(stream: R.R_outpstream_t) *OutputContext {
-    if (stream == null) err.signal("serialization output stream is null");
-    const data = stream[0].data orelse err.signal("serialization output state is null");
-    return @ptrCast(@alignCast(data));
-}
-
-fn appendByte(context: *OutputContext, value: u8) void {
-    if (context.bytes.items.len < context.bytes.capacity) {
-        context.bytes.appendAssumeCapacity(value);
-    } else {
-        context.bytes.append(context.allocator, value) catch
-            err.signal("out of memory during serialization");
-    }
-}
-
-fn outChar(stream: R.R_outpstream_t, value: c_int) callconv(.c) void {
-    if (value < 0 or value > std.math.maxInt(u8)) err.signal("serialization produced an invalid byte");
-    const context = outputContext(stream);
-    appendByte(context, @intCast(value));
-}
-
-fn outBytes(stream: R.R_outpstream_t, data: ?*anyopaque, len: c_int) callconv(.c) void {
-    if (len < 0) err.signal("serialization produced an invalid byte count");
-    const count: usize = @intCast(len);
-    if (count == 0) return;
-    const raw = data orelse err.signal("serialization produced null bytes");
-    const bytes = @as([*]const u8, @ptrCast(raw))[0..count];
-    const context = outputContext(stream);
-    context.bytes.appendSlice(context.allocator, bytes) catch
-        err.signal("out of memory during serialization");
-}
-
 const SerializeRequest = struct {
     value: R.SEXP,
     version: Version,
@@ -98,35 +45,21 @@ fn serializeCall(data: ?*anyopaque) R.SEXP {
         err.signal("serialization request is null")));
     var input = protect.scoped(request.value);
     defer input.deinit();
-
-    var arena = memory.UnwindArena.init();
-    defer arena.deinit();
-    var context = OutputContext{ .allocator = arena.allocator() };
-    const initial_capacity = initialOutputCapacity(input.get());
-    if (initial_capacity != 0) {
-        context.bytes.ensureTotalCapacityPrecise(context.allocator, initial_capacity) catch
-            err.signal("out of memory during serialization");
-    }
-    var stream: R.struct_R_outpstream_st = .{};
-    R.R_InitOutPStream(
-        &stream,
-        @ptrCast(&context),
-        R.R_pstream_xdr_format,
-        @intFromEnum(request.version),
-        outChar,
-        outBytes,
-        null,
+    var version = protect.scoped(R.Rf_ScalarInteger(@intFromEnum(request.version)));
+    defer version.deinit();
+    var call = protect.scoped(R.Rf_lang4(
+        R.Rf_install("serialize"),
+        input.get(),
         R.R_NilValue,
-    );
-    R.R_Serialize(input.get(), &stream);
-
-    if (!sexp_mod.fitsVectorLength(context.bytes.items.len)) {
-        err.signal("serialized output exceeds R_XLEN_T_MAX");
+        version.get(),
+    ));
+    defer call.deinit();
+    R.SET_TAG(R.CDR(R.CDR(R.CDR(call.get()))), R.Rf_install("version"));
+    const result = R.Rf_eval(call.get(), R.R_BaseEnv);
+    if (result == null or R.TYPEOF(result) != R.RAWSXP) {
+        err.signal("serialization did not return a raw vector");
     }
-    var result = protect.scoped(R.Rf_allocVector(R.RAWSXP, @intCast(context.bytes.items.len)));
-    defer result.deinit();
-    @memcpy(R.RAW(result.get())[0..context.bytes.items.len], context.bytes.items);
-    return result.get();
+    return result;
 }
 
 /// Serializes with portable XDR encoding and an explicit R format version.
@@ -201,6 +134,12 @@ fn unserializeCall(data: ?*anyopaque) R.SEXP {
         err.signal("unserialization request is null")));
     var input = protect.scoped(serialized);
     defer input.deinit();
+
+    if (R.ALTREP(input.get()) == 0) {
+        var call = protect.scoped(R.Rf_lang2(R.Rf_install("unserialize"), input.get()));
+        defer call.deinit();
+        return R.Rf_eval(call.get(), R.R_BaseEnv);
+    }
 
     const raw_len = R.XLENGTH(input.get());
     if (raw_len < 0) err.signal("serialized input has negative length");

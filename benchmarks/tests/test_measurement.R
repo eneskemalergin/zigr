@@ -362,13 +362,18 @@ cost_accounts <- direct_task_cost_accounts()
 expect_true(
   identical(as.character(cost_accounts$task), direct_cost_account_task_ids()) &&
     identical(cost_accounts$input_elements[cost_accounts$task == "rng"], 1L) &&
+    identical(cost_accounts$input_passes[cost_accounts$task == "missing_mean"], 2L) &&
+    identical(cost_accounts$input_passes[cost_accounts$task == "list_sum"], 1L) &&
     identical(cost_accounts$borrowed_bytes[cost_accounts$task == "attributes"], 0) &&
     identical(cost_accounts$native_requested_bytes[cost_accounts$task == "sort"], 1324288) &&
-    identical(cost_accounts$native_requested_bytes[cost_accounts$task == "serialize"], 800064) &&
+    identical(cost_accounts$native_requested_bytes[cost_accounts$task == "serialize"], 0) &&
     identical(cost_accounts$r_payload_bytes[cost_accounts$task == "serialize"], 1600031) &&
+    identical(cost_accounts$borrowed_bytes[cost_accounts$task == "serialize"], 0) &&
+    identical(cost_accounts$copied_bytes[cost_accounts$task == "serialize"], 0) &&
+    identical(cost_accounts$written_bytes[cost_accounts$task == "serialize"], 0) &&
     identical(cost_accounts$list_slot_reads[cost_accounts$task == "list_sum"], 1000L) &&
     identical(cost_accounts$materialized_bytes[cost_accounts$task == "altrep_materialize"], 1024),
-  "fixed-input cost accounts record attributable native, R-payload, list, and materialization bytes"
+  "fixed-input cost accounts record attributable passes, native work, R payloads, list access, and materialization"
 )
 expect_true(
   identical(validate_direct_task_cost_accounts(cost_accounts), cost_accounts),
