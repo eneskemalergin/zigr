@@ -1722,28 +1722,97 @@ const LogicalChunkIter = struct {
     }
 };
 
-pub fn sum(sexp: SEXP) f64 {
-    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
-    const n = xlength(sexp);
-    if (n == 0) return 0.0;
+fn narrowRealSum(total: c_longdouble) f64 {
+    const largest_f64: c_longdouble = std.math.floatMax(f64);
+    if (total > largest_f64) return std.math.inf(f64);
+    if (total < -largest_f64) return -std.math.inf(f64);
+    return @floatCast(total);
+}
 
-    const lanes = simd.f64_lanes;
-    var total: f64 = 0.0;
+fn realSum(sexp: SEXP, na_rm: bool) f64 {
+    var total: c_longdouble = 0.0;
+    var na_seen = false;
+    var nan_seen = false;
     var iter = RealChunkIter.init(sexp);
     while (iter.next()) |chunk| {
-        var i: usize = 0;
-        if (chunk.data.len >= lanes) {
-            var vec_total: @Vector(lanes, f64) = @splat(0.0);
-            const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                vec_total += chunk.data[i..][0..lanes].*;
+        for (chunk.data) |value| {
+            if (value != value) {
+                @branchHint(.unlikely);
+                if (!na_rm) {
+                    if (R.ISNA(value) != 0) na_seen = true else nan_seen = true;
+                }
+                continue;
             }
-            total += @reduce(.Add, vec_total);
+            total += @as(c_longdouble, @floatCast(value));
         }
-        while (i < chunk.data.len) : (i += 1) total += chunk.data[i];
     }
 
-    return total;
+    if (na_seen) return R.R_NaReal;
+    if (nan_seen) return R.R_NaN;
+    return narrowRealSum(total);
+}
+
+fn realMean(sexp: SEXP, na_rm: bool) f64 {
+    var total: c_longdouble = 0.0;
+    var count: usize = 0;
+    var na_seen = false;
+    var nan_seen = false;
+    var iter = RealChunkIter.init(sexp);
+    while (iter.next()) |chunk| {
+        for (chunk.data) |value| {
+            if (value != value) {
+                @branchHint(.unlikely);
+                if (!na_rm) {
+                    if (R.ISNA(value) != 0) na_seen = true else nan_seen = true;
+                }
+                continue;
+            }
+            total += @as(c_longdouble, @floatCast(value));
+            count += 1;
+        }
+    }
+
+    if (na_seen) return R.R_NaReal;
+    if (nan_seen) return R.R_NaN;
+    if (count == 0) return R.R_NaN;
+
+    const divisor: c_longdouble = @floatFromInt(count);
+    const finite_total = std.math.isFinite(@as(f64, @floatCast(total)));
+    var result = if (finite_total) total / divisor else scaled: {
+        const scaled_divisor: f64 = @floatFromInt(count);
+        var scaled_total: c_longdouble = 0.0;
+        var scaled_iter = RealChunkIter.init(sexp);
+        while (scaled_iter.next()) |chunk| {
+            for (chunk.data) |value| {
+                if (na_rm and value != value) continue;
+                scaled_total += @as(c_longdouble, @floatCast(value / scaled_divisor));
+            }
+        }
+        break :scaled scaled_total;
+    };
+
+    if (std.math.isFinite(@as(f64, @floatCast(result)))) {
+        var correction: c_longdouble = 0.0;
+        var correction_iter = RealChunkIter.init(sexp);
+        while (correction_iter.next()) |chunk| {
+            for (chunk.data) |value| {
+                if (na_rm and value != value) continue;
+                const extended: c_longdouble = @floatCast(value);
+                correction += if (finite_total)
+                    extended - result
+                else
+                    (extended - result) / divisor;
+            }
+        }
+        result += if (finite_total) correction / divisor else correction;
+    }
+
+    return @floatCast(result);
+}
+
+pub fn sum(sexp: SEXP) f64 {
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
+    return realSum(sexp, false);
 }
 
 pub fn sumInt(sexp: SEXP) i64 {
@@ -1941,7 +2010,8 @@ pub fn argmaxLogical(sexp: SEXP) i64 {
 }
 
 pub fn mean(sexp: SEXP) f64 {
-    return sum(sexp) / @as(f64, @floatFromInt(R.XLENGTH(sexp)));
+    expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
+    return realMean(sexp, false);
 }
 
 pub fn norm2(sexp: SEXP) f64 {
@@ -2180,71 +2250,12 @@ pub fn argmax(sexp: SEXP) i64 {
 
 pub fn sum_narm(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
-    const n = xlength(sexp);
-    if (n == 0) return 0.0;
-
-    const lanes = simd.f64_lanes;
-    const zero: @Vector(lanes, f64) = @splat(0.0);
-    var total: f64 = 0.0;
-    var iter = RealChunkIter.init(sexp);
-    while (iter.next()) |chunk| {
-        var i: usize = 0;
-        if (chunk.data.len >= lanes) {
-            var vec_total: @Vector(lanes, f64) = @splat(0.0);
-            const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                const v: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
-                const ok = v == v;
-                vec_total += @select(f64, ok, v, zero);
-            }
-            total += @reduce(.Add, vec_total);
-        }
-        while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNAN(chunk.data[i])) continue;
-            total += chunk.data[i];
-        }
-    }
-
-    return total;
+    return realSum(sexp, true);
 }
 
 pub fn mean_narm(sexp: SEXP) f64 {
     expectType(sexp, R.REALSXP, error.ExpectedReal) catch |err| signalError(err);
-    const n = xlength(sexp);
-    if (n == 0) return R.R_NaN;
-
-    const lanes = simd.f64_lanes;
-    const zero: @Vector(lanes, f64) = @splat(0.0);
-    const one: @Vector(lanes, f64) = @splat(1.0);
-    var total: f64 = 0.0;
-    var count: i64 = 0;
-    var iter = RealChunkIter.init(sexp);
-    while (iter.next()) |chunk| {
-        var i: usize = 0;
-        if (chunk.data.len >= lanes) {
-            var vec_total: @Vector(lanes, f64) = @splat(0.0);
-            var vec_cnt: @Vector(lanes, f64) = @splat(0.0);
-            const end = chunk.data.len - (chunk.data.len % lanes);
-            while (i < end) : (i += lanes) {
-                const v: @Vector(lanes, f64) = chunk.data[i..][0..lanes].*;
-                const ok = v == v;
-                vec_total += @select(f64, ok, v, zero);
-                vec_cnt += @select(f64, ok, one, zero);
-            }
-            total += @reduce(.Add, vec_total);
-            count += @as(i64, @intFromFloat(@reduce(.Add, vec_cnt)));
-        }
-        while (i < chunk.data.len) : (i += 1) {
-            if (R.ISNAN(chunk.data[i])) {
-                @branchHint(.unlikely);
-                continue;
-            }
-            total += chunk.data[i];
-            count += 1;
-        }
-    }
-
-    return if (count == 0) R.R_NaN else total / @as(f64, @floatFromInt(count));
+    return realMean(sexp, true);
 }
 
 fn realPairMin(a: f64, b: f64) f64 {

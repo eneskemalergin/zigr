@@ -76,7 +76,8 @@ Run `zig build fmt` separately for formatting. Commands that compile zigr fail w
 - Type conversion (real, int, string, logical, raw, complex)
 - Protected direct result builders for final numeric, integer, logical, raw, complex, string, list, and fixed-schema R storage
 - Explicit borrowed-or-owned export views for numeric and complex inputs, plus header-free read-only string projections via `convert.StringIdentityView`, `StringMissingnessView`, `StringBytesView`, `StringEncodingView`, `StringTranslatedTextView`, and `StringMetadataView`
-- SIMD vector math via `@Vector(8, f64)` -> sum, mean, norm2, min, max, argmin, argmax, sum_narm, mean_narm, pmin, pmax, cumsum
+- R-compatible ordered real reductions for `sum`, `mean`, `sum_narm`, and `mean_narm`
+- SIMD kernels for integer sum and argmin/argmax plus real `norm2`, extrema, and `scaleAdd`
 - ALTREP consumption and owned creation for real, integer, logical, raw, complex, and string vectors
 - Data frames, attributes, S4 objects, external pointers, weak references
 - R code evaluation (`rCodeEval`, `rRawEval`)

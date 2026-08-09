@@ -191,18 +191,7 @@ fn directReal(value: R.SEXP) ?[]const f64 {
 }
 
 fn benchVectorSum(value: R.SEXP) f64 {
-    if (directReal(value)) |data| {
-        var total: f64 = 0.0;
-        for (data) |element| total += element;
-        return total;
-    }
-    var input = realOnePass(value);
-    defer input.deinit();
-    var total: f64 = 0.0;
-    while (input.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk) |element| total += element;
-    }
-    return total;
+    return convert.sum(value);
 }
 
 fn benchNumericTransform(value: R.SEXP) R.SEXP {
@@ -295,26 +284,7 @@ fn benchSort(value: R.SEXP) R.SEXP {
 }
 
 fn benchMissingMean(value: R.SEXP) f64 {
-    if (directReal(value)) |data| {
-        var total: f64 = 0.0;
-        var count: usize = 0;
-        for (data) |element| if (element == element) {
-            total += element;
-            count += 1;
-        };
-        return total / @as(f64, @floatFromInt(count));
-    }
-    var input = realOnePass(value);
-    defer input.deinit();
-    var total: f64 = 0.0;
-    var count: usize = 0;
-    while (input.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk) |element| if (element == element) {
-            total += element;
-            count += 1;
-        };
-    }
-    return total / @as(f64, @floatFromInt(count));
+    return convert.mean_narm(value);
 }
 
 fn transposeInto(output: []f64, source: []const f64, rows: usize, columns: usize) void {
@@ -417,21 +387,31 @@ fn benchListSum(value: R.SEXP) f64 {
     if (value == null or R.TYPEOF(value) != R.VECSXP) convert.signalError(error.ExpectedList);
     const length = R.XLENGTH(value);
     if (length < 0) zigr.@"error".signal("list length is negative");
-    var total: f64 = 0.0;
+    var total: c_longdouble = 0.0;
+    var na_seen = false;
+    var nan_seen = false;
     for (0..@as(usize, @intCast(length))) |index| {
         const item = R.VECTOR_ELT(value, @intCast(index));
-        if (item != null and R.TYPEOF(item) == R.REALSXP and R.ALTREP(item) == 0) {
-            for (R.REAL(item)[0..@as(usize, @intCast(R.XLENGTH(item)))]) |element| total += element;
+        const item_total = convert.sum(item);
+        if (R.ISNA(item_total) != 0) {
+            na_seen = true;
             continue;
         }
-        var input = realOnePass(item);
-        while (input.next() catch |err| convert.signalError(err)) |chunk| {
-            for (chunk) |element| total += element;
+        if (R.ISNAN(item_total)) {
+            nan_seen = true;
+            continue;
         }
-        input.deinit();
+        total += @as(c_longdouble, @floatCast(item_total));
     }
-    return total;
+    if (na_seen) return R.R_NaReal;
+    if (nan_seen) return R.R_NaN;
+
+    const largest_f64: c_longdouble = std.math.floatMax(f64);
+    if (total > largest_f64) return std.math.inf(f64);
+    if (total < -largest_f64) return -std.math.inf(f64);
+    return @floatCast(total);
 }
+
 fn benchStringConcat(value: R.SEXP) R.SEXP {
     var separator = zigr.protect.scoped(R.Rf_mkString(", "));
     defer separator.deinit();
