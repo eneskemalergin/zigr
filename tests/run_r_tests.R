@@ -96,6 +96,7 @@ run_generated_registration_arity_test <- function() {
   state_entry <- call_routines[["zigr_arity_probe_state"]]
   if (is.null(state_entry) || state_entry$numParameters != 0L) stop("missing state constructor registration")
   state <- .Call(state_entry)
+  if (!rejects_call(state_entry, list(1L))) stop("state constructor accepted wrong arity")
 
   for (extra_arity in 0:4) {
     name <- paste0("r_runtime_ArityProbeState__arity_", extra_arity)
