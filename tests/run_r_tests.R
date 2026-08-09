@@ -459,6 +459,7 @@ gctorture_setting <- Sys.getenv("ZIGR_GCTORTURE", "")
 gctorture_mode <- nzchar(gctorture_setting) && !tolower(gctorture_setting) %in% c("0", "false", "no")
 gctorture_step <- suppressWarnings(as.integer(gctorture_setting))
 if (is.na(gctorture_step) || gctorture_step < 1L) gctorture_step <- 10L
+reduction_only <- tolower(Sys.getenv("ZIGR_REDUCTION_ONLY", "false")) %in% c("1", "true", "yes")
 
 run_with_gctorture <- function(expr) {
   if (!gctorture_mode) return(force(expr))
@@ -480,14 +481,17 @@ reduction_symbols <- local({
     list = "zigr_reduction_list",
     direct = "zigr_reduction_direct",
     region = "zigr_reduction_region",
+    failing_region = "zigr_reduction_failing_region",
     uses_direct = "zigr_reduction_uses_direct",
-    uses_regions = "zigr_reduction_uses_regions"
+    uses_regions = "zigr_reduction_uses_regions",
+    reset_diagnostics = "zigr_reduction_reset_diagnostics",
+    resource_state = "zigr_reduction_resource_state"
   )
   lapply(names, function(name) getNativeSymbolInfo(name, reduction_dll)$address)
 })
 
-reduction_call <- function(name, value) {
-  .Call(reduction_symbols[[name]], value)
+reduction_call <- function(name, ...) {
+  .Call(reduction_symbols[[name]], ...)
 }
 
 reduction_direct <- function(values) {
@@ -502,6 +506,14 @@ reduction_region <- function(values) {
   result <- reduction_call("region", values)
   if (!identical(reduction_call("uses_regions", result), TRUE)) {
     stop("reduction region fixture exposes direct storage")
+  }
+  result
+}
+
+reduction_failing_region <- function(values, fail_after = 1L) {
+  result <- reduction_call("failing_region", values, as.integer(fail_after))
+  if (!identical(reduction_call("uses_regions", result), TRUE)) {
+    stop("failing reduction fixture exposes direct storage")
   }
   result
 }
@@ -601,6 +613,144 @@ check_list_reduction_oracle <- function(cases) {
   TRUE
 }
 
+check_reduction_resource_state <- function(expected_region_calls) {
+  actual <- reduction_call("resource_state")
+  expected <- as.integer(expected_region_calls)
+  if (!identical(actual, expected)) {
+    stop(sprintf("expected %d region calls with restored state, got %d", expected, actual))
+  }
+  TRUE
+}
+
+reset_reduction_diagnostics <- function() {
+  if (!identical(reduction_call("reset_diagnostics"), TRUE)) {
+    stop("failed to reset reduction diagnostics")
+  }
+}
+
+check_reduction_resource_contract <- function() {
+  values <- rep(c(-4, 1, 2, 8), 2049L)
+  region_chunks <- ceiling(length(values) / 4096L)
+  vectors <- list(
+    sum = list(oracle = sum, region_passes = 1L, failure_after = 1L),
+    mean = list(oracle = mean, region_passes = 2L, failure_after = region_chunks + 1L),
+    sum_narm = list(
+      oracle = function(value) sum(value, na.rm = TRUE),
+      region_passes = 1L,
+      failure_after = 1L
+    ),
+    mean_narm = list(
+      oracle = function(value) mean(value, na.rm = TRUE),
+      region_passes = 2L,
+      failure_after = region_chunks + 1L
+    )
+  )
+
+  for (name in names(vectors)) {
+    family <- vectors[[name]]
+    expected <- family$oracle(values)
+    for (input in list(values, reduction_direct(values))) {
+      reset_reduction_diagnostics()
+      if (!exact_scalar_equal(reduction_call(name, input), expected)) {
+        stop("reduction resource success mismatch: ", name)
+      }
+      check_reduction_resource_state(0L)
+    }
+
+    reset_reduction_diagnostics()
+    if (!exact_scalar_equal(reduction_call(name, reduction_region(values)), expected)) {
+      stop("region reduction resource success mismatch: ", name)
+    }
+    check_reduction_resource_state(region_chunks * family$region_passes)
+
+    reset_reduction_diagnostics()
+    check_reduction_error(
+      reduction_call(name, reduction_failing_region(values, family$failure_after)),
+      "injected reduction region error"
+    )
+    check_reduction_resource_state(family$failure_after)
+
+    reset_reduction_diagnostics()
+    check_reduction_error(reduction_call(name, 1L), "expected REALSXP")
+    check_reduction_resource_state(0L)
+  }
+
+  overflow_values <- rep(1e305, length(values))
+  overflow_vectors <- list(
+    mean = list(values = overflow_values, oracle = mean),
+    mean_narm = list(
+      values = replace(overflow_values, 4097L, NA_real_),
+      oracle = function(value) mean(value, na.rm = TRUE)
+    )
+  )
+  overflow_failure_after <- 2L * region_chunks + 1L
+  for (name in names(overflow_vectors)) {
+    family <- overflow_vectors[[name]]
+    reset_reduction_diagnostics()
+    if (!exact_scalar_equal(
+      reduction_call(name, reduction_region(family$values)),
+      family$oracle(family$values)
+    )) stop("overflow mean resource success mismatch: ", name)
+    check_reduction_resource_state(3L * region_chunks)
+
+    reset_reduction_diagnostics()
+    check_reduction_error(
+      reduction_call(
+        name,
+        reduction_failing_region(family$values, overflow_failure_after)
+      ),
+      "injected reduction region error"
+    )
+    check_reduction_resource_state(overflow_failure_after)
+  }
+
+  list_values <- list(values, rev(values))
+  expected_list <- sum(vapply(list_values, sum, numeric(1)))
+  for (input in list(list_values, lapply(list_values, reduction_direct))) {
+    reset_reduction_diagnostics()
+    if (!exact_scalar_equal(reduction_call("list", input), expected_list)) {
+      stop("list reduction resource success mismatch")
+    }
+    check_reduction_resource_state(0L)
+  }
+
+  reset_reduction_diagnostics()
+  if (!exact_scalar_equal(
+    reduction_call("list", lapply(list_values, reduction_region)),
+    expected_list
+  )) stop("region list reduction resource success mismatch")
+  check_reduction_resource_state(2L * region_chunks)
+
+  reset_reduction_diagnostics()
+  check_reduction_error(
+    reduction_call(
+      "list",
+      list(reduction_region(values), reduction_failing_region(values, region_chunks + 1L))
+    ),
+    "injected reduction region error"
+  )
+  check_reduction_resource_state(region_chunks + 1L)
+
+  reset_reduction_diagnostics()
+  check_reduction_error(reduction_call("list", numeric()), "expected VECSXP")
+  check_reduction_resource_state(0L)
+
+  reset_reduction_diagnostics()
+  check_reduction_error(
+    reduction_call("list", list(reduction_region(values), 1L)),
+    "expected REALSXP"
+  )
+  check_reduction_resource_state(region_chunks)
+
+  reset_reduction_diagnostics()
+  check_reduction_error(
+    reduction_failing_region(values, 0L),
+    "reduction failure point must be positive"
+  )
+  check_reduction_resource_state(0L)
+  TRUE
+}
+
 cancellation <- c(1e16, 1, -1e16)
 chunk_cancellation <- numeric(4099L)
 chunk_cancellation[4096:4098] <- cancellation
@@ -669,12 +819,16 @@ reduction_oracle_tests <- list(
   list(
     name = "list_reduction_exact_r_oracle",
     run = function() check_list_reduction_oracle(list_reduction_cases)
+  ),
+  list(
+    name = "reduction_resource_contract",
+    run = check_reduction_resource_contract
   )
 )
 
 if (gctorture_mode) cat("  GC diagnostic mode: gctorture2 step", gctorture_step, "around each registered call\n")
 
-for (t in tests) {
+if (!reduction_only) for (t in tests) {
   name <- if (is.list(t)) t$name else t
   expect_error <- if (is.list(t) && !is.null(t$expect_error)) t$expect_error else FALSE
 
@@ -724,6 +878,11 @@ for (test in reduction_oracle_tests) {
     cat("    ", conditionMessage(result), "\n", sep = "")
     failed <- failed + 1
   }
+}
+
+if (reduction_only) {
+  cat(sprintf("\nResults: %d passed, %d failed, %d skipped\n", passed, failed, skipped))
+  quit(status = if (failed > 0) 1L else 0L)
 }
 
 warning_message <- NULL

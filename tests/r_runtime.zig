@@ -7275,7 +7275,10 @@ fn generatedReductionMeanNarm(value: SEXP) f64 {
 }
 
 var reduction_region_class: R.R_altrep_class_t = undefined;
+var reduction_failing_region_class: R.R_altrep_class_t = undefined;
 var reduction_region_registered = false;
+threadlocal var reduction_region_calls: usize = 0;
+threadlocal var reduction_region_failure_after: usize = 1;
 
 fn reductionRegionLength(value: SEXP) callconv(.c) R.R_xlen_t {
     return R.XLENGTH(R.R_altrep_data1(value));
@@ -7289,7 +7292,7 @@ fn reductionRegionElt(value: SEXP, index: R.R_xlen_t) callconv(.c) f64 {
     return R.REAL(R.R_altrep_data1(value))[@intCast(index)];
 }
 
-fn reductionRegionGetRegion(
+fn copyReductionRegion(
     value: SEXP,
     start: R.R_xlen_t,
     requested: R.R_xlen_t,
@@ -7308,6 +7311,29 @@ fn reductionRegionGetRegion(
     return count;
 }
 
+fn reductionRegionGetRegion(
+    value: SEXP,
+    start: R.R_xlen_t,
+    requested: R.R_xlen_t,
+    buffer: [*c]f64,
+) callconv(.c) R.R_xlen_t {
+    reduction_region_calls += 1;
+    return copyReductionRegion(value, start, requested, buffer);
+}
+
+fn reductionFailingRegionGetRegion(
+    value: SEXP,
+    start: R.R_xlen_t,
+    requested: R.R_xlen_t,
+    buffer: [*c]f64,
+) callconv(.c) R.R_xlen_t {
+    reduction_region_calls += 1;
+    if (reduction_region_calls >= reduction_region_failure_after) {
+        err.signal("injected reduction region error");
+    }
+    return copyReductionRegion(value, start, requested, buffer);
+}
+
 fn registerReductionRegion(info: *R.DllInfo) void {
     if (reduction_region_registered) return;
     reduction_region_class = R.R_make_altreal_class("reduction_region_real", "zigr", info);
@@ -7315,6 +7341,12 @@ fn registerReductionRegion(info: *R.DllInfo) void {
     R.R_set_altvec_Dataptr_or_null_method(reduction_region_class, reductionRegionDataptrOrNull);
     R.R_set_altreal_Elt_method(reduction_region_class, reductionRegionElt);
     R.R_set_altreal_Get_region_method(reduction_region_class, reductionRegionGetRegion);
+
+    reduction_failing_region_class = R.R_make_altreal_class("reduction_failing_region_real", "zigr", info);
+    R.R_set_altrep_Length_method(reduction_failing_region_class, reductionRegionLength);
+    R.R_set_altvec_Dataptr_or_null_method(reduction_failing_region_class, reductionRegionDataptrOrNull);
+    R.R_set_altreal_Elt_method(reduction_failing_region_class, reductionRegionElt);
+    R.R_set_altreal_Get_region_method(reduction_failing_region_class, reductionFailingRegionGetRegion);
     reduction_region_registered = true;
 }
 
@@ -7353,6 +7385,13 @@ fn generatedReductionRegion(values: SEXP) SEXP {
     return R.R_new_altrep(reduction_region_class, values, R.R_NilValue);
 }
 
+fn generatedReductionFailingRegion(values: SEXP, fail_after: i32) SEXP {
+    if (values == null or R.TYPEOF(values) != R.REALSXP) zigr_convert.signalError(error.ExpectedReal);
+    if (fail_after <= 0) err.signal("reduction failure point must be positive");
+    reduction_region_failure_after = @intCast(fail_after);
+    return R.R_new_altrep(reduction_failing_region_class, values, R.R_NilValue);
+}
+
 fn generatedReductionDirect(values: []const f64) SEXP {
     return MyAlt.init(values);
 }
@@ -7367,6 +7406,22 @@ fn generatedReductionUsesRegions(value: SEXP) bool {
         (R.XLENGTH(value) == 0 or R.REAL_OR_NULL(value) == null);
 }
 
+fn generatedReductionResetDiagnostics() bool {
+    reduction_region_calls = 0;
+    reduction_region_failure_after = 1;
+    cleanup.resetDiagnostics();
+    return true;
+}
+
+fn generatedReductionResourceState() i32 {
+    const diagnostics = cleanup.diagnosticSnapshot();
+    if (diagnostics.enabled and
+        (diagnostics.cleanup_frames != 0 or diagnostics.unwind_boundaries != 1 or
+            diagnostics.protect_depth != 0 or diagnostics.max_cleanup_frames != 0 or
+            diagnostics.max_unwind_boundaries != 1 or diagnostics.max_protect_depth != 0)) return -1;
+    return std.math.cast(i32, reduction_region_calls) orelse -1;
+}
+
 const ReductionExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_reduction_sum", .func = generatedReductionSum },
     .{ .name = "zigr_reduction_mean", .func = generatedReductionMean },
@@ -7375,8 +7430,11 @@ const ReductionExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_reduction_list", .func = generatedListReduction },
     .{ .name = "zigr_reduction_direct", .func = generatedReductionDirect },
     .{ .name = "zigr_reduction_region", .func = generatedReductionRegion },
+    .{ .name = "zigr_reduction_failing_region", .func = generatedReductionFailingRegion },
     .{ .name = "zigr_reduction_uses_direct", .func = generatedReductionUsesDirect },
     .{ .name = "zigr_reduction_uses_regions", .func = generatedReductionUsesRegions },
+    .{ .name = "zigr_reduction_reset_diagnostics", .func = generatedReductionResetDiagnostics },
+    .{ .name = "zigr_reduction_resource_state", .func = generatedReductionResourceState },
 }, &.{});
 
 fn sameRealVector(a: SEXP, b: SEXP) bool {
