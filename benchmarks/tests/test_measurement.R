@@ -578,6 +578,62 @@ expect_true(
                                          numeric(11L), 0.01)$status, "PASS"),
   "gradual drift below every declared threshold remains visible but does not create a false regime"
 )
+
+candidate_forward <- c(100.2, 99.8, 100.3, 99.7)
+candidate_reverse <- c(100, 100, 100, 100)
+comparison_tie <- classify_direct_comparison(
+  candidate_forward, candidate_reverse,
+  c(100.1, 99.9, 100.2, 99.8), c(100, 100, 100, 100)
+)
+comparison_lead <- classify_direct_comparison(
+  candidate_forward, candidate_reverse, rep(105, 4L), rep(105, 4L)
+)
+comparison_loss <- classify_direct_comparison(
+  candidate_forward, candidate_reverse, rep(95, 4L), rep(95, 4L)
+)
+comparison_lead_or_tie <- classify_direct_comparison(
+  candidate_forward, candidate_reverse, c(100, 102, 102, 102), c(100, 102, 102, 102)
+)
+comparison_indeterminate <- classify_direct_comparison(
+  candidate_forward, candidate_reverse, c(97, 103, 97, 103), c(97, 103, 97, 103)
+)
+expect_true(
+  identical(comparison_tie$status, "TIE") &&
+    identical(comparison_lead$status, "LEAD") &&
+    identical(comparison_lead_or_tie$status, "LEAD_OR_TIE") &&
+    identical(comparison_loss$status, "LOSS") &&
+    identical(comparison_indeterminate$status, "INDETERMINATE"),
+  "fixed comparison policy separates equivalence, directional results, and uncertainty"
+)
+expect_true(
+  identical(classify_direct_comparison(
+    c(90, 110, 90, 110), rep(100, 4L), rep(100, 4L), rep(100, 4L)
+  )$status, "BLOCK"),
+  "comparison policy rejects a candidate whose order effect exceeds the fixed margin"
+)
+expect_true(
+  identical(classify_direct_comparison(
+    rep(100, 4L), rep(100, 4L), rep(50, 4L), rep(200, 4L)
+  )$status, "BLOCK"),
+  "comparison policy rejects a comparator whose order effect exceeds the fixed margin"
+)
+expect_error(
+  "comparison policy requires exactly four complete opposite-order pairs",
+  classify_direct_comparison(rep(1, 3L), rep(1, 3L), rep(1, 3L), rep(1, 3L)),
+  "comparison evidence is invalid"
+)
+expect_error(
+  "comparison policy does not permit post-hoc sample extension",
+  classify_direct_comparison(rep(1, 5L), rep(1, 5L), rep(1, 5L), rep(1, 5L)),
+  "comparison evidence is invalid"
+)
+forged_comparison_policy <- direct_comparison_policy()
+forged_comparison_policy$equivalence_margin_pct <- 20
+expect_error(
+  "comparison policy rejects a widened equivalence margin",
+  validate_direct_comparison_policy(forged_comparison_policy),
+  "invalid limits"
+)
 scheduler_spike <- classify_direct_distribution(c(rep(1, 10L), 30), c(rep(1, 10L), 30), numeric(11L), 0.01)
 expect_true(
   identical(scheduler_spike$status, "BLOCK") &&

@@ -45,3 +45,5 @@ The manifest seals source-tree and built-artifact identities, selected task seed
 
 The harness reports medians and distribution diagnostics for each runner and task.
 It does not assign product tiers, aggregate winners, or comparative report tracks.
+
+A comparative decision requires exactly four source-identical opposite-order worker pairs predeclared before the first run, with matching event contracts and passing runner distributions. The policy uses 90% paired Student-t intervals over log ratios and a fixed prospective 2% equivalence margin. The candidate and comparator must each show an order effect contained by that margin. The comparison is tied only when its full interval also fits inside the margin; an interval extending only from a lead into the margin is lead-or-tie. Point estimates, rank swaps, post-hoc sample extension, and same-process calls cannot establish a tie.

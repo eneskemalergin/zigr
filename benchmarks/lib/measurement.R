@@ -1132,6 +1132,132 @@ direct_distribution_policy_digest <- function(policy = direct_distribution_polic
   serialized_md5(validate_direct_distribution_policy(policy))
 }
 
+direct_comparison_policy <- function() {
+  list(
+    policy_version = "fixed-equivalence-v1",
+    evidence_unit = "source-identical-opposite-order-worker-pair-v1",
+    interval_method = "paired-student-t-log-ratio-v1",
+    confidence_level = 0.90,
+    required_order_pairs = 4L,
+    equivalence_margin_pct = 2,
+    decision_rule = "fixed-margin-equivalence-with-order-check-v1"
+  )
+}
+
+validate_direct_comparison_policy <- function(policy) {
+  fields <- c(
+    "policy_version", "evidence_unit", "interval_method", "confidence_level",
+    "required_order_pairs", "equivalence_margin_pct", "decision_rule"
+  )
+  if (!is.list(policy) || !identical(names(policy), fields) ||
+      !identical(as.character(policy$policy_version), "fixed-equivalence-v1") ||
+      !identical(as.character(policy$evidence_unit),
+                 "source-identical-opposite-order-worker-pair-v1") ||
+      !identical(as.character(policy$interval_method), "paired-student-t-log-ratio-v1") ||
+      !identical(as.character(policy$decision_rule),
+                 "fixed-margin-equivalence-with-order-check-v1")) {
+    stop("direct comparison policy is invalid")
+  }
+  confidence_level <- as.numeric(policy$confidence_level)
+  required_order_pairs <- input_scalar_integer(
+    policy$required_order_pairs, "required comparison order pairs"
+  )
+  equivalence_margin_pct <- as.numeric(policy$equivalence_margin_pct)
+  if (length(confidence_level) != 1L || !is.finite(confidence_level) ||
+      !identical(confidence_level, 0.90) || required_order_pairs != 4L ||
+      length(equivalence_margin_pct) != 1L || !is.finite(equivalence_margin_pct) ||
+      !identical(equivalence_margin_pct, 2)) {
+    stop("direct comparison policy has invalid limits")
+  }
+  list(
+    confidence_level = confidence_level,
+    required_order_pairs = required_order_pairs,
+    equivalence_margin_pct = equivalence_margin_pct
+  )
+}
+
+direct_log_ratio_interval <- function(values, confidence_level) {
+  center <- mean(values)
+  half_width <- if (length(values) > 1L && stats::sd(values) > 0) {
+    stats::qt((1 + confidence_level) / 2, df = length(values) - 1L) *
+      stats::sd(values) / sqrt(length(values))
+  } else {
+    0
+  }
+  c(lower = center - half_width, estimate = center, upper = center + half_width)
+}
+
+classify_direct_comparison <- function(candidate_forward_ms, candidate_reverse_ms,
+                                       comparator_forward_ms, comparator_reverse_ms,
+                                       policy = direct_comparison_policy()) {
+  limits <- validate_direct_comparison_policy(policy)
+  values <- lapply(list(
+    candidate_forward_ms, candidate_reverse_ms, comparator_forward_ms,
+    comparator_reverse_ms
+  ), as.numeric)
+  lengths <- vapply(values, length, integer(1))
+  if (length(unique(lengths)) != 1L || lengths[[1L]] != limits$required_order_pairs ||
+      any(vapply(values, function(value) {
+        anyNA(value) || any(!is.finite(value)) || any(value <= 0)
+      }, logical(1)))) {
+    stop("direct comparison evidence is invalid")
+  }
+  candidate_forward_ms <- values[[1L]]
+  candidate_reverse_ms <- values[[2L]]
+  comparator_forward_ms <- values[[3L]]
+  comparator_reverse_ms <- values[[4L]]
+
+  candidate_order_interval <- direct_log_ratio_interval(
+    log(candidate_forward_ms / candidate_reverse_ms), limits$confidence_level
+  )
+  comparator_order_interval <- direct_log_ratio_interval(
+    log(comparator_forward_ms / comparator_reverse_ms), limits$confidence_level
+  )
+  equivalence_limit <- log1p(limits$equivalence_margin_pct / 100)
+  comparison_interval <- direct_log_ratio_interval(
+    (log(candidate_forward_ms / comparator_forward_ms) +
+       log(candidate_reverse_ms / comparator_reverse_ms)) / 2,
+    limits$confidence_level
+  )
+  as_pct <- function(value) 100 * expm1(value)
+  result <- list(
+    status = "INDETERMINATE",
+    reason = "comparison interval crosses the fixed equivalence boundary",
+    estimate_pct = unname(as_pct(comparison_interval[["estimate"]])),
+    lower_pct = unname(as_pct(comparison_interval[["lower"]])),
+    upper_pct = unname(as_pct(comparison_interval[["upper"]])),
+    equivalence_margin_pct = limits$equivalence_margin_pct,
+    candidate_order_lower_pct = unname(as_pct(candidate_order_interval[["lower"]])),
+    candidate_order_upper_pct = unname(as_pct(candidate_order_interval[["upper"]])),
+    comparator_order_lower_pct = unname(as_pct(comparator_order_interval[["lower"]])),
+    comparator_order_upper_pct = unname(as_pct(comparator_order_interval[["upper"]]))
+  )
+  interval_within_margin <- function(interval) {
+    interval[["lower"]] >= -equivalence_limit && interval[["upper"]] <= equivalence_limit
+  }
+  if (!interval_within_margin(candidate_order_interval)) {
+    result$status <- "BLOCK"
+    result$reason <- "candidate order effect is not equivalent within the fixed margin"
+  } else if (!interval_within_margin(comparator_order_interval)) {
+    result$status <- "BLOCK"
+    result$reason <- "comparator order effect is not equivalent within the fixed margin"
+  } else if (interval_within_margin(comparison_interval)) {
+    result$status <- "TIE"
+    result$reason <- "comparison interval is contained by the fixed equivalence margin"
+  } else if (comparison_interval[["upper"]] < -equivalence_limit) {
+    result$status <- "LEAD"
+    result$reason <- "comparison interval is faster than the fixed equivalence margin"
+  } else if (comparison_interval[["upper"]] <= equivalence_limit &&
+             comparison_interval[["lower"]] < -equivalence_limit) {
+    result$status <- "LEAD_OR_TIE"
+    result$reason <- "comparison interval contains only a lead or fixed-margin equivalence"
+  } else if (comparison_interval[["lower"]] > equivalence_limit) {
+    result$status <- "LOSS"
+    result$reason <- "comparison interval is slower than the fixed equivalence margin"
+  }
+  result
+}
+
 direct_distribution_metrics <- function(values, policy = direct_distribution_policy()) {
   policy <- validate_direct_distribution_policy(policy)
   values <- as.numeric(values)
@@ -1472,7 +1598,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v9",
+    policy_version = "direct-batch-v10",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,
@@ -1483,6 +1609,7 @@ benchmark_timing_policy <- function() {
     total_run_timeout_seconds = 5400L,
     r_jit_policy = "disabled-before-runner-load",
     distribution_policy = direct_distribution_policy(),
+    comparison_policy = direct_comparison_policy(),
     allocation_policy = direct_allocation_policy(),
     gc_policy = paste(
       "full before first call, warmup, calibration, and each large-output measurement sample;",

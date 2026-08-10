@@ -280,10 +280,11 @@ validate_direct_run_manifest <- function(metadata) {
   policy_fields <- c(
     "policy_version", "warmup_iterations", "local_calibration_batches",
     "measurement_samples", "measurement_probe_samples", "sizing_policy", "batch_repetitions", "worker_timeout_seconds",
-    "total_run_timeout_seconds", "r_jit_policy", "distribution_policy", "allocation_policy", "gc_policy"
+    "total_run_timeout_seconds", "r_jit_policy", "distribution_policy", "comparison_policy",
+    "allocation_policy", "gc_policy"
   )
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v9")) {
+      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v10")) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
@@ -293,6 +294,7 @@ validate_direct_run_manifest <- function(metadata) {
     stop("run manifest has an invalid R JIT policy")
   }
   distribution_policy <- validate_direct_distribution_policy(policy$distribution_policy)
+  validate_direct_comparison_policy(policy$comparison_policy)
   validate_direct_allocation_policy(policy$allocation_policy)
   if (!identical(as.integer(policy$measurement_samples), distribution_policy$measurement_samples)) {
     stop("run manifest measurement samples differ from its distribution policy")

@@ -275,8 +275,13 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-    identical(policy$policy_version, "direct-batch-v9") &&
+    identical(policy$policy_version, "direct-batch-v10") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L)) &&
+    identical(validate_direct_comparison_policy(policy$comparison_policy), list(
+      confidence_level = 0.90,
+      required_order_pairs = 4L,
+      equivalence_margin_pct = 2
+    )) &&
     identical(policy$measurement_samples, 11L) &&
     identical(policy$sizing_policy$target_batch_ms, 1) &&
     grepl("each large-output measurement sample", policy$gc_policy, fixed = TRUE),
@@ -305,6 +310,13 @@ metadata <- list(
   command = list("Rscript", "run_benchmarks.R")
 )
 validate_direct_run_manifest(metadata)
+forged_comparison_policy <- clone(metadata)
+forged_comparison_policy$timing_policy$comparison_policy$equivalence_margin_pct <- 20
+expect_error(
+  "manifest rejects a widened comparison equivalence margin",
+  validate_direct_run_manifest(forged_comparison_policy),
+  "comparison policy has invalid limits"
+)
 missing_required <- clone(metadata)
 missing_required$source_tree <- NULL
 expect_error(
