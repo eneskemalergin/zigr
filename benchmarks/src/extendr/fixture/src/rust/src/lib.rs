@@ -339,7 +339,7 @@ fn bench_altrep_sum(x: Integers) -> f64 {
 
 #[extendr]
 fn bench_altrep_index(x: Integers) -> f64 {
-    (0..x.len()).step_by(10000).map(|i| x.elt(i).0 as f64).sum()
+    (0..x.len()).step_by(32).map(|i| x.elt(i).0 as f64).sum()
 }
 
 #[extendr]

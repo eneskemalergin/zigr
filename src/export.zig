@@ -81,6 +81,9 @@ fn fromSexp(comptime T: type, sexp: R.SEXP, arena: std.mem.Allocator) T {
     if (comptime isVectorAccess(T)) {
         return convert.toVectorAccess(T.element_type, T.access_need, arena, sexp) catch |err| signalErrorMsg("toVectorAccess", @errorName(err));
     }
+    if (comptime T == convert.IndexedIntegerAccess) {
+        return convert.toIndexedIntegerAccess(sexp) catch |err| signalErrorMsg("toIndexedIntegerAccess", @errorName(err));
+    }
     // Avoid a second conversion for common non-null optional scalars.
     if (comptime T == ?f64) {
         return convert.toOptionalRealScalar(sexp) catch |err| convert.signalError(err);
@@ -255,6 +258,7 @@ fn needsInputArena(comptime T: type) bool {
         T == convert.StringTranslatedTextView or
         T == convert.StringMetadataView) return false;
     if (comptime isVectorAccess(T)) return true;
+    if (comptime T == convert.IndexedIntegerAccess) return false;
     if (comptime T == convert.RealSliceView or
         T == convert.IntegerSliceView or
         T == convert.RawSliceView or
@@ -844,10 +848,12 @@ fn generatedCoverageAccess(
     one_pass: convert.VectorAccess(i32, .one_pass),
     repeated_pass: convert.VectorAccess(i32, .repeated_pass),
     random_access: convert.VectorAccess(i32, .random_access),
+    indexed: convert.IndexedIntegerAccess,
 ) i32 {
     _ = one_pass;
     _ = repeated_pass;
     _ = random_access;
+    _ = indexed;
     return 1;
 }
 
@@ -929,6 +935,7 @@ test "generated coverage compiles logical vectors across entry forms" {
     try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .one_pass)));
     try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .repeated_pass)));
     try std.testing.expect(needsInputArena(convert.VectorAccess(i32, .random_access)));
+    try std.testing.expect(!needsInputArena(convert.IndexedIntegerAccess));
 }
 
 test "scalar and optional scalar wrappers do not need an arena" {

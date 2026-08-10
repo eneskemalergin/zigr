@@ -422,7 +422,7 @@ bench_external_ptr(cpp11::integers value) {
 
 [[cpp11::register]] double bench_altrep_index(cpp11::integers x) {
   double total = 0.0;
-  for (R_xlen_t i = 0; i < x.size(); i += 10000) total += x[i];
+  for (R_xlen_t i = 0; i < x.size(); i += 32) total += x[i];
   return total;
 }
 

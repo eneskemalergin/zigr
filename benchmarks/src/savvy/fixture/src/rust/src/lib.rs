@@ -390,7 +390,7 @@ fn bench_altrep_sum(x: IntegerSexp) -> savvy::Result<Sexp> {
 #[savvy]
 fn bench_altrep_index(x: IntegerSexp) -> savvy::Result<Sexp> {
     let total = (0..x.len())
-        .step_by(10000)
+        .step_by(32)
         .map(|i| x.as_slice()[i] as f64)
         .sum::<f64>();
     OwnedRealSexp::try_from_scalar(total)?.into()

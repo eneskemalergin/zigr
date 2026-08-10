@@ -649,7 +649,7 @@ bench_schema <- r_fixture_schema
 bench_altrep_sum <- r_fixture_altrep_integer
 bench_altrep_index <- function(x) {
   total <- 0
-  for (index in seq.int(1L, length(x), by = 10000L)) total <- total + x[[index]]
+  for (index in seq.int(1L, length(x), by = 32L)) total <- total + x[[index]]
   total
 }
 bench_altrep_materialize <- function(x) as.integer(x) + 0L

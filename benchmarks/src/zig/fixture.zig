@@ -592,20 +592,11 @@ fn benchAltrepSum(value: convert.VectorAccess(i32, .one_pass)) f64 {
     }
     return total;
 }
-fn benchAltrepIndex(value: convert.VectorAccess(i32, .one_pass)) f64 {
-    var access = value;
-    defer access.deinit();
+fn benchAltrepIndex(value: convert.IndexedIntegerAccess) f64 {
     var total: f64 = 0.0;
-    var offset: usize = 0;
-    var next_index: usize = 0;
-    while (access.next() catch |err| convert.signalError(err)) |chunk| {
-        for (chunk, 0..) |element, index| {
-            if (offset + index == next_index) {
-                total += @floatFromInt(element);
-                next_index += 10000;
-            }
-        }
-        offset += chunk.len;
+    var index: usize = 0;
+    while (index < value.len()) : (index += 32) {
+        total += @floatFromInt(value.get(index) catch |err| convert.signalError(err));
     }
     return total;
 }

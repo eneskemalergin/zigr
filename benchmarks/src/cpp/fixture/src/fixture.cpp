@@ -429,7 +429,7 @@ double bench_altrep_sum(Rcpp::IntegerVector x) { return fixture_altrep_integer(x
 // [[Rcpp::export]]
 double bench_altrep_index(Rcpp::IntegerVector x) {
   double total = 0.0;
-  for (R_xlen_t i = 0; i < x.size(); i += 10000) total += x[i];
+  for (R_xlen_t i = 0; i < x.size(); i += 32) total += x[i];
   return total;
 }
 

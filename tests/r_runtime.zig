@@ -1167,6 +1167,7 @@ var short_region_registered = false;
 var short_region_get_calls: usize = 0;
 var short_region_elt_calls: usize = 0;
 var short_region_max_requested: usize = 0;
+var short_region_elt_fails = false;
 
 fn shortRegionLength(_: SEXP) callconv(.c) R.R_xlen_t {
     return @intCast(short_region_len);
@@ -1178,6 +1179,7 @@ fn shortRegionDataptrOrNull(_: SEXP) callconv(.c) ?*const anyopaque {
 
 fn shortRegionElt(_: SEXP, index: R.R_xlen_t) callconv(.c) c_int {
     short_region_elt_calls += 1;
+    if (short_region_elt_fails) R.Rf_error("%s", "indexed ALTREP read failed");
     return @intCast(index + 1);
 }
 
@@ -5959,6 +5961,15 @@ fn generatedAltrepMaterialized(values: zigr_convert.VectorAccess(i32, .random_ac
     return values.contiguousSlice() orelse unreachable;
 }
 
+fn generatedAltrepIndexed(values: zigr_convert.IndexedIntegerAccess) f64 {
+    var total: f64 = 0.0;
+    var index: usize = 0;
+    while (index < values.len()) : (index += 10_000) {
+        total += @floatFromInt(values.get(index) catch |access_err| zigr_convert.signalError(access_err));
+    }
+    return total;
+}
+
 fn generatedAltrepOnePassRaw(values: zigr_convert.VectorAccess(u8, .one_pass)) void {
     var access = values;
     defer access.deinit();
@@ -5996,6 +6007,7 @@ const ArenaExports = zigr.@"export".generateExports(&.{
     .{ .name = "zigr_direct_result_error", .func = directResultThenError },
     .{ .name = "zigr_direct_result_oversized", .func = directResultOversized },
     .{ .name = "zigr_direct_result_interrupt", .func = directResultThenInterrupt },
+    .{ .name = "zigr_altrep_indexed", .func = generatedAltrepIndexed },
 }, &.{});
 
 var generated_failure_input: SEXP = undefined;
@@ -6011,6 +6023,10 @@ fn arenaCall(index: usize, arg: SEXP) SEXP {
 
 fn generatedFailureCall() SEXP {
     return arenaCall(9, generated_failure_input);
+}
+
+fn generatedIndexedFailureCall() SEXP {
+    return arenaCall(15, generated_failure_input);
 }
 
 fn initArenaExports() bool {
@@ -6826,6 +6842,24 @@ export fn zigr_test_altrep_access_strategies() SEXP {
     if (direct_end != null) return R.Rf_ScalarReal(0.0);
     direct_access.deinit();
 
+    const direct_indexed = zigr_convert.toIndexedIntegerAccess(direct) catch
+        return R.Rf_ScalarReal(0.0);
+    if (direct_indexed.strategy() != .direct or direct_indexed.len() != direct_values.len or
+        (direct_indexed.get(0) catch return R.Rf_ScalarReal(0.0)) != 4 or
+        (direct_indexed.get(4) catch return R.Rf_ScalarReal(0.0)) != 3) return R.Rf_ScalarReal(0.0);
+    if (direct_indexed.get(direct_values.len)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |access_err| {
+        if (access_err != error.IndexOutOfBounds) return R.Rf_ScalarReal(0.0);
+    }
+
+    const wrong_indexed = zigr_convert.toIndexedIntegerAccess(R.Rf_ScalarReal(1.0));
+    if (wrong_indexed) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |access_err| {
+        if (access_err != error.ExpectedInteger) return R.Rf_ScalarReal(0.0);
+    }
+
     const empty_values = [_]i32{};
     const empty = R.Rf_protect(MyAltInt.init(empty_values[0..]));
     defer R.Rf_unprotect(1);
@@ -6835,6 +6869,15 @@ export fn zigr_test_altrep_access_strategies() SEXP {
     const empty_chunk = empty_access.next() catch return R.Rf_ScalarReal(0.0);
     if (empty_chunk != null) return R.Rf_ScalarReal(0.0);
     empty_access.deinit();
+
+    const empty_indexed = zigr_convert.toIndexedIntegerAccess(empty) catch
+        return R.Rf_ScalarReal(0.0);
+    if (empty_indexed.strategy() != .direct or empty_indexed.len() != 0) return R.Rf_ScalarReal(0.0);
+    if (empty_indexed.get(0)) |_| {
+        return R.Rf_ScalarReal(0.0);
+    } else |access_err| {
+        if (access_err != error.IndexOutOfBounds) return R.Rf_ScalarReal(0.0);
+    }
 
     const missing_values = [_]i32{ 1, R.R_NaInt, 3 };
     const missing = R.Rf_protect(MyAltInt.init(missing_values[0..]));
@@ -6877,6 +6920,17 @@ export fn zigr_test_altrep_access_strategies() SEXP {
         region_counting.stats.peak_live_bytes > 256 * @sizeOf(i32)) return R.Rf_ScalarReal(0.0);
     region_access.deinit();
     if (region_counting.stats.live_bytes != 0) return R.Rf_ScalarReal(0.0);
+
+    short_region_get_calls = 0;
+    short_region_elt_calls = 0;
+    const region_indexed = zigr_convert.toIndexedIntegerAccess(region_input) catch
+        return R.Rf_ScalarReal(0.0);
+    if (region_indexed.strategy() != .element or region_indexed.len() != short_region_len or
+        (region_indexed.get(0) catch return R.Rf_ScalarReal(0.0)) != 1 or
+        (region_indexed.get(256) catch return R.Rf_ScalarReal(0.0)) != 257 or
+        (region_indexed.get(4096) catch return R.Rf_ScalarReal(0.0)) != 4097 or
+        short_region_elt_calls != 3 or short_region_get_calls != 0 or
+        R.INTEGER_OR_NULL(region_input) != null) return R.Rf_ScalarReal(0.0);
 
     var materialized_counting = mem.CountingAllocator.init(std.heap.page_allocator);
     var materialized = zigr_convert.toVectorAccessWithStrategy(i32, .random_access, materialized_counting.allocator(), region_input, .materialized) catch
@@ -6952,6 +7006,18 @@ export fn zigr_test_altrep_access_strategies() SEXP {
     if (protect.getDepth() != before_failure_depth) return R.Rf_ScalarReal(0.0);
     generated_failure_input = R.R_NilValue;
 
+    const indexed_failure_entry = cleanup.diagnosticSnapshot();
+    generated_failure_input = region_input;
+    short_region_elt_fails = true;
+    if (trycatch_mod.tryCatch(generatedIndexedFailureCall)) |_| {
+        short_region_elt_fails = false;
+        generated_failure_input = R.R_NilValue;
+        return R.Rf_ScalarReal(0.0);
+    } else |_| {}
+    short_region_elt_fails = false;
+    generated_failure_input = R.R_NilValue;
+    if (!sameRestorationState(indexed_failure_entry, cleanup.diagnosticSnapshot())) return R.Rf_ScalarReal(0.0);
+
     const generated_sum = R.Rf_protect(arenaCall(7, region_input));
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(generated_sum) != R.REALSXP or R.REAL(generated_sum)[0] != @as(f64, @floatFromInt(region_sum)) or
@@ -6960,6 +7026,14 @@ export fn zigr_test_altrep_access_strategies() SEXP {
     defer R.Rf_unprotect(1);
     if (R.TYPEOF(generated_materialized) != R.INTSXP or R.XLENGTH(generated_materialized) != short_region_len or
         R.INTEGER(generated_materialized)[0] != 1 or R.INTEGER(generated_materialized)[4096] != 4097) return R.Rf_ScalarReal(0.0);
+
+    const compact = compactIntSequence(100_000) orelse return R.Rf_ScalarReal(0.0);
+    defer R.Rf_unprotect(1);
+    if (R.ALTREP(compact) == 0 or R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
+    const generated_indexed = R.Rf_protect(arenaCall(15, compact));
+    defer R.Rf_unprotect(1);
+    if (R.TYPEOF(generated_indexed) != R.REALSXP or R.REAL(generated_indexed)[0] != 450_010.0 or
+        R.INTEGER_OR_NULL(compact) != null) return R.Rf_ScalarReal(0.0);
     return R.Rf_ScalarReal(1.0);
 }
 

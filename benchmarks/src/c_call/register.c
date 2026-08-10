@@ -868,7 +868,7 @@ static SEXP c_revision_altrep_sum(SEXP x) { return c_benchmark_fixture_altrep_in
 static SEXP c_revision_altrep_index(SEXP x) {
     R_xlen_t n = XLENGTH(x);
     double total = 0.0;
-    for (R_xlen_t i = 0; i < n; i += 10000) total += INTEGER_ELT(x, i);
+    for (R_xlen_t i = 0; i < n; i += 32) total += INTEGER_ELT(x, i);
     return Rf_ScalarReal(total);
 }
 

@@ -108,6 +108,7 @@ pub const ConvertError = error{
     OutOfMemory,
     NegativeLength,
     LengthOverflow,
+    IndexOutOfBounds,
     NullPointer,
 };
 
@@ -145,6 +146,7 @@ pub fn errorMessage(err: anyerror) []const u8 {
         error.SchemaNames => "fixed schema names do not match",
         error.SchemaAttributes => "fixed schema has unsupported attributes",
         error.OutOfMemory => "out of memory during SEXP conversion",
+        error.IndexOutOfBounds => "vector index is out of bounds",
         error.NullPointer => "SEXP pointer is null",
         else => @errorName(err),
     };
@@ -354,6 +356,12 @@ pub const AccessStrategy = enum {
     materialized,
 };
 
+/// Identifies whether indexed access reads native storage or R elements.
+pub const IndexedAccessStrategy = enum {
+    direct,
+    element,
+};
+
 const region_chunk_elements = 256;
 
 fn checkedRegionCount(got: R.R_xlen_t, requested: R.R_xlen_t) ConvertError!usize {
@@ -459,6 +467,42 @@ pub fn VectorAccess(comptime T: type, comptime need: AccessNeed) type {
             }
             self.* = undefined;
         }
+    };
+}
+
+/// A call-scoped integer input for sparse or non-sequential reads. Ordinary
+/// storage and ALTREP classes with an existing native buffer are read directly.
+/// Other ALTREP inputs use `INTEGER_ELT` without requesting a contiguous buffer.
+/// The caller keeps the source SEXP rooted for the view's life. Element access
+/// can R-longjmp; callers register cleanup for any live native resources before
+/// calling `get`.
+pub const IndexedIntegerAccess = struct {
+    sexp: SEXP,
+    length: usize,
+    direct: ?[]const i32,
+
+    pub fn len(self: @This()) usize {
+        return self.length;
+    }
+
+    pub fn strategy(self: @This()) IndexedAccessStrategy {
+        return if (self.direct != null) .direct else .element;
+    }
+
+    pub fn get(self: @This(), index: usize) ConvertError!i32 {
+        if (index >= self.length) return error.IndexOutOfBounds;
+        if (self.direct) |data| return data[index];
+        return R.INTEGER_ELT(self.sexp, @intCast(index));
+    }
+};
+
+pub fn toIndexedIntegerAccess(sexp: SEXP) ConvertError!IndexedIntegerAccess {
+    try expectVectorType(i32, sexp);
+    const representation = try vectorRepresentation(sexp);
+    return .{
+        .sexp = sexp,
+        .length = representation.len,
+        .direct = directIntSliceOrNull(sexp, representation),
     };
 }
 
@@ -2610,6 +2654,19 @@ test "SliceView deinit borrowed is no-op" {
     view.deinit();
 }
 
+test "indexed integer access handles empty input and bounds" {
+    const access: IndexedIntegerAccess = .{
+        .sexp = null,
+        .length = 0,
+        .direct = &.{},
+    };
+
+    try std.testing.expectEqual(@as(usize, 0), access.len());
+    try std.testing.expectEqual(IndexedAccessStrategy.direct, access.strategy());
+    try std.testing.expectError(error.IndexOutOfBounds, access.get(0));
+    try std.testing.expectError(error.NullPointer, toIndexedIntegerAccess(null));
+}
+
 test "errorMessage covers all ConvertError variants" {
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedReal), "expected REALSXP");
     try std.testing.expectEqualSlices(u8, errorMessage(error.ExpectedInteger), "expected INTSXP");
@@ -2627,6 +2684,7 @@ test "errorMessage covers all ConvertError variants" {
     try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaNames), "fixed schema names do not match");
     try std.testing.expectEqualSlices(u8, errorMessage(error.SchemaAttributes), "fixed schema has unsupported attributes");
     try std.testing.expectEqualSlices(u8, errorMessage(error.OutOfMemory), "out of memory during SEXP conversion");
+    try std.testing.expectEqualSlices(u8, errorMessage(error.IndexOutOfBounds), "vector index is out of bounds");
     try std.testing.expectEqualSlices(u8, errorMessage(error.NullPointer), "SEXP pointer is null");
 }
 
