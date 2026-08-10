@@ -201,7 +201,14 @@ fn benchNumericTransform(value: R.SEXP) R.SEXP {
 fn benchBroadcast(value: R.SEXP, scalar: f64) f64 {
     if (directReal(value)) |data| {
         var total: f80 = 0.0;
-        for (data) |element| total += @floatCast(element + scalar);
+        var index: usize = 0;
+        while (index + 4 <= data.len) : (index += 4) {
+            total += @floatCast(data[index] + scalar);
+            total += @floatCast(data[index + 1] + scalar);
+            total += @floatCast(data[index + 2] + scalar);
+            total += @floatCast(data[index + 3] + scalar);
+        }
+        while (index < data.len) : (index += 1) total += @floatCast(data[index] + scalar);
         return @floatCast(total);
     }
     var input = realOnePass(value);
@@ -213,10 +220,55 @@ fn benchBroadcast(value: R.SEXP, scalar: f64) f64 {
     return @floatCast(total);
 }
 
+fn radixSortRealSmall(values: []f64, scratch: []u64) void {
+    const output_bits = @as([*]u64, @ptrCast(values.ptr))[0..values.len];
+    const sign_bit = @as(u64, 1) << 63;
+    for (output_bits) |*value| value.* = if (value.* & sign_bit != 0) ~value.* else value.* ^ sign_bit;
+
+    const digit_bits = 11;
+    const digit_mask = (1 << digit_bits) - 1;
+    var counts: [6][1 << digit_bits]u16 = undefined;
+    @memset(std.mem.asBytes(&counts), 0);
+    for (output_bits) |value| {
+        inline for (0..counts.len) |pass| {
+            const shift: u6 = @intCast(pass * digit_bits);
+            counts[pass][@intCast((value >> shift) & digit_mask)] += 1;
+        }
+    }
+
+    var source = output_bits;
+    var destination = scratch;
+    inline for (0..counts.len) |pass| {
+        var offset: u16 = 0;
+        for (&counts[pass]) |*count| {
+            const length = count.*;
+            count.* = offset;
+            offset += length;
+        }
+        const shift: u6 = @intCast(pass * digit_bits);
+        for (source) |value| {
+            const digit: usize = @intCast((value >> shift) & digit_mask);
+            destination[counts[pass][digit]] = value;
+            counts[pass][digit] += 1;
+        }
+        const previous = source;
+        source = destination;
+        destination = previous;
+    }
+
+    for (output_bits) |*value| value.* = if (value.* & sign_bit != 0) value.* ^ sign_bit else ~value.*;
+}
+
 fn radixSortReal(values: []f64) void {
     if (values.len < 2) return;
     const scratch = std.heap.page_allocator.alloc(u64, values.len) catch |err| convert.signalError(err);
     defer std.heap.page_allocator.free(scratch);
+
+    if (values.len < 1 << 16) {
+        radixSortRealSmall(values, scratch);
+        return;
+    }
+
     const counts = std.heap.page_allocator.alloc(usize, 1 << 16) catch |err| {
         std.heap.page_allocator.free(scratch);
         convert.signalError(err);
@@ -242,7 +294,7 @@ fn radixSortReal(values: []f64) void {
         }
         for (source) |value| {
             const digit: usize = @intCast((value >> bit_shift) & 0xffff);
-            destination[@intCast(counts[digit])] = value;
+            destination[counts[digit]] = value;
             counts[digit] += 1;
         }
         const previous = source;
