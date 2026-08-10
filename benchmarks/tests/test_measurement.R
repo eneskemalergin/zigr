@@ -37,6 +37,9 @@ expect_true(
   all(suitability$immutable_input) && !any(suitability$input_mutating) &&
     identical(task_set("stateful"), "rng") &&
     identical(task_set("representation_changing"), c("altrep_sum", "altrep_index", "altrep_materialize")) &&
+    identical(task_set("batch_equivalent"), setdiff(vapply(specs, `[[`, character(1), "id"), c(
+      "altrep_sum", "altrep_index", "altrep_materialize", "serialize", "rng"
+    ))) &&
     identical(task_set("large_output"), c(
       "numeric_transform", "sort", "transpose", "matmul", "attributes", "raw_copy",
       "complex_conjugate", "altrep_materialize", "serialize", "rng"
@@ -63,6 +66,13 @@ expect_true(
       c(rep("ordinary", 19L), "preserve", "preserve", "allow_change", rep("ordinary", 5L))
     ),
   "the task suitability map records the declared input, state, representation, output, matrix, and ALTREP contracts"
+)
+invalid_suitability <- suitability
+invalid_suitability$batch_equivalent[invalid_suitability$task == "rng"] <- TRUE
+expect_error(
+  "stateful events cannot claim batch equivalence",
+  validate_direct_task_suitability(invalid_suitability),
+  "direct task suitability is invalid"
 )
 
 expect_true(
@@ -339,15 +349,23 @@ expect_true(
   "fresh external state is recreated for every repeated event"
 )
 batchability <- vapply(
-  c("altrep_sum", "altrep_index", "altrep_materialize", "external_state", "rng", "sort", "attributes"),
+  c("altrep_sum", "altrep_index", "altrep_materialize", "external_state", "serialize", "rng", "sort", "attributes"),
   direct_task_batchability, character(1)
 )
 expect_true(
   identical(
     unname(batchability),
-    c("one", "one", "one", "repeat", "one", "repeat", "repeat")
+    c("one", "one", "one", "repeat", "one", "one", "repeat", "repeat")
   ),
-  "only cross-event state, RNG, and representation-changing events require a single invocation"
+  "only batch-equivalent events may repeat one prepared call"
+)
+repeat_checks <- vapply(
+  c("serialize", "external_state", "rng", "altrep_sum"),
+  direct_task_repeats_for_correctness, logical(1)
+)
+expect_true(
+  identical(unname(repeat_checks), c(TRUE, TRUE, FALSE, FALSE)),
+  "correctness repetition stays independent from timing batch equivalence"
 )
 allocation_classes <- vapply(
   c("complex_conjugate", "schema", "outputs"), direct_task_allocation_class, character(1)

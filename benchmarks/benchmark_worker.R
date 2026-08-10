@@ -237,7 +237,7 @@ if (identical(mode, "memory")) {
 if (mode %in% c("sizing", "timing") && any(vapply(task_ids, function(task) {
   identical(direct_task_batchability(task), "one") && batch_repetitions[[task]] != 1L
 }, logical(1)))) {
-  stop("mutable, stateful, RNG, and ALTREP tasks require batch repetitions of one")
+  stop("single-event tasks require batch repetitions of one")
 }
 
 if (identical(mode, "sizing")) {

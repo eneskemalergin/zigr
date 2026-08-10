@@ -209,6 +209,7 @@ direct_task_suitability <- function() {
     input_mutating = FALSE,
     stateful = c(rep(FALSE, 25L), TRUE, FALSE),
     representation_changing = c(rep(FALSE, 19L), TRUE, TRUE, TRUE, rep(FALSE, 5L)),
+    batch_equivalent = c(rep(TRUE, 19L), FALSE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, TRUE),
     large_output = c(
       FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, FALSE,
       FALSE, FALSE, TRUE, FALSE, FALSE, TRUE, TRUE, FALSE, FALSE, FALSE, TRUE,
@@ -234,13 +235,14 @@ direct_task_suitability <- function() {
 validate_direct_task_suitability <- function(rows = direct_task_suitability()) {
   required <- c(
     "task", "immutable_input", "input_mutating", "stateful", "representation_changing",
-    "large_output", "small_output", "gc_relevant", "matrix_task"
+    "batch_equivalent", "large_output", "small_output", "gc_relevant", "matrix_task"
   )
   expected_tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   if (!is.data.frame(rows) || !identical(names(rows), required) ||
       !identical(as.character(rows$task), expected_tasks) || anyDuplicated(rows$task) ||
       any(!vapply(rows[-1L], is.logical, logical(1))) ||
       any(rows$immutable_input == rows$input_mutating) ||
+      any((rows$stateful | rows$representation_changing) & rows$batch_equivalent) ||
       any(rows$large_output & rows$small_output) ||
       any(rows$gc_relevant & !rows$large_output)) {
     stop("direct task suitability is invalid")
@@ -256,14 +258,16 @@ direct_task_suitability_row <- function(task_id, rows = direct_task_suitability(
 }
 
 # One event is one invocation with freshly prepared deterministic arguments.
-# These tasks cannot repeat that event against one prepared object: they mutate
-# it, consume RNG state, or may change ALTREP representation.
+# Tasks may repeat one prepared call only when doing so preserves the event's
+# state, representation, allocation, and result-lifetime shape.
 direct_task_batchability <- function(task_id) {
   suitability <- direct_task_suitability_row(task_id)
-  if (isTRUE(suitability$stateful) || isTRUE(suitability$representation_changing)) {
-    return("one")
-  }
-  "repeat"
+  if (isTRUE(suitability$batch_equivalent)) "repeat" else "one"
+}
+
+direct_task_repeats_for_correctness <- function(task_id) {
+  suitability <- direct_task_suitability_row(task_id)
+  !isTRUE(suitability$stateful) && !isTRUE(suitability$representation_changing)
 }
 
 direct_task_is_altrep <- function(task_id) {
@@ -1617,7 +1621,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v12",
+    policy_version = "direct-batch-v13",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,

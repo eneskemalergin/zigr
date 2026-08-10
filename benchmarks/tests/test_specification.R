@@ -275,7 +275,7 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-    identical(policy$policy_version, "direct-batch-v12") &&
+    identical(policy$policy_version, "direct-batch-v13") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L, 512L, 4096L, 8192L)) &&
     identical(validate_direct_comparison_policy(policy$comparison_policy), list(
       confidence_level = 0.90,
@@ -363,6 +363,9 @@ expect_error("manifest rejects forged input seed", validate_direct_run_manifest(
 bad_batch <- clone(metadata)
 bad_batch$timing_policy$batch_repetitions$vector_sum <- 7L
 expect_error("manifest rejects undeclared repetition", validate_direct_run_manifest(bad_batch), "outside the sizing ladder")
+bad_batch <- clone(metadata)
+bad_batch$timing_policy$batch_repetitions$serialize <- 8L
+expect_error("manifest rejects repeated serialization", validate_direct_run_manifest(bad_batch), "single-event task contract")
 missing_diagnostic <- clone(incomplete)
 missing_diagnostic$status_message <- NULL
 expect_error("incomplete manifest requires diagnostic", validate_direct_run_manifest(missing_diagnostic), "incomplete status message")

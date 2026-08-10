@@ -10,7 +10,7 @@ The product comparison set is zigr, Rcpp, cpp11, extendr, and Savvy. Pure R and 
 
 Reduction fixtures must match R's ordered extended-precision result. The C and C++ fixtures implement that algorithm directly. The fixture Rust toolchains do not expose a matching extended-precision scalar, so Extendr and Savvy use their public R-call interfaces; those rows include the delegated base-R kernel.
 
-The timed event excludes input construction, correctness comparison, timers, and result retention. Each timing sample is one timer interval around the declared fixed-count event batch. The batch count is selected once per task across all selected runners from the declared 1, 8, 64, 512, 4,096, 8,192 ladder and must stay within the 500 ms batch cap. Tasks with state, RNG, or ALTREP representation changes remain at one event per batch. A focused baseline-only receipt may select a different count from a product receipt; those receipts establish separate timing coverage and cannot be compared with each other.
+The timed event excludes input construction, correctness comparison, timers, and result retention. Each timing sample is one timer interval around the declared fixed-count event batch. The batch count is selected once per task across all selected runners from the declared 1, 8, 64, 512, 4,096, 8,192 ladder and must stay within the 500 ms batch cap. Only tasks whose state, representation, allocation, and result-lifetime shape are unchanged by repetition may use more than one event per batch. A focused baseline-only receipt may select a different count from a product receipt; those receipts establish separate timing coverage and cannot be compared with each other.
 
 ## Commands
 

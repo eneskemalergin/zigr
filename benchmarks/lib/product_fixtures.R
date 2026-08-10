@@ -315,7 +315,7 @@ run_benchmark_revision_gate <- function(
     direct_assert_exact_task_oracles(spec, runner, runner_invoke, c_dll)
 
     runner_repeat_result <- NULL
-    if (identical(direct_task_batchability(spec$id), "repeat")) {
+    if (direct_task_repeats_for_correctness(spec$id)) {
       runner_repeat_result <- runner_invoke(runner_arguments)
       if (!is.null(runner_input_fingerprint)) {
         assert_immutable_input(spec$id, runner_arguments, runner_input_fingerprint, "ordinary_r_object")
