@@ -1109,12 +1109,16 @@ pub fn StringProjectionView(comptime projection: StringProjection, comptime prob
         sexp: SEXP,
         len: usize,
         is_altrep: bool,
+        ordinary_elements: ?[*]const SEXP,
         probe: if (probe_enabled) ?*StringProjectionProbe else void = if (probe_enabled) null else {},
 
         pub const selected_projection = projection;
 
         fn element(self: @This(), index: usize) SEXP {
-            if (!self.is_altrep) return sexp_mod.fastVectorElt(self.sexp, index);
+            if (!self.is_altrep) {
+                if (self.ordinary_elements) |elements| return elements[index];
+                return sexp_mod.fastVectorElt(self.sexp, index);
+            }
             return R.STRING_ELT(self.sexp, @intCast(index));
         }
 
@@ -1154,10 +1158,16 @@ pub const StringMetadataView = StringProjectionView(.metadata, false);
 
 fn initStringProjectionView(comptime projection: StringProjection, comptime probe_enabled: bool, sexp: SEXP, probe: ?*StringProjectionProbe) !StringProjectionView(projection, probe_enabled) {
     try expectType(sexp, R.STRSXP, error.ExpectedString);
+    const len = try tryXlength(sexp);
+    const is_altrep = R.ALTREP(sexp) != 0;
     return .{
         .sexp = sexp,
-        .len = try tryXlength(sexp),
-        .is_altrep = R.ALTREP(sexp) != 0,
+        .len = len,
+        .is_altrep = is_altrep,
+        .ordinary_elements = if (!sexp_mod.uses_direct_layout and !is_altrep and len != 0)
+            @ptrCast(R.STRING_PTR_RO(sexp))
+        else
+            null,
         .probe = if (comptime probe_enabled) probe else {},
     };
 }

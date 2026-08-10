@@ -2338,6 +2338,11 @@ export fn zigr_test_string_projections() SEXP {
 
     var missing_probe = zigr_convert.StringProjectionProbe{};
     const missing = zigr_convert.toStringProjectionViewWithProbe(.missingness, vector, &missing_probe) catch return R.Rf_ScalarReal(0.0);
+    if ((!zigr.sexp.uses_direct_layout and missing.ordinary_elements == null) or
+        (zigr.sexp.uses_direct_layout and missing.ordinary_elements != null))
+    {
+        return R.Rf_ScalarReal(0.0);
+    }
     var missing_count: usize = 0;
     var missing_iterator = missing.iterator();
     while (missing_iterator.next()) |element| {
@@ -2403,6 +2408,7 @@ export fn zigr_test_string_projections() SEXP {
     defer R.Rf_unprotect(1);
     var altrep_probe = zigr_convert.StringProjectionProbe{};
     const altrep_missing = zigr_convert.toStringProjectionViewWithProbe(.missingness, altrep, &altrep_probe) catch return R.Rf_ScalarReal(0.0);
+    if (altrep_missing.ordinary_elements != null) return R.Rf_ScalarReal(0.0);
     var altrep_count: usize = 0;
     var altrep_iterator = altrep_missing.iterator();
     while (altrep_iterator.next()) |element| {
