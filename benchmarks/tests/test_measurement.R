@@ -438,8 +438,34 @@ expect_true(
 )
 expect_error(
   "sizing rejects a repeatable task that misses the final ladder count",
-  advance_direct_sizing_tasks("vector_sum", FALSE, 64L),
+  advance_direct_sizing_tasks("vector_sum", FALSE, 8192L),
   "cannot meet"
+)
+extended_sizing <- data.frame(
+  runner = rep(c("r", "c_call"), times = 6L),
+  task = "outputs",
+  batch_repetitions = rep(c(1L, 8L, 64L, 512L, 4096L, 8192L), each = 2L),
+  batch_elapsed_ms = c(0.01, 0.01, 0.08, 0.02, 0.6, 0.2, 4, 0.5, 32, 0.9, 64, 1.8),
+  gc_elapsed_ms = 0,
+  stringsAsFactors = FALSE
+)
+expect_true(
+  identical(
+    unname(select_direct_batch_repetitions(
+      extended_sizing, c(r = 0.01, c_call = 0.01), c("r", "c_call"), "outputs"
+    )),
+    8192L
+  ),
+  "sizing reaches the first shared safe batch beyond the former ladder limit"
+)
+cap_progress <- advance_direct_sizing_tasks(
+  c("numeric_transform", "schema"), c(FALSE, FALSE), 64L,
+  cap_exceeded_tasks = "numeric_transform"
+)
+expect_true(
+  identical(cap_progress$active_tasks, "schema") &&
+    identical(cap_progress$blocked_tasks, "numeric_transform"),
+  "a task above the batch cap stops without forcing other tasks off the shared ladder"
 )
 expect_error(
   "sizing rejects a favorable-runner-only ladder step",

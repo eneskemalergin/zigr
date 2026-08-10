@@ -463,8 +463,8 @@ parse_named_integer_map <- function(value, expected_names, label) {
 
 direct_sizing_policy <- function() {
   list(
-    policy_version = "shared-ladder-v2",
-    ladder = as.list(c(1L, 8L, 64L)),
+    policy_version = "shared-ladder-v3",
+    ladder = as.list(c(1L, 8L, 64L, 512L, 4096L, 8192L)),
     minimum_batch_ms = 1,
     timer_floor_multiplier = 20L,
     target_batch_ms = 1,
@@ -478,8 +478,8 @@ validate_direct_sizing_policy <- function(policy) {
     "target_batch_ms", "maximum_batch_ms"
   )
   if (!is.list(policy) || !identical(names(policy), fields) ||
-      !identical(as.character(policy$policy_version), "shared-ladder-v2") ||
-      !identical(as.integer(unlist(policy$ladder, use.names = FALSE)), c(1L, 8L, 64L))) {
+      !identical(as.character(policy$policy_version), "shared-ladder-v3") ||
+      !identical(as.integer(unlist(policy$ladder, use.names = FALSE)), c(1L, 8L, 64L, 512L, 4096L, 8192L))) {
     stop("direct sizing policy is invalid")
   }
   multiplier <- input_scalar_integer(policy$timer_floor_multiplier, "timer floor multiplier")
@@ -540,32 +540,35 @@ direct_sizing_count_accepted <- function(rows, timer_floors, runners,
 
 advance_direct_sizing_tasks <- function(active_tasks, complete_tasks, count,
                                         blocked_tasks = character(),
-                                        policy = direct_sizing_policy()) {
+                                        policy = direct_sizing_policy(),
+                                        cap_exceeded_tasks = character()) {
   policy <- validate_direct_sizing_policy(policy)
   active_tasks <- as.character(active_tasks)
   blocked_tasks <- as.character(blocked_tasks)
+  cap_exceeded_tasks <- as.character(cap_exceeded_tasks)
   if (length(active_tasks) == 0L || length(complete_tasks) != length(active_tasks) ||
       anyNA(active_tasks) || any(!nzchar(active_tasks)) || anyNA(complete_tasks) ||
       !is.logical(complete_tasks) || anyDuplicated(active_tasks) ||
       any(!active_tasks %in% vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")) ||
       any(!blocked_tasks %in% vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")) ||
-      anyDuplicated(blocked_tasks)) {
+      anyDuplicated(blocked_tasks) || any(!cap_exceeded_tasks %in% active_tasks) ||
+      anyDuplicated(cap_exceeded_tasks) || any(cap_exceeded_tasks %in% active_tasks[complete_tasks])) {
     stop("direct sizing task progress is invalid")
   }
   count <- input_scalar_integer(count, "sizing count")
   if (!count %in% policy$ladder) stop("direct sizing count is not on the declared ladder")
   failed_tasks <- active_tasks[!complete_tasks]
   one_event_failures <- failed_tasks[vapply(failed_tasks, direct_task_batchability, character(1)) == "one"]
-  repeat_failures <- setdiff(failed_tasks, one_event_failures)
+  repeat_failures <- setdiff(failed_tasks, c(one_event_failures, cap_exceeded_tasks))
   if (identical(count, max(policy$ladder)) && length(repeat_failures) > 0L) {
     stop(sprintf(
       "batch sizing cannot meet the shared policy for: %s",
-      paste(c(blocked_tasks, repeat_failures), collapse = ", ")
+      paste(c(blocked_tasks, cap_exceeded_tasks, repeat_failures), collapse = ", ")
     ))
   }
   list(
     active_tasks = repeat_failures,
-    blocked_tasks = unique(c(blocked_tasks, one_event_failures))
+    blocked_tasks = unique(c(blocked_tasks, one_event_failures, cap_exceeded_tasks))
   )
 }
 
@@ -1598,7 +1601,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v10",
+    policy_version = "direct-batch-v11",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,

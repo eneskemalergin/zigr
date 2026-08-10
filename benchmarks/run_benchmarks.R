@@ -256,7 +256,13 @@ run_direct_benchmark <- function() {
         selected_runners, sizing_policy
       )
     }, logical(1))
-    progress <- advance_direct_sizing_tasks(active_tasks, complete_tasks, count, blocked_tasks, sizing_policy)
+    cap_exceeded_tasks <- active_tasks[vapply(active_tasks, function(task) {
+      rows <- round_rows[round_rows$task == task, , drop = FALSE]
+      any(rows$batch_elapsed_ms > sizing_policy$maximum_batch_ms)
+    }, logical(1))]
+    progress <- advance_direct_sizing_tasks(
+      active_tasks, complete_tasks, count, blocked_tasks, sizing_policy, cap_exceeded_tasks
+    )
     active_tasks <- progress$active_tasks
     blocked_tasks <- progress$blocked_tasks
   }
