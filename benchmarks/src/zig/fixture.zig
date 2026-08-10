@@ -614,7 +614,18 @@ fn benchAltrepMaterialize(value: R.SEXP) R.SEXP {
     return input.copy();
 }
 fn benchEval(value: R.SEXP) R.SEXP {
-    return callR("function(x) eval(quote(sum(x)+mean(x)),list2env(list(x=x),parent=baseenv()))", &.{value});
+    var environment = zigr.protect.scoped(R.R_NewEnv(R.R_BaseEnv, 0, 29));
+    defer environment.deinit();
+    zigr.eval.defineVarIn("x", value, environment.get());
+
+    const x_symbol = zigr.lang.symbol("x");
+    var sum_call = zigr.protect.scoped(zigr.lang.call1(zigr.lang.symbol("sum"), x_symbol));
+    defer sum_call.deinit();
+    var mean_call = zigr.protect.scoped(zigr.lang.call1(zigr.lang.symbol("mean"), x_symbol));
+    defer mean_call.deinit();
+    var expression = zigr.protect.scoped(zigr.lang.call2(zigr.lang.symbol("+"), sum_call.get(), mean_call.get()));
+    defer expression.deinit();
+    return zigr.eval.rEval(expression.get(), environment.get());
 }
 fn benchSerialize(value: R.SEXP) R.SEXP {
     var bytes = zigr.protect.scoped(zigr.serialize.toVector(value));
