@@ -372,8 +372,14 @@ expect_true(
     identical(cost_accounts$copied_bytes[cost_accounts$task == "serialize"], 0) &&
     identical(cost_accounts$written_bytes[cost_accounts$task == "serialize"], 0) &&
     identical(cost_accounts$list_slot_reads[cost_accounts$task == "list_sum"], 1000L) &&
-    identical(cost_accounts$materialized_bytes[cost_accounts$task == "altrep_materialize"], 1024),
-  "fixed-input cost accounts record attributable passes, native work, R payloads, list access, and materialization"
+    identical(cost_accounts$materialized_bytes[cost_accounts$task == "altrep_materialize"], 1024) &&
+    identical(cost_accounts$r_payload_bytes[cost_accounts$task == "factor"], 800) &&
+    identical(cost_accounts$opaque_r_operations[cost_accounts$task == "eval"], TRUE) &&
+    identical(cost_accounts$borrowed_bytes[cost_accounts$task == "string_metadata"], 80000) &&
+    identical(cost_accounts$copied_bytes[cost_accounts$task == "string_metadata"], 20) &&
+    identical(cost_accounts$indexed_element_reads[cost_accounts$task == "altrep_index"], 312500L) &&
+    identical(cost_accounts$materialized_bytes[cost_accounts$task == "altrep_index"], 0),
+  "fixed-input cost accounts record attributable input, allocation, and sparse-access work"
 )
 expect_true(
   identical(validate_direct_task_cost_accounts(cost_accounts), cost_accounts),
@@ -402,6 +408,13 @@ invalid_cost_accounts <- cost_accounts
 invalid_cost_accounts$native_requested_bytes[[which(invalid_cost_accounts$task == "sort")]] <- 1
 expect_error(
   "cost accounts reject altered native allocation attribution",
+  validate_direct_task_cost_accounts(invalid_cost_accounts),
+  "direct task cost accounts are invalid"
+)
+invalid_cost_accounts <- cost_accounts
+invalid_cost_accounts$indexed_element_reads[[which(invalid_cost_accounts$task == "altrep_index")]] <- 0L
+expect_error(
+  "cost accounts reject altered sparse access attribution",
   validate_direct_task_cost_accounts(invalid_cost_accounts),
   "direct task cost accounts are invalid"
 )
@@ -486,7 +499,7 @@ expect_error(
   "unnecessary or undeclared"
 )
 over_cap_sizing <- sizing_rows
-over_cap_sizing$batch_elapsed_ms[over_cap_sizing$batch_repetitions == 8L] <- 251
+over_cap_sizing$batch_elapsed_ms[over_cap_sizing$batch_repetitions == 8L] <- 501
 expect_error(
   "sizing rejects a batch above the wall-time cap",
   select_direct_batch_repetitions(

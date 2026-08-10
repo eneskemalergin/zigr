@@ -347,12 +347,13 @@ direct_task_output_vcells <- function(task_id, policy = direct_allocation_policy
 
 # These are the fixed revision inputs whose public paths are retained in the
 # performance ledger.  The account describes only work attributable to the
-# generated fixture source; R headers, allocator rounding, and opaque work
-# inside R's serialization and attribute APIs are kept explicit below.
+# generated fixture source; R headers, allocator rounding, and opaque R work
+# are kept explicit below.
 direct_cost_account_task_ids <- function() {
   c(
     "vector_sum", "broadcast", "missing_mean", "list_sum", "sort", "serialize",
-    "transpose", "complex_conjugate", "rng", "attributes", "altrep_materialize"
+    "transpose", "complex_conjugate", "rng", "attributes", "altrep_materialize",
+    "factor", "eval", "string_metadata", "altrep_index"
   )
 }
 
@@ -370,26 +371,34 @@ direct_task_cost_accounts <- function(tasks = direct_cost_account_task_ids()) {
   rows <- data.frame(
     task = expected,
     input_elements = c(1000000L, 1000000L, 1000000L, 100000L, 100000L,
-                       100000L, 262144L, 32768L, 1L, 100000L, 5000000L),
-    input_passes = c(1L, 1L, 2L, 1L, 1L, 0L, 1L, 1L, 0L, 0L, 1L),
+                       100000L, 262144L, 32768L, 1L, 100000L, 5000000L,
+                       10000L, 100000L, 10000L, 10000000L),
+    input_passes = c(1L, 1L, 2L, 1L, 1L, 0L, 1L, 1L, 0L, 0L, 1L,
+                     0L, 0L, 1L, 0L),
     borrowed_bytes = c(8000000, 8000000, 8000000, 800000, 800000,
-                       0, 2097152, 524288, 0, 0, 0),
-    materialized_bytes = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1024),
-    native_allocation_events = c(0L, 0L, 0L, 0L, 2L, 0L, 0L, 0L, 0L, 0L, 1L),
-    native_requested_bytes = c(0, 0, 0, 0, 1324288, 0, 0, 0, 0, 0, 1024),
-    r_payload_allocations = c(1L, 1L, 1L, 1L, 1L, 2L, 1L, 1L, 1L, 1L, 1L),
+                       0, 2097152, 524288, 0, 0, 0, 0, 0, 80000, 0),
+    materialized_bytes = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1024, 0, 0, 0, 0),
+    native_allocation_events = c(0L, 0L, 0L, 0L, 2L, 0L, 0L, 0L, 0L, 0L, 1L,
+                                 0L, 0L, 0L, 0L),
+    native_requested_bytes = c(0, 0, 0, 0, 1324288, 0, 0, 0, 0, 0, 1024,
+                               0, 0, 0, 0),
+    r_payload_allocations = c(1L, 1L, 1L, 1L, 1L, 2L, 1L, 1L, 1L, 1L, 1L,
+                              1L, 0L, 2L, 1L),
     r_payload_bytes = c(8, 8, 8, 8, 800000, 1600031, 2097152,
-                        524288, 800000, 800000, 20000000),
-    copied_bytes = c(0, 0, 0, 0, 800000, 0, 0, 0, 0, 800000, 20000000),
+                        524288, 800000, 800000, 20000000, 800, 0, 60, 8),
+    copied_bytes = c(0, 0, 0, 0, 800000, 0, 0, 0, 0, 800000, 20000000,
+                     0, 0, 20, 0),
     written_bytes = c(8, 8, 8, 8, 800000, 0, 2097152,
-                      524288, 800000, 800000, 20000000),
+                      524288, 800000, 800000, 20000000, 800, 0, 60, 8),
     opaque_r_operations = c(FALSE, FALSE, FALSE, FALSE, FALSE, TRUE,
-                            FALSE, FALSE, FALSE, TRUE, TRUE),
+                            FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE),
     stringsAsFactors = FALSE
   )
   rows$list_slot_reads <- 0L
   rows$list_slot_reads[rows$task == "list_sum"] <- 1000L
-  rows$account_scope <- "exact-attributable-fixed-input-x86_64-v2"
+  rows$indexed_element_reads <- 0L
+  rows$indexed_element_reads[rows$task == "altrep_index"] <- 312500L
+  rows$account_scope <- "exact-attributable-fixed-input-x86_64-v3"
   rows <- rows[match(tasks, rows$task), , drop = FALSE]
   rownames(rows) <- NULL
   rows
@@ -401,7 +410,7 @@ validate_direct_task_cost_accounts <- function(accounts, tasks = direct_cost_acc
     "task", "input_elements", "input_passes", "borrowed_bytes", "materialized_bytes",
     "native_allocation_events", "native_requested_bytes", "r_payload_allocations",
     "r_payload_bytes", "copied_bytes", "written_bytes", "opaque_r_operations",
-    "list_slot_reads", "account_scope"
+    "list_slot_reads", "indexed_element_reads", "account_scope"
   )
   if (!is.data.frame(accounts) || !identical(names(accounts), required) ||
       !identical(as.character(accounts$task), tasks) || anyDuplicated(accounts$task)) {
@@ -416,7 +425,7 @@ validate_direct_task_cost_accounts <- function(accounts, tasks = direct_cost_acc
       any(!vapply(accounts["account_scope"], is.character, logical(1))) ||
       anyNA(numeric_values) || any(!is.finite(numeric_values)) || any(numeric_values < 0) ||
       anyNA(accounts$opaque_r_operations) || anyNA(accounts$account_scope) ||
-      any(accounts$account_scope != "exact-attributable-fixed-input-x86_64-v2")) {
+      any(accounts$account_scope != "exact-attributable-fixed-input-x86_64-v3")) {
     stop("direct task cost accounts are invalid")
   }
   expected <- direct_task_cost_accounts(tasks)
@@ -463,12 +472,12 @@ parse_named_integer_map <- function(value, expected_names, label) {
 
 direct_sizing_policy <- function() {
   list(
-    policy_version = "shared-ladder-v3",
+    policy_version = "shared-ladder-v4",
     ladder = as.list(c(1L, 8L, 64L, 512L, 4096L, 8192L)),
     minimum_batch_ms = 1,
     timer_floor_multiplier = 20L,
     target_batch_ms = 1,
-    maximum_batch_ms = 250
+    maximum_batch_ms = 500
   )
 }
 
@@ -478,18 +487,25 @@ validate_direct_sizing_policy <- function(policy) {
     "target_batch_ms", "maximum_batch_ms"
   )
   if (!is.list(policy) || !identical(names(policy), fields) ||
-      !identical(as.character(policy$policy_version), "shared-ladder-v3") ||
-      !identical(as.integer(unlist(policy$ladder, use.names = FALSE)), c(1L, 8L, 64L, 512L, 4096L, 8192L))) {
+      !identical(as.character(policy$policy_version), "shared-ladder-v4") ||
+      !is.list(policy$ladder) || !is.null(names(policy$ladder)) ||
+      length(policy$ladder) != 6L || any(lengths(policy$ladder) != 1L)) {
+    stop("direct sizing policy is invalid")
+  }
+  ladder <- unlist(policy$ladder, use.names = FALSE)
+  if (!is.numeric(ladder) || anyNA(ladder) || any(!is.finite(ladder)) ||
+      !identical(as.numeric(ladder), c(1, 8, 64, 512, 4096, 8192))) {
     stop("direct sizing policy is invalid")
   }
   multiplier <- input_scalar_integer(policy$timer_floor_multiplier, "timer floor multiplier")
   numeric <- unlist(policy[c("minimum_batch_ms", "target_batch_ms", "maximum_batch_ms")], use.names = FALSE)
   if (length(numeric) != 3L || any(!is.finite(numeric)) || any(numeric <= 0) ||
-      numeric[[1L]] > numeric[[2L]] || numeric[[2L]] > numeric[[3L]]) {
+      numeric[[1L]] > numeric[[2L]] || numeric[[2L]] > numeric[[3L]] ||
+      !identical(multiplier, 20L) || !identical(as.numeric(numeric), c(1, 1, 500))) {
     stop("direct sizing policy has invalid batch bounds")
   }
   list(
-    ladder = as.integer(unlist(policy$ladder, use.names = FALSE)),
+    ladder = as.integer(ladder),
     minimum_batch_ms = as.numeric(numeric[[1L]]),
     timer_floor_multiplier = multiplier,
     target_batch_ms = as.numeric(numeric[[2L]]),
@@ -1601,7 +1617,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v11",
+    policy_version = "direct-batch-v12",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,

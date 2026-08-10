@@ -275,7 +275,7 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-    identical(policy$policy_version, "direct-batch-v11") &&
+    identical(policy$policy_version, "direct-batch-v12") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L, 512L, 4096L, 8192L)) &&
     identical(validate_direct_comparison_policy(policy$comparison_policy), list(
       confidence_level = 0.90,
@@ -284,6 +284,7 @@ expect_true(
     )) &&
     identical(policy$measurement_samples, 11L) &&
     identical(policy$sizing_policy$target_batch_ms, 1) &&
+    identical(policy$sizing_policy$maximum_batch_ms, 500) &&
     grepl("each large-output measurement sample", policy$gc_policy, fixed = TRUE),
   "direct timing uses one bounded shared-count policy and explicit large-output GC boundaries"
 )
@@ -316,6 +317,20 @@ expect_error(
   "manifest rejects a widened comparison equivalence margin",
   validate_direct_run_manifest(forged_comparison_policy),
   "comparison policy has invalid limits"
+)
+forged_sizing_policy <- clone(metadata)
+forged_sizing_policy$timing_policy$sizing_policy$maximum_batch_ms <- 5000
+expect_error(
+  "manifest rejects a widened sizing cap",
+  validate_direct_run_manifest(forged_sizing_policy),
+  "sizing policy has invalid batch bounds"
+)
+forged_sizing_policy <- clone(metadata)
+forged_sizing_policy$timing_policy$sizing_policy$ladder[[1L]] <- 1.5
+expect_error(
+  "manifest rejects a fractional sizing ladder",
+  validate_direct_run_manifest(forged_sizing_policy),
+  "direct sizing policy is invalid"
 )
 missing_required <- clone(metadata)
 missing_required$source_tree <- NULL
