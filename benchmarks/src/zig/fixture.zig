@@ -261,14 +261,16 @@ fn radixSortRealSmall(values: []f64, scratch: []u64) void {
 
 fn radixSortReal(values: []f64) void {
     if (values.len < 2) return;
-    const scratch = std.heap.page_allocator.alloc(u64, values.len) catch |err| convert.signalError(err);
-    defer std.heap.page_allocator.free(scratch);
 
     if (values.len < 1 << 16) {
+        const scratch = zigr.memory.RAllocator.alloc(u64, values.len) catch |err| convert.signalError(err);
+        defer zigr.memory.RAllocator.free(scratch);
         radixSortRealSmall(values, scratch);
         return;
     }
 
+    const scratch = std.heap.page_allocator.alloc(u64, values.len) catch |err| convert.signalError(err);
+    defer std.heap.page_allocator.free(scratch);
     const counts = std.heap.page_allocator.alloc(usize, 1 << 16) catch |err| {
         std.heap.page_allocator.free(scratch);
         convert.signalError(err);
