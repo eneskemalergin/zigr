@@ -1612,6 +1612,26 @@ const RealChunk = struct {
     data: []const f64,
 };
 
+const DirectRealChunkIter = struct {
+    data: []const f64,
+    n: usize,
+    consumed: bool = false,
+
+    fn init(data: []const f64) DirectRealChunkIter {
+        return .{ .data = data, .n = data.len };
+    }
+
+    fn next(self: *DirectRealChunkIter) ?RealChunk {
+        if (self.consumed) return null;
+        self.consumed = true;
+        return .{ .offset = 0, .data = self.data };
+    }
+
+    fn rewind(self: *DirectRealChunkIter) void {
+        self.consumed = false;
+    }
+};
+
 const IntChunk = struct {
     offset: usize,
     data: []const i32,
@@ -1626,11 +1646,19 @@ const RealChunkIter = struct {
 
     fn init(sexp: SEXP) RealChunkIter {
         const representation = vectorRepresentation(sexp) catch |err| signalError(err);
+        return initWithRepresentation(sexp, representation);
+    }
+
+    fn initWithRepresentation(sexp: SEXP, representation: VectorRepresentation) RealChunkIter {
         return .{
             .sexp = sexp,
             .n = representation.len,
             .direct = directRealSliceOrNull(sexp, representation),
         };
+    }
+
+    fn initRegions(sexp: SEXP, representation: VectorRepresentation) RealChunkIter {
+        return .{ .sexp = sexp, .n = representation.len, .direct = null };
     }
 
     fn next(self: *RealChunkIter) ?RealChunk {
@@ -1649,6 +1677,10 @@ const RealChunkIter = struct {
         ) catch |err| signalError(err);
         self.offset += got;
         return .{ .offset = chunk_offset, .data = self.buf[0..got] };
+    }
+
+    fn rewind(self: *RealChunkIter) void {
+        self.offset = 0;
     }
 };
 
@@ -1729,46 +1761,113 @@ fn narrowRealSum(total: c_longdouble) f64 {
     return @floatCast(total);
 }
 
-fn realSum(sexp: SEXP, na_rm: bool) f64 {
-    var total: c_longdouble = 0.0;
-    var na_seen = false;
-    var nan_seen = false;
-    var iter = RealChunkIter.init(sexp);
-    while (iter.next()) |chunk| {
-        for (chunk.data) |value| {
+const RealSumAccumulator = struct {
+    total: c_longdouble = 0.0,
+    na_seen: bool = false,
+    nan_seen: bool = false,
+
+    fn add(self: *RealSumAccumulator, values: []const f64, comptime na_rm: bool) void {
+        for (values) |value| {
             if (value != value) {
                 @branchHint(.unlikely);
                 if (!na_rm) {
-                    if (R.ISNA(value) != 0) na_seen = true else nan_seen = true;
+                    if (R.ISNA(value) != 0) self.na_seen = true else self.nan_seen = true;
                 }
                 continue;
             }
-            total += @as(c_longdouble, @floatCast(value));
+            self.total += @as(c_longdouble, @floatCast(value));
         }
     }
 
-    if (na_seen) return R.R_NaReal;
-    if (nan_seen) return R.R_NaN;
-    return narrowRealSum(total);
+    fn finish(self: RealSumAccumulator) f64 {
+        if (self.na_seen) return R.R_NaReal;
+        if (self.nan_seen) return R.R_NaN;
+        return narrowRealSum(self.total);
+    }
+};
+
+noinline fn realSumRegions(sexp: SEXP, representation: VectorRepresentation, comptime na_rm: bool) f64 {
+    var accumulator: RealSumAccumulator = .{};
+    var iter = RealChunkIter.initRegions(sexp, representation);
+    while (iter.next()) |chunk| accumulator.add(chunk.data, na_rm);
+    return accumulator.finish();
 }
 
-fn realMean(sexp: SEXP, na_rm: bool) f64 {
+fn realSum(sexp: SEXP, comptime na_rm: bool) f64 {
+    const representation = vectorRepresentation(sexp) catch |err| signalError(err);
+    if (directRealSliceOrNull(sexp, representation)) |data| {
+        var accumulator: RealSumAccumulator = .{};
+        accumulator.add(data, na_rm);
+        return accumulator.finish();
+    }
+    return realSumRegions(sexp, representation, na_rm);
+}
+
+inline fn addRealMeanCorrection(
+    correction: *c_longdouble,
+    value: f64,
+    result: c_longdouble,
+    divisor: c_longdouble,
+    finite_total: bool,
+) void {
+    const extended: c_longdouble = @floatCast(value);
+    correction.* += if (finite_total)
+        extended - result
+    else
+        (extended - result) / divisor;
+}
+
+inline fn realMeanCorrection(
+    correction: *c_longdouble,
+    values: []const f64,
+    result: c_longdouble,
+    divisor: c_longdouble,
+    finite_total: bool,
+    comptime na_rm: bool,
+) void {
+    var index: usize = 0;
+
+    if (comptime na_rm) {
+        // Classifying pairs keeps extended arithmetic behind the NaN branch without changing order.
+        while (index + 2 <= values.len) : (index += 2) {
+            const block = values[index..][0..2];
+            const all_non_nan = block[0] == block[0] and block[1] == block[1];
+            if (all_non_nan) {
+                for (block) |value| {
+                    addRealMeanCorrection(correction, value, result, divisor, finite_total);
+                }
+            } else {
+                for (block) |value| {
+                    if (value == value) {
+                        addRealMeanCorrection(correction, value, result, divisor, finite_total);
+                    }
+                }
+            }
+        }
+    }
+
+    for (values[index..]) |value| {
+        if (na_rm and value != value) continue;
+        addRealMeanCorrection(correction, value, result, divisor, finite_total);
+    }
+}
+
+fn realMeanChunks(iter: anytype, comptime na_rm: bool) f64 {
     var total: c_longdouble = 0.0;
-    var count: usize = 0;
     var na_seen = false;
     var nan_seen = false;
-    var iter = RealChunkIter.init(sexp);
+    var count = iter.n;
     while (iter.next()) |chunk| {
         for (chunk.data) |value| {
             if (value != value) {
                 @branchHint(.unlikely);
+                count -= 1;
                 if (!na_rm) {
                     if (R.ISNA(value) != 0) na_seen = true else nan_seen = true;
                 }
                 continue;
             }
             total += @as(c_longdouble, @floatCast(value));
-            count += 1;
         }
     }
 
@@ -1781,10 +1880,13 @@ fn realMean(sexp: SEXP, na_rm: bool) f64 {
     var result = if (finite_total) total / divisor else scaled: {
         const scaled_divisor: f64 = @floatFromInt(count);
         var scaled_total: c_longdouble = 0.0;
-        var scaled_iter = RealChunkIter.init(sexp);
-        while (scaled_iter.next()) |chunk| {
+        iter.rewind();
+        while (iter.next()) |chunk| {
             for (chunk.data) |value| {
-                if (na_rm and value != value) continue;
+                if (na_rm and value != value) {
+                    @branchHint(.unlikely);
+                    continue;
+                }
                 scaled_total += @as(c_longdouble, @floatCast(value / scaled_divisor));
             }
         }
@@ -1793,21 +1895,28 @@ fn realMean(sexp: SEXP, na_rm: bool) f64 {
 
     if (std.math.isFinite(@as(f64, @floatCast(result)))) {
         var correction: c_longdouble = 0.0;
-        var correction_iter = RealChunkIter.init(sexp);
-        while (correction_iter.next()) |chunk| {
-            for (chunk.data) |value| {
-                if (na_rm and value != value) continue;
-                const extended: c_longdouble = @floatCast(value);
-                correction += if (finite_total)
-                    extended - result
-                else
-                    (extended - result) / divisor;
-            }
+        iter.rewind();
+        while (iter.next()) |chunk| {
+            realMeanCorrection(&correction, chunk.data, result, divisor, finite_total, na_rm);
         }
         result += if (finite_total) correction / divisor else correction;
     }
 
     return @floatCast(result);
+}
+
+noinline fn realMeanRegions(sexp: SEXP, representation: VectorRepresentation, comptime na_rm: bool) f64 {
+    var iter = RealChunkIter.initRegions(sexp, representation);
+    return realMeanChunks(&iter, na_rm);
+}
+
+fn realMean(sexp: SEXP, comptime na_rm: bool) f64 {
+    const representation = vectorRepresentation(sexp) catch |err| signalError(err);
+    if (directRealSliceOrNull(sexp, representation)) |data| {
+        var iter = DirectRealChunkIter.init(data);
+        return realMeanChunks(&iter, na_rm);
+    }
+    return realMeanRegions(sexp, representation, na_rm);
 }
 
 pub fn sum(sexp: SEXP) f64 {

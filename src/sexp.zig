@@ -117,7 +117,8 @@ fn directLength(sexp: SEXP) R.R_xlen_t {
 /// Caller assumes non-null inputs are vectors or CHARSXPs.
 pub fn fastLength(sexp: SEXP) R.R_xlen_t {
     if (sexp == null) return 0;
-    if (R.ALTREP(sexp) != 0 or !uses_direct_layout) return checked.length(sexp);
+    if (comptime !uses_direct_layout) return checked.length(sexp);
+    if (R.ALTREP(sexp) != 0) return checked.length(sexp);
     return directLength(sexp);
 }
 

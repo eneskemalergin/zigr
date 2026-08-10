@@ -393,12 +393,8 @@ fn benchListSum(value: R.SEXP) f64 {
     for (0..@as(usize, @intCast(length))) |index| {
         const item = R.VECTOR_ELT(value, @intCast(index));
         const item_total = convert.sum(item);
-        if (R.ISNA(item_total) != 0) {
-            na_seen = true;
-            continue;
-        }
-        if (R.ISNAN(item_total)) {
-            nan_seen = true;
+        if (std.math.isNan(item_total)) {
+            if (R.ISNA(item_total) != 0) na_seen = true else nan_seen = true;
             continue;
         }
         total += @as(c_longdouble, @floatCast(item_total));
