@@ -75,7 +75,7 @@ direct_assert_runner_parity <- function(spec, r_result, c_result, runner_result,
   invisible(runner_result)
 }
 
-exact_reduction_arguments <- function(task_id) {
+exact_task_arguments <- function(task_id) {
   switch(task_id,
     vector_sum = list(
       list(c(1e16, 1, -1e16)),
@@ -101,12 +101,19 @@ exact_reduction_arguments <- function(task_id) {
       list(list(-0)),
       list(list())
     ),
+    sort = list(
+      list(numeric()),
+      list(c(3, -2, -0, 0, Inf, -Inf, 3)),
+      list(rep(7, 65535L)),
+      list(rep(c(Inf, 3, 0, -0, -2, -Inf), length.out = 65535L)),
+      list(rep(7, 65536L))
+    ),
     list()
   )
 }
 
-direct_assert_exact_reduction_oracles <- function(spec, runner, runner_invoke, c_dll) {
-  cases <- exact_reduction_arguments(spec$id)
+direct_assert_exact_task_oracles <- function(spec, runner, runner_invoke, c_dll) {
+  cases <- exact_task_arguments(spec$id)
   if (length(cases) == 0L) return(invisible(TRUE))
   r_function <- get(spec$function_name, envir = .GlobalEnv, inherits = FALSE)
   for (index in seq_along(cases)) {
@@ -118,9 +125,11 @@ direct_assert_exact_reduction_oracles <- function(spec, runner, runner_invoke, c
     revision_assert_same(expected, c_result, paste0(label, " R/C"))
     revision_assert_same(expected, runner_result, paste0(label, " R/", runner))
     revision_assert_same(c_result, runner_result, paste0(label, " C/", runner))
-    encodings <- c(sprintf("%a", expected), sprintf("%a", c_result), sprintf("%a", runner_result))
-    if (length(unique(encodings)) != 1L) {
-      stop(sprintf("%s scalar encodings differ", label))
+    if (length(expected) == 1L) {
+      encodings <- c(sprintf("%a", expected), sprintf("%a", c_result), sprintf("%a", runner_result))
+      if (length(unique(encodings)) != 1L) {
+        stop(sprintf("%s scalar encodings differ", label))
+      }
     }
   }
   invisible(TRUE)
@@ -303,7 +312,7 @@ run_benchmark_revision_gate <- function(
     direct_assert_runner_parity(
       spec, r_result, c_result, runner_result, runner, r_rng, c_rng, runner_rng
     )
-    direct_assert_exact_reduction_oracles(spec, runner, runner_invoke, c_dll)
+    direct_assert_exact_task_oracles(spec, runner, runner_invoke, c_dll)
 
     runner_repeat_result <- NULL
     if (identical(direct_task_batchability(spec$id), "repeat")) {

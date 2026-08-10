@@ -189,6 +189,13 @@ expect_error(
 )
 
 product_source <- readLines(file.path(root_dir, "lib", "product_fixtures.R"), warn = FALSE)
+sort_oracle_lengths <- vapply(
+  exact_task_arguments("sort"), function(arguments) length(arguments[[1L]]), integer(1)
+)
+expect_true(
+  identical(sort_oracle_lengths, c(0L, 7L, 65535L, 65535L, 65536L)),
+  "sort correctness oracles cover compact and large radix boundaries"
+)
 legacy_definition_pattern <- paste0(
   "^(", paste(c("fixture_", "verify_", "build_fixture_", "run_fixture_",
                  "validate_fixture_", "cpp11_fixture_"), collapse = "|"),
