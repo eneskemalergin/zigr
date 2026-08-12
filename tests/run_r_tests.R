@@ -532,6 +532,11 @@ exact_scalar_equal <- function(actual, expected) {
   TRUE
 }
 
+reduction_scalar_equal <- function(actual, expected, mixed_missing) {
+  if (mixed_missing) return(length(actual) == 1L && is.double(actual) && is.na(actual))
+  exact_scalar_equal(actual, expected)
+}
+
 exact_scalar_label <- function(value) {
   if (isTRUE(value == 0)) return(if (1 / value < 0) "-0" else "0")
   paste(format(value, digits = 17L, scientific = TRUE), collapse = ",")
@@ -566,7 +571,7 @@ check_vector_reduction_oracle <- function(symbol, oracle, cases) {
     for (representation in names(inputs)) {
       input <- inputs[[representation]]
       actual <- reduction_call(symbol, input)
-      if (!exact_scalar_equal(actual, expected)) {
+      if (!reduction_scalar_equal(actual, expected, identical(case_name, "mixed_missing"))) {
         failures <- c(
           failures,
           sprintf(
@@ -596,7 +601,7 @@ check_list_reduction_oracle <- function(cases) {
     for (representation in names(inputs)) {
       input <- inputs[[representation]]
       actual <- reduction_call("list", input)
-      if (!exact_scalar_equal(actual, expected)) {
+      if (!reduction_scalar_equal(actual, expected, identical(case_name, "mixed_missing"))) {
         failures <- c(
           failures,
           sprintf(
@@ -762,7 +767,9 @@ reduction_cases <- list(
   finite = c(-4, 1, 2, 8),
   cancellation = cancellation,
   chunk_boundary = chunk_cancellation,
-  missing_precedence = c(NaN, NA_real_, 1),
+  na = c(NA_real_, 1),
+  nan = c(NaN, 1),
+  mixed_missing = c(NaN, NA_real_, 1),
   opposing_infinities = c(Inf, -Inf),
   double_overflow = rep(.Machine$double.xmax, 2L),
   scaled_rounding_overflow = rep(.Machine$double.xmax, 3L),
@@ -786,7 +793,9 @@ list_reduction_cases <- list(
   finite = list(c(-4, 1), c(2, 8)),
   cancellation = list(cancellation, cancellation),
   chunk_boundary = list(chunk_cancellation, cancellation),
-  missing_precedence = list(c(NaN, NA_real_, 1), c(2, 3)),
+  na = list(c(NA_real_, 1), c(2, 3)),
+  nan = list(c(NaN, 1), c(2, 3)),
+  mixed_missing = list(c(NaN, NA_real_, 1), c(2, 3)),
   opposing_infinities = list(c(Inf, 1), c(-Inf)),
   double_overflow = list(.Machine$double.xmax, .Machine$double.xmax),
   signed_zero = list(-0),
