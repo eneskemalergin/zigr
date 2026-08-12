@@ -283,8 +283,13 @@ validate_direct_run_manifest <- function(metadata) {
     "total_run_timeout_seconds", "r_jit_policy", "distribution_policy", "comparison_policy",
     "allocation_policy", "gc_policy"
   )
+  policy_version <- if (is.list(policy) && "policy_version" %in% names(policy)) {
+    manifest_scalar(policy$policy_version, "timing policy")
+  } else {
+    ""
+  }
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !identical(manifest_scalar(policy$policy_version, "timing policy"), "direct-batch-v13")) {
+      !policy_version %in% c("direct-batch-v13", "direct-batch-v14")) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
@@ -294,7 +299,11 @@ validate_direct_run_manifest <- function(metadata) {
     stop("run manifest has an invalid R JIT policy")
   }
   distribution_policy <- validate_direct_distribution_policy(policy$distribution_policy)
-  validate_direct_comparison_policy(policy$comparison_policy)
+  if (identical(policy_version, "direct-batch-v13")) {
+    validate_direct_comparison_policy(policy$comparison_policy)
+  } else {
+    validate_direct_paired_comparison_policy(policy$comparison_policy)
+  }
   validate_direct_allocation_policy(policy$allocation_policy)
   if (!identical(as.integer(policy$measurement_samples), distribution_policy$measurement_samples)) {
     stop("run manifest measurement samples differ from its distribution policy")

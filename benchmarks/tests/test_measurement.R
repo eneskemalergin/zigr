@@ -691,6 +691,168 @@ expect_error(
   validate_direct_comparison_policy(forged_comparison_policy),
   "invalid limits"
 )
+
+paired_policy <- direct_paired_comparison_policy()
+paired_limits <- validate_direct_paired_comparison_policy(paired_policy)
+expect_true(
+  identical(paired_limits, list(
+    confidence_level = 0.90,
+    required_workers = 4L,
+    measurement_rounds = 96L,
+    extended_measurement_rounds = 192L,
+    extended_round_tasks = c(
+      "schema", "altrep_sum", "altrep_index", "altrep_materialize", "serialize", "rng",
+      "outputs"
+    ),
+    repeat_batch_ladder_steps = 1L,
+    equivalence_margin_pct = 2
+  )) &&
+    identical(direct_paired_round_order(1L, 1L), c("candidate", "comparator")) &&
+    identical(direct_paired_round_order(2L, 1L), c("comparator", "candidate")) &&
+    identical(direct_paired_measurement_rounds("vector_sum"), 96L) &&
+    identical(direct_paired_measurement_rounds("schema"), 192L) &&
+    identical(direct_paired_measurement_rounds("outputs"), 192L) &&
+    identical(direct_paired_batch_repetitions("vector_sum", 1L), 8L) &&
+    identical(direct_paired_batch_repetitions("schema", 8192L), 8192L) &&
+    identical(direct_paired_batch_repetitions("serialize", 1L), 1L),
+  "paired comparison policy balances adjacent runner positions across four workers"
+)
+
+make_paired_samples <- function(candidate_ms = 100, comparator_ms = 100) {
+  measurement_rounds <- direct_paired_measurement_rounds("vector_sum")
+  rows <- lapply(seq_len(paired_limits$required_workers), function(worker) {
+    do.call(rbind, lapply(seq_len(measurement_rounds), function(round) {
+      sides <- direct_paired_round_order(worker, round)
+      values <- c(candidate = candidate_ms, comparator = comparator_ms)[sides]
+      data.frame(
+        worker = worker,
+        task = "vector_sum",
+        round = round,
+        position = seq_len(2L),
+        order = if (identical(sides[[1L]], "candidate")) {
+          "candidate_first"
+        } else {
+          "comparator_first"
+        },
+        side = sides,
+        runner = rep("zigr", 2L),
+        phase = rep("measurement", 2L),
+        batch_repetitions = rep(1L, 2L),
+        batch_elapsed_ms = unname(values),
+        elapsed_per_event_ms = unname(values),
+        gc_elapsed_ms = rep(0, 2L),
+        vector_heap_trigger_vcells = rep(1000000, 2L),
+        stringsAsFactors = FALSE
+      )
+    }))
+  })
+  result <- do.call(rbind, rows)
+  rownames(result) <- NULL
+  result
+}
+
+paired_tie_samples <- make_paired_samples()
+validate_direct_paired_worker_samples(
+  paired_tie_samples[paired_tie_samples$worker == 1L, , drop = FALSE],
+  1L, "zigr", "zigr", "vector_sum"
+)
+validate_direct_paired_samples(
+  paired_tie_samples, "zigr", "zigr", "vector_sum"
+)
+paired_tie <- classify_direct_paired_comparison(
+  paired_tie_samples, rep(0.01, 4L), "zigr", "zigr", "vector_sum"
+)
+paired_lead <- classify_direct_paired_comparison(
+  make_paired_samples(95, 100), rep(0.01, 4L),
+  "zigr", "zigr", "vector_sum"
+)
+expect_true(
+  identical(paired_tie$status, "TIE") &&
+    identical(paired_lead$status, "LEAD") &&
+    all(paired_tie$distributions$status == "PASS") &&
+    nrow(paired_tie$worker_effects) == 4L,
+  "paired comparison separates exact equivalence and a material lead"
+)
+
+position_biased_samples <- make_paired_samples()
+position_biased_samples$elapsed_per_event_ms[
+  position_biased_samples$side == "candidate" &
+    position_biased_samples$order == "candidate_first"
+] <- 103
+position_biased_samples$batch_elapsed_ms <-
+  position_biased_samples$elapsed_per_event_ms
+position_biased_samples$elapsed_per_event_ms[
+  position_biased_samples$side == "candidate" &
+    position_biased_samples$order == "comparator_first"
+] <- 97
+position_biased_samples$batch_elapsed_ms <-
+  position_biased_samples$elapsed_per_event_ms
+position_balanced <- classify_direct_paired_comparison(
+  position_biased_samples, rep(0.01, 4L),
+  "zigr", "zigr", "vector_sum"
+)
+expect_true(
+  identical(position_balanced$status, "TIE") &&
+    position_balanced$position_lower_pct > 2,
+  "paired comparison reports but cancels a balanced first-position effect"
+)
+
+unstable_paired_samples <- paired_tie_samples
+unstable_paired_samples$batch_elapsed_ms[[1L]] <- 3000
+unstable_paired_samples$elapsed_per_event_ms[[1L]] <- 3000
+unstable_paired <- classify_direct_paired_comparison(
+  unstable_paired_samples, rep(0.01, 4L),
+  "zigr", "zigr", "vector_sum"
+)
+common_pause_samples <- paired_tie_samples
+common_pause_samples$batch_elapsed_ms[1:2] <- 3000
+common_pause_samples$elapsed_per_event_ms[1:2] <- 3000
+common_pause <- classify_direct_paired_comparison(
+  common_pause_samples, rep(0.01, 4L),
+  "zigr", "zigr", "vector_sum"
+)
+expect_true(
+  !identical(unstable_paired$status, "TIE") &&
+    any(unstable_paired$distributions$status == "BLOCK") &&
+    identical(common_pause$status, "TIE") &&
+    any(common_pause$distributions$status == "BLOCK"),
+  "paired comparison distinguishes one-sided instability from a common pause"
+)
+
+misordered_paired_samples <- paired_tie_samples
+misordered_paired_samples$side[1:2] <- rev(misordered_paired_samples$side[1:2])
+expect_error(
+  "paired comparison rejects a changed adjacent order",
+  validate_direct_paired_samples(
+    misordered_paired_samples, "zigr", "zigr", "vector_sum"
+  ),
+  "raw sample order is invalid"
+)
+expect_error(
+  "paired comparison rejects post-hoc round extension",
+  validate_direct_paired_samples(
+    rbind(paired_tie_samples, paired_tie_samples[1:2, ]),
+    "zigr", "zigr", "vector_sum"
+  ),
+  "coverage is incomplete"
+)
+zero_paired_sample <- paired_tie_samples
+zero_paired_sample$batch_elapsed_ms[[1L]] <- 0
+zero_paired_sample$elapsed_per_event_ms[[1L]] <- 0
+expect_error(
+  "paired comparison rejects a zero elapsed time before taking log ratios",
+  validate_direct_paired_samples(
+    zero_paired_sample, "zigr", "zigr", "vector_sum"
+  ),
+  "invalid measurements"
+)
+forged_paired_policy <- direct_paired_comparison_policy()
+forged_paired_policy$measurement_rounds <- 98L
+expect_error(
+  "paired comparison rejects a changed round budget",
+  validate_direct_paired_comparison_policy(forged_paired_policy),
+  "invalid limits"
+)
 scheduler_spike <- classify_direct_distribution(c(rep(1, 10L), 30), c(rep(1, 10L), 30), numeric(11L), 0.01)
 expect_true(
   identical(scheduler_spike$status, "BLOCK") &&

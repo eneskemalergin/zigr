@@ -17,7 +17,10 @@ option_value <- function(arguments, name, required = FALSE) {
 }
 
 arguments <- commandArgs(trailingOnly = TRUE)
-runner <- option_value(arguments, "runner", required = TRUE)
+runner <- option_value(arguments, "runner")
+candidate_runner <- option_value(arguments, "candidate")
+comparator_runner <- option_value(arguments, "comparator")
+paired_worker <- option_value(arguments, "paired-worker")
 mode <- option_value(arguments, "mode", required = TRUE)
 output_root <- normalizePath(option_value(arguments, "output-root", required = TRUE), mustWork = FALSE)
 task_filter <- option_value(arguments, "tasks")
@@ -27,9 +30,35 @@ master_seed <- option_value(arguments, "master-seed")
 skip_probes <- "--skip-probes" %in% arguments
 
 runner_names <- direct_runner_names(root_dir)
-if (!(runner %in% runner_names)) stop(sprintf("unknown runner: %s", runner))
-if (!(mode %in% c("correctness", "sizing", "timing", "memory"))) {
-  stop("worker mode must be correctness, sizing, timing, or memory")
+paired_mode <- identical(mode, "paired")
+if (paired_mode) {
+  if (!is.null(runner) || is.null(candidate_runner) || is.null(comparator_runner) ||
+      is.null(paired_worker)) {
+    stop("paired workers require candidate, comparator, and paired-worker only")
+  }
+  if (!(candidate_runner %in% runner_names)) {
+    stop(sprintf("unknown candidate runner: %s", candidate_runner))
+  }
+  if (!(comparator_runner %in% runner_names)) {
+    stop(sprintf("unknown comparator runner: %s", comparator_runner))
+  }
+  paired_worker <- input_scalar_integer(paired_worker, "paired worker")
+  paired_limits <- validate_direct_paired_comparison_policy(
+    direct_paired_comparison_policy()
+  )
+  if (paired_worker < 1L || paired_worker > paired_limits$required_workers) {
+    stop("paired worker is outside the declared comparison policy")
+  }
+} else {
+  if (is.null(runner)) stop("--runner is required")
+  if (!is.null(candidate_runner) || !is.null(comparator_runner) ||
+      !is.null(paired_worker)) {
+    stop("candidate, comparator, and paired-worker are allowed only in paired mode")
+  }
+  if (!(runner %in% runner_names)) stop(sprintf("unknown runner: %s", runner))
+}
+if (!(mode %in% c("correctness", "sizing", "timing", "memory", "paired"))) {
+  stop("worker mode must be correctness, sizing, timing, memory, or paired")
 }
 if (skip_probes && !identical(mode, "sizing")) {
   stop("--skip-probes is allowed only for later sizing rounds")
@@ -64,10 +93,14 @@ if (identical(mode, "correctness")) {
 }
 
 task_ids <- vapply(specs, `[[`, character(1), "id")
-if (mode %in% c("sizing", "timing")) {
-  if (is.null(batch_repetitions)) stop("--batch-repetitions is required for sizing and timing")
+if (mode %in% c("sizing", "timing", "paired")) {
+  if (is.null(batch_repetitions)) {
+    stop("--batch-repetitions is required for sizing, timing, and paired workers")
+  }
   if (identical(mode, "timing")) {
     measurement_samples <- input_scalar_integer(measurement_samples, "measurement samples")
+  } else if (paired_mode && !is.null(measurement_samples)) {
+    stop("paired measurement rounds are fixed by the comparison policy")
   }
   batch_repetitions <- parse_named_integer_map(
     batch_repetitions, task_ids, "batch repetitions"
@@ -82,23 +115,197 @@ if (!methods::isClass("BenchS4")) methods::setClass("BenchS4", slots = c(slot_x 
 c_dll <- dyn.load(file.path(root_dir, "src", "c_call", "bench.so"), local = TRUE, now = TRUE)
 on.exit(try(dyn.unload(c_dll[["path"]]), silent = TRUE), add = TRUE)
 native_checks <- direct_revision_native_checks(c_dll)
+worker_label <- if (paired_mode) "paired" else runner
 if (!skip_probes && !identical(mode, "memory")) {
   probes <- run_direct_measurement_probes(c_dll)
-  probe_rows <- transform(probes$samples, runner = runner)
+  probe_rows <- transform(probes$samples, runner = worker_label)
   probe_rows <- probe_rows[c(
     "runner", "probe", "probe_sample", "batch_repetitions", "batch_elapsed_ms",
     "elapsed_per_event_ms", "gc_elapsed_ms"
   )]
   write_csv_once(
-    probe_rows, file.path(output_root, paste0(runner, "-probes.csv")), "runner probes"
+    probe_rows, file.path(output_root, paste0(worker_label, "-probes.csv")), "runner probes"
   )
   write_csv_once(data.frame(
-    runner = runner,
+    runner = worker_label,
     timer_floor_ms = probes$timer_floor_ms,
     nanotime_elapsed_ms = probes$nanotime_elapsed_ms,
     independent_elapsed_ms = probes$independent_elapsed_ms,
     stringsAsFactors = FALSE
-  ), file.path(output_root, paste0(runner, "-probe-summary.csv")), "runner probe summary")
+  ), file.path(output_root, paste0(worker_label, "-probe-summary.csv")), "runner probe summary")
+}
+
+if (paired_mode) {
+  if (length(specs) != 1L) stop("paired workers require exactly one task")
+  spec <- specs[[1L]]
+  repetitions <- batch_repetitions[[spec$id]]
+  paired_rounds <- direct_paired_measurement_rounds(spec$id)
+  if (identical(direct_task_batchability(spec$id), "one") && repetitions != 1L) {
+    stop("single-event tasks require batch repetitions of one")
+  }
+
+  first_order <- direct_paired_round_order(paired_worker, 1L)
+  runner_by_side <- c(candidate = candidate_runner, comparator = comparator_runner)
+  contexts <- setNames(vector("list", 2L), c("candidate", "comparator"))
+  make_context <- function(runner_name) {
+    runner_spec <- direct_runner_spec(root_dir, runner_name)
+    runner_environment <- direct_runner_environment(root_dir, runner_name, runner_spec)
+    entry <- if (identical(runner_spec$invocation, "registered_native")) {
+      symbol <- getNativeSymbolInfo(paste0("c_revision_", spec$id), c_dll)
+      function(values) direct_native_call(".Call", symbol, values)
+    } else {
+      function_object <- get(
+        spec$function_name,
+        envir = if (identical(runner_spec$invocation, "r_function")) {
+          .GlobalEnv
+        } else {
+          runner_environment
+        },
+        inherits = FALSE
+      )
+      function(values) direct_function_call(function_object, values)
+    }
+    list(
+      runner = runner_name,
+      environment = runner_environment,
+      entry = entry
+    )
+  }
+  for (side in first_order) {
+    contexts[[side]] <- make_context(runner_by_side[[side]])
+  }
+
+  rng_seed <- task_input_seed(master_seed, "rng", "direct-timing-v1")
+  reset_rng <- function() {
+    if (isTRUE(spec$rng)) {
+      set.seed(
+        rng_seed, kind = "Mersenne-Twister", normal.kind = "Inversion",
+        sample.kind = "Rejection"
+      )
+    }
+  }
+  truth_arguments <- benchmark_revision_arguments(spec, master_seed)
+  reset_rng()
+  truth <- eval(
+    direct_function_call(
+      get(spec$function_name, envir = .GlobalEnv, inherits = FALSE), truth_arguments
+    ),
+    envir = .GlobalEnv
+  )
+  truth_rng <- if (isTRUE(spec$rng)) rng_state_snapshot() else NULL
+
+  run_side <- function(side, phase, timed = TRUE) {
+    context <- contexts[[side]]
+    values <- benchmark_revision_arguments(spec, master_seed)
+    if (direct_task_is_altrep(spec$id)) {
+      direct_assert_altrep_phase(
+        spec, values[[1L]], native_checks$is_unmaterialized_altrep,
+        sprintf("%s/%s", context$runner, spec$id), "before"
+      )
+    }
+    before <- if (length(values) && !direct_task_is_altrep(spec$id)) {
+      task_arguments_fingerprint(spec$id, values, "ordinary_r_object")
+    } else {
+      NULL
+    }
+    call <- context$entry(values)
+    reset_rng()
+    measured <- if (timed) {
+      measure_direct_batch(call, context$environment, repetitions)
+    } else {
+      list(
+        result = eval(
+          direct_batch_expression(call, repetitions), envir = context$environment
+        )
+      )
+    }
+    if (!is.null(before)) {
+      assert_immutable_input(spec$id, values, before, "ordinary_r_object")
+    }
+    if (direct_task_is_altrep(spec$id)) {
+      direct_assert_altrep_phase(
+        spec, values[[1L]], native_checks$is_unmaterialized_altrep,
+        sprintf("%s/%s", context$runner, spec$id), "after"
+      )
+    }
+    direct_assert_result_parity(truth, measured$result, spec, paste(spec$id, phase, side))
+    direct_assert_altrep_result(
+      spec, measured$result, native_checks$is_altrep,
+      sprintf("%s/%s", context$runner, spec$id)
+    )
+    if (isTRUE(spec$rng)) {
+      assert_rng_state_equivalent(truth_rng, rng_state_snapshot(), spec$id)
+    }
+    measured$result <- NULL
+    measured
+  }
+
+  first_rows <- list()
+  for (side in first_order) {
+    gc(full = TRUE)
+    measured <- run_side(side, "first call")
+    first_rows[[length(first_rows) + 1L]] <- data.frame(
+      worker = paired_worker, task = spec$id, side = side,
+      runner = contexts[[side]]$runner, first_call_ms = measured$batch_elapsed_ms,
+      stringsAsFactors = FALSE
+    )
+  }
+  for (side in first_order) {
+    gc(full = TRUE)
+    invisible(run_side(side, "warmup", timed = FALSE))
+  }
+  for (side in first_order) {
+    gc(full = TRUE)
+    invisible(run_side(side, "local calibration"))
+  }
+
+  rows <- list()
+  requires_measurement_gc <- direct_task_requires_measurement_gc(spec$id)
+  for (round in seq_len(paired_rounds)) {
+    sides <- direct_paired_round_order(paired_worker, round)
+    gc_state <- gc(full = TRUE)
+    for (position in seq_along(sides)) {
+      if (requires_measurement_gc && position > 1L) gc_state <- gc(full = TRUE)
+      side <- sides[[position]]
+      measured <- run_side(side, "measurement")
+      rows[[length(rows) + 1L]] <- data.frame(
+        worker = paired_worker,
+        task = spec$id,
+        round = round,
+        position = position,
+        order = if (identical(sides[[1L]], "candidate")) {
+          "candidate_first"
+        } else {
+          "comparator_first"
+        },
+        side = side,
+        runner = contexts[[side]]$runner,
+        phase = "measurement",
+        batch_repetitions = measured$batch_repetitions,
+        batch_elapsed_ms = measured$batch_elapsed_ms,
+        elapsed_per_event_ms = measured$elapsed_per_event_ms,
+        gc_elapsed_ms = measured$gc_elapsed_ms,
+        vector_heap_trigger_vcells = direct_vector_heap_trigger_vcells(gc_state),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  samples <- do.call(rbind, rows)
+  rownames(samples) <- NULL
+  first_calls <- do.call(rbind, first_rows)
+  rownames(first_calls) <- NULL
+  validate_direct_paired_worker_samples(
+    samples, paired_worker, candidate_runner, comparator_runner, spec$id
+  )
+  write_csv_once(samples, file.path(output_root, "paired-samples.csv"), "paired samples")
+  write_csv_once(
+    first_calls, file.path(output_root, "paired-first-call.csv"), "paired first calls"
+  )
+  cat(sprintf(
+    "Paired timing passed for %s across %d rounds.\n",
+    spec$id, paired_rounds
+  ))
+  quit(save = "no", status = 0L, runLast = FALSE)
 }
 
 runner_spec <- direct_runner_spec(root_dir, runner)

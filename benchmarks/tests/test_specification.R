@@ -275,11 +275,18 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-    identical(policy$policy_version, "direct-batch-v13") &&
+    identical(policy$policy_version, "direct-batch-v14") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L, 512L, 4096L, 8192L)) &&
-    identical(validate_direct_comparison_policy(policy$comparison_policy), list(
+    identical(validate_direct_paired_comparison_policy(policy$comparison_policy), list(
       confidence_level = 0.90,
-      required_order_pairs = 4L,
+      required_workers = 4L,
+      measurement_rounds = 96L,
+      extended_measurement_rounds = 192L,
+      extended_round_tasks = c(
+        "schema", "altrep_sum", "altrep_index", "altrep_materialize", "serialize", "rng",
+        "outputs"
+      ),
+      repeat_batch_ladder_steps = 1L,
       equivalence_margin_pct = 2
     )) &&
     identical(policy$measurement_samples, 11L) &&
@@ -311,6 +318,17 @@ metadata <- list(
   command = list("Rscript", "run_benchmarks.R")
 )
 validate_direct_run_manifest(metadata)
+historical_metadata <- clone(metadata)
+historical_metadata$timing_policy$policy_version <- "direct-batch-v13"
+historical_metadata$timing_policy$comparison_policy <- direct_comparison_policy()
+validate_direct_run_manifest(historical_metadata)
+mismatched_comparison_policy <- clone(metadata)
+mismatched_comparison_policy$timing_policy$comparison_policy <- direct_comparison_policy()
+expect_error(
+  "manifest rejects the former comparison unit under the current timing policy",
+  validate_direct_run_manifest(mismatched_comparison_policy),
+  "paired comparison policy is invalid"
+)
 forged_comparison_policy <- clone(metadata)
 forged_comparison_policy$timing_policy$comparison_policy$equivalence_margin_pct <- 20
 expect_error(
