@@ -162,9 +162,12 @@ expect_true(
   "current runtime owners do not consume historical receipt or promotion metadata"
 )
 source_identity <- source_tree_identity(root_dir)
+source_selection <- source_tree_files(root_dir)
 expect_true(
-  identical(validate_source_tree_identity(root_dir, source_identity)$digest, source_identity$digest),
-  "direct source identity validates the current worktree"
+  identical(validate_source_tree_identity(root_dir, source_identity)$digest, source_identity$digest) &&
+    all(c("benchmarks/benchmark_worker.R", "benchmarks/lib/measurement.R", "src/root.zig") %in%
+          source_selection$relative),
+  "direct source identity validates the full current worktree"
 )
 forged_source_identity <- source_identity
 forged_source_identity$digest <- paste0(source_identity$digest, "-changed")

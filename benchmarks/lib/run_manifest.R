@@ -11,10 +11,24 @@ run_manifest_values <- function(value) {
 # Worktree source identity used by the direct manifest.
 
 source_tree_files <- function(root_dir) {
+  repository_root <- tryCatch(
+    system2(
+      "git", c("-C", root_dir, "rev-parse", "--show-toplevel"),
+      stdout = TRUE, stderr = TRUE
+    ),
+    error = function(error) {
+      stop(sprintf("could not resolve repository root with git: %s", conditionMessage(error)))
+    }
+  )
+  status <- attr(repository_root, "status")
+  if ((!is.null(status) && status != 0L) || length(repository_root) != 1L) {
+    stop("git repository-root lookup failed")
+  }
+  repository_root <- normalizePath(repository_root[[1L]])
   git_files <- tryCatch(
     system2(
       "git",
-      c("-C", root_dir, "ls-files", "--cached", "--others", "--exclude-standard", "--"),
+      c("-C", repository_root, "ls-files", "--cached", "--others", "--exclude-standard", "--"),
       stdout = TRUE,
       stderr = TRUE
     ),
@@ -34,9 +48,10 @@ source_tree_files <- function(root_dir) {
     relative
   )
   relative <- sort(relative[relevant & !generated])
-  relative <- relative[file.exists(file.path(root_dir, relative))]
+  relative <- relative[file.exists(file.path(repository_root, relative))]
   if (length(relative) == 0L) stop("source tree has no identity files after exclusions")
   list(
+    repository_root = repository_root,
     relative = relative,
     included_prefixes = c(".gitignore", "build.zig", "build.zig.zon", ".github/", "src/", "tests/", "benchmarks/"),
     excluded_patterns = c("git ignored files", "**/{results,target,tmp,temp,zig-out,zig-cache,.zig-cache,.zig-global-cache}/", "**/*.{so,dll,dylib,o,a,d,obj,exe,stamp,tmp,log}")
@@ -46,7 +61,7 @@ source_tree_files <- function(root_dir) {
 source_tree_identity <- function(root_dir) {
   root_dir <- normalizePath(root_dir)
   selection <- source_tree_files(root_dir)
-  files <- file.path(root_dir, selection$relative)
+  files <- file.path(selection$repository_root, selection$relative)
   file_md5 <- as.character(tools::md5sum(files))
   if (anyNA(file_md5)) stop("could not hash every source identity file")
   lines <- paste(selection$relative, file_md5, sep = "\t")
