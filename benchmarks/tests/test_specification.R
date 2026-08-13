@@ -278,7 +278,7 @@ expect_error(
 
 policy <- benchmark_timing_policy()
 expect_true(
-    identical(policy$policy_version, "direct-batch-v14") &&
+    identical(policy$policy_version, "direct-batch-v15") &&
     identical(validate_direct_sizing_policy(policy$sizing_policy)$ladder, c(1L, 8L, 64L, 512L, 4096L, 8192L)) &&
     identical(validate_direct_paired_comparison_policy(policy$comparison_policy), list(
       confidence_level = 0.90,

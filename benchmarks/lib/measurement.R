@@ -1167,7 +1167,7 @@ direct_comparison_policy <- function() {
   )
 }
 
-direct_paired_comparison_policy <- function() {
+direct_paired_comparison_policy_v1 <- function() {
   list(
     policy_version = "alternating-paired-equivalence-v1",
     evidence_unit = "fresh-process-single-task-alternating-runner-pair-v1",
@@ -1186,6 +1186,48 @@ direct_paired_comparison_policy <- function() {
   )
 }
 
+validate_direct_paired_comparison_policy_v1 <- function(policy) {
+  expected <- direct_paired_comparison_policy_v1()
+  if (!is.list(policy) || !identical(names(policy), names(expected)) ||
+      !identical(as.character(policy$policy_version), expected$policy_version) ||
+      !identical(as.character(policy$evidence_unit), expected$evidence_unit) ||
+      !identical(as.character(policy$interval_method), expected$interval_method) ||
+      !identical(as.character(policy$decision_rule), expected$decision_rule)) {
+    stop("legacy direct paired comparison policy is invalid")
+  }
+  numeric_fields <- c(
+    "confidence_level", "required_workers", "measurement_rounds",
+    "extended_measurement_rounds", "repeat_batch_ladder_steps",
+    "equivalence_margin_pct"
+  )
+  if (any(vapply(numeric_fields, function(field) {
+    !identical(as.numeric(policy[[field]]), as.numeric(expected[[field]]))
+  }, logical(1))) ||
+      !identical(as.character(policy$extended_round_tasks), expected$extended_round_tasks)) {
+    stop("legacy direct paired comparison policy has invalid limits")
+  }
+  invisible(policy)
+}
+
+direct_paired_comparison_policy <- function() {
+  list(
+    policy_version = "alternating-paired-equivalence-v2",
+    evidence_unit = "fresh-process-single-task-four-round-balanced-pair-v2",
+    interval_method = "worker-mean-paired-student-t-log-ratio-v2",
+    confidence_level = 0.90,
+    required_workers = 4L,
+    measurement_rounds = 96L,
+    extended_measurement_rounds = 192L,
+    extended_round_tasks = c(
+      "schema", "altrep_sum", "altrep_index", "altrep_materialize", "serialize", "rng",
+      "outputs"
+    ),
+    repeat_batch_ladder_steps = 1L,
+    equivalence_margin_pct = 2,
+    decision_rule = "fixed-margin-equivalence-with-four-round-balance-v2"
+  )
+}
+
 validate_direct_paired_comparison_policy <- function(policy) {
   fields <- c(
     "policy_version", "evidence_unit", "interval_method", "confidence_level",
@@ -1195,13 +1237,13 @@ validate_direct_paired_comparison_policy <- function(policy) {
   )
   if (!is.list(policy) || !identical(names(policy), fields) ||
       !identical(as.character(policy$policy_version),
-                 "alternating-paired-equivalence-v1") ||
+                 "alternating-paired-equivalence-v2") ||
       !identical(as.character(policy$evidence_unit),
-                 "fresh-process-single-task-alternating-runner-pair-v1") ||
+                 "fresh-process-single-task-four-round-balanced-pair-v2") ||
       !identical(as.character(policy$interval_method),
-                 "worker-mean-paired-student-t-log-ratio-v1") ||
+                 "worker-mean-paired-student-t-log-ratio-v2") ||
       !identical(as.character(policy$decision_rule),
-                 "fixed-margin-equivalence-with-balanced-position-v1")) {
+                 "fixed-margin-equivalence-with-four-round-balance-v2")) {
     stop("direct paired comparison policy is invalid")
   }
   confidence_level <- as.numeric(policy$confidence_level)
@@ -1221,9 +1263,9 @@ validate_direct_paired_comparison_policy <- function(policy) {
   equivalence_margin_pct <- as.numeric(policy$equivalence_margin_pct)
   if (length(confidence_level) != 1L || !is.finite(confidence_level) ||
       !identical(confidence_level, 0.90) || required_workers != 4L ||
-      measurement_rounds != 96L || measurement_rounds %% 2L != 0L ||
+      measurement_rounds != 96L || measurement_rounds %% 4L != 0L ||
       extended_measurement_rounds != 192L ||
-      extended_measurement_rounds %% 2L != 0L ||
+      extended_measurement_rounds %% 4L != 0L ||
       !identical(extended_round_tasks, c(
         "schema", "altrep_sum", "altrep_index", "altrep_materialize", "serialize", "rng",
         "outputs"
@@ -1395,7 +1437,9 @@ direct_paired_round_order <- function(worker, round,
       round < 1L || round > limits$extended_measurement_rounds) {
     stop("paired worker or round is outside the declared policy")
   }
-  if ((worker + round) %% 2L == 0L) {
+  candidate_first <- (round - 1L) %% 4L %in% c(0L, 3L)
+  if (worker %% 2L == 0L) candidate_first <- !candidate_first
+  if (candidate_first) {
     c("candidate", "comparator")
   } else {
     c("comparator", "candidate")
@@ -1938,7 +1982,7 @@ run_direct_measurement_probes <- function(c_dll, samples = 101L) {
 benchmark_timing_policy <- function() {
   tasks <- vapply(benchmark_revision_task_specs(), `[[`, character(1), "id")
   list(
-    policy_version = "direct-batch-v14",
+    policy_version = "direct-batch-v15",
     warmup_iterations = 1L,
     local_calibration_batches = 1L,
     measurement_samples = 11L,

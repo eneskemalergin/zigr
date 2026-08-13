@@ -304,7 +304,9 @@ validate_direct_run_manifest <- function(metadata) {
     ""
   }
   if (!is.list(policy) || !identical(names(policy), policy_fields) ||
-      !policy_version %in% c("direct-batch-v13", "direct-batch-v14")) {
+      !policy_version %in% c(
+        "direct-batch-v13", "direct-batch-v14", "direct-batch-v15"
+      )) {
     stop("run manifest has an invalid direct timing policy")
   }
   for (field in setdiff(policy_fields[2:9], c("sizing_policy", "batch_repetitions"))) {
@@ -316,6 +318,8 @@ validate_direct_run_manifest <- function(metadata) {
   distribution_policy <- validate_direct_distribution_policy(policy$distribution_policy)
   if (identical(policy_version, "direct-batch-v13")) {
     validate_direct_comparison_policy(policy$comparison_policy)
+  } else if (identical(policy_version, "direct-batch-v14")) {
+    validate_direct_paired_comparison_policy_v1(policy$comparison_policy)
   } else {
     validate_direct_paired_comparison_policy(policy$comparison_policy)
   }

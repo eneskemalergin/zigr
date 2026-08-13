@@ -709,6 +709,9 @@ expect_true(
   )) &&
     identical(direct_paired_round_order(1L, 1L), c("candidate", "comparator")) &&
     identical(direct_paired_round_order(2L, 1L), c("comparator", "candidate")) &&
+    identical(vapply(1:4, function(round) {
+      direct_paired_round_order(1L, round)[[1L]]
+    }, character(1)), c("candidate", "comparator", "comparator", "candidate")) &&
     identical(direct_paired_measurement_rounds("vector_sum"), 96L) &&
     identical(direct_paired_measurement_rounds("schema"), 192L) &&
     identical(direct_paired_measurement_rounds("outputs"), 192L) &&
@@ -760,18 +763,59 @@ validate_direct_paired_samples(
   paired_tie_samples, "zigr", "zigr", "vector_sum"
 )
 paired_tie <- classify_direct_paired_comparison(
-  paired_tie_samples, rep(0.01, 4L), "zigr", "zigr", "vector_sum"
+  paired_tie_samples, rep(0.01, paired_limits$required_workers),
+  "zigr", "zigr", "vector_sum"
 )
 paired_lead <- classify_direct_paired_comparison(
-  make_paired_samples(95, 100), rep(0.01, 4L),
+  make_paired_samples(95, 100), rep(0.01, paired_limits$required_workers),
   "zigr", "zigr", "vector_sum"
+)
+make_worker_effect_samples <- function(candidate_ms) {
+  samples <- paired_tie_samples
+  for (worker in seq_along(candidate_ms)) {
+    selected <- samples$worker == worker & samples$side == "candidate"
+    samples$batch_elapsed_ms[selected] <- candidate_ms[[worker]]
+    samples$elapsed_per_event_ms[selected] <- candidate_ms[[worker]]
+  }
+  samples
+}
+paired_lead_or_tie <- classify_direct_paired_comparison(
+  make_worker_effect_samples(c(95, 100, 100, 100)),
+  rep(0.01, paired_limits$required_workers), "zigr", "zigr", "vector_sum"
+)
+paired_loss <- classify_direct_paired_comparison(
+  make_paired_samples(105, 100), rep(0.01, paired_limits$required_workers),
+  "zigr", "zigr", "vector_sum"
+)
+paired_indeterminate <- classify_direct_paired_comparison(
+  make_worker_effect_samples(c(95, 105, 95, 105)),
+  rep(0.01, paired_limits$required_workers), "zigr", "zigr", "vector_sum"
 )
 expect_true(
   identical(paired_tie$status, "TIE") &&
     identical(paired_lead$status, "LEAD") &&
+    identical(paired_lead_or_tie$status, "LEAD_OR_TIE") &&
+    identical(paired_loss$status, "LOSS") &&
+    identical(paired_indeterminate$status, "INDETERMINATE") &&
     all(paired_tie$distributions$status == "PASS") &&
-    nrow(paired_tie$worker_effects) == 4L,
-  "paired comparison separates exact equivalence and a material lead"
+    nrow(paired_tie$worker_effects) == paired_limits$required_workers,
+  "paired comparison separates equivalence, directional results, and uncertainty"
+)
+
+call_phase_samples <- paired_tie_samples
+call_phase <- (call_phase_samples$round - 1L) * 2L + call_phase_samples$position
+call_phase_samples$elapsed_per_event_ms <- c(103, 101, 97, 99)[
+  (call_phase - 1L) %% 4L + 1L
+]
+call_phase_samples$batch_elapsed_ms <- call_phase_samples$elapsed_per_event_ms
+call_phase_balanced <- classify_direct_paired_comparison(
+  call_phase_samples, rep(0.01, paired_limits$required_workers),
+  "zigr", "zigr", "vector_sum"
+)
+expect_true(
+  identical(call_phase_balanced$status, "TIE") &&
+    all(abs(call_phase_balanced$worker_effects$comparison_log_ratio) < 1e-12),
+  "paired comparison balances four-call phase within every worker"
 )
 
 position_biased_samples <- make_paired_samples()
@@ -788,7 +832,7 @@ position_biased_samples$elapsed_per_event_ms[
 position_biased_samples$batch_elapsed_ms <-
   position_biased_samples$elapsed_per_event_ms
 position_balanced <- classify_direct_paired_comparison(
-  position_biased_samples, rep(0.01, 4L),
+  position_biased_samples, rep(0.01, paired_limits$required_workers),
   "zigr", "zigr", "vector_sum"
 )
 expect_true(
@@ -801,14 +845,14 @@ unstable_paired_samples <- paired_tie_samples
 unstable_paired_samples$batch_elapsed_ms[[1L]] <- 3000
 unstable_paired_samples$elapsed_per_event_ms[[1L]] <- 3000
 unstable_paired <- classify_direct_paired_comparison(
-  unstable_paired_samples, rep(0.01, 4L),
+  unstable_paired_samples, rep(0.01, paired_limits$required_workers),
   "zigr", "zigr", "vector_sum"
 )
 common_pause_samples <- paired_tie_samples
 common_pause_samples$batch_elapsed_ms[1:2] <- 3000
 common_pause_samples$elapsed_per_event_ms[1:2] <- 3000
 common_pause <- classify_direct_paired_comparison(
-  common_pause_samples, rep(0.01, 4L),
+  common_pause_samples, rep(0.01, paired_limits$required_workers),
   "zigr", "zigr", "vector_sum"
 )
 expect_true(
