@@ -299,9 +299,48 @@ expect_true(
   "direct timing uses one bounded shared-count policy and explicit large-output GC boundaries"
 )
 clone <- function(value) unserialize(serialize(value, NULL))
+sealed_execution_identity <- list(
+  build = list(
+    contract = "checked-releasefast-linux-x86_64-v1",
+    provenance = "same-invocation-build-v1",
+    zig = list(version = "0.16.0", md5 = paste(rep("1", 32L), collapse = "")),
+    r_headers = list(version = "4.6.1", md5 = paste(rep("2", 32L), collapse = "")),
+    r_library = list(md5 = paste(rep("3", 32L), collapse = "")),
+    configuration = list(
+      optimization = "ReleaseFast",
+      target = "native",
+      cpu = "baseline",
+      sexp_abi = "checked_r_api"
+    )
+  ),
+  runtime = list(
+    r = list(version = "4.6.1", platform = "x86_64-pc-linux-gnu"),
+    system = list(
+      name = "Linux",
+      release = "test-kernel",
+      machine = "x86_64",
+      cpu_model = "test CPU"
+    ),
+    blas = list(path = "/test/libblas.so", md5 = paste(rep("4", 32L), collapse = "")),
+    lapack = list(path = "/test/liblapack.so", md5 = paste(rep("5", 32L), collapse = "")),
+    thread_limits = as.list(direct_worker_thread_limits())
+  )
+)
+expect_true(
+  identical(direct_worker_thread_limits(), c(
+    OPENBLAS_NUM_THREADS = "1", OMP_NUM_THREADS = "1", MKL_NUM_THREADS = "1",
+    VECLIB_MAXIMUM_THREADS = "1", BLIS_NUM_THREADS = "1"
+  )) &&
+    identical(
+      direct_r_header_version(direct_r_build_paths()$include),
+      paste(R.version$major, R.version$minor, sep = ".")
+    ),
+  "sealed execution identity uses the active R headers and serial worker limits"
+)
+validate_direct_execution_identity(sealed_execution_identity)
 direct_seed <- benchmark_master_seed() + 17L
 metadata <- list(
-  schema_version = 4L,
+  schema_version = 5L,
   artifact_layout = "direct-v1",
   run_id = "direct-manifest-test",
   status = "running",
@@ -316,21 +355,73 @@ metadata <- list(
   artifacts = setNames(lapply(direct_runners, function(runner) {
     list(runner = runner, relative_path = paste0("artifact/", runner), md5 = paste0("digest-", runner))
   }), direct_runners),
+  execution_identity = sealed_execution_identity,
   timing_policy = policy,
   measurement_mode = "timed",
   command = list("Rscript", "run_benchmarks.R")
 )
 validate_direct_run_manifest(metadata)
 historical_metadata <- clone(metadata)
+historical_metadata$schema_version <- 4L
+historical_metadata$execution_identity <- NULL
 historical_metadata$timing_policy$policy_version <- "direct-batch-v13"
 historical_metadata$timing_policy$comparison_policy <- direct_comparison_policy()
 validate_direct_run_manifest(historical_metadata)
+paired_historical_metadata <- clone(metadata)
+paired_historical_metadata$schema_version <- 4L
+paired_historical_metadata$execution_identity <- NULL
+paired_historical_metadata$timing_policy$policy_version <- "direct-batch-v14"
+paired_historical_metadata$timing_policy$comparison_policy <-
+  direct_paired_comparison_policy_v1()
+validate_direct_run_manifest(paired_historical_metadata)
 mismatched_comparison_policy <- clone(metadata)
 mismatched_comparison_policy$timing_policy$comparison_policy <- direct_comparison_policy()
 expect_error(
   "manifest rejects the former comparison unit under the current timing policy",
   validate_direct_run_manifest(mismatched_comparison_policy),
   "paired comparison policy is invalid"
+)
+missing_execution_identity <- clone(metadata)
+missing_execution_identity$execution_identity <- NULL
+expect_error(
+  "schema 5 manifest rejects missing execution identity",
+  validate_direct_run_manifest(missing_execution_identity),
+  "run manifest is missing: execution_identity"
+)
+legacy_with_execution_identity <- clone(metadata)
+legacy_with_execution_identity$schema_version <- 4L
+expect_error(
+  "schema 4 manifest rejects unsupported execution identity",
+  validate_direct_run_manifest(legacy_with_execution_identity),
+  "schema 4 run manifest cannot contain an execution identity"
+)
+forged_execution_identity <- clone(metadata)
+forged_execution_identity$execution_identity$build$configuration$cpu <- "native"
+expect_error(
+  "sealed manifest rejects native CPU specialization",
+  validate_direct_run_manifest(forged_execution_identity),
+  "run manifest build configuration is invalid"
+)
+forged_execution_identity <- clone(metadata)
+forged_execution_identity$execution_identity$runtime$blas$md5 <- "not-a-digest"
+expect_error(
+  "sealed manifest rejects an invalid BLAS digest",
+  validate_direct_run_manifest(forged_execution_identity),
+  "run manifest BLAS digest is invalid"
+)
+forged_execution_identity <- clone(metadata)
+forged_execution_identity$execution_identity$runtime$r$platform <- "aarch64-unknown-linux-gnu"
+expect_error(
+  "sealed manifest rejects a different R runtime platform",
+  validate_direct_run_manifest(forged_execution_identity),
+  "run manifest R runtime identity is invalid"
+)
+forged_execution_identity <- clone(metadata)
+forged_execution_identity$execution_identity$runtime$thread_limits$OMP_NUM_THREADS <- "2"
+expect_error(
+  "sealed manifest rejects a changed worker thread limit",
+  validate_direct_run_manifest(forged_execution_identity),
+  "run manifest thread limits are invalid"
 )
 forged_comparison_policy <- clone(metadata)
 forged_comparison_policy$timing_policy$comparison_policy$equivalence_margin_pct <- 20

@@ -8,6 +8,161 @@ run_manifest_values <- function(value) {
   if (is.null(value)) character(0) else as.character(unlist(value, use.names = FALSE))
 }
 
+direct_environment_boolean <- function(name, default = FALSE) {
+  value <- tolower(Sys.getenv(name, unset = if (default) "true" else "false"))
+  if (value %in% c("1", "true", "yes", "on")) return(TRUE)
+  if (value %in% c("0", "false", "no", "off", "")) return(FALSE)
+  stop(sprintf("%s must be a boolean value", name))
+}
+
+direct_identity_md5 <- function(path, label) {
+  path <- normalizePath(path)
+  digest <- unname(as.character(tools::md5sum(path))[[1L]])
+  if (is.na(digest) || !nzchar(digest)) stop(sprintf("could not hash %s", label))
+  list(path = path, md5 = digest)
+}
+
+direct_zig_executable <- function(root_dir) {
+  configured <- Sys.getenv("ZIG", unset = "")
+  candidates <- if (nzchar(configured)) {
+    configured
+  } else {
+    c(unname(Sys.which("zig")), file.path(root_dir, "..", "zig-0.16.0", "zig"))
+  }
+  candidates <- candidates[nzchar(candidates) & file.exists(candidates)]
+  if (length(candidates) == 0L) stop("zig executable not found; set ZIG or install zig")
+  path <- normalizePath(candidates[[1L]])
+  if (file.access(path, mode = 1L) != 0L) stop("zig executable is not executable")
+  path
+}
+
+direct_r_build_paths <- function() {
+  r_include <- Sys.getenv("R_INCLUDE", unset = "")
+  if (!nzchar(r_include)) {
+    candidates <- c(
+      file.path(R.home(), "include"),
+      file.path(R.home(), "..", "share", "R", "include"),
+      "/usr/share/R/include"
+    )
+    candidates <- candidates[dir.exists(candidates)]
+    if (length(candidates) == 0L) stop("R include directory not found")
+    r_include <- candidates[[1L]]
+  }
+  r_lib <- Sys.getenv("R_LIB", unset = "")
+  if (!nzchar(r_lib)) r_lib <- file.path(R.home(), "lib")
+  if (!dir.exists(r_include) || !dir.exists(r_lib)) {
+    stop("R include or library directory is invalid")
+  }
+  list(include = normalizePath(r_include), lib = normalizePath(r_lib))
+}
+
+direct_r_header_version <- function(include_dir) {
+  lines <- readLines(file.path(include_dir, "Rversion.h"), warn = FALSE)
+  macro <- function(name) {
+    pattern <- sprintf('^#define[[:space:]]+%s[[:space:]]+"([^"]+)"', name)
+    matches <- regexec(pattern, lines)
+    values <- regmatches(lines, matches)
+    values <- values[lengths(values) == 2L]
+    if (length(values) != 1L) stop(sprintf("R header has no unique %s", name))
+    values[[1L]][[2L]]
+  }
+  paste(macro("R_MAJOR"), macro("R_MINOR"), sep = ".")
+}
+
+direct_cpu_model <- function() {
+  path <- "/proc/cpuinfo"
+  if (!file.exists(path)) return(unname(Sys.info()[["machine"]]))
+  lines <- readLines(path, warn = FALSE)
+  values <- sub("^[^:]+:[[:space:]]*", "", grep("^model name[[:space:]]*:", lines, value = TRUE))
+  if (length(values) == 0L || !nzchar(values[[1L]])) unname(Sys.info()[["machine"]]) else values[[1L]]
+}
+
+direct_supported_build_invocation <- function(root_dir) {
+  expected <- c(
+    ZIGR_OPTIMIZE = "ReleaseFast",
+    ZIGR_TARGET = "native",
+    ZIGR_CPU_FEATURES = "baseline"
+  )
+  for (name in names(expected)) {
+    actual <- Sys.getenv(name, unset = expected[[name]])
+    if (!identical(actual, expected[[name]])) {
+      stop(sprintf("--build requires %s=%s", name, expected[[name]]))
+    }
+  }
+  if (!direct_environment_boolean("ZIGR_CHECKED_SEXP", default = TRUE) ||
+      direct_environment_boolean("ZIGR_DIRECT_SEXP", default = FALSE)) {
+    stop("--build requires checked SEXP access with direct layout disabled")
+  }
+
+  zig <- direct_zig_executable(root_dir)
+  zig_version <- system2(zig, "version", stdout = TRUE, stderr = TRUE)
+  if (!is.null(attr(zig_version, "status")) || length(zig_version) != 1L) {
+    stop("could not identify the Zig compiler")
+  }
+  zig_version <- as.character(zig_version[[1L]])
+  r_paths <- direct_r_build_paths()
+  r_version_header <- file.path(r_paths$include, "Rversion.h")
+  r_library <- file.path(r_paths$lib, paste0("libR", .Platform$dynlib.ext))
+  if (!file.exists(r_version_header) || !file.exists(r_library)) {
+    stop("R header or runtime library identity file is missing")
+  }
+  zig_record <- direct_identity_md5(zig, "Zig compiler")
+  header_record <- direct_identity_md5(r_version_header, "R version header")
+  library_record <- direct_identity_md5(r_library, "R runtime library")
+
+  list(
+    environment = c(
+      ZIG = zig,
+      R_INCLUDE = r_paths$include,
+      R_LIB = r_paths$lib,
+      expected,
+      ZIGR_CHECKED_SEXP = "true",
+      ZIGR_DIRECT_SEXP = "false"
+    ),
+    identity = list(
+      contract = "checked-releasefast-linux-x86_64-v1",
+      provenance = "same-invocation-build-v1",
+      zig = list(version = zig_version, md5 = zig_record$md5),
+      r_headers = list(
+        version = direct_r_header_version(r_paths$include),
+        md5 = header_record$md5
+      ),
+      r_library = list(md5 = library_record$md5),
+      configuration = list(
+        optimization = expected[["ZIGR_OPTIMIZE"]],
+        target = expected[["ZIGR_TARGET"]],
+        cpu = expected[["ZIGR_CPU_FEATURES"]],
+        sexp_abi = "checked_r_api"
+      )
+    )
+  )
+}
+
+direct_runtime_identity <- function() {
+  info <- Sys.info()
+  blas <- direct_identity_md5(unname(extSoftVersion()[["BLAS"]]), "BLAS library")
+  lapack <- direct_identity_md5(La_library(), "LAPACK library")
+  list(
+    r = list(
+      version = paste(R.version$major, R.version$minor, sep = "."),
+      platform = R.version$platform
+    ),
+    system = list(
+      name = unname(info[["sysname"]]),
+      release = unname(info[["release"]]),
+      machine = unname(info[["machine"]]),
+      cpu_model = direct_cpu_model()
+    ),
+    blas = blas,
+    lapack = lapack,
+    thread_limits = as.list(direct_worker_thread_limits())
+  )
+}
+
+direct_execution_identity <- function(build_identity) {
+  list(build = build_identity, runtime = direct_runtime_identity())
+}
+
 # Worktree source identity used by the direct manifest.
 
 source_tree_files <- function(root_dir) {
@@ -115,6 +270,83 @@ manifest_numeric_scalar <- function(value, label) {
   as.numeric(value)
 }
 
+validate_direct_execution_identity <- function(identity) {
+  if (!is.list(identity) || !identical(names(identity), c("build", "runtime"))) {
+    stop("run manifest execution identity is invalid")
+  }
+  build <- identity$build
+  build_fields <- c("contract", "provenance", "zig", "r_headers", "r_library", "configuration")
+  if (!is.list(build) || !identical(names(build), build_fields) ||
+      !identical(manifest_scalar(build$contract, "execution contract"),
+                 "checked-releasefast-linux-x86_64-v1") ||
+      !identical(manifest_scalar(build$provenance, "build provenance"),
+                 "same-invocation-build-v1")) {
+    stop("run manifest build identity is invalid")
+  }
+  digest_record <- function(record, label, path = FALSE) {
+    fields <- c(if (path) "path", "md5")
+    if (!is.list(record) || !identical(names(record), fields)) {
+      stop(sprintf("run manifest %s identity is invalid", label))
+    }
+    if (path) manifest_scalar(record$path, paste(label, "path"))
+    digest <- manifest_scalar(record$md5, paste(label, "digest"))
+    if (!grepl("^[0-9a-f]{32}$", digest)) {
+      stop(sprintf("run manifest %s digest is invalid", label))
+    }
+  }
+  if (!is.list(build$zig) || !identical(names(build$zig), c("version", "md5")) ||
+      !identical(manifest_scalar(build$zig$version, "Zig version"), "0.16.0")) {
+    stop("run manifest Zig identity is invalid")
+  }
+  digest_record(list(md5 = build$zig$md5), "Zig")
+  if (!is.list(build$r_headers) ||
+      !identical(names(build$r_headers), c("version", "md5")) ||
+      !identical(manifest_scalar(build$r_headers$version, "R header version"), "4.6.1")) {
+    stop("run manifest R header identity is invalid")
+  }
+  digest_record(list(md5 = build$r_headers$md5), "R header")
+  digest_record(build$r_library, "R library")
+  configuration <- build$configuration
+  if (!is.list(configuration) ||
+      !identical(names(configuration), c("optimization", "target", "cpu", "sexp_abi")) ||
+      !identical(manifest_scalar(configuration$optimization, "optimization"), "ReleaseFast") ||
+      !identical(manifest_scalar(configuration$target, "target"), "native") ||
+      !identical(manifest_scalar(configuration$cpu, "CPU policy"), "baseline") ||
+      !identical(manifest_scalar(configuration$sexp_abi, "SEXP ABI"), "checked_r_api")) {
+    stop("run manifest build configuration is invalid")
+  }
+
+  runtime <- identity$runtime
+  if (!is.list(runtime) ||
+      !identical(names(runtime), c("r", "system", "blas", "lapack", "thread_limits"))) {
+    stop("run manifest runtime identity is invalid")
+  }
+  if (!is.list(runtime$r) || !identical(names(runtime$r), c("version", "platform")) ||
+      !identical(manifest_scalar(runtime$r$version, "R runtime version"), "4.6.1") ||
+      !identical(manifest_scalar(runtime$r$platform, "R runtime platform"),
+                 "x86_64-pc-linux-gnu")) {
+    stop("run manifest R runtime identity is invalid")
+  }
+  system <- runtime$system
+  if (!is.list(system) ||
+      !identical(names(system), c("name", "release", "machine", "cpu_model")) ||
+      !identical(tolower(manifest_scalar(system$name, "system name")), "linux") ||
+      !identical(tolower(manifest_scalar(system$machine, "system machine")), "x86_64")) {
+    stop("run manifest system identity is invalid")
+  }
+  manifest_scalar(system$release, "system release")
+  manifest_scalar(system$cpu_model, "CPU model")
+  digest_record(runtime$blas, "BLAS", path = TRUE)
+  digest_record(runtime$lapack, "LAPACK", path = TRUE)
+  expected_threads <- as.list(direct_worker_thread_limits())
+  if (!is.list(runtime$thread_limits) ||
+      !identical(names(runtime$thread_limits), names(expected_threads)) ||
+      !identical(lapply(runtime$thread_limits, as.character), expected_threads)) {
+    stop("run manifest thread limits are invalid")
+  }
+  invisible(identity)
+}
+
 validate_measurement_probe_record <- function(probe, runner, sample_count) {
   required_probe <- c(
     "timer_floor_ms", "nanotime_elapsed_ms", "independent_elapsed_ms", "samples"
@@ -198,7 +430,7 @@ validate_direct_run_manifest <- function(metadata) {
     "schema_version", "artifact_layout", "run_id", "status", "started_at",
     "runners", "tasks", "master_seed", "input_recipe_version", "input_seeds",
     "rng_event_seed",
-    "source_tree", "artifacts", "timing_policy", "measurement_mode", "command",
+    "source_tree", "artifacts", "execution_identity", "timing_policy", "measurement_mode", "command",
     "memory_task", "memory_policy",
     "correctness_completed_at", "measurement_probes", "finished_at", "outputs", "status_message"
   )
@@ -216,10 +448,19 @@ validate_direct_run_manifest <- function(metadata) {
   if (length(missing) > 0L) {
     stop(sprintf("run manifest is missing: %s", paste(missing, collapse = ", ")))
   }
-  if (!identical(as.integer(metadata$schema_version), 4L) ||
+  schema_version <- as.integer(metadata$schema_version)
+  if (!(schema_version %in% c(4L, 5L)) ||
       !identical(manifest_scalar(metadata$artifact_layout, "artifact layout"), "direct-v1")) {
     stop("run manifest is not the direct timing schema")
   }
+  has_execution_identity <- "execution_identity" %in% names(metadata)
+  if (schema_version == 5L && !has_execution_identity) {
+    stop("run manifest is missing: execution_identity")
+  }
+  if (schema_version == 4L && has_execution_identity) {
+    stop("schema 4 run manifest cannot contain an execution identity")
+  }
+  if (has_execution_identity) validate_direct_execution_identity(metadata$execution_identity)
   status <- manifest_scalar(metadata$status, "status")
   if (!(status %in% c("running", "incomplete", "correctness_complete", "complete"))) {
     stop("run manifest has an invalid status")

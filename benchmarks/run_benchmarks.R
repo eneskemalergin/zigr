@@ -62,8 +62,22 @@ if (!is.null(memory_task) && (correctness_only || !(memory_task %in% selected_ta
   stop("memory task must be a selected large-output task in a timed run")
 }
 
+build_invocation <- if (do_build) direct_supported_build_invocation(root_dir) else NULL
+execution_identity <- if (do_build) {
+  identity <- direct_execution_identity(build_invocation$identity)
+  validate_direct_execution_identity(identity)
+  identity
+} else {
+  NULL
+}
 if (do_build) {
-  build_status <- system("bash build_all.sh", ignore.stdout = FALSE, ignore.stderr = FALSE)
+  build_environment <- paste0(
+    names(build_invocation$environment), "=", shQuote(build_invocation$environment)
+  )
+  build_status <- system2(
+    "bash", "build_all.sh", env = build_environment,
+    stdout = "", stderr = ""
+  )
   if (!identical(build_status, 0L)) stop(sprintf("runner build failed with exit code %d", build_status))
 }
 
@@ -97,12 +111,22 @@ artifacts <- lapply(selected_runners, function(runner) {
   )
 })
 names(artifacts) <- selected_runners
+validate_artifacts_unchanged <- function() {
+  current <- lapply(artifacts, function(record) {
+    path <- direct_runner_artifact_path(root_dir, record$runner)
+    unname(as.character(tools::md5sum(path))[[1L]])
+  })
+  if (!identical(current, lapply(artifacts, `[[`, "md5"))) {
+    stop("runner artifacts changed during the run")
+  }
+  invisible(artifacts)
+}
 
 timing_policy <- benchmark_timing_policy()
 batch_repetitions <- direct_batch_repetition_map(selected_tasks)
 timing_policy$batch_repetitions <- as.list(batch_repetitions)
 metadata <- list(
-  schema_version = 4L,
+  schema_version = if (do_build) 5L else 4L,
   artifact_layout = "direct-v1",
   run_id = run_id,
   status = "running",
@@ -117,10 +141,12 @@ metadata <- list(
   rng_event_seed = task_input_seed(master_seed, "rng", "direct-timing-v1"),
   source_tree = source_tree_identity(normalizePath("..")),
   artifacts = artifacts,
+  execution_identity = execution_identity,
   timing_policy = timing_policy,
   measurement_mode = if (correctness_only) "correctness_only" else "timed",
   command = as.list(commandArgs())
 )
+if (!do_build) metadata$execution_identity <- NULL
 if (!is.null(memory_task)) {
   metadata$memory_task <- memory_task
   metadata$memory_policy <- direct_memory_policy()
@@ -145,7 +171,9 @@ run_direct_benchmark <- function() {
   sizing_staging <- file.path(staging, "sizing")
   timing_staging <- file.path(staging, "timing")
   dir.create(correctness_staging, recursive = TRUE, showWarnings = FALSE)
-  blas_environment <- c("OPENBLAS_NUM_THREADS=1")
+  blas_environment <- paste0(
+    names(direct_worker_thread_limits()), "=", direct_worker_thread_limits()
+  )
   task_argument <- paste(selected_tasks, collapse = ",")
 
   cat("Correctness\n")
@@ -187,6 +215,7 @@ run_direct_benchmark <- function() {
   if (correctness_only) {
     unlink(staging, recursive = TRUE)
     validate_source_tree_identity(normalizePath(".."), metadata$source_tree)
+    validate_artifacts_unchanged()
     metadata$status <- "correctness_complete"
     metadata$finished_at <- run_manifest_timestamp()
     metadata$outputs <- list(correctness = list(
@@ -426,13 +455,7 @@ run_direct_benchmark <- function() {
   unlink(staging, recursive = TRUE)
 
   validate_source_tree_identity(normalizePath(".."), metadata$source_tree)
-  current_artifacts <- lapply(artifacts, function(record) {
-    path <- direct_runner_artifact_path(root_dir, record$runner)
-    unname(as.character(tools::md5sum(path))[[1L]])
-  })
-  if (!identical(current_artifacts, lapply(artifacts, `[[`, "md5"))) {
-    stop("runner artifacts changed during the run")
-  }
+  validate_artifacts_unchanged()
 
   metadata$status <- "complete"
   metadata$finished_at <- run_manifest_timestamp()

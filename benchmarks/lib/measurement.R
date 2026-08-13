@@ -2,6 +2,28 @@
 
 benchmark_input_schema_version <- function() "benchmark-input-v2"
 
+direct_worker_thread_limits <- function() {
+  c(
+    OPENBLAS_NUM_THREADS = "1",
+    OMP_NUM_THREADS = "1",
+    MKL_NUM_THREADS = "1",
+    VECLIB_MAXIMUM_THREADS = "1",
+    BLIS_NUM_THREADS = "1"
+  )
+}
+
+validate_direct_worker_thread_limits <- function(values = NULL) {
+  expected <- direct_worker_thread_limits()
+  if (is.null(values)) {
+    values <- Sys.getenv(names(expected), unset = NA_character_)
+  }
+  if (!is.character(values) || !identical(names(values), names(expected)) ||
+      !identical(unname(values), unname(expected))) {
+    stop("benchmark worker thread limits differ from the declared policy")
+  }
+  invisible(values)
+}
+
 benchmark_master_seed <- function() 20260713L
 
 # This is the frozen comparison vocabulary for the current direct harness.

@@ -22,6 +22,7 @@ bash build_all.sh
 Rscript tests/test_measurement.R
 Rscript tests/test_specification.R
 Rscript check_coverage.R
+Rscript run_benchmarks.R --build --correctness-only
 Rscript run_benchmarks.R --runners=r,c_call,zigr --tasks=vector_sum
 Rscript run_benchmarks.R --tasks=attributes --memory-task=attributes
 ```
@@ -35,11 +36,11 @@ Rscript run_benchmarks.R --tasks=attributes --memory-task=attributes
 5. `cost_account.csv`
 6. `memory_summary.csv` when `--memory-task` is selected
 
-The manifest seals source-tree and built-artifact identities, selected task seeds, the timing policy, and output digests. A changed source tree, artifact, raw sample, or summary cannot be accepted as the same run.
+The manifest seals source-tree and built-artifact identities, selected task seeds, the timing policy, and output digests. `--build` also seals the same-invocation Zig 0.16.0, R 4.6.1, checked ReleaseFast, native Linux target, baseline x86_64 CPU, BLAS/LAPACK, and serial thread identity in schema 5. A run without `--build` remains an unsealed schema 4 diagnostic. A changed source tree, artifact, execution identity, raw sample, or summary cannot be accepted as the same run.
 
 `cost_account.csv` records the exact attributable work for the fixed revision inputs: logical input elements and passes; fixture-level borrowed, materialized, copied, and written bytes; native allocation requests; known R payload sizes; list-slot reads; and sparse indexed-element reads. The byte columns describe separate transfers, not one additive total. `input_elements` is the input cardinality, so the RNG row records its scalar count argument while its output size appears in the R payload columns. `input_passes` counts complete fixture-level traversals and excludes work inside opaque R calls. Native request sizes use the current x86_64 fixture ABI. R headers, allocator rounding, metadata allocations, and work hidden inside opaque R evaluation, serialization, attribute, string-interning, factor, and ALTREP calls are marked instead of being presented as measured totals.
 
-`results/CANONICAL_RUN.json` is an old receipt that the harness does not read. Do not use it for a current comparison. Use the schema 4 `direct-v1` manifest and artifacts produced by the run.
+`results/CANONICAL_RUN.json` is an old receipt that the harness does not read. Do not use it for a current comparison. Comparative evidence requires the schema 5 `direct-v1` manifest and artifacts produced by a same-invocation `--build` run.
 
 `memory_summary.csv` is a separate, one-event fresh-process safety measurement for one selected large-output task. On Linux it records loaded `VmRSS`, pre-event and post-event `VmHWM`, and swap. Its high-water difference is a process-growth cap, not an allocation claim.
 

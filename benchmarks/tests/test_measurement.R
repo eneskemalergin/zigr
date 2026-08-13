@@ -25,6 +25,19 @@ expect_error <- function(label, expression, pattern) {
   invisible(error)
 }
 
+thread_limits <- direct_worker_thread_limits()
+expect_true(
+  identical(validate_direct_worker_thread_limits(thread_limits), thread_limits),
+  "worker thread limits accept the complete serial policy"
+)
+changed_thread_limits <- thread_limits
+changed_thread_limits[["OMP_NUM_THREADS"]] <- "2"
+expect_error(
+  "worker thread limits reject a changed value",
+  validate_direct_worker_thread_limits(changed_thread_limits),
+  "thread limits differ from the declared policy"
+)
+
 specs <- benchmark_revision_task_specs()
 expect_true(
   length(specs) == 27L && !anyDuplicated(vapply(specs, `[[`, character(1), "id")) &&

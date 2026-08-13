@@ -60,6 +60,7 @@ if (paired_mode) {
 if (!(mode %in% c("correctness", "sizing", "timing", "memory", "paired"))) {
   stop("worker mode must be correctness, sizing, timing, memory, or paired")
 }
+validate_direct_worker_thread_limits()
 if (skip_probes && !identical(mode, "sizing")) {
   stop("--skip-probes is allowed only for later sizing rounds")
 }
